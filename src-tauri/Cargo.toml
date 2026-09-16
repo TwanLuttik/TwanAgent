@@ -1,0 +1,31 @@
+[package]
+name = "twanagent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "TwanAgent desktop"
+
+[lib]
+name = "twanagent_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-util = "0.3"
+hex = "0.4"
+keyring = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["time", "rt", "macros", "process"] }
+tauri = { version = "2", features = ["protocol-asset"] }
+portable-pty = "0.8"
+tauri-plugin-dialog = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

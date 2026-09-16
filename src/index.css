@@ -1,0 +1,212 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #ffffff;
+  --color-sidebar: #ececec;
+  --color-panel: #f5f5f7;
+  --color-line: #d8d8dc;
+  --color-ink: #3f3f42;
+  --color-muted: #6e6e73;
+  --color-accent: #007aff;
+  --color-accent-hover: #0066d6;
+  --color-on-accent: #ffffff;
+  --color-select: #c8daf5;
+  --color-ok: #34c759;
+  --color-err: #ff3b30;
+  --color-warn: #ff9f0a;
+  --color-inset: #e8e8ed;
+  --color-wash: rgb(0 0 0 / 0.05);
+  --color-wash-strong: rgb(0 0 0 / 0.08);
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+html {
+  color-scheme: light;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.sidebar-space {
+  pointer-events: none;
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 0;
+  height: 18.5rem;
+  overflow: hidden;
+}
+
+html[data-space-corner="off"] .sidebar-space {
+  display: none;
+}
+
+.sidebar-space-art,
+.sidebar-space-dots {
+  position: absolute;
+  inset: 0;
+}
+
+.sidebar-space-art {
+  background-position: top left;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: 0.48;
+}
+
+.sidebar-space-dots {
+  background-image:
+    radial-gradient(circle, rgb(255 255 255 / 0.5) 0.55px, transparent 0.7px),
+    radial-gradient(circle, rgb(255 255 255 / 0.18) 0.8px, transparent 0.95px);
+  background-position: 0 0, 1.75px 1.75px;
+  background-size: 3.25px 3.25px, 7px 7px;
+  opacity: 0.38;
+}
+
+html[data-theme-mode="dark"] .sidebar-space-art {
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+html[data-theme-mode="light"] .sidebar-space-art {
+  mix-blend-mode: multiply;
+  opacity: 0.2;
+}
+
+html[data-theme-mode="light"] .sidebar-space-dots {
+  background-image:
+    radial-gradient(circle, rgb(40 28 70 / 0.45) 0.55px, transparent 0.7px),
+    radial-gradient(circle, rgb(40 28 70 / 0.16) 0.8px, transparent 0.95px);
+  opacity: 0.28;
+}
+
+.media-check {
+  background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-canvas));
+  background-image:
+    linear-gradient(45deg, color-mix(in srgb, var(--color-ink) 9%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--color-ink) 9%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--color-ink) 9%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--color-ink) 9%, transparent) 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+}
+
+.dev-term,
+.dev-term .xterm,
+.dev-term .xterm-screen {
+  height: 100%;
+}
+
+.dev-term .xterm {
+  width: 100%;
+  padding: 0;
+}
+
+/* Viewport is a full-size overlay; let clicks/wheel reach the screen so TUIs get mouse reports. */
+.dev-term .xterm-viewport {
+  pointer-events: none;
+}
+
+.dev-term .xterm-screen {
+  pointer-events: auto;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover,
+[data-scrolling] {
+  scrollbar-color: color-mix(in srgb, var(--color-ink) 28%, transparent) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  background-clip: padding-box;
+  border: 1.5px solid transparent;
+  border-radius: 999px;
+}
+
+*:hover::-webkit-scrollbar-thumb,
+[data-scrolling]::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-ink) 28%, transparent);
+}
+
+.hop-packet {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  animation: hop-packet 1.15s ease-in-out infinite;
+}
+
+@keyframes hop-packet {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  82% {
+    opacity: 1;
+  }
+  100% {
+    top: calc(100% - 4px);
+    opacity: 0;
+  }
+}
+
+.hop-indet {
+  animation: hop-indet 1.15s ease-in-out infinite;
+}
+
+@keyframes hop-indet {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(380%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hop-packet,
+  .hop-indet {
+    animation: none;
+  }
+}
