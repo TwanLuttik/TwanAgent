@@ -4185,6 +4185,7 @@ dependencies = [
  "futures-util",
  "hex",
  "keyring",
+ "libc",
  "portable-pty",
  "reqwest 0.12.28",
  "serde",

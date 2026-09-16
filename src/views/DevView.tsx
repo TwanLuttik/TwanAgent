@@ -65,6 +65,12 @@ import {
   saveDevWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, permissionLabel, shouldPromptShell, type PermissionMode } from "../lib/dev-permission";
+import {
+  canPersistTurn,
+  draftForChat,
+  setDraftForChat,
+  turnAppliesToChat,
+} from "../lib/dev-turn";
 import * as api from "../lib/tauri";
 import type { DevConversationSummary, DevRuntime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -80,7 +86,7 @@ export function DevView() {
   const [conversations, setConversations] = useState<DevConversationSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [runningId, setRunningId] = useState("");
   const [streamText, setStreamText] = useState("");
@@ -91,6 +97,7 @@ export function DevView() {
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
   const [tick, setTick] = useState(0);
+  const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [recents, setRecents] = useState(loadDevRecentWorkspaces);
   const [showSettings, setShowSettings] = useState(false);
@@ -102,7 +109,16 @@ export function DevView() {
   const abortRef = useRef<AbortController | null>(null);
   const permissionRef = useRef(permission);
   permissionRef.current = permission;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const deletedIdsRef = useRef(new Set<string>());
+  const turnMessagesRef = useRef<ChatMessage[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const draft = draftForChat(drafts, activeId);
+
+  const setDraft = useCallback((text: string) => {
+    setDrafts((prev) => setDraftForChat(prev, activeId, text));
+  }, [activeId]);
 
   const ready = Boolean(runtime?.ready);
   const models = runtime?.models ?? [];
@@ -196,6 +212,34 @@ export function DevView() {
     if (workspace) void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
   }, [workspace, reloadConversations, setFlash]);
 
+  useEffect(() => {
+    if (!workspace) {
+      setOpened(false);
+      return;
+    }
+    let cancelled = false;
+    setOpened(false);
+    void api
+      .devOpenFolder(workspace)
+      .then((path) => {
+        if (cancelled) return;
+        if (path !== workspace) {
+          saveDevWorkspace(path);
+          setWorkspace(path);
+          return;
+        }
+        setOpened(true);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setOpened(false);
+        setFlash({ kind: "err", text: String(e) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace, setFlash]);
+
   const pendingShell = shellQueue[0] ?? null;
 
   useEffect(() => {
@@ -253,6 +297,7 @@ export function DevView() {
   }
 
   function applyWorkspace(path: string) {
+    abortRef.current?.abort();
     void terminalSessions.disposeAll();
     saveDevWorkspace(path);
     setRecents(pushDevRecentWorkspace(path));
@@ -262,6 +307,7 @@ export function DevView() {
     setPendingClosePath(null);
     setSubagents([]);
     setExpandedAgents({});
+    setDrafts({});
     setFolderOpen(false);
   }
 
@@ -296,6 +342,14 @@ export function DevView() {
     if (!workspace || id === activeId) return;
     setSubagents([]);
     setExpandedAgents({});
+    if (runningId === id && turnMessagesRef.current) {
+      setActiveId(id);
+      setMessages(turnMessagesRef.current);
+      saveDevConversation(workspace, id);
+      return;
+    }
+    setStreamText("");
+    setLiveTools([]);
     const full = await api.devGetConversation(workspace, id);
     setActiveId(id);
     setMessages((full.messages as ChatMessage[]) ?? []);
@@ -304,6 +358,8 @@ export function DevView() {
 
   async function removeChat(id: string) {
     if (!workspace) return;
+    deletedIdsRef.current.add(id);
+    if (runningId === id) abortRef.current?.abort();
     await terminalSessions.dispose(id);
     await api.devDeleteConversation(workspace, id);
     if (activeId === id) {
@@ -315,6 +371,7 @@ export function DevView() {
   }
 
   async function persist(next: ChatMessage[], id: string, ws = workspace) {
+    if (!canPersistTurn(id, deletedIdsRef.current)) return;
     if (!ws || !id) return;
     const title = conversationTitleFrom(next);
     const now = nowIso();
@@ -414,6 +471,12 @@ export function DevView() {
       setFolderOpen(true);
       return;
     }
+    try {
+      ws = await api.devOpenFolder(ws);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+      return;
+    }
     let id = activeId;
     if (!id) {
       const now = nowIso();
@@ -431,13 +494,15 @@ export function DevView() {
     }
     const next: ChatMessage[] = [...messages, { role: "user", content: text }];
     setMessages(next);
-    setDraft("");
+    setDrafts((prev) => setDraftForChat(prev, id, ""));
     setBusy(true);
     setRunningId(id);
     setStreamText("");
     setLiveTools([]);
+    turnMessagesRef.current = next;
     const ac = new AbortController();
     abortRef.current = ac;
+    const visible = () => turnAppliesToChat(id, activeIdRef.current);
     try {
       const done = await completeTurn({
         workspace: ws,
@@ -445,35 +510,46 @@ export function DevView() {
         model,
         effort,
         allowSpawn: true,
-        onDelta: (chunk) => setStreamText((s) => s + chunk),
-        onError: (err) => setFlash({ kind: "err", text: err }),
+        onDelta: (chunk) => {
+          if (visible()) setStreamText((s) => s + chunk);
+        },
+        onError: (err) => {
+          if (visible()) setFlash({ kind: "err", text: err });
+        },
         confirmShell,
         getPermission: () => permissionRef.current,
         onTool: (call) => {
           if (call.name === "spawn_subagent") return;
-          setLiveTools((rows) => [...rows, toolActivityLabel(call)]);
+          if (visible()) setLiveTools((rows) => [...rows, toolActivityLabel(call)]);
         },
         onSubagent: (event) => {
+          if (!visible()) return;
           setSubagents((rows) => applySubagentEvent(rows, event));
           if (event.type === "start") {
             setExpandedAgents((prev) => ({ ...prev, [event.record.id]: true }));
           }
         },
-        onUpdate: (next) => {
-          setMessages(next);
+        onUpdate: (nextMessages) => {
+          turnMessagesRef.current = nextMessages;
+          if (!visible()) return;
+          setMessages(nextMessages);
           setStreamText("");
         },
         onRefresh: () => setTick((n) => n + 1),
         signal: ac.signal,
       });
-      setMessages(done);
-      setStreamText("");
-      setLiveTools([]);
+      turnMessagesRef.current = done;
+      if (visible()) {
+        setMessages(done);
+        setStreamText("");
+        setLiveTools([]);
+      }
       await persist(done, id, ws);
     } catch (e) {
-      setFlash({ kind: "err", text: String(e) });
+      if (visible()) setFlash({ kind: "err", text: String(e) });
     } finally {
       abortRef.current = null;
+      turnMessagesRef.current = null;
       setBusy(false);
       setRunningId("");
       setShellQueue((q) => {
@@ -667,7 +743,7 @@ export function DevView() {
                 onKeyChange={reloadRuntime}
                 onClose={folderOpen ? undefined : closeSettings}
               />
-            ) : editor.focus === "file" && editor.activePath ? (
+            ) : editor.focus === "file" && editor.activePath && opened ? (
                 <DevEditor
                   workspace={workspace}
                   path={editor.activePath}
@@ -687,6 +763,7 @@ export function DevView() {
                 />
               ) : parseConversationKind(conversations.find((c) => c.id === activeId)?.kind) === "terminal" &&
                 workspace &&
+                opened &&
                 activeId ? (
                 <GrokTerminal workspace={workspace} conversationId={activeId} active />
               ) : (
@@ -776,7 +853,7 @@ export function DevView() {
                 </>
               )}
           </div>
-          {workspace && !showSettings ? (
+          {workspace && opened && !showSettings ? (
             <DevWorkspace
               workspace={workspace}
               tick={tick}

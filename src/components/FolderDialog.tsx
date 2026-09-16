@@ -186,7 +186,7 @@ export function FolderDialog({
     setError(null);
     const picked = await api.pickDir();
     if (!picked) return;
-    onPick(picked);
+    await runOpen(picked);
   }
 
   async function runOpen(path: string) {

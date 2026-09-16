@@ -3,7 +3,7 @@ use std::path::Path;
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 const SERVICE: &str = "app.twanagent.desktop";
 const XAI_ACCOUNT: &str = "xai";
@@ -58,49 +58,98 @@ fn replace_file(tmp: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn keychain_set(account: &str, value: &str) -> std::result::Result<(), keyring::Error> {
-    Entry::new(SERVICE, account)?.set_password(value)
+pub trait SecretStore {
+    fn set(&self, value: &str) -> std::result::Result<(), String>;
+    fn get(&self) -> std::result::Result<Option<String>, String>;
+    fn delete(&self);
 }
 
-fn keychain_get(account: &str) -> std::result::Result<String, keyring::Error> {
-    Entry::new(SERVICE, account)?.get_password()
-}
+pub struct SystemKeychain;
 
-fn keychain_delete(account: &str) {
-    if let Ok(entry) = Entry::new(SERVICE, account) {
-        let _ = entry.delete_credential();
+impl SecretStore for SystemKeychain {
+    fn set(&self, value: &str) -> std::result::Result<(), String> {
+        Entry::new(SERVICE, XAI_ACCOUNT)
+            .and_then(|entry| entry.set_password(value))
+            .map_err(|e| e.to_string())
     }
+
+    fn get(&self) -> std::result::Result<Option<String>, String> {
+        match Entry::new(SERVICE, XAI_ACCOUNT).and_then(|entry| entry.get_password()) {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn delete(&self) {
+        if let Ok(entry) = Entry::new(SERVICE, XAI_ACCOUNT) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
+fn clear_file_key(data_dir: &Path) -> Result<()> {
+    let mut file = load_file(data_dir)?;
+    if file.xai_key.is_none() {
+        return Ok(());
+    }
+    file.xai_key = None;
+    save_file(data_dir, &file)
+}
+
+fn leftover_file_key(data_dir: &Path) -> Option<String> {
+    load_file(data_dir).ok().and_then(|file| {
+        file.xai_key
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 pub fn set_xai_key(data_dir: &Path, key: &str) -> Result<()> {
+    set_xai_key_in(data_dir, key, &SystemKeychain)
+}
+
+pub fn set_xai_key_in(data_dir: &Path, key: &str, store: &dyn SecretStore) -> Result<()> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
-        return delete_xai_key(data_dir);
+        return delete_xai_key_in(data_dir, store);
     }
-    let _ = keychain_set(XAI_ACCOUNT, trimmed);
-    let mut file = load_file(data_dir)?;
-    file.xai_key = Some(trimmed.to_string());
-    save_file(data_dir, &file)
+    store
+        .set(trimmed)
+        .map_err(|e| Error::Keychain(format!("could not save key to keychain: {e}")))?;
+    let _ = clear_file_key(data_dir);
+    Ok(())
 }
 
 pub fn get_xai_key(data_dir: &Path) -> Option<String> {
-    if let Ok(file) = load_file(data_dir) {
-        if let Some(value) = file.xai_key {
-            if !value.trim().is_empty() {
-                return Some(value);
-            }
-        }
-    }
-    keychain_get(XAI_ACCOUNT)
+    get_xai_key_in(data_dir, &SystemKeychain)
+}
+
+pub fn get_xai_key_in(data_dir: &Path, store: &dyn SecretStore) -> Option<String> {
+    let stored = store
+        .get()
         .ok()
-        .filter(|value| !value.trim().is_empty())
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(value) = stored {
+        let _ = clear_file_key(data_dir);
+        return Some(value);
+    }
+    let leftover = leftover_file_key(data_dir)?;
+    if store.set(&leftover).is_ok() {
+        let _ = clear_file_key(data_dir);
+    }
+    Some(leftover)
 }
 
 pub fn delete_xai_key(data_dir: &Path) -> Result<()> {
-    keychain_delete(XAI_ACCOUNT);
-    let mut file = load_file(data_dir)?;
-    file.xai_key = None;
-    save_file(data_dir, &file)
+    delete_xai_key_in(data_dir, &SystemKeychain)
+}
+
+pub fn delete_xai_key_in(data_dir: &Path, store: &dyn SecretStore) -> Result<()> {
+    store.delete();
+    clear_file_key(data_dir)
 }
 
 /// Settings key wins; otherwise `XAI_API_KEY`.
@@ -148,9 +197,98 @@ mod xai_key_tests {
     #[test]
     fn xai_key_roundtrip_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        set_xai_key(dir.path(), "xai-secret").unwrap();
-        assert_eq!(get_xai_key(dir.path()).as_deref(), Some("xai-secret"));
-        delete_xai_key(dir.path()).unwrap();
-        assert_eq!(get_xai_key(dir.path()), None);
+        let store = MemStore::default();
+        set_xai_key_in(dir.path(), "xai-secret", &store).unwrap();
+        assert_eq!(
+            get_xai_key_in(dir.path(), &store).as_deref(),
+            Some("xai-secret")
+        );
+        delete_xai_key_in(dir.path(), &store).unwrap();
+        assert_eq!(get_xai_key_in(dir.path(), &store), None);
+    }
+
+    #[test]
+    fn set_does_not_write_the_key_to_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MemStore::default();
+        set_xai_key_in(dir.path(), "xai-secret", &store).unwrap();
+        let path = dir.path().join("secrets.json");
+        if path.exists() {
+            let raw = std::fs::read_to_string(&path).unwrap();
+            assert!(!raw.contains("xai-secret"), "{raw}");
+        }
+        assert_eq!(store.get().unwrap().as_deref(), Some("xai-secret"));
+    }
+
+    #[test]
+    fn set_fails_when_keychain_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = set_xai_key_in(dir.path(), "xai-secret", &FailStore).unwrap_err();
+        assert!(err.to_string().contains("keychain"));
+        assert!(!dir.path().join("secrets.json").exists());
+    }
+
+    #[test]
+    fn get_prefers_keychain_and_clears_leftover_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("secrets.json"),
+            r#"{"xai_key":"file-secret"}"#,
+        )
+        .unwrap();
+        let store = MemStore::default();
+        store.set("chain-secret").unwrap();
+        assert_eq!(
+            get_xai_key_in(dir.path(), &store).as_deref(),
+            Some("chain-secret")
+        );
+        let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
+        assert!(!raw.contains("file-secret"), "{raw}");
+    }
+
+    #[test]
+    fn get_migrates_leftover_file_into_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("secrets.json"),
+            r#"{"xai_key":"file-secret"}"#,
+        )
+        .unwrap();
+        let store = MemStore::default();
+        assert_eq!(
+            get_xai_key_in(dir.path(), &store).as_deref(),
+            Some("file-secret")
+        );
+        assert_eq!(store.get().unwrap().as_deref(), Some("file-secret"));
+        let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
+        assert!(!raw.contains("file-secret"), "{raw}");
+    }
+
+    #[derive(Default)]
+    struct MemStore(std::sync::Mutex<Option<String>>);
+
+    impl SecretStore for MemStore {
+        fn set(&self, value: &str) -> std::result::Result<(), String> {
+            *self.0.lock().unwrap() = Some(value.to_string());
+            Ok(())
+        }
+        fn get(&self) -> std::result::Result<Option<String>, String> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        fn delete(&self) {
+            *self.0.lock().unwrap() = None;
+        }
+    }
+
+    struct FailStore;
+
+    impl SecretStore for FailStore {
+        fn set(&self, _: &str) -> std::result::Result<(), String> {
+            Err("unavailable".into())
+        }
+        fn get(&self) -> std::result::Result<Option<String>, String> {
+            Err("unavailable".into())
+        }
+        fn delete(&self) {}
     }
 }

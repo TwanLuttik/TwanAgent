@@ -45,6 +45,13 @@ describe("childCanUseTool", () => {
     assert.equal(childCanUseTool("plan", "edit_file"), false);
     assert.equal(childCanUseTool("general-purpose", "edit_file"), true);
   });
+
+  it("blocks shell commands for explore and plan", () => {
+    assert.equal(childCanUseTool("explore", "run_command"), false);
+    assert.equal(childCanUseTool("plan", "run_command"), false);
+    assert.equal(childCanUseTool("general-purpose", "run_command"), true);
+    assert.equal(childCanUseTool("explore", "list_dir"), true);
+  });
 });
 
 describe("subagentSystemPrompt", () => {

@@ -8,10 +8,11 @@ use std::time::Duration;
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
+use crate::state::AppState;
 
 const EVENT: &str = "dev-pty";
 
@@ -45,6 +46,7 @@ pub fn default_shell() -> String {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn resolve_workspace(workspace: &str) -> Result<PathBuf> {
     let root = fs::canonicalize(workspace)
         .map_err(|_| Error::Other("workspace folder is missing".into()))?;
@@ -240,13 +242,13 @@ pub fn kill_pty(id: &str) -> Result<()> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_pty_open(app: AppHandle, workspace: String, cols: u16, rows: u16) -> Result<String> {
-    let root = resolve_workspace(&workspace)?;
+    let root = app.state::<AppState>().require_workspace(&workspace)?;
     spawn_pty(app, &root, cols, rows)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_pty_open_grok(app: AppHandle, workspace: String, cols: u16, rows: u16) -> Result<String> {
-    let root = resolve_workspace(&workspace)?;
+    let root = app.state::<AppState>().require_workspace(&workspace)?;
     spawn_grok_pty(app, &root, cols, rows)
 }
 

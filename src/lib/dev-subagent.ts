@@ -51,7 +51,7 @@ export function parseSpawnArgs(raw: string): SpawnArgs {
 export function childCanUseTool(type: SubagentType, name: string): boolean {
   if (name === "spawn_subagent") return false;
   if (type === "explore" || type === "plan") {
-    return name !== "write_file" && name !== "edit_file";
+    return name !== "write_file" && name !== "edit_file" && name !== "run_command";
   }
   return true;
 }
@@ -72,9 +72,9 @@ export function subagentSystemPrompt(
 ): ChatMessage {
   const limits =
     type === "explore"
-      ? "You are an explore agent. Search and read, but do not edit files."
+      ? "You are an explore agent. Search and read, but do not edit files or run shell commands."
       : type === "plan"
-        ? "You are a plan agent. Explore the codebase and produce a structured plan. Do not edit files."
+        ? "You are a plan agent. Explore the codebase and produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
   return {
     role: "system",

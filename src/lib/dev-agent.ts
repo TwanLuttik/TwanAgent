@@ -2,6 +2,7 @@ import type { DevToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage } from "./dev.ts";
 import { parsePermissionMode, toolDeniedByPermission, type PermissionMode } from "./dev-permission.ts";
+import { skipToolIfAborted } from "./dev-turn.ts";
 import {
   childCanUseTool,
   emptySubagent,
@@ -20,7 +21,10 @@ export async function executeTool(
   confirmShell: ConfirmShell,
   childType?: SubagentType,
   permission: PermissionMode = "ask",
+  signal?: AbortSignal,
 ): Promise<string> {
+  const skipped = signal ? skipToolIfAborted(signal) : null;
+  if (skipped) return skipped;
   if (childType && !childCanUseTool(childType, call.name)) {
     return `Error: ${call.name} is not available to this ${childType} subagent.`;
   }
@@ -117,6 +121,11 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const contents: string[] = new Array(result.toolCalls.length);
     const spawnWaits: Promise<void>[] = [];
     for (let i = 0; i < result.toolCalls.length; i++) {
+      const skipped = skipToolIfAborted(opts.signal);
+      if (skipped) {
+        contents[i] = skipped;
+        continue;
+      }
       const call = result.toolCalls[i];
       opts.onTool?.(call);
       if (call.name === "spawn_subagent") {
@@ -133,6 +142,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.confirmShell,
         opts.childType,
         parsePermissionMode(opts.getPermission?.()),
+        opts.signal,
       );
       if (call.name === "write_file" || call.name === "edit_file" || call.name === "run_command") {
         opts.onRefresh?.();
