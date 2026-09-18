@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { ChatMarkdown } from "../components/ChatMarkdown";
+import { ChatMarkdown, WorkspaceFileLinks } from "../components/ChatMarkdown";
 import { ConversationList } from "../components/ConversationList";
 import { DevComposer } from "../components/DevComposer";
 import { DevEditor } from "../components/DevEditor";
@@ -9,22 +9,43 @@ import { Flash } from "../components/Flash";
 import { FolderDialog } from "../components/FolderDialog";
 import { SpaceCorner } from "../components/SpaceCorner";
 import { SubagentDock } from "../components/SubagentDock";
-import { FileIcon } from "../components/FileIcon";
+import { ToolTrail } from "../components/ToolTrail";
 import { Symbol } from "../components/Symbol";
+import { ChromeTab, ChromeTabStrip } from "../components/ChromeTabs";
 import { headerBarClass, WindowButtons } from "../components/WindowButtons";
+import { isNearBottom } from "../lib/chat-scroll";
 import { completeTurn } from "../lib/dev-agent";
+import {
+  contextWindowForModel,
+  putChatUsage,
+  sameChatUsage,
+  usageToPersist,
+  type ChatUsage,
+} from "../lib/dev-context";
 import { applySubagentEvent, type SubagentRecord } from "../lib/dev-subagent";
 import {
+  activityFromToolCall,
+  conversationActivityLabel,
   conversationTitleFrom,
   folderName,
-  latestAssistantPreview,
+  isLiveToolTrail,
   liveTranscriptItems,
   moveById,
   newConversationId,
   nowIso,
   toolActivityLabel,
   type ChatMessage,
+  type ConversationActivity,
 } from "../lib/dev";
+import {
+  conversationHasSummarizeSource,
+  JOURNEY_SUMMARIZE_PROMPT,
+  journeyKnowledgePath,
+  lastAssistantText,
+  parseJourneyColor,
+  type JourneyColor,
+  type JourneySummary,
+} from "../lib/dev-journey";
 import {
   conversationDraft,
   parseConversationKind,
@@ -33,14 +54,16 @@ import {
 import { terminalSessions } from "../lib/dev-terminal-sessions";
 import {
   closeEditorTab,
-  editorTabTitle,
+  editorFileView,
   emptyEditor,
+  focusEditor,
   markdownViewForTab,
   pinEditorTab,
   previewEditorTab,
   requestCloseEditorTab,
   selectChatTab,
   selectEditorTab,
+  setEditorFileView,
   setEditorMarkdownView,
   type EditorState,
 } from "../lib/dev-editor";
@@ -65,6 +88,7 @@ import {
   saveDevWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, permissionLabel, shouldPromptShell, type PermissionMode } from "../lib/dev-permission";
+import { formatElapsed } from "../lib/relative-time";
 import {
   canPersistTurn,
   draftForChat,
@@ -84,13 +108,18 @@ export function DevView() {
   const [effort, setEffort] = useState("");
   const [permission, setPermission] = useState<PermissionMode>(() => parsePermissionMode(loadDevPermission()));
   const [conversations, setConversations] = useState<DevConversationSummary[]>([]);
+  const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [runningId, setRunningId] = useState("");
   const [streamText, setStreamText] = useState("");
+  const [usageByChat, setUsageByChat] = useState<Record<string, ChatUsage>>({});
   const [liveTools, setLiveTools] = useState<string[]>([]);
+  const [runningActivity, setRunningActivity] = useState<ConversationActivity | null>(null);
+  const [turnStartedAt, setTurnStartedAt] = useState(0);
+  const [openingId, setOpeningId] = useState("");
   const [shellQueue, setShellQueue] = useState<
     { command: string; resolve: (ok: boolean) => void }[]
   >([]);
@@ -113,7 +142,13 @@ export function DevView() {
   activeIdRef.current = activeId;
   const deletedIdsRef = useRef(new Set<string>());
   const turnMessagesRef = useRef<ChatMessage[] | null>(null);
+  const turnLiveRef = useRef({
+    streamText: "",
+    liveTools: [] as string[],
+    activity: null as ConversationActivity | null,
+  });
   const scroller = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const draft = draftForChat(drafts, activeId);
 
   const setDraft = useCallback((text: string) => {
@@ -126,12 +161,15 @@ export function DevView() {
   const reloadConversations = useCallback(async (ws: string, preferId?: string) => {
     if (!ws) {
       setConversations([]);
+      setJourneys([]);
       setActiveId("");
       setMessages([]);
       return;
     }
     const rows = await api.devListConversations(ws);
+    const nextJourneys = await api.devListJourneys(ws).catch(() => [] as JourneySummary[]);
     setConversations(rows);
+    setJourneys(nextJourneys);
     const want = preferId || loadDevConversation(ws) || rows[0]?.id || "";
     if (!want) {
       setActiveId("");
@@ -147,6 +185,7 @@ export function DevView() {
     const full = await api.devGetConversation(ws, found.id);
     setActiveId(found.id);
     setMessages((full.messages as ChatMessage[]) ?? []);
+    setUsageByChat((prev) => putChatUsage(prev, found.id, full.context_usage));
     saveDevConversation(ws, found.id);
   }, []);
 
@@ -242,10 +281,10 @@ export function DevView() {
 
   const pendingShell = shellQueue[0] ?? null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, streamText, pendingShell]);
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages, streamText, pendingShell, runningActivity, liveTools, openingId]);
 
   const closeSettings = useCallback(() => setShowSettings(false), []);
 
@@ -308,10 +347,12 @@ export function DevView() {
     setSubagents([]);
     setExpandedAgents({});
     setDrafts({});
+    setUsageByChat({});
+    setJourneys([]);
     setFolderOpen(false);
   }
 
-  async function startNewChat(kind: ConversationKind = "chat") {
+  async function startNewChat(kind: ConversationKind = "chat", journeyId?: string) {
     setShowSettings(false);
     setSubagents([]);
     setExpandedAgents({});
@@ -319,7 +360,8 @@ export function DevView() {
       setFolderOpen(true);
       return;
     }
-    const conv = conversationDraft(kind, newConversationId(), nowIso());
+    stickToBottomRef.current = true;
+    const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId);
     await api.devSaveConversation(workspace, conv);
     saveDevConversation(workspace, conv.id);
     setActiveId(conv.id);
@@ -332,6 +374,8 @@ export function DevView() {
         created_at: conv.created_at,
         updated_at: conv.updated_at,
         kind: conv.kind,
+        journey_id: journeyId ?? null,
+        sort_order: 0,
       },
       ...rows,
     ]);
@@ -340,26 +384,41 @@ export function DevView() {
   async function openChat(id: string) {
     setShowSettings(false);
     if (!workspace || id === activeId) return;
+    stickToBottomRef.current = true;
     setSubagents([]);
     setExpandedAgents({});
     if (runningId === id && turnMessagesRef.current) {
       setActiveId(id);
       setMessages(turnMessagesRef.current);
+      setStreamText(turnLiveRef.current.streamText);
+      setLiveTools(turnLiveRef.current.liveTools);
       saveDevConversation(workspace, id);
       return;
     }
     setStreamText("");
     setLiveTools([]);
-    const full = await api.devGetConversation(workspace, id);
-    setActiveId(id);
-    setMessages((full.messages as ChatMessage[]) ?? []);
-    saveDevConversation(workspace, id);
+    setOpeningId(id);
+    try {
+      const full = await api.devGetConversation(workspace, id);
+      setActiveId(id);
+      setMessages((full.messages as ChatMessage[]) ?? []);
+      setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
+      saveDevConversation(workspace, id);
+    } finally {
+      setOpeningId("");
+    }
   }
 
   async function removeChat(id: string) {
     if (!workspace) return;
     deletedIdsRef.current.add(id);
     if (runningId === id) abortRef.current?.abort();
+    setUsageByChat((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     await terminalSessions.dispose(id);
     await api.devDeleteConversation(workspace, id);
     if (activeId === id) {
@@ -370,7 +429,7 @@ export function DevView() {
     }
   }
 
-  async function persist(next: ChatMessage[], id: string, ws = workspace) {
+  async function persist(next: ChatMessage[], id: string, ws = workspace, usage?: ChatUsage) {
     if (!canPersistTurn(id, deletedIdsRef.current)) return;
     if (!ws || !id) return;
     const title = conversationTitleFrom(next);
@@ -383,15 +442,21 @@ export function DevView() {
       created_at: existing?.created_at ?? now,
       updated_at: now,
       kind,
+      journey_id: existing?.journey_id ?? null,
+      sort_order: existing?.sort_order ?? 0,
       messages: next,
+      context_usage: usageToPersist(usage, usageByChat[id]),
     });
     setConversations((rows) => {
+      const prev = rows.find((row) => row.id === id);
       const next = {
         id,
         title,
-        created_at: existing?.created_at ?? now,
+        created_at: prev?.created_at ?? existing?.created_at ?? now,
         updated_at: now,
         kind,
+        journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
+        sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
       };
       const idx = rows.findIndex((r) => r.id === id);
       if (idx < 0) return [next, ...rows];
@@ -400,9 +465,10 @@ export function DevView() {
   }
 
   async function reorderChats(fromId: string, toId: string) {
-    const next = moveById(conversations, fromId, toId);
-    if (next === conversations) return;
-    setConversations(next);
+    const from = conversations.find((row) => row.id === fromId);
+    const siblings = conversations.filter((row) => (row.journey_id ?? null) === (from?.journey_id ?? null));
+    const next = moveById(siblings, fromId, toId);
+    if (next === siblings) return;
     if (!workspace) return;
     try {
       const saved = await api.devReorderConversations(
@@ -413,6 +479,148 @@ export function DevView() {
     } catch (e) {
       setFlash({ kind: "err", text: String(e) });
       await reloadConversations(workspace);
+    }
+  }
+
+  async function reorderSidebar(
+    fromId: string,
+    fromKind: "journey" | "conversation",
+    toId: string,
+    toKind: "journey" | "conversation",
+  ) {
+    if (!workspace) return;
+    const top: api.DevSidebarItem[] = [];
+    const seen = new Set<string>();
+    const ordered = [...journeys.map((j) => ({ kind: "journey" as const, id: j.id, sort: j.sort_order })),
+      ...conversations
+        .filter((c) => !c.journey_id)
+        .map((c) => ({ kind: "conversation" as const, id: c.id, sort: c.sort_order ?? 0 })),
+    ].sort((a, b) => a.sort - b.sort || a.id.localeCompare(b.id));
+    for (const row of ordered) {
+      if (seen.has(`${row.kind}:${row.id}`)) continue;
+      seen.add(`${row.kind}:${row.id}`);
+      top.push({ kind: row.kind, id: row.id });
+    }
+    const fromIdx = top.findIndex((row) => row.id === fromId && row.kind === fromKind);
+    const toIdx = top.findIndex((row) => row.id === toId && row.kind === toKind);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const next = top.slice();
+    const [item] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, item);
+    try {
+      const saved = await api.devReorderSidebar(workspace, next);
+      setConversations(saved);
+      setJourneys(await api.devListJourneys(workspace));
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+      await reloadConversations(workspace);
+    }
+  }
+
+  async function createJourneyFromChat(id: string) {
+    if (!workspace) return;
+    const seed = conversations.find((row) => row.id === id);
+    if (!seed || seed.journey_id || runningId === id) return;
+    try {
+      const journey = await api.devCreateJourney(workspace, id);
+      const [rows, nextJourneys] = await Promise.all([
+        api.devListConversations(workspace),
+        api.devListJourneys(workspace),
+      ]);
+      setConversations(rows);
+      setJourneys(nextJourneys);
+      const msgs = id === activeId ? messages : (((await api.devGetConversation(workspace, id)).messages as ChatMessage[]) ?? []);
+      if (id !== activeId) await openChat(id);
+      if (!conversationHasSummarizeSource(msgs)) return;
+      const next = [...msgs, { role: "user" as const, content: JOURNEY_SUMMARIZE_PROMPT }];
+      await runTurn(workspace, id, next, async (done) => {
+        const text = lastAssistantText(done);
+        if (!text) return;
+        await api.devSaveJourneyKnowledge(workspace, journey.id, text);
+        setTick((n) => n + 1);
+      }, journey.id);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function openJourneyKnowledge(id: string) {
+    setShowSettings(false);
+    setEditor((prev) => pinEditorTab(prev, journeyKnowledgePath(id)));
+  }
+
+  async function toggleJourney(id: string) {
+    const current = journeys.find((row) => row.id === id);
+    if (!current || !workspace) return;
+    const collapsed = !current.collapsed;
+    setJourneys((rows) => rows.map((row) => (row.id === id ? { ...row, collapsed } : row)));
+    try {
+      await api.devSetJourneyCollapsed(workspace, id, collapsed);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+      await reloadConversations(workspace);
+    }
+  }
+
+  async function setJourneyColor(id: string, color: JourneyColor) {
+    if (!workspace) return;
+    setJourneys((rows) => rows.map((row) => (row.id === id ? { ...row, color } : row)));
+    try {
+      const next = await api.devSetJourneyColor(workspace, id, color);
+      setJourneys((rows) => rows.map((row) => (row.id === id ? { ...row, color: parseJourneyColor(next.color) } : row)));
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+      await reloadConversations(workspace);
+    }
+  }
+
+  async function renameJourney(id: string, title: string) {
+    if (!workspace) return;
+    try {
+      const next = await api.devRenameJourney(workspace, id, title);
+      setJourneys((rows) => rows.map((row) => (row.id === id ? next : row)));
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function deleteJourney(id: string, deleteChats: boolean) {
+    if (!workspace) return;
+    const kids = conversations.filter((row) => row.journey_id === id);
+    try {
+      if (deleteChats) {
+        for (const kid of kids) {
+          deletedIdsRef.current.add(kid.id);
+          if (runningId === kid.id) abortRef.current?.abort();
+          await terminalSessions.dispose(kid.id);
+        }
+      }
+      await api.devDeleteJourney(workspace, id, deleteChats);
+      setEditor((prev) => closeEditorTab(prev, journeyKnowledgePath(id)));
+      setDirtyFiles((prev) => {
+        const next = { ...prev };
+        delete next[journeyKnowledgePath(id)];
+        return next;
+      });
+      const prefer = deleteChats && kids.some((kid) => kid.id === activeId) ? undefined : activeId;
+      await reloadConversations(workspace, prefer);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function moveConversation(id: string, journeyId: string | null) {
+    if (!workspace) return;
+    try {
+      await api.devMoveConversation(workspace, id, journeyId);
+      const [rows, nextJourneys] = await Promise.all([
+        api.devListConversations(workspace),
+        api.devListJourneys(workspace),
+      ]);
+      setConversations(rows);
+      setJourneys(nextJourneys);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
     }
   }
 
@@ -490,19 +698,46 @@ export function DevView() {
         messages: [],
       });
       setActiveId(id);
+      activeIdRef.current = id;
       saveDevConversation(ws, id);
     }
+    stickToBottomRef.current = true;
     const next: ChatMessage[] = [...messages, { role: "user", content: text }];
-    setMessages(next);
     setDrafts((prev) => setDraftForChat(prev, id, ""));
+    await runTurn(ws, id, next);
+  }
+
+  async function runTurn(
+    ws: string,
+    id: string,
+    next: ChatMessage[],
+    after?: (done: ChatMessage[]) => Promise<void>,
+    journeyIdOverride?: string,
+  ) {
+    setMessages(next);
     setBusy(true);
     setRunningId(id);
+    setTurnStartedAt(Date.now());
     setStreamText("");
     setLiveTools([]);
+    setRunningActivity(null);
+    turnLiveRef.current = { streamText: "", liveTools: [], activity: null };
     turnMessagesRef.current = next;
     const ac = new AbortController();
     abortRef.current = ac;
     const visible = () => turnAppliesToChat(id, activeIdRef.current);
+    let latestUsage = usageByChat[id];
+    const journeyId =
+      journeyIdOverride || conversations.find((row) => row.id === id)?.journey_id || undefined;
+    const kind = parseConversationKind(conversations.find((row) => row.id === id)?.kind);
+    let knowledge = "";
+    if (journeyId && kind === "chat") {
+      try {
+        knowledge = await api.devGetJourneyKnowledge(ws, journeyId);
+      } catch {
+        knowledge = "";
+      }
+    }
     try {
       const done = await completeTurn({
         workspace: ws,
@@ -510,8 +745,11 @@ export function DevView() {
         model,
         effort,
         allowSpawn: true,
+        journeyId: kind === "chat" ? journeyId : undefined,
+        journeyKnowledge: kind === "chat" ? knowledge : undefined,
         onDelta: (chunk) => {
-          if (visible()) setStreamText((s) => s + chunk);
+          turnLiveRef.current.streamText += chunk;
+          if (visible()) setStreamText(turnLiveRef.current.streamText);
         },
         onError: (err) => {
           if (visible()) setFlash({ kind: "err", text: err });
@@ -520,7 +758,12 @@ export function DevView() {
         getPermission: () => permissionRef.current,
         onTool: (call) => {
           if (call.name === "spawn_subagent") return;
-          if (visible()) setLiveTools((rows) => [...rows, toolActivityLabel(call)]);
+          const activity = activityFromToolCall(call);
+          const labels = [...turnLiveRef.current.liveTools, toolActivityLabel(call)];
+          turnLiveRef.current.activity = activity;
+          turnLiveRef.current.liveTools = labels;
+          setRunningActivity(activity);
+          if (visible()) setLiveTools(labels);
         },
         onSubagent: (event) => {
           if (!visible()) return;
@@ -531,27 +774,42 @@ export function DevView() {
         },
         onUpdate: (nextMessages) => {
           turnMessagesRef.current = nextMessages;
+          turnLiveRef.current.streamText = "";
+          turnLiveRef.current.activity = null;
+          setRunningActivity(null);
           if (!visible()) return;
           setMessages(nextMessages);
           setStreamText("");
         },
         onRefresh: () => setTick((n) => n + 1),
+        onUsage: (usage) => {
+          latestUsage = usage;
+          setUsageByChat((prev) => (sameChatUsage(prev[id], usage) ? prev : { ...prev, [id]: usage }));
+        },
         signal: ac.signal,
       });
       turnMessagesRef.current = done;
+      turnLiveRef.current = { streamText: "", liveTools: [], activity: null };
+      setRunningActivity(null);
       if (visible()) {
         setMessages(done);
         setStreamText("");
         setLiveTools([]);
       }
-      await persist(done, id, ws);
+      await persist(done, id, ws, latestUsage);
+      await after?.(done);
     } catch (e) {
+      const pending = turnMessagesRef.current;
+      if (pending) await persist(pending, id, ws, latestUsage);
       if (visible()) setFlash({ kind: "err", text: String(e) });
     } finally {
       abortRef.current = null;
       turnMessagesRef.current = null;
       setBusy(false);
       setRunningId("");
+      setRunningActivity(null);
+      setTurnStartedAt(0);
+      turnLiveRef.current = { streamText: "", liveTools: [], activity: null };
       setShellQueue((q) => {
         for (const item of q) item.resolve(false);
         return [];
@@ -567,8 +825,37 @@ export function DevView() {
     });
   }
 
+  const openWorkspaceFile = useCallback(
+    (path: string, mode: "preview" | "pin" = "pin", view: "edit" | "diff" = "edit") => {
+      setShowSettings(false);
+      setEditor((prev) => {
+        const next = mode === "preview" ? previewEditorTab(prev, path) : pinEditorTab(prev, path);
+        return setEditorFileView(next, path, view);
+      });
+    },
+    [],
+  );
+
   const showLanding =
     !showSettings && messages.length === 0 && conversations.length === 0 && !busy && !streamText;
+
+  useEffect(() => {
+    if (showLanding || showSettings || editor.focus === "file") return;
+    const el = scroller.current;
+    if (!el) return;
+    const onScroll = () => {
+      stickToBottomRef.current = isNearBottom(el);
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) stickToBottomRef.current = false;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [showLanding, showSettings, editor.focus]);
 
   const folderDialog = folderOpen ? (
     <FolderDialog
@@ -640,6 +927,7 @@ export function DevView() {
   }
 
   return (
+    <WorkspaceFileLinks workspace={workspace || null} tick={tick} onOpenFile={openWorkspaceFile}>
     <div className="flex h-full min-w-0 overflow-hidden bg-sidebar">
       <Flash />
       {folderDialog}
@@ -679,18 +967,32 @@ export function DevView() {
           <NewChatMenu disabled={!workspace} onPick={(kind) => void startNewChat(kind)} />
         </div>
         <div className="relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
-          {conversations.length === 0 ? (
+          {conversations.length === 0 && journeys.length === 0 ? (
             <p className="px-2 py-1 text-[12px] text-muted">{workspace ? "No chats yet" : "Open a folder"}</p>
           ) : (
             <ConversationList
               conversations={conversations}
+              journeys={journeys}
               activeId={activeId}
               runningId={runningId}
-              runningPreview={latestAssistantPreview(messages, streamText, liveTools)}
+              loadingId={openingId}
+              runningPreview={conversationActivityLabel(runningActivity)}
               showSettings={showSettings}
               onOpen={(id) => void openChat(id)}
               onDelete={(id) => void removeChat(id)}
               onReorder={(fromId, toId) => void reorderChats(fromId, toId)}
+              onReorderSidebar={(fromId, fromKind, toId, toKind) =>
+                void reorderSidebar(fromId, fromKind, toId, toKind)
+              }
+              onCreateJourney={(id) => void createJourneyFromChat(id)}
+              onOpenKnowledge={(id) => void openJourneyKnowledge(id)}
+              onNewChat={(journeyId, kind) => void startNewChat(kind, journeyId)}
+              onToggleCollapse={(id) => void toggleJourney(id)}
+              onRenameJourney={(id, title) => void renameJourney(id, title)}
+              onDeleteJourney={(id, deleteChats) => void deleteJourney(id, deleteChats)}
+              onRemoveFromJourney={(id) => void moveConversation(id, null)}
+              onMoveToJourney={(id, journeyId) => void moveConversation(id, journeyId)}
+              onSetColor={(id, color) => void setJourneyColor(id, color)}
             />
           )}
         </div>
@@ -718,17 +1020,13 @@ export function DevView() {
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className={`flex shrink-0 items-center gap-2 px-2 ${headerBarClass()}`} data-tauri-drag-region>
+        <div className={`flex shrink-0 items-end ${headerBarClass()}`} data-tauri-drag-region>
           {!showSettings ? (
             <CenterTabs
               editor={editor}
-              dirtyFiles={dirtyFiles}
-              pendingClosePath={pendingClosePath}
               chatKind={parseConversationKind(conversations.find((c) => c.id === activeId)?.kind)}
               onChat={() => setEditor((prev) => selectChatTab(prev))}
-              onFile={(path) => setEditor((prev) => selectEditorTab(prev, path))}
-              onPinFile={(path) => setEditor((prev) => pinEditorTab(prev, path))}
-              onCloseFile={closeFileTab}
+              onCode={() => setEditor((prev) => focusEditor(prev))}
             />
           ) : (
             <div className="min-w-0 flex-1" data-tauri-drag-region />
@@ -748,11 +1046,16 @@ export function DevView() {
                   workspace={workspace}
                   path={editor.activePath}
                   tick={tick}
+                  fileView={editorFileView(editor.tabs.find((tab) => tab.path === editor.activePath))}
                   markdownView={markdownViewForTab(
                     editor.activePath,
                     loadMarkdownOpenMode(),
                     editor.tabs.find((tab) => tab.path === editor.activePath)?.markdownView,
                   )}
+                  editor={editor}
+                  dirtyFiles={dirtyFiles}
+                  pendingClosePath={pendingClosePath}
+                  journeyTitles={Object.fromEntries(journeys.map((row) => [row.id, row.title]))}
                   onMarkdownView={(mode) =>
                     setEditor((prev) => setEditorMarkdownView(prev, editor.activePath ?? "", mode))
                   }
@@ -760,6 +1063,9 @@ export function DevView() {
                     setDirtyFiles((prev) => (prev[path] === dirty ? prev : { ...prev, [path]: dirty }));
                     if (dirty) setEditor((prev) => pinEditorTab(prev, path));
                   }}
+                  onSelectTab={(path) => setEditor((prev) => selectEditorTab(prev, path))}
+                  onPinTab={(path) => setEditor((prev) => pinEditorTab(prev, path))}
+                  onCloseTab={closeFileTab}
                 />
               ) : parseConversationKind(conversations.find((c) => c.id === activeId)?.kind) === "terminal" &&
                 workspace &&
@@ -775,59 +1081,72 @@ export function DevView() {
                       setExpandedAgents((prev) => ({ ...prev, [id]: !prev[id] }))
                     }
                   />
-                  <div ref={scroller} className="min-h-0 min-w-0 flex-1 overflow-auto">
-                    <div className="mx-auto w-full min-w-0 max-w-[720px] px-6 py-5">
-                      <div className="mb-5">
-                        <div className="truncate text-[15px] font-semibold">
-                          {workspace ? folderName(workspace) : "TwanAgent"}
-                        </div>
-                        <div className="truncate text-[12px] text-muted">
-                          {models.find((m) => m.id === model)?.name ?? "Grok"}
-                          {effort
-                            ? ` · ${models.find((m) => m.id === model)?.efforts.find((e) => e.id === effort)?.label ?? effort}`
-                            : ""}
-                          {` · ${permissionLabel(permission)}`}
-                          {workspace ? ` · ${workspace}` : ""}
-                        </div>
-                      </div>
-                      {messages.length === 0 && !streamText && !busy && (
-                        <p className="m-0 text-center text-[13px] text-muted">
-                          Ask Grok to inspect, edit, or run something in this folder.
-                        </p>
-                      )}
-                      {liveTranscriptItems(messages, streamText, liveTools).map((item, i) => (
-                        <TranscriptBlock key={i} item={item} />
-                      ))}
-                      {busy && !streamText && liveTools.length === 0 && !pendingShell && (
-                        <div className="mb-3 text-[11px] text-muted/55">Working…</div>
-                      )}
-                      {pendingShell && (
-                        <div className="mb-4 rounded-md border border-line bg-panel px-3 py-2.5">
-                          <div className="text-[12px] font-medium">Run this command?</div>
-                          <pre className="mt-1 mb-2 overflow-auto rounded bg-canvas px-2 py-1.5 font-mono text-[12px]">
-                            {pendingShell.command}
-                          </pre>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent"
-                              onClick={() => answerShell(true)}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-md border border-line px-2.5 py-1 text-[12px]"
-                              onClick={() => answerShell(false)}
-                            >
-                              Skip
-                            </button>
+                  <div className="relative min-h-0 min-w-0 flex-1">
+                    <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto">
+                      <div
+                        className="mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5 pb-5"
+                      >
+                        <div className="mb-5">
+                          <div className="truncate text-[15px] font-semibold">
+                            {workspace ? folderName(workspace) : "TwanAgent"}
+                          </div>
+                          <div className="truncate text-[12px] text-muted">
+                            {models.find((m) => m.id === model)?.name ?? "Grok"}
+                            {effort
+                              ? ` · ${models.find((m) => m.id === model)?.efforts.find((e) => e.id === effort)?.label ?? effort}`
+                              : ""}
+                            {` · ${permissionLabel(permission)}`}
+                            {workspace ? ` · ${workspace}` : ""}
                           </div>
                         </div>
-                      )}
+                        {messages.length === 0 && !streamText && !busy && (
+                          <p className="m-0 text-center text-[13px] text-muted">
+                            Ask Grok to inspect, edit, or run something in this folder.
+                          </p>
+                        )}
+                        <ChatTranscript
+                          messages={messages}
+                          streamText={streamText}
+                          liveTools={liveTools}
+                          busy={busy}
+                        />
+                        {openingId && openingId !== runningId ? (
+                          <ActivityStatus label="Loading…" />
+                        ) : null}
+                        {busy && activeId === runningId && !pendingShell && (
+                          <ActivityStatus
+                            label={conversationActivityLabel(runningActivity)}
+                            startedAt={turnStartedAt}
+                          />
+                        )}
+                        {pendingShell && (
+                          <div className="mb-4 rounded-md border border-line bg-panel px-3 py-2.5">
+                            <div className="text-[12px] font-medium">Run this command?</div>
+                            <pre className="mt-1 mb-2 overflow-auto rounded bg-canvas px-2 py-1.5 font-mono text-[12px]">
+                              {pendingShell.command}
+                            </pre>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent"
+                                onClick={() => answerShell(true)}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                className="rounded-md border border-line px-2.5 py-1 text-[12px]"
+                                onClick={() => answerShell(false)}
+                              >
+                                Skip
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <div className="shrink-0 border-t border-line">
+                  <div className="shrink-0">
                     <div className="mx-auto w-full min-w-0 max-w-[720px] px-6 py-3">
                       <DevComposer
                         draft={draft}
@@ -847,6 +1166,11 @@ export function DevView() {
                         permission={permission}
                         onPermission={pickPermission}
                         compact
+                        usage={activeId ? usageByChat[activeId] : undefined}
+                        usageWindow={contextWindowForModel(
+                          model,
+                          models.find((m) => m.id === model)?.context_window,
+                        )}
                       />
                     </div>
                   </div>
@@ -858,18 +1182,14 @@ export function DevView() {
               workspace={workspace}
               tick={tick}
               selectedPath={editor.activePath}
-              onOpenFile={(path, mode) => {
-                setShowSettings(false);
-                setEditor((prev) =>
-                  mode === "preview" ? previewEditorTab(prev, path) : pinEditorTab(prev, path),
-                );
-              }}
+              onOpenFile={openWorkspaceFile}
               onRefresh={() => setTick((n) => n + 1)}
             />
           ) : null}
         </div>
       </div>
     </div>
+    </WorkspaceFileLinks>
   );
 }
 
@@ -947,154 +1267,91 @@ function NewChatMenu({
 
 function CenterTabs({
   editor,
-  dirtyFiles,
-  pendingClosePath,
   chatKind,
   onChat,
-  onFile,
-  onPinFile,
-  onCloseFile,
+  onCode,
 }: {
   editor: EditorState;
-  dirtyFiles: Record<string, boolean>;
-  pendingClosePath: string | null;
   chatKind: ConversationKind;
   onChat: () => void;
-  onFile: (path: string) => void;
-  onPinFile: (path: string) => void;
-  onCloseFile: (path: string) => void;
+  onCode: () => void;
 }) {
   const chatOn = editor.focus === "chat";
+  const codeOn = editor.focus === "file";
   const terminal = chatKind === "terminal";
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-0.5">
-      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto" role="tablist" aria-label="Main view">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={chatOn}
-          onClick={onChat}
-          className={`flex shrink-0 items-center gap-1 rounded-[7px] px-2 py-[4px] text-[12px] ${
-            chatOn ? "bg-wash-strong text-ink" : "text-muted hover:text-ink"
-          }`}
-        >
-          <Symbol name={terminal ? "terminal" : "bubble.left"} className="size-3" />
-          <span>{terminal ? "Terminal" : "Chat"}</span>
-        </button>
-        {editor.tabs.map((tab) => (
-          <EditorFileTab
-            key={tab.path}
-            path={tab.path}
-            preview={Boolean(tab.preview)}
-            selected={editor.focus === "file" && tab.path === editor.activePath}
-            dirty={Boolean(dirtyFiles[tab.path])}
-            warnClose={Boolean(dirtyFiles[tab.path]) && pendingClosePath === tab.path}
-            onFile={onFile}
-            onPinFile={onPinFile}
-            onCloseFile={onCloseFile}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EditorFileTab({
-  path,
-  preview,
-  selected,
-  dirty,
-  warnClose,
-  onFile,
-  onPinFile,
-  onCloseFile,
-}: {
-  path: string;
-  preview: boolean;
-  selected: boolean;
-  dirty: boolean;
-  warnClose: boolean;
-  onFile: (path: string) => void;
-  onPinFile: (path: string) => void;
-  onCloseFile: (path: string) => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [tip, setTip] = useState<{ left: number; top: number } | null>(null);
-
-  useLayoutEffect(() => {
-    if (!warnClose) {
-      setTip(null);
-      return;
-    }
-    const el = ref.current;
-    if (!el) return;
-    const box = el.getBoundingClientRect();
-    setTip({ left: box.left + box.width / 2, top: box.bottom + 6 });
-  }, [warnClose]);
-
-  const title = editorTabTitle(path);
-  return (
-    <div
-      ref={ref}
-      className={`group flex max-w-[12rem] shrink-0 items-center rounded-[7px] ${
-        selected ? "bg-wash-strong text-ink" : "text-muted hover:text-ink"
-      }`}
-      onMouseDown={(ev) => {
-        if (ev.button === 1) ev.preventDefault();
-      }}
-      onAuxClick={(ev) => {
-        if (ev.button !== 1) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        onCloseFile(path);
-      }}
-      onDoubleClick={() => {
-        if (preview) onPinFile(path);
-      }}
-    >
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selected}
-        title={
-          warnClose
-            ? "Needs to be saved — click again to close"
-            : preview
-              ? `${path} — preview, double-click to keep open`
-              : path
-        }
-        onClick={() => onFile(path)}
-        className="flex min-w-0 items-center gap-1 py-[4px] pr-0.5 pl-2 text-left text-[12px]"
-      >
-        <FileIcon name={path} className="size-3 shrink-0 text-muted" />
-        <span className={`min-w-0 truncate ${preview ? "italic" : ""}`}>{title}</span>
-        {dirty ? <span className="size-1.5 shrink-0 rounded-full bg-accent" aria-label="Unsaved" /> : null}
-      </button>
-      <button
-        type="button"
-        aria-label={`Close ${title}`}
-        onClick={() => onCloseFile(path)}
-        className={`mr-0.5 flex size-4 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink ${
-          selected ? "opacity-70" : "opacity-0 group-hover:opacity-100"
-        }`}
-      >
-        <Symbol name="xmark" className="size-2.5" />
-      </button>
-      {warnClose && tip ? (
-        <div
-          role="tooltip"
-          className="pointer-events-none fixed z-50 w-max max-w-[13rem] -translate-x-1/2 rounded-md border border-line bg-canvas px-2 py-1 text-[11px] leading-snug text-ink shadow-card"
-          style={{ left: tip.left, top: tip.top }}
-        >
-          Needs to be saved — click again to close
-        </div>
+    <ChromeTabStrip>
+      <ChromeTab
+        selected={chatOn}
+        label={terminal ? "Terminal" : "Chat"}
+        icon={<Symbol name={terminal ? "terminal.fill" : "bubble.left.fill"} className="size-3.5 shrink-0" />}
+        onClick={onChat}
+      />
+      {editor.tabs.length > 0 ? (
+        <ChromeTab
+          selected={codeOn}
+          label="Code"
+          icon={<Symbol name="doc.fill" className="size-3.5 shrink-0" />}
+          onClick={onCode}
+        />
       ) : null}
+    </ChromeTabStrip>
+  );
+}
+
+function ActivityStatus({ label, startedAt }: { label: string; startedAt?: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!startedAt) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  const elapsed = startedAt ? formatElapsed(now - startedAt) : "";
+  return (
+    <div className="mb-3 flex items-center gap-1.5 text-[11px] text-muted/55" aria-live="polite">
+      <span
+        className="size-2.5 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+        aria-hidden
+      />
+      <span>{label}</span>
+      {elapsed ? <span className="tabular-nums text-muted/40">{elapsed}</span> : null}
     </div>
   );
 }
 
-function TranscriptBlock({ item }: { item: ReturnType<typeof liveTranscriptItems>[number] }) {
-  if (item.kind === "tools") return <ToolTrail labels={item.labels} />;
+function ChatTranscript({
+  messages,
+  streamText,
+  liveTools,
+  busy,
+}: {
+  messages: ChatMessage[];
+  streamText: string;
+  liveTools: string[];
+  busy: boolean;
+}) {
+  const items = liveTranscriptItems(messages, streamText, liveTools);
+  return (
+    <>
+      {items.map((item, i) => (
+        <TranscriptBlock key={i} item={item} live={isLiveToolTrail(items, i, busy)} />
+      ))}
+    </>
+  );
+}
+
+function TranscriptBlock({
+  item,
+  live,
+}: {
+  item: ReturnType<typeof liveTranscriptItems>[number];
+  live: boolean;
+}) {
+  if (item.kind === "tools") return <ToolTrail labels={item.labels} files={item.files} live={live} />;
+  if (item.kind === "error") {
+    return <p className="mb-4 text-[13px] leading-relaxed text-err [overflow-wrap:anywhere]">{item.content}</p>;
+  }
   return (
     <div className="mb-4">
       <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
@@ -1107,19 +1364,6 @@ function TranscriptBlock({ item }: { item: ReturnType<typeof liveTranscriptItems
           {item.content}
         </div>
       )}
-    </div>
-  );
-}
-
-function ToolTrail({ labels }: { labels: string[] }) {
-  if (labels.length === 0) return null;
-  return (
-    <div className="mb-3 space-y-0.5 px-0.5" aria-label="Tool activity">
-      {labels.map((label, i) => (
-        <div key={`${label}-${i}`} className="truncate text-[11px] text-muted/55">
-          {label}
-        </div>
-      ))}
     </div>
   );
 }

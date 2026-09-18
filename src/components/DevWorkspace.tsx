@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   HEAVY_DIRS,
+  formatDiffCount,
   gitChangeForPath,
   gitChangeMap,
+  gitChangeTotals,
+  gitChangesTree,
   gitFolderHasChanges,
   gitLineStats,
+  type GitChangeTreeNode,
 } from "../lib/dev";
+import { ALL_DIFF_PATH } from "../lib/dev-editor";
 import {
   addableKinds,
   closePane,
@@ -21,7 +26,10 @@ import {
   DEV_PANE_MAX,
   DEV_PANE_MIN,
   loadDevPaneWidth,
+  loadGitChangesView,
   saveDevPaneWidth,
+  saveGitChangesView,
+  type GitChangesView,
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
 import type { DevEntry, DevGitBranches, DevGitChange } from "../lib/tauri";
@@ -39,7 +47,7 @@ export function DevWorkspace({
   workspace: string;
   tick: number;
   selectedPath?: string | null;
-  onOpenFile?: (path: string, mode?: "preview" | "pin") => void;
+  onOpenFile?: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
   onRefresh?: () => void;
 }) {
   const [pane, setPane] = useState<PaneState>(defaultPaneState);
@@ -48,9 +56,6 @@ export function DevWorkspace({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ "": true });
   const [children, setChildren] = useState<Record<string, DevEntry[]>>({});
   const [selected, setSelected] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{ path: string; text: string; kind: "file" | "diff" } | null>(
-    null,
-  );
   const [changes, setChanges] = useState<DevGitChange[]>([]);
   const [branches, setBranches] = useState<DevGitBranches>({ current: null, branches: [] });
   const [branchError, setBranchError] = useState<string | null>(null);
@@ -101,19 +106,14 @@ export function DevWorkspace({
     }
   }
 
-  function openFile(path: string, mode: "preview" | "pin" = "pin") {
+  function openFile(path: string, mode: "preview" | "pin" = "pin", view: "edit" | "diff" = "edit") {
     setSelected(path);
-    onOpenFile?.(path, mode);
+    onOpenFile?.(path, mode, view);
   }
 
-  async function openChange(change: DevGitChange) {
+  function openChange(change: DevGitChange, mode: "preview" | "pin" = "preview") {
     setSelected(change.path);
-    try {
-      const text = await api.devGitDiff(workspace, change.path);
-      setPreview({ path: change.path, text: text || "(no diff)", kind: "diff" });
-    } catch (e) {
-      setPreview({ path: change.path, text: String(e), kind: "diff" });
-    }
+    onOpenFile?.(change.path, mode, "diff");
   }
 
   function addKind(kind: PaneKind) {
@@ -214,9 +214,9 @@ export function DevWorkspace({
                   switching={switching}
                   onSwitch={(name) => void switchBranch(name)}
                   changes={changes}
-                  selected={selected}
-                  preview={preview?.kind === "diff" ? preview : null}
-                  onOpen={(row) => void openChange(row)}
+                  selected={selectedPath ?? selected}
+                  onOpen={(row, mode) => openChange(row, mode)}
+                  onOpenAll={() => openFile(ALL_DIFF_PATH, "pin", "diff")}
                 />
               ) : null}
             </div>
@@ -263,16 +263,18 @@ function PaneTabs({
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 border-b border-line px-1.5 py-1">
-      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto" role="tablist" aria-label="Pane">
+    <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Pane">
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeId;
           const meta = paneMeta(tab.kind);
           return (
             <div
               key={tab.id}
-              className={`group flex max-w-[9.5rem] shrink-0 items-center rounded-[7px] ${
-                active ? "bg-wash-strong text-ink" : "text-muted hover:text-ink"
+              className={`group flex h-7 max-w-[10rem] shrink-0 items-center rounded-md ${
+                active
+                  ? "bg-wash-strong text-ink ring-1 ring-line/80"
+                  : "text-muted hover:bg-wash hover:text-ink"
               }`}
               onMouseDown={(ev) => {
                 if (ev.button === 1) ev.preventDefault();
@@ -289,9 +291,11 @@ function PaneTabs({
                 role="tab"
                 aria-selected={active}
                 onClick={() => onChange(selectPane(pane, tab.id))}
-                className="flex min-w-0 items-center gap-1 py-[3px] pr-0.5 pl-1.5 text-left text-[12px]"
+                className={`flex min-w-0 items-center gap-1.5 py-0 pr-1 pl-2 text-left text-[12px] ${
+                  active ? "font-medium" : ""
+                } ${canClose ? "" : "pr-2"}`}
               >
-                <Symbol name={meta.icon} className="size-3 shrink-0" />
+                <Symbol name={meta.icon} className="size-3.5 shrink-0" weight="regular" />
                 <span className="min-w-0 truncate">{tab.title}</span>
               </button>
               {canClose ? (
@@ -299,11 +303,11 @@ function PaneTabs({
                   type="button"
                   aria-label={`Close ${tab.title}`}
                   onClick={() => onChange(closePane(pane, tab.id))}
-                  className={`mr-0.5 flex size-4 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink ${
+                  className={`mr-1 flex size-4 items-center justify-center rounded-[4px] text-muted hover:bg-wash-strong hover:text-ink ${
                     active ? "opacity-70" : "opacity-0 group-hover:opacity-100"
                   }`}
                 >
-                  <Symbol name="xmark" className="size-2.5" />
+                  <Symbol name="xmark" className="size-2.5" weight="regular" />
                 </button>
               ) : null}
             </div>
@@ -321,9 +325,9 @@ function PaneTabs({
             if (kinds.length === 1) add(kinds[0]);
             else setMenu((open) => !open);
           }}
-          className="flex size-6 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-wash hover:text-ink"
         >
-          <Symbol name="plus" className="size-3" />
+          <Symbol name="plus" className="size-3.5" weight="regular" />
         </button>
         {menu ? (
           <div
@@ -340,7 +344,7 @@ function PaneTabs({
                   onClick={() => add(kind)}
                   className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-inset"
                 >
-                  <Symbol name={meta.icon} className="size-3.5 text-muted" />
+                  <Symbol name={meta.icon} className="size-3.5 text-muted" weight="regular" />
                   <span>{meta.label}</span>
                 </button>
               );
@@ -394,8 +398,8 @@ function GitPane({
   onSwitch,
   changes,
   selected,
-  preview,
   onOpen,
+  onOpenAll,
 }: {
   branches: DevGitBranches;
   branchError: string | null;
@@ -403,9 +407,19 @@ function GitPane({
   onSwitch: (name: string) => void;
   changes: DevGitChange[];
   selected: string | null;
-  preview: { path: string; text: string } | null;
-  onOpen: (row: DevGitChange) => void;
+  onOpen: (row: DevGitChange, mode?: "preview" | "pin") => void;
+  onOpenAll: () => void;
 }) {
+  const [view, setView] = useState<GitChangesView>(loadGitChangesView);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const tree = view === "tree" ? gitChangesTree(changes) : [];
+  const totals = gitChangeTotals(changes);
+
+  function setChangesView(next: GitChangesView) {
+    setView(next);
+    saveGitChangesView(next);
+  }
+
   return (
     <>
       <div className="px-1.5 pt-1.5">
@@ -417,35 +431,176 @@ function GitPane({
         />
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
       </div>
-      <div className="flex items-center justify-between px-3 pt-2 pb-1">
-        <span className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Changes</span>
+      {changes.length > 0 ? (
+        <div className="px-1.5 pt-1">
+          <button
+            type="button"
+            onClick={onOpenAll}
+            className={`flex w-full items-center justify-center gap-1.5 rounded-[7px] px-2 py-[6px] text-[12px] ${
+              selected === ALL_DIFF_PATH ? "bg-wash-strong text-ink" : "bg-wash text-ink hover:bg-wash-strong"
+            }`}
+          >
+            <span>View Diff</span>
+            {totals.additions > 0 ? (
+              <span className="font-medium text-ok">+{formatDiffCount(totals.additions)}</span>
+            ) : null}
+            {totals.deletions > 0 ? (
+              <span className="font-medium text-err">-{formatDiffCount(totals.deletions)}</span>
+            ) : null}
+          </button>
+        </div>
+      ) : null}
+      <div className="flex h-7 items-center justify-between gap-2 px-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Changes</span>
+          <div className="flex items-center rounded-[6px] bg-wash p-px" role="group" aria-label="Change list layout">
+            <button
+              type="button"
+              aria-pressed={view === "list"}
+              aria-label="List view"
+              title="List"
+              onClick={() => setChangesView("list")}
+              className={`flex size-5 items-center justify-center rounded-[5px] ${
+                view === "list" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
+              }`}
+            >
+              <Symbol name="list.bullet" className="size-3" />
+            </button>
+            <button
+              type="button"
+              aria-pressed={view === "tree"}
+              aria-label="Tree view"
+              title="Tree"
+              onClick={() => setChangesView("tree")}
+              className={`flex size-5 items-center justify-center rounded-[5px] ${
+                view === "tree" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
+              }`}
+            >
+              <Symbol name="list.tree" className="size-3" />
+            </button>
+          </div>
+        </div>
         <span className="text-[11px] text-muted">{changes.length}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {changes.length === 0 ? (
           <p className="px-2 py-1 text-[12px] text-muted">No changes</p>
+        ) : view === "tree" ? (
+          tree.map((node) => (
+            <ChangeTree
+              key={node.kind === "dir" ? node.path : node.change.path}
+              node={node}
+              depth={0}
+              selected={selected}
+              collapsed={collapsed}
+              onToggle={(path) => setCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
+              onOpen={onOpen}
+            />
+          ))
         ) : (
           changes.map((row) => (
-            <button
+            <ChangeFileRow
               key={row.path}
-              type="button"
-              onClick={() => onOpen(row)}
-              className={`flex w-full items-center gap-2 rounded-[6px] px-2 py-[4px] text-left text-[12px] ${
-                selected === row.path ? "bg-wash-strong" : "hover:bg-wash"
-              }`}
-            >
-              <span className={`w-3 shrink-0 text-[10px] font-semibold ${statusTone(row.status)}`}>
-                {statusMark(row.status)}
-              </span>
-              <FileIcon name={row.path} className="size-3.5 text-muted" />
-              <GitLineStats {...gitLineStats(row)} />
-              <span className="min-w-0 flex-1 truncate text-ok">{row.path}</span>
-            </button>
+              row={row}
+              label={row.path}
+              selected={selected === row.path}
+              pad={8}
+              onOpen={onOpen}
+            />
           ))
         )}
       </div>
-      {preview ? <PreviewBlock kind="Diff" path={preview.path} text={preview.text} /> : null}
     </>
+  );
+}
+
+function ChangeTree({
+  node,
+  depth,
+  selected,
+  collapsed,
+  onToggle,
+  onOpen,
+}: {
+  node: GitChangeTreeNode<DevGitChange>;
+  depth: number;
+  selected: string | null;
+  collapsed: Record<string, boolean>;
+  onToggle: (path: string) => void;
+  onOpen: (row: DevGitChange, mode?: "preview" | "pin") => void;
+}) {
+  if (node.kind === "file") {
+    return (
+      <ChangeFileRow
+        row={node.change}
+        label={node.name}
+        selected={selected === node.change.path}
+        pad={8 + depth * 12}
+        onOpen={onOpen}
+      />
+    );
+  }
+
+  const open = !collapsed[node.path];
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => onToggle(node.path)}
+        className="flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] text-ink/90 hover:bg-wash"
+        style={{ paddingLeft: 8 + depth * 12 }}
+      >
+        <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-3 text-muted" />
+        <Symbol name="folder.fill" className="size-3.5 text-ok" />
+        <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      </button>
+      {open
+        ? node.children.map((child) => (
+            <ChangeTree
+              key={child.kind === "dir" ? child.path : child.change.path}
+              node={child}
+              depth={depth + 1}
+              selected={selected}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onOpen={onOpen}
+            />
+          ))
+        : null}
+    </div>
+  );
+}
+
+function ChangeFileRow({
+  row,
+  label,
+  selected,
+  pad,
+  onOpen,
+}: {
+  row: DevGitChange;
+  label: string;
+  selected: boolean;
+  pad: number;
+  onOpen: (row: DevGitChange, mode?: "preview" | "pin") => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(row, "preview")}
+      onDoubleClick={() => onOpen(row, "pin")}
+      className={`flex w-full items-center gap-2 rounded-[6px] py-[4px] pr-2 text-left text-[12px] ${
+        selected ? "bg-wash-strong" : "hover:bg-wash"
+      }`}
+      style={{ paddingLeft: pad }}
+    >
+      <span className={`w-3 shrink-0 text-[10px] font-semibold ${statusTone(row.status)}`}>
+        {statusMark(row.status)}
+      </span>
+      <FileIcon name={row.path} className="size-3.5 text-muted" />
+      <span className="min-w-0 flex-1 truncate text-ok">{label}</span>
+      <GitLineStats {...gitLineStats(row)} />
+    </button>
   );
 }
 
@@ -528,19 +683,6 @@ function BranchSwitch({
   );
 }
 
-function PreviewBlock({ kind, path, text }: { kind: string; path: string; text: string }) {
-  return (
-    <div className="max-h-[40%] min-h-[96px] overflow-auto border-t border-line bg-canvas px-3 py-2">
-      <div className="mb-1 truncate text-[11px] text-muted">
-        {kind} · {path}
-      </div>
-      <pre className="m-0 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-ink">
-        {text.length > 12000 ? `${text.slice(0, 12000)}\n…` : text}
-      </pre>
-    </div>
-  );
-}
-
 function Tree({
   path,
   depth,
@@ -595,8 +737,8 @@ function Tree({
               ) : (
                 <FileIcon name={row.name} className="size-3.5 text-muted" />
               )}
+              <span className="min-w-0 flex-1 truncate">{row.name}</span>
               {!isDir ? <GitLineStats additions={stats.additions} deletions={stats.deletions} /> : null}
-              <span className="min-w-0 truncate">{row.name}</span>
             </button>
             {isDir && open && (
               <Tree

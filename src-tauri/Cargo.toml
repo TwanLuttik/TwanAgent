@@ -26,6 +26,7 @@ tauri = { version = "2", features = ["protocol-asset"] }
 portable-pty = "0.8"
 tauri-plugin-dialog = "2"
 uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

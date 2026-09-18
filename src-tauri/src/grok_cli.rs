@@ -23,6 +23,8 @@ pub struct DevModel {
     pub id: String,
     pub name: String,
     pub efforts: Vec<DevEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +55,40 @@ pub fn grok_home() -> Option<PathBuf> {
         }
     }
     home_dir().map(|h| h.join(".grok"))
+}
+
+pub fn grok_launch_args(session_id: Option<&str>, existing: bool) -> Vec<String> {
+    match session_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) if existing => vec!["--resume".into(), id.into()],
+        Some(id) => vec!["--session-id".into(), id.into()],
+        None => Vec::new(),
+    }
+}
+
+pub fn session_id_safe(session_id: &str) -> bool {
+    let id = session_id.trim();
+    !id.is_empty()
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+pub fn session_exists_in(home: &Path, session_id: &str) -> bool {
+    if !session_id_safe(session_id) {
+        return false;
+    }
+    let root = home.join("sessions");
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| entry.path().join(session_id).is_dir())
+}
+
+pub fn session_exists(session_id: &str) -> bool {
+    grok_home().is_some_and(|home| session_exists_in(&home, session_id))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -252,6 +288,7 @@ pub fn parse_models_cache(src: &str) -> Vec<DevModel> {
                 .to_string(),
             name,
             efforts,
+            context_window: info.get("context_window").and_then(|v| v.as_u64()),
         });
     }
     rows.sort_by(|a, b| b.id.cmp(&a.id));
@@ -285,6 +322,7 @@ fn fallback_models() -> Vec<DevModel> {
                     label: effort_label(e),
                 })
                 .collect(),
+            context_window: Some(500_000),
         })
         .collect()
 }
@@ -478,7 +516,8 @@ mod tests {
                 "reasoning_efforts": [
                   {"id": "xhigh", "label": "Extra High Effort"},
                   {"id": "high", "label": "High Effort"}
-                ]
+                ],
+                "context_window": 500000
               }
             },
             "sxs-claude-opus-4-6": {
@@ -494,6 +533,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "grok-4.6");
         assert_eq!(rows[0].efforts[0].label, "Extra high");
+        assert_eq!(rows[0].context_window, Some(500_000));
     }
 
     #[test]
@@ -541,5 +581,29 @@ mod tests {
         assert_eq!(headers.token_auth, "xai-grok-cli");
         assert_eq!(headers.client_identifier, "backupanything");
         assert_eq!(headers.user_agent, "backupanything-dev/1.0.31");
+    }
+
+    #[test]
+    fn launch_args_bind_or_resume_a_session() {
+        assert_eq!(grok_launch_args(None, false), Vec::<String>::new());
+        assert_eq!(grok_launch_args(Some("c1"), false), ["--session-id", "c1"]);
+        assert_eq!(grok_launch_args(Some("c1"), true), ["--resume", "c1"]);
+        assert_eq!(grok_launch_args(Some("  "), false), Vec::<String>::new());
+    }
+
+    #[test]
+    fn session_exists_finds_a_dir_under_any_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b70";
+        assert!(!session_exists_in(dir.path(), id));
+        let session = dir
+            .path()
+            .join("sessions")
+            .join("%2Ftmp%2Fproject")
+            .join(id);
+        fs::create_dir_all(&session).unwrap();
+        assert!(session_exists_in(dir.path(), id));
+        assert!(!session_exists_in(dir.path(), "missing-id"));
+        assert!(!session_exists_in(dir.path(), "../escape"));
     }
 }

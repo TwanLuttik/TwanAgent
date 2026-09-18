@@ -5,14 +5,25 @@ import CodeMirror from "@uiw/react-codemirror";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   editorTabTitle,
+  isAllDiffPath,
   languageForPath,
   mediaKindForPath,
+  type EditorFileView,
+  type EditorState,
   type MarkdownOpenMode,
 } from "../lib/dev-editor";
+import { parseJourneyId } from "../lib/dev-journey";
+import { addedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/dev-git-diff";
+import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
+import { normalizeGitPath } from "../lib/dev";
 import * as api from "../lib/tauri";
+import { isMacOS } from "./WindowButtons";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { DevMedia, type MediaMeta } from "./DevMedia";
+import { EditorFileTabs } from "./EditorFileTabs";
+import { GitDiffView } from "./GitDiffView";
+import { Symbol } from "./Symbol";
 
 type Buffer = {
   path: string;
@@ -26,19 +37,36 @@ export function DevEditor({
   path,
   tick,
   markdownView = null,
+  fileView = "edit",
+  editor,
+  dirtyFiles,
+  pendingClosePath,
+  journeyTitles,
   onMarkdownView,
   onDirty,
+  onSelectTab,
+  onPinTab,
+  onCloseTab,
 }: {
   workspace: string;
   path: string;
   tick: number;
   markdownView?: MarkdownOpenMode | null;
+  fileView?: EditorFileView;
+  editor: EditorState;
+  dirtyFiles: Record<string, boolean>;
+  pendingClosePath: string | null;
+  journeyTitles: Record<string, string>;
   onMarkdownView?: (mode: MarkdownOpenMode) => void;
   onDirty?: (path: string, dirty: boolean) => void;
+  onSelectTab: (path: string) => void;
+  onPinTab: (path: string) => void;
+  onCloseTab: (path: string) => void;
 }) {
   const [buffers, setBuffers] = useState<Record<string, Buffer>>({});
   const [saving, setSaving] = useState(false);
   const [mediaMeta, setMediaMeta] = useState<MediaMeta | null>(null);
+  const [gutterMarks, setGutterMarks] = useState<Map<number, GutterMark>>(() => new Map());
   const buf = buffers[path];
   const dirty = Boolean(buf && buf.draft !== buf.original && !buf.error);
   const media = mediaKindForPath(path);
@@ -49,12 +77,15 @@ export function DevEditor({
 
   const load = useCallback(
     async (file: string, force = false) => {
-      if (mediaKindForPath(file)) return;
+      if (mediaKindForPath(file) || isAllDiffPath(file)) return;
       const existing = buffersRef.current[file];
       if (existing && existing.draft !== existing.original) return;
       if (existing && !force && !existing.error) return;
       try {
-        const text = await api.devReadFile(workspace, file);
+        const journeyId = parseJourneyId(file);
+        const text = journeyId
+          ? await api.devGetJourneyKnowledge(workspace, journeyId)
+          : await api.devReadFile(workspace, file);
         setBuffers((prev) => {
           const cur = prev[file];
           if (cur && cur.draft !== cur.original) return prev;
@@ -85,24 +116,56 @@ export function DevEditor({
   }, [tick, path, load]);
 
   useEffect(() => {
-    if (media) {
+    if (media || fileView === "diff") {
       onDirty?.(path, false);
       return;
     }
     if (!buf) return;
     onDirty?.(path, dirty);
-  }, [buf, dirty, media, onDirty, path]);
+  }, [buf, dirty, fileView, media, onDirty, path]);
 
   useEffect(() => {
     setMediaMeta(null);
   }, [path]);
+
+  useEffect(() => {
+    if (!workspace || !path || fileView === "diff" || media || parseJourneyId(path)) {
+      setGutterMarks(new Map());
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [diff, changes] = await Promise.all([
+          api.devGitDiff(workspace, path),
+          api.devGitStatus(workspace),
+        ]);
+        let text = diff;
+        if (!text.trim()) {
+          const change = changes.find((row) => normalizeGitPath(row.path) === normalizeGitPath(path));
+          if (change?.status === "untracked") {
+            const contents = buffersRef.current[path]?.original ?? (await api.devReadFile(workspace, path));
+            text = addedFileDiff(path, contents);
+          }
+        }
+        if (!cancelled) setGutterMarks(gutterMarksFromDiff(parseGitDiff(text)));
+      } catch {
+        if (!cancelled) setGutterMarks(new Map());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace, path, tick, fileView, media]);
 
   const save = useCallback(async () => {
     const current = buffersRef.current[path];
     if (!current || current.error || current.draft === current.original) return;
     setSaving(true);
     try {
-      await api.devWriteFile(workspace, path, current.draft);
+      const journeyId = parseJourneyId(path);
+      if (journeyId) await api.devSaveJourneyKnowledge(workspace, journeyId, current.draft);
+      else await api.devWriteFile(workspace, path, current.draft);
       setBuffers((prev) => ({
         ...prev,
         [path]: { ...current, original: current.draft, error: null },
@@ -131,8 +194,8 @@ export function DevEditor({
         },
       ]),
     );
-    return [...(lang ? [lang] : []), editorTheme(mode), saveKey];
-  }, [path, mode, save]);
+    return [...(lang ? [lang] : []), editorTheme(mode), gitChangeGutter(gutterMarks), saveKey];
+  }, [path, mode, save, gutterMarks]);
 
   function setDraft(draft: string) {
     const current = buffersRef.current[path];
@@ -142,51 +205,29 @@ export function DevEditor({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
-      <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1">
-        <span className="min-w-0 truncate text-[11px] text-muted">{path}</span>
-        <span className="text-[11px] text-muted">{media ?? languageForPath(path)}</span>
-        {markdownView ? (
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <div className="flex gap-0.5">
-              {(
-                [
-                  { id: "editor", label: "Editor" },
-                  { id: "viewer", label: "Viewer" },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => onMarkdownView?.(opt.id)}
-                  className={`rounded-[6px] px-2 py-[3px] text-[12px] ${
-                    markdownView === opt.id ? "bg-wash-strong text-ink" : "text-muted hover:text-ink"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              disabled={!dirty || saving}
-              onClick={() => void save()}
-              className="shrink-0 rounded-[6px] px-2 py-[3px] text-[12px] text-ink hover:bg-wash disabled:opacity-35"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        ) : media ? null : (
-          <button
-            type="button"
-            disabled={!dirty || saving}
-            onClick={() => void save()}
-            className="ml-auto shrink-0 rounded-[6px] px-2 py-[3px] text-[12px] text-ink hover:bg-wash disabled:opacity-35"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        )}
+      <div className="flex h-9 shrink-0 items-stretch border-b border-line bg-sidebar/70">
+        <EditorFileTabs
+          editor={editor}
+          dirtyFiles={dirtyFiles}
+          pendingClosePath={pendingClosePath}
+          journeyTitles={journeyTitles}
+          onFile={onSelectTab}
+          onPinFile={onPinTab}
+          onCloseFile={onCloseTab}
+        />
+        <EditorChromeActions
+          fileView={fileView}
+          markdownView={markdownView}
+          media={Boolean(media)}
+          dirty={dirty}
+          saving={saving}
+          onMarkdownView={onMarkdownView}
+          onSave={() => void save()}
+        />
       </div>
-      {media ? (
+      {fileView === "diff" ? (
+        <GitDiffView workspace={workspace} path={path} tick={tick} />
+      ) : media ? (
         <DevMedia workspace={workspace} path={path} kind={media} tick={tick} onMeta={setMediaMeta} />
       ) : buf?.error ? (
         <div className="min-h-0 flex-1 overflow-auto px-4 py-3 text-[13px] text-err">{buf.error}</div>
@@ -222,16 +263,103 @@ export function DevEditor({
         <div className="min-h-0 flex-1 px-4 py-3 text-[12px] text-muted">Opening…</div>
       )}
       <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1 text-[11px] text-muted">
-        <span className="min-w-0 truncate">{editorTabTitle(path)}</span>
+        <span className="min-w-0 truncate">
+          {isAllDiffPath(path) ? "All changes" : parseJourneyId(path) ? "Journey knowledge" : path}
+        </span>
         <span className="ml-auto shrink-0">
-          {media ? mediaMeta?.label ?? "" : dirty ? "Unsaved" : "Saved"}
+          {fileView === "diff"
+            ? "Git changes"
+            : media
+              ? mediaMeta?.label ?? ""
+              : `${languageForPath(path) ?? "text"}${dirty ? " · Unsaved" : ""}`}
         </span>
       </div>
     </div>
   );
 }
 
+function EditorChromeActions({
+  fileView,
+  markdownView,
+  media,
+  dirty,
+  saving,
+  onMarkdownView,
+  onSave,
+}: {
+  fileView: EditorFileView;
+  markdownView?: MarkdownOpenMode | null;
+  media: boolean;
+  dirty: boolean;
+  saving: boolean;
+  onMarkdownView?: (mode: MarkdownOpenMode) => void;
+  onSave: () => void;
+}) {
+  if (fileView === "diff") {
+    return (
+      <span className="flex shrink-0 items-center px-2.5 text-[11px] text-muted">Read only</span>
+    );
+  }
+  if (media) return null;
+
+  const showSave = dirty || saving;
+  const shortcut = isMacOS() ? "⌘S" : "Ctrl+S";
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 px-2">
+      {markdownView ? (
+        <div
+          className="flex rounded-[7px] bg-wash p-0.5"
+          role="radiogroup"
+          aria-label="Markdown view"
+        >
+          {(
+            [
+              { id: "editor", label: "Edit", icon: "pencil", title: "Edit source" },
+              { id: "viewer", label: "Preview", icon: "eye", title: "Preview rendered Markdown" },
+            ] as const
+          ).map((opt) => {
+            const on = markdownView === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                title={opt.title}
+                onClick={() => onMarkdownView?.(opt.id)}
+                className={`flex items-center gap-1 rounded-[5px] px-2 py-[3px] text-[11px] ${
+                  on ? "bg-canvas text-ink shadow-sm" : "text-muted hover:text-ink"
+                }`}
+              >
+                <Symbol name={opt.icon} className="size-3" />
+                <span>{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {markdownView && showSave ? <span className="h-3.5 w-px shrink-0 bg-line" aria-hidden /> : null}
+      {showSave ? (
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          title={`Save ${shortcut}`}
+          onClick={onSave}
+          className="shrink-0 rounded-[6px] bg-accent px-2 py-[3px] text-[11px] font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function languageExtension(path: string) {
+  if (parseJourneyId(path)) {
+    const table = langs as Record<string, () => Extension>;
+    return typeof table.md === "function" ? table.md() : null;
+  }
   const name = editorTabTitle(path).toLowerCase();
   const i = name.lastIndexOf(".");
   const ext = i > 0 ? name.slice(i + 1) : "";

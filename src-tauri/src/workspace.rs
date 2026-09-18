@@ -134,10 +134,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let got = opened.register(dir.path()).unwrap();
         assert!(opened.is_allowed(&got));
-        assert_eq!(
-            opened.require(dir.path().to_str().unwrap()).unwrap(),
-            got
-        );
+        assert_eq!(opened.require(dir.path().to_str().unwrap()).unwrap(), got);
     }
 
     #[test]

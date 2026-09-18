@@ -3,9 +3,12 @@ import { describe, it } from "node:test";
 import {
   canPersistTurn,
   draftForChat,
+  isEmptyCompletion,
+  isRetryableChatError,
   setDraftForChat,
   skipToolIfAborted,
   turnAppliesToChat,
+  turnFailureMessage,
 } from "./dev-turn.ts";
 
 describe("turnAppliesToChat", () => {
@@ -42,6 +45,35 @@ describe("per-conversation drafts", () => {
     assert.equal(draftForChat(drafts, "a"), "keep");
     assert.equal(draftForChat(drafts, "b"), "");
     assert.equal(Object.hasOwn(drafts, "b"), false);
+  });
+});
+
+describe("isRetryableChatError", () => {
+  it("retries transport and server failures, not stop or auth", () => {
+    assert.equal(isRetryableChatError("xAI request failed: error sending request"), true);
+    assert.equal(isRetryableChatError("xAI error 429: rate limited"), true);
+    assert.equal(isRetryableChatError("xAI error 503: unavailable"), true);
+    assert.equal(isRetryableChatError("Stopped."), false);
+    assert.equal(isRetryableChatError("Grok CLI login expired. Run grok login."), false);
+    assert.equal(isRetryableChatError("xAI rejected the API key."), false);
+  });
+});
+
+describe("isEmptyCompletion", () => {
+  it("treats whitespace-only text with no tool calls as empty", () => {
+    assert.equal(isEmptyCompletion("", []), true);
+    assert.equal(isEmptyCompletion("   ", []), true);
+    assert.equal(isEmptyCompletion("ok", []), false);
+    assert.equal(isEmptyCompletion("", [{ id: "1" }]), false);
+  });
+});
+
+describe("turnFailureMessage", () => {
+  it("keeps the API error in the transcript so the turn is not a silent stop", () => {
+    const msg = turnFailureMessage("xAI error 503: unavailable");
+    assert.equal(msg.role, "assistant");
+    assert.match(String(msg.content), /xAI error 503/);
+    assert.equal(msg.error, true);
   });
 });
 

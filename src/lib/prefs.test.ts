@@ -7,10 +7,14 @@ import {
   DEV_SIDEBAR_MIN,
   loadDevPermission,
   loadDevSidebarWidth,
+  loadFileHoverCard,
+  loadGitChangesView,
   loadMarkdownOpenMode,
   saveDevPermission,
   saveDevSidebarWidth,
+  saveGitChangesView,
   saveMarkdownOpenMode,
+  setFileHoverCard,
 } from "./prefs.ts";
 
 function mockStorage() {
@@ -72,6 +76,56 @@ describe("markdown open mode", () => {
   it("treats unknown stored values as editor", () => {
     localStorage.setItem("twanagent.markdownOpen", "split");
     assert.equal(loadMarkdownOpenMode(), "editor");
+  });
+});
+
+describe("git changes view", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to list when nothing is stored", () => {
+    assert.equal(loadGitChangesView(), "list");
+  });
+
+  it("saves and reloads tree mode", () => {
+    saveGitChangesView("tree");
+    assert.equal(loadGitChangesView(), "tree");
+  });
+
+  it("treats unknown stored values as list", () => {
+    localStorage.setItem("twanagent.gitChangesView", "grid");
+    assert.equal(loadGitChangesView(), "list");
+  });
+});
+
+describe("file hover card", () => {
+  beforeEach(() => {
+    mockStorage();
+    Object.defineProperty(globalThis, "document", {
+      value: { documentElement: { dataset: {} as Record<string, string> } },
+      configurable: true,
+    });
+  });
+
+  it("defaults to on when nothing is stored", () => {
+    assert.equal(loadFileHoverCard(), true);
+  });
+
+  it("saves and reloads the preference", () => {
+    setFileHoverCard(false);
+    assert.equal(loadFileHoverCard(), false);
+    setFileHoverCard(true);
+    assert.equal(loadFileHoverCard(), true);
+  });
+
+  it("treats off/false/0 as disabled", () => {
+    localStorage.setItem("twanagent.fileHoverCard", "off");
+    assert.equal(loadFileHoverCard(), false);
+    localStorage.setItem("twanagent.fileHoverCard", "false");
+    assert.equal(loadFileHoverCard(), false);
+    localStorage.setItem("twanagent.fileHoverCard", "0");
+    assert.equal(loadFileHoverCard(), false);
   });
 });
 

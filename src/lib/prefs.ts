@@ -138,6 +138,46 @@ export function saveMarkdownOpenMode(mode: MarkdownOpenMode): void {
   localStorage.setItem(MARKDOWN_OPEN_KEY, mode);
 }
 
+export type GitChangesView = "list" | "tree";
+
+const GIT_CHANGES_VIEW_KEY = "twanagent.gitChangesView";
+
+export function loadGitChangesView(): GitChangesView {
+  return localStorage.getItem(GIT_CHANGES_VIEW_KEY) === "tree" ? "tree" : "list";
+}
+
+export function saveGitChangesView(view: GitChangesView): void {
+  localStorage.setItem(GIT_CHANGES_VIEW_KEY, view);
+}
+
+const FILE_HOVER_CARD_KEY = "twanagent.fileHoverCard";
+const PREFS_EVENT = "twanagent-prefs";
+
+export function loadFileHoverCard(): boolean {
+  const raw = localStorage.getItem(FILE_HOVER_CARD_KEY);
+  return raw !== "off" && raw !== "0" && raw !== "false";
+}
+
+export function applyFileHoverCard(on: boolean): void {
+  document.documentElement.dataset.fileHoverCard = on ? "on" : "off";
+}
+
+export function setFileHoverCard(on: boolean): void {
+  localStorage.setItem(FILE_HOVER_CARD_KEY, on ? "on" : "off");
+  applyFileHoverCard(on);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
+export function subscribePrefs(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(PREFS_EVENT, onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener(PREFS_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
 export function saveDevConversation(workspace: string, id: string): void {
   let all: Record<string, string> = {};
   try {

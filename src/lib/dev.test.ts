@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  activityFromToolCall,
+  conversationActivityLabel,
   conversationTitleFrom,
   latestAssistantPreview,
   moveById,
@@ -8,10 +10,14 @@ import {
   folderActionEnabled,
   folderActionHint,
   folderName,
+  isExistingProjectName,
   gitChangeForPath,
   gitChangeMap,
+  gitChangeTotals,
+  gitChangesTree,
   gitFolderHasChanges,
   gitLineStats,
+  isLiveToolTrail,
   mergeProjectRows,
   normalizeGitPath,
   pathWithSlash,
@@ -23,7 +29,12 @@ import {
   repoNameFromUrl,
   sanitizeProjectName,
   toApiMessages,
+  toolFileChange,
   toolSummary,
+  toolTrailFileChanges,
+  toolTrailSummary,
+  toolTrailTypeCountText,
+  toolTrailTypeCounts,
   transcriptItems,
   liveTranscriptItems,
   systemPrompt,
@@ -97,6 +108,36 @@ describe("moveById", () => {
   });
 });
 
+describe("conversation activity", () => {
+  it("labels a quiet turn as Thinking…", () => {
+    assert.equal(conversationActivityLabel(null), "Thinking…");
+    assert.equal(conversationActivityLabel({ kind: "thinking" }), "Thinking…");
+  });
+
+  it("labels an in-flight edit as Editing <file>", () => {
+    assert.deepEqual(
+      activityFromToolCall({ id: "1", name: "edit_file", arguments: '{"path":"src/lib/dev.ts"}' }),
+      { kind: "editing", path: "src/lib/dev.ts" },
+    );
+    assert.deepEqual(
+      activityFromToolCall({ id: "2", name: "write_file", arguments: '{"path":"src/new.ts"}' }),
+      { kind: "editing", path: "src/new.ts" },
+    );
+    assert.equal(
+      conversationActivityLabel({ kind: "editing", path: "src/lib/dev.ts" }),
+      "Editing dev.ts",
+    );
+  });
+
+  it("labels the current tool call", () => {
+    assert.deepEqual(
+      activityFromToolCall({ id: "3", name: "read_file", arguments: '{"path":"src/main.tsx"}' }),
+      { kind: "tool", label: "Read src/main.tsx" },
+    );
+    assert.equal(conversationActivityLabel({ kind: "tool", label: "Read src/main.tsx" }), "Read src/main.tsx");
+  });
+});
+
 describe("latestAssistantPreview", () => {
   it("prefers the live stream, then the last assistant text", () => {
     assert.equal(
@@ -154,9 +195,27 @@ describe("tool helpers", () => {
     ]);
     assert.deepEqual(items, [
       { kind: "user", content: "fix the bug" },
-      { kind: "tools", labels: ["Read src/lib.rs", "Edit src/lib.rs"] },
+      {
+        kind: "tools",
+        labels: ["Read src/lib.rs", "Edit src/lib.rs"],
+        files: [{ path: "src/lib.rs", name: "lib.rs", additions: 0, deletions: 0, added: [], removed: [] }],
+      },
       { kind: "assistant", content: "Updated the file." },
     ]);
+  });
+
+  it("keeps a failed continuation visible in the transcript", () => {
+    const items = transcriptItems([
+      { role: "user", content: "scaffold the app" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"index.html"}' }],
+      },
+      { role: "tool", tool_call_id: "1", content: "<html>" },
+      { role: "assistant", content: "Couldn't continue: xAI error 503: unavailable" },
+    ]);
+    assert.equal(items[items.length - 1]?.kind, "error");
   });
 
   it("keeps committed tool calls above newly streaming text", () => {
@@ -219,6 +278,139 @@ describe("tool helpers", () => {
   });
 });
 
+describe("tool file changes", () => {
+  it("counts written lines as additions", () => {
+    assert.deepEqual(
+      toolFileChange({
+        id: "1",
+        name: "write_file",
+        arguments: JSON.stringify({ path: "src/main.ts", contents: "a\nb\nc" }),
+      }),
+      {
+        path: "src/main.ts",
+        name: "main.ts",
+        additions: 3,
+        deletions: 0,
+        added: ["a", "b", "c"],
+        removed: [],
+      },
+    );
+  });
+
+  it("counts an edit as added and removed lines", () => {
+    assert.deepEqual(
+      toolFileChange({
+        id: "2",
+        name: "edit_file",
+        arguments: JSON.stringify({
+          path: "src/app.ts",
+          old_string: "one\ntwo",
+          new_string: "one\ntwo\nthree",
+        }),
+      }),
+      {
+        path: "src/app.ts",
+        name: "app.ts",
+        additions: 3,
+        deletions: 2,
+        added: ["one", "two", "three"],
+        removed: ["one", "two"],
+      },
+    );
+  });
+
+  it("ignores reads and merges writes to the same file", () => {
+    assert.equal(
+      toolFileChange({ id: "r", name: "read_file", arguments: '{"path":"a.ts"}' }),
+      null,
+    );
+    assert.deepEqual(
+      toolTrailFileChanges([
+        { id: "1", name: "write_file", arguments: '{"path":"a.ts","contents":"x"}' },
+        { id: "2", name: "edit_file", arguments: '{"path":"a.ts","old_string":"x","new_string":"x\\ny"}' },
+        { id: "3", name: "write_file", arguments: '{"path":"b.ts","contents":"z"}' },
+      ]),
+      [
+        {
+          path: "a.ts",
+          name: "a.ts",
+          additions: 3,
+          deletions: 1,
+          added: ["x", "x", "y"],
+          removed: ["x"],
+        },
+        { path: "b.ts", name: "b.ts", additions: 1, deletions: 0, added: ["z"], removed: [] },
+      ],
+    );
+  });
+});
+
+describe("tool trail collapse", () => {
+  it("summarizes a segment count", () => {
+    assert.equal(toolTrailSummary(0), "");
+    assert.equal(toolTrailSummary(1), "1 tool call");
+    assert.equal(toolTrailSummary(24), "24 tool calls");
+  });
+
+  it("groups labels by tool type with ×counts in first-seen order", () => {
+    assert.deepEqual(
+      toolTrailTypeCounts(["Read a.ts", "Read b.ts", "List .", "Edit a.ts", "Read c.ts"]),
+      [
+        { type: "Read", count: 3 },
+        { type: "List", count: 1 },
+        { type: "Edit", count: 1 },
+      ],
+    );
+    assert.equal(toolTrailTypeCountText("Read", 15), "Read ×15");
+  });
+
+  it("keeps special tool types intact when grouping", () => {
+    assert.deepEqual(
+      toolTrailTypeCounts([
+        "$ cargo test",
+        "Git status",
+        "Subagent: Find parser",
+        "Edit journey knowledge",
+      ]),
+      [
+        { type: "$", count: 1 },
+        { type: "Git status", count: 1 },
+        { type: "Subagent", count: 1 },
+        { type: "Edit journey knowledge", count: 1 },
+      ],
+    );
+  });
+
+  it("is live only for the current last tools segment while the turn is running", () => {
+    const items = liveTranscriptItems(
+      [{ role: "user", content: "inspect the repo" }],
+      "",
+      ["List .", "Read README.md", "Read package.json"],
+    );
+    assert.equal(isLiveToolTrail(items, 1, true), true);
+    assert.equal(isLiveToolTrail(items, 1, false), false);
+    assert.equal(isLiveToolTrail(items, 0, true), false);
+  });
+
+  it("collapses a tools segment once later text is past it", () => {
+    const items = liveTranscriptItems(
+      [
+        { role: "user", content: "inspect the repo" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "1", name: "list_dir", arguments: '{"path":"."}' }],
+        },
+        { role: "tool", tool_call_id: "1", content: "..." },
+      ],
+      "Here is what I found.",
+    );
+    const toolsAt = items.findIndex((item) => item.kind === "tools");
+    assert.equal(items[items.length - 1]?.kind, "assistant");
+    assert.equal(isLiveToolTrail(items, toolsAt, true), false);
+  });
+});
+
 describe("folder command helpers", () => {
   it("detects paths and git URLs", () => {
     assert.equal(looksLikePath("/Users/me/app"), true);
@@ -258,6 +450,18 @@ describe("folder command helpers", () => {
     assert.equal(pathWithSlash("/projects"), "/projects/");
     assert.equal(pathWithSlash("/projects/"), "/projects/");
   });
+
+  it("detects a project name that already exists", () => {
+    const rows = [
+      { name: "Demo-App", path: "/app/projects/Demo-App" },
+      { name: "other", path: "/tmp/other" },
+    ];
+    assert.equal(isExistingProjectName("", rows), false);
+    assert.equal(isExistingProjectName("fresh", rows), false);
+    assert.equal(isExistingProjectName("Demo-App", rows), true);
+    assert.equal(isExistingProjectName("demo-app", rows), true);
+    assert.equal(isExistingProjectName("Demo App", rows), true);
+  });
 });
 
 describe("git file decorations", () => {
@@ -284,6 +488,11 @@ describe("git file decorations", () => {
     assert.equal(gitFolderHasChanges(map, ""), true);
   });
 
+  it("sums additions and deletions across files", () => {
+    assert.deepEqual(gitChangeTotals(rows), { additions: 21, deletions: 4 });
+    assert.deepEqual(gitChangeTotals([]), { additions: 0, deletions: 0 });
+  });
+
   it("treats missing counts as zero", () => {
     assert.deepEqual(gitLineStats(undefined), { additions: 0, deletions: 0 });
     assert.deepEqual(gitLineStats({ path: "a", status: "modified", staged: false }), {
@@ -291,6 +500,37 @@ describe("git file decorations", () => {
       deletions: 0,
     });
     assert.deepEqual(gitLineStats(rows[0]), { additions: 12, deletions: 3 });
+  });
+
+  it("builds a nested tree from change paths", () => {
+    const tree = gitChangesTree(rows);
+    assert.deepEqual(
+      tree.map((node) => node.kind === "dir" ? node.path : node.change.path),
+      ["apps", "src", "README.md"],
+    );
+    const apps = tree[0];
+    assert.equal(apps.kind, "dir");
+    if (apps.kind !== "dir") return;
+    assert.equal(apps.name, "apps");
+    assert.equal(apps.children[0]?.kind, "dir");
+    if (apps.children[0].kind !== "dir") return;
+    assert.equal(apps.children[0].path, "apps/client");
+    assert.equal(apps.children[0].children[0]?.kind, "file");
+    if (apps.children[0].children[0].kind !== "file") return;
+    assert.equal(apps.children[0].children[0].name, "App.tsx");
+    assert.equal(apps.children[0].children[0].change.status, "modified");
+  });
+
+  it("keeps root files at the top level", () => {
+    const tree = gitChangesTree([
+      { path: "LICENSE", status: "added", staged: false },
+      { path: "src\\dev.ts", status: "modified", staged: false },
+    ]);
+    assert.equal(tree[0]?.kind, "dir");
+    assert.equal(tree[1]?.kind, "file");
+    if (tree[1]?.kind !== "file") return;
+    assert.equal(tree[1].name, "LICENSE");
+    assert.equal(tree[1].change.path, "LICENSE");
   });
 });
 
@@ -322,6 +562,14 @@ describe("toApiMessages", () => {
       content: "fn main() {}",
     });
   });
+
+  it("drops a failed-turn notice so a retry does not send it back to the model", () => {
+    const out = toApiMessages([
+      { role: "user", content: "go" },
+      { role: "assistant", content: "Couldn't continue: xAI error 503: unavailable", error: true },
+    ]);
+    assert.deepEqual(out, [{ role: "user", content: "go" }]);
+  });
 });
 
 describe("withSystem", () => {
@@ -340,5 +588,15 @@ describe("withSystem", () => {
   it("describes the selected permission mode", () => {
     assert.match(String(systemPrompt("/tmp/app", "approve-all").content), /without asking/);
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
+  });
+
+  it("appends journey knowledge and omits an empty file", () => {
+    const withNotes = systemPrompt("/tmp/app", "ask", "- brand is blue");
+    assert.match(String(withNotes.content), /Journey knowledge:/);
+    assert.match(String(withNotes.content), /brand is blue/);
+    assert.match(String(withNotes.content), /update_journey_knowledge/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", "  ").content), /Journey knowledge:/);
+    const injected = withSystem("/tmp/app", [{ role: "user", content: "hi" }], undefined, "ask", "- keep tone short");
+    assert.match(String(injected[0].content), /keep tone short/);
   });
 });

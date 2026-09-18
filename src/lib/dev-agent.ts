@@ -1,8 +1,15 @@
 import type { DevToolCall } from "./tauri";
 import * as api from "./tauri";
+import { parseChatUsage, type ChatUsage } from "./dev-context.ts";
 import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage } from "./dev.ts";
 import { parsePermissionMode, toolDeniedByPermission, type PermissionMode } from "./dev-permission.ts";
-import { skipToolIfAborted } from "./dev-turn.ts";
+import {
+  EMPTY_COMPLETION_MESSAGE,
+  isEmptyCompletion,
+  isRetryableChatError,
+  skipToolIfAborted,
+  turnFailureMessage,
+} from "./dev-turn.ts";
 import {
   childCanUseTool,
   emptySubagent,
@@ -22,6 +29,7 @@ export async function executeTool(
   childType?: SubagentType,
   permission: PermissionMode = "ask",
   signal?: AbortSignal,
+  journeyId?: string,
 ): Promise<string> {
   const skipped = signal ? skipToolIfAborted(signal) : null;
   if (skipped) return skipped;
@@ -57,6 +65,18 @@ export async function executeTool(
         return await api.devGitDiff(workspace, String(args.path ?? ""));
       case "run_command":
         return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
+      case "update_journey_knowledge":
+        if (!journeyId) return "Error: update_journey_knowledge is only available in a Journey chat.";
+        return api.devUpdateJourneyKnowledge(workspace, journeyId, {
+          mode: String(args.mode ?? ""),
+          contents: args.contents == null ? undefined : String(args.contents),
+          oldString: args.old_string == null && args.oldString == null
+            ? undefined
+            : String(args.old_string ?? args.oldString ?? ""),
+          newString: args.new_string == null && args.newString == null
+            ? undefined
+            : String(args.new_string ?? args.newString ?? ""),
+        });
       default:
         return `Unknown tool: ${call.name}`;
     }
@@ -93,7 +113,10 @@ export type TurnOpts = {
   onUpdate?: (messages: ChatMessage[]) => void;
   onRefresh?: () => void;
   onSubagent?: (event: SubagentEvent) => void;
+  onUsage?: (usage: ChatUsage) => void;
   signal: AbortSignal;
+  journeyId?: string;
+  journeyKnowledge?: string;
 };
 
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
@@ -101,15 +124,47 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     if (opts.signal.aborted) return messages;
     const permission = parsePermissionMode(opts.getPermission?.());
-    const result = await streamCompletion(
-      withSystem(opts.workspace, messages, opts.system, permission),
+    let result = await streamCompletion(
+      withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
       opts,
     );
     if (opts.signal.aborted) return messages;
+    if (result.error && isRetryableChatError(result.error)) {
+      result = await streamCompletion(
+        withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
+        opts,
+      );
+    }
+    if (opts.signal.aborted) return messages;
     if (result.error) {
       opts.onError(result.error);
+      if (result.error !== "Stopped.") {
+        messages = [...messages, turnFailureMessage(result.error)];
+        opts.onUpdate?.(messages);
+      }
       return messages;
     }
+    if (isEmptyCompletion(result.text, result.toolCalls)) {
+      result = await streamCompletion(
+        withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
+        opts,
+      );
+      if (opts.signal.aborted) return messages;
+      if (result.error) {
+        opts.onError(result.error);
+        if (result.error !== "Stopped.") {
+          messages = [...messages, turnFailureMessage(result.error)];
+          opts.onUpdate?.(messages);
+        }
+        return messages;
+      }
+    }
+    if (isEmptyCompletion(result.text, result.toolCalls)) {
+      messages = [...messages, turnFailureMessage(EMPTY_COMPLETION_MESSAGE)];
+      opts.onUpdate?.(messages);
+      return messages;
+    }
+    if (result.usage) opts.onUsage?.(result.usage);
     const assistant: ChatMessage = {
       role: "assistant",
       content: result.text || (result.toolCalls.length ? "" : result.text),
@@ -143,8 +198,14 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.childType,
         parsePermissionMode(opts.getPermission?.()),
         opts.signal,
+        opts.journeyId,
       );
-      if (call.name === "write_file" || call.name === "edit_file" || call.name === "run_command") {
+      if (
+        call.name === "write_file" ||
+        call.name === "edit_file" ||
+        call.name === "run_command" ||
+        call.name === "update_journey_knowledge"
+      ) {
         opts.onRefresh?.();
       }
     }
@@ -189,7 +250,9 @@ async function runSubagent(call: DevToolCall, opts: TurnOpts): Promise<string> {
         parsed.subagentType,
         parsed.description,
         parsePermissionMode(opts.getPermission?.()),
+        opts.journeyKnowledge,
       ),
+      journeyKnowledge: opts.journeyKnowledge,
       allowSpawn: false,
       childType: parsed.subagentType,
       getPermission: opts.getPermission,
@@ -233,16 +296,19 @@ async function streamCompletion(
     effort?: string;
     onDelta: (text: string) => void;
     onError: (text: string) => void;
+    onUsage?: (usage: ChatUsage) => void;
     signal: AbortSignal;
+    journeyId?: string;
   },
-): Promise<{ text: string; toolCalls: DevToolCall[]; error?: string }> {
+): Promise<{ text: string; toolCalls: DevToolCall[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
   let toolCalls: DevToolCall[] = [];
+  let usage: ChatUsage | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
     let unlisten: (() => void) | undefined;
-    const finish = (value: { text: string; toolCalls: DevToolCall[]; error?: string }) => {
+    const finish = (value: { text: string; toolCalls: DevToolCall[]; error?: string; usage?: ChatUsage }) => {
       if (settled) return;
       settled = true;
       opts.signal.removeEventListener("abort", onAbort);
@@ -260,11 +326,18 @@ async function streamCompletion(
           if (ev.kind === "delta" && ev.text) {
             text += ev.text;
             opts.onDelta(ev.text);
+          } else if (ev.kind === "usage") {
+            const next = parseChatUsage(ev.usage);
+            if (next) {
+              usage = next;
+              opts.onUsage?.(next);
+            }
           } else if (ev.kind === "done") {
             if (ev.tool_calls?.length) toolCalls = ev.tool_calls;
-            finish({ text, toolCalls });
+            usage = parseChatUsage(ev.usage) ?? usage;
+            finish({ text: text || ev.text || "", toolCalls, usage });
           } else if (ev.kind === "error") {
-            finish({ text, toolCalls, error: ev.text || "xAI request failed." });
+            finish({ text, toolCalls, error: ev.text || "xAI request failed.", usage });
           }
         });
         if (opts.signal.aborted) {
@@ -272,7 +345,7 @@ async function streamCompletion(
           return;
         }
         opts.signal.addEventListener("abort", onAbort);
-        await api.devChatStart(streamId, toApiMessages(messages), opts.model, opts.effort);
+        await api.devChatStart(streamId, toApiMessages(messages), opts.model, opts.effort, opts.journeyId);
       } catch (e) {
         opts.signal.removeEventListener("abort", onAbort);
         unlisten?.();

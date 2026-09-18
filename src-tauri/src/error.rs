@@ -38,6 +38,12 @@ impl From<serde_json::Error> for Error {
     }
 }
 
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Other(e.to_string())
+    }
+}
+
 impl Serialize for Error {
     fn serialize<S: serde::Serializer>(
         &self,

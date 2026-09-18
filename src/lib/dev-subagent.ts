@@ -49,7 +49,7 @@ export function parseSpawnArgs(raw: string): SpawnArgs {
 }
 
 export function childCanUseTool(type: SubagentType, name: string): boolean {
-  if (name === "spawn_subagent") return false;
+  if (name === "spawn_subagent" || name === "update_journey_knowledge") return false;
   if (type === "explore" || type === "plan") {
     return name !== "write_file" && name !== "edit_file" && name !== "run_command";
   }
@@ -69,6 +69,7 @@ export function subagentSystemPrompt(
   type: SubagentType,
   description: string,
   permission: PermissionMode = "ask",
+  knowledge?: string,
 ): ChatMessage {
   const limits =
     type === "explore"
@@ -76,6 +77,7 @@ export function subagentSystemPrompt(
       : type === "plan"
         ? "You are a plan agent. Explore the codebase and produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
+  const knowledgeBlock = (knowledge ?? "").trim() ? `\nJourney knowledge:\n${knowledge!.trim()}` : "";
   return {
     role: "system",
     content: `You are Grok, a ${type} subagent in TwanAgent.
@@ -83,7 +85,7 @@ Workspace: ${workspace}
 Task: ${description}
 ${limits}
 ${permissionSystemLine(permission)}
-Be concise. End with a clear summary of findings or work done.`,
+Be concise. End with a clear summary of findings or work done.${knowledgeBlock}`,
   };
 }
 

@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 const stroke = {
   fill: "none",
   stroke: "currentColor",
-  strokeWidth: 2.15,
   strokeLinecap: "round" as const,
   strokeLinejoin: "round" as const,
 };
@@ -46,7 +45,7 @@ const ICONS: Record<string, ReactNode> = {
   folder: (
     <path
       d="M3.3 8.6A2.1 2.1 0 0 1 5.4 6.5h3.1l1.55 1.75h8.65A2.1 2.1 0 0 1 20.8 10.35v7.15a2.1 2.1 0 0 1-2.1 2.1H5.4A2.1 2.1 0 0 1 3.3 17.5Z"
-      fill="currentColor"
+      {...stroke}
     />
   ),
   "folder.fill": (
@@ -91,6 +90,14 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="5.2" cy="7" r="1.05" fill="currentColor" />
       <circle cx="5.2" cy="12" r="1.05" fill="currentColor" />
       <circle cx="5.2" cy="17" r="1.05" fill="currentColor" />
+    </>
+  ),
+  "list.tree": (
+    <>
+      <path d="M5 5.6v8.8" {...stroke} />
+      <path d="M5 10h4.4M5 14.4h4.4" {...stroke} />
+      <path d="M11.6 6.4h7.8M11.6 10h7.8M11.6 14.4h7.8M11.6 18.8h7.8" {...stroke} />
+      <path d="M5 5.6h4.4" {...stroke} />
     </>
   ),
   "square.grid.2x2": (
@@ -400,6 +407,12 @@ const ICONS: Record<string, ReactNode> = {
       {...stroke}
     />
   ),
+  "bubble.left.fill": (
+    <path
+      d="M5.2 6.2h13.6A2.2 2.2 0 0 1 21 8.4v6.4a2.2 2.2 0 0 1-2.2 2.2H11l-3.8 3v-3H5.2A2.2 2.2 0 0 1 3 14.8V8.4A2.2 2.2 0 0 1 5.2 6.2Z"
+      fill="currentColor"
+    />
+  ),
   "arrow.triangle.branch": (
     <>
       <circle cx="7.2" cy="6.4" r="2.1" {...stroke} />
@@ -418,6 +431,18 @@ const ICONS: Record<string, ReactNode> = {
     <>
       <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2.2" fill="currentColor" />
       <path d="M7.2 9.2 10.2 12 7.2 14.8M12.4 15.2h4.4" stroke="#fff" strokeWidth={2.15} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </>
+  ),
+  pencil: (
+    <path
+      d="M14.6 5.2 18.8 9.4 9.2 19H5v-4.2ZM13 6.8l4.2 4.2"
+      {...stroke}
+    />
+  ),
+  eye: (
+    <>
+      <path d="M3.4 12s3.2-6.2 8.6-6.2S20.6 12 20.6 12s-3.2 6.2-8.6 6.2S3.4 12 3.4 12Z" {...stroke} />
+      <circle cx="12" cy="12" r="2.4" {...stroke} />
     </>
   ),
   gearshape: (
@@ -440,10 +465,31 @@ const ICONS: Record<string, ReactNode> = {
   ),
 };
 
-export function Symbol({ name, className = "size-4" }: { name: string; className?: string }) {
+export type SymbolWeight = "light" | "regular" | "semibold";
+
+const WEIGHT: Record<SymbolWeight, number> = {
+  light: 1.3,
+  regular: 1.55,
+  semibold: 2.15,
+};
+
+export function Symbol({
+  name,
+  className = "size-4",
+  weight = "semibold",
+}: {
+  name: string;
+  className?: string;
+  weight?: SymbolWeight;
+}) {
   const node = ICONS[name] ?? ICONS[name.replace(/\.fill$/, "")] ?? ICONS.doc;
   return (
-    <svg viewBox="0 0 24 24" className={`block shrink-0 ${className}`} aria-hidden>
+    <svg
+      viewBox="0 0 24 24"
+      className={`block shrink-0 ${className}`}
+      aria-hidden
+      strokeWidth={WEIGHT[weight]}
+    >
       {node}
     </svg>
   );

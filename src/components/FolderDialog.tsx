@@ -5,11 +5,13 @@ import {
   filterProjectRows,
   folderActionEnabled,
   folderActionHint,
+  isExistingProjectName,
   looksLikeGitUrl,
   looksLikePath,
   mergeProjectRows,
   pathWithSlash,
   preferredFolderAction,
+  sanitizeProjectName,
   type FolderActionId,
   type ProjectRow,
 } from "../lib/dev";
@@ -45,6 +47,8 @@ export function FolderDialog({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const visibleProjects = showProjects ? filterProjectRows(projects, query) : [];
+  const nameTaken = isExistingProjectName(query, projects);
+  const createName = sanitizeProjectName(query);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -75,7 +79,9 @@ export function FolderDialog({
   }, [busy, onClose]);
 
   useEffect(() => {
-    if (manual && (active === "clone" || folderActionEnabled(active, query))) return;
+    if (manual && (active === "clone" || active === "create" || folderActionEnabled(active, query))) {
+      return;
+    }
     if (showProjects && visibleProjects.length && !looksLikeGitUrl(query)) {
       setFocus({ kind: "project", index: 0 });
       setManual(false);
@@ -135,6 +141,7 @@ export function FolderDialog({
     setManual(true);
     setError(null);
     if (id === "clone" && query && !looksLikeGitUrl(query)) setQuery("");
+    if (id === "create" && query && (looksLikePath(query) || looksLikeGitUrl(query))) setQuery("");
     window.setTimeout(focusSearch, 0);
   }
 
@@ -162,6 +169,7 @@ export function FolderDialog({
       setActive(next.id);
       setManual(true);
       if (next.id === "clone" && query && !looksLikeGitUrl(query)) setQuery("");
+      if (next.id === "create" && query && (looksLikePath(query) || looksLikeGitUrl(query))) setQuery("");
     } else {
       setActive("open");
       setManual(true);
@@ -212,7 +220,15 @@ export function FolderDialog({
         return;
       }
       if (id === "create") {
-        if (!folderActionEnabled("create", query)) return;
+        if (!folderActionEnabled("create", query)) {
+          selectAction("create");
+          return;
+        }
+        if (isExistingProjectName(query, projects)) {
+          selectAction("create");
+          setError("A project with this name already exists.");
+          return;
+        }
         setBusy(true);
         onPick(await api.devCreateProject(query));
         return;
@@ -291,11 +307,16 @@ export function FolderDialog({
               placeholder={
                 active === "clone"
                   ? "https://github.com/org/repo.git"
-                  : showProjects
-                    ? "Search projects, or type a path"
-                    : "Type a folder path or project name"
+                  : active === "create"
+                    ? "Type a project name"
+                    : showProjects
+                      ? "Search projects, or type a path"
+                      : "Type a folder path or project name"
               }
-              className="h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted disabled:opacity-60"
+              className={`h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted disabled:opacity-60 ${
+                active === "create" && nameTaken ? "text-err" : ""
+              }`}
+              aria-invalid={active === "create" && nameTaken}
               aria-labelledby="folder-dialog-title"
             />
           </div>
@@ -310,6 +331,7 @@ export function FolderDialog({
               <div className="mb-1 max-h-[220px] overflow-auto">
                 {visibleProjects.map((row, index) => {
                   const on = focus.kind === "project" && focus.index === index;
+                  const conflict = active === "create" && isExistingProjectName(query, [row]);
                   return (
                     <button
                       key={row.path}
@@ -330,7 +352,11 @@ export function FolderDialog({
                         <Symbol name="folder.fill" className="size-4" />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px] font-medium text-ink">{row.name}</span>
+                        <span
+                          className={`block text-[13px] font-medium ${conflict ? "text-err" : "text-ink"}`}
+                        >
+                          {row.name}
+                        </span>
                         <span className="block truncate text-[12px] text-muted">{row.path}</span>
                       </span>
                       {on && <span className="shrink-0 text-[11px] text-muted">↵</span>}
@@ -340,9 +366,22 @@ export function FolderDialog({
               </div>
             )}
             {FOLDER_ACTIONS.map((action) => {
-              const can = action.id === "clone" ? true : folderActionEnabled(action.id, query);
+              const createConflict = action.id === "create" && nameTaken;
+              const can =
+                action.id === "clone" || action.id === "create"
+                  ? true
+                  : folderActionEnabled(action.id, query);
+              const ready =
+                action.id === "create"
+                  ? folderActionEnabled("create", query) && !nameTaken
+                  : action.id === "clone"
+                    ? folderActionEnabled("clone", query)
+                    : can;
               const selected = focus.kind === "action" && focus.id === action.id;
-              const cloneReady = folderActionEnabled("clone", query);
+              const hint =
+                createConflict && createName
+                  ? `${createName} already exists`
+                  : folderActionHint(action.id, query);
               return (
                 <div key={action.id}>
                   <div
@@ -362,10 +401,10 @@ export function FolderDialog({
                   >
                     <button
                       type="button"
-                      disabled={busy || (action.id !== "clone" && !can)}
+                      disabled={busy}
                       onClick={() => {
-                        if (action.id === "clone") {
-                          selectAction("clone");
+                        if (action.id === "clone" || action.id === "create") {
+                          selectAction(action.id);
                           return;
                         }
                         void run(action.id);
@@ -376,18 +415,24 @@ export function FolderDialog({
                         <Symbol name={action.icon} className="size-4" />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px] font-medium text-ink">{action.label}</span>
-                        <span className="block truncate text-[12px] text-muted">
+                        <span
+                          className={`block text-[13px] font-medium ${createConflict ? "text-err" : "text-ink"}`}
+                        >
+                          {action.label}
+                        </span>
+                        <span
+                          className={`block truncate text-[12px] ${createConflict ? "text-err" : "text-muted"}`}
+                        >
                           {busy && selected
                             ? action.id === "clone"
                               ? "Cloning…"
                               : action.id === "create"
                                 ? "Creating…"
                                 : "Opening…"
-                            : folderActionHint(action.id, query)}
+                            : hint}
                         </span>
                       </span>
-                      {selected && (action.id === "clone" ? cloneReady : can) && (
+                      {selected && ready && (
                         <span className="shrink-0 text-[11px] text-muted">↵</span>
                       )}
                     </button>

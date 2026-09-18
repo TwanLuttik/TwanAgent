@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { folderName } from "../lib/dev";
+import type { ChatUsage } from "../lib/dev-context";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/dev-permission";
 import type { DevEffort, DevModel } from "../lib/tauri";
+import { ContextUsageChip } from "./ContextUsageChip";
 import { Symbol } from "./Symbol";
+
+const COMPACT_MAX = 160;
+const LANDING_MAX = 220;
 
 export function DevComposer({
   draft,
@@ -23,6 +28,8 @@ export function DevComposer({
   onPermission,
   autoFocus,
   compact,
+  usage,
+  usageWindow,
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -42,11 +49,25 @@ export function DevComposer({
   onPermission: (id: string) => void;
   autoFocus?: boolean;
   compact?: boolean;
+  usage?: ChatUsage | null;
+  usageWindow?: number;
 }) {
   const selected = models.find((m) => m.id === model) ?? models[0];
   const efforts = selected?.efforts ?? [];
   const effortLabel = efforts.find((e) => e.id === effort)?.label ?? "Thinking";
   const permissionMode = parsePermissionMode(permission);
+  const area = useRef<HTMLTextAreaElement>(null);
+  const [usageHover, setUsageHover] = useState(false);
+  const canSend = Boolean(draft.trim()) && !busy && ready;
+  const showUsage = Boolean(usage && usageWindow);
+
+  useEffect(() => {
+    const el = area.current;
+    if (!el) return;
+    const max = compact ? COMPACT_MAX : LANDING_MAX;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+  }, [draft, compact]);
 
   function submit(ev?: FormEvent) {
     ev?.preventDefault();
@@ -64,80 +85,85 @@ export function DevComposer({
   return (
     <form onSubmit={submit} className="w-full">
       <div
-        className={`relative border border-line bg-panel focus-within:border-accent ${
-          compact ? "rounded-xl" : "rounded-2xl shadow-card"
+        className={`relative border border-line/90 bg-panel focus-within:border-accent/80 ${
+          compact ? "rounded-2xl" : "rounded-[22px] shadow-card"
         }`}
       >
+        {usage && usageWindow ? (
+          <ContextUsageChip usage={usage} windowSize={usageWindow} expanded={usageHover} />
+        ) : null}
         <textarea
+          ref={area}
           value={draft}
           onChange={(e) => onDraft(e.target.value)}
           onKeyDown={onKey}
-          rows={compact ? 2 : 3}
+          onMouseEnter={() => {
+            if (showUsage) setUsageHover(true);
+          }}
+          onMouseLeave={() => setUsageHover(false)}
+          rows={compact ? 1 : 2}
           autoFocus={autoFocus}
           placeholder={placeholder}
-          className={`w-full resize-none border-0 bg-transparent text-[15px] outline-none placeholder:text-muted ${
-            compact ? "px-3.5 pt-3 pb-11" : "px-4 pt-3.5 pb-12"
+          className={`block w-full resize-none overflow-y-auto border-0 bg-transparent text-[14px] leading-relaxed outline-none placeholder:text-muted/80 ${
+            compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2"
           }`}
         />
-        {busy && onStop ? (
+        <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
+          <ChipSelect
+            label={selected?.name ?? "Model"}
+            title="Model"
+            items={models.map((m) => ({ id: m.id, label: m.name }))}
+            value={model}
+            onChange={onModel}
+          />
+          {efforts.length > 0 && (
+            <ChipSelect
+              label={effortLabel}
+              title="Thinking"
+              items={efforts}
+              value={effort}
+              onChange={onEffort}
+            />
+          )}
+          <ChipSelect
+            label={permissionLabel(permissionMode)}
+            title="Permissions"
+            items={[...PERMISSION_MODES]}
+            value={permissionMode}
+            onChange={onPermission}
+          />
+          <div className="min-w-0 flex-1" />
           <button
             type="button"
-            onClick={onStop}
-            aria-label="Stop"
-            title="Stop"
-            className="absolute right-2.5 bottom-2.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-err text-white hover:bg-err/90"
+            onClick={onOpenFolder}
+            title={workspace || "Open folder"}
+            className="flex max-w-[38%] items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted hover:bg-wash hover:text-ink"
           >
-            <Symbol name="stop.fill" className="size-3" />
+            <Symbol name="folder.fill" className="size-3 text-accent" />
+            <span className="truncate">{workspace ? folderName(workspace) : "Folder"}</span>
           </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={busy || !draft.trim() || !ready}
-            aria-label="Send"
-            className="absolute right-2.5 bottom-2.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:opacity-35"
-          >
-            <Symbol name="arrow.up" className="size-3.5" />
-          </button>
-        )}
-      </div>
-      <div
-        className={`relative z-10 mx-3 -mt-2 flex items-center gap-0.5 rounded-lg border border-line bg-inset ${
-          compact ? "px-1 py-0.5" : "px-1.5 py-1"
-        }`}
-      >
-        <ChipSelect
-          label={selected?.name ?? "Model"}
-          title="Model"
-          items={models.map((m) => ({ id: m.id, label: m.name }))}
-          value={model}
-          onChange={onModel}
-        />
-        {efforts.length > 0 && (
-          <ChipSelect
-            label={effortLabel}
-            title="Thinking"
-            items={efforts}
-            value={effort}
-            onChange={onEffort}
-          />
-        )}
-        <ChipSelect
-          label={permissionLabel(permissionMode)}
-          title="Permissions"
-          items={[...PERMISSION_MODES]}
-          value={permissionMode}
-          onChange={onPermission}
-        />
-        <div className="min-w-0 flex-1" />
-        <button
-          type="button"
-          onClick={onOpenFolder}
-          title={workspace || "Open folder"}
-          className="flex max-w-[46%] items-center gap-1 rounded-full px-2 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink"
-        >
-          <Symbol name="folder.fill" className="size-3.5 text-accent" />
-          <span className="truncate">{workspace ? folderName(workspace) : "Folder"}</span>
-        </button>
+          {busy && onStop ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="Stop"
+              title="Stop"
+              className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-err text-white hover:bg-err/90"
+            >
+              <Symbol name="stop.fill" className="size-2.5" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!canSend}
+              aria-label="Send"
+              title="Send"
+              className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:bg-wash-strong disabled:text-muted disabled:opacity-70"
+            >
+              <Symbol name="arrow.up" className="size-3.5" />
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );
@@ -180,15 +206,17 @@ function ChipSelect({
         type="button"
         title={title}
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1 rounded-full px-2 py-1 text-[12px] text-ink/80 hover:bg-wash"
+        className={`flex items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+          open ? "bg-wash text-ink" : "text-muted hover:text-ink"
+        }`}
       >
-        <span className="max-w-[140px] truncate">{label}</span>
-        <Symbol name="chevron.down" className="size-3 text-muted" />
+        <span className="max-w-[132px] truncate">{label}</span>
+        <Symbol name="chevron.down" className="size-2.5 opacity-70" />
       </button>
       {open && (
         <div
           role="menu"
-          className="absolute bottom-full left-0 z-30 mb-1 min-w-[168px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
+          className="absolute bottom-full left-0 z-30 mb-1 min-w-[168px] overflow-hidden rounded-lg border border-line bg-canvas py-1 shadow-card"
         >
           {items.map((item) => (
             <button
@@ -199,7 +227,7 @@ function ChipSelect({
                 onChange(item.id);
                 setOpen(false);
               }}
-              className={`flex w-full items-center px-2.5 py-1.5 text-left text-[13px] hover:bg-inset ${
+              className={`flex w-full items-center px-2.5 py-1.5 text-left text-[12px] hover:bg-inset ${
                 item.id === value ? "font-medium text-ink" : "text-ink/80"
               }`}
             >

@@ -4,7 +4,12 @@ export function parseConversationKind(value: unknown): ConversationKind {
   return value === "terminal" ? "terminal" : "chat";
 }
 
-export function conversationDraft(kind: ConversationKind, id: string, now: string) {
+export function conversationDraft(
+  kind: ConversationKind,
+  id: string,
+  now: string,
+  journeyId?: string | null,
+) {
   return {
     id,
     title: kind === "terminal" ? "Terminal" : "New chat",
@@ -12,6 +17,7 @@ export function conversationDraft(kind: ConversationKind, id: string, now: strin
     updated_at: now,
     messages: [] as unknown[],
     kind,
+    ...(journeyId ? { journey_id: journeyId } : {}),
   };
 }
 
@@ -34,7 +40,7 @@ export type TerminalPtyEvent = {
 };
 
 export type TerminalSessionIo = {
-  openGrok: (workspace: string, cols: number, rows: number) => Promise<string>;
+  openGrok: (workspace: string, cols: number, rows: number, sessionId: string) => Promise<string>;
   kill: (id: string) => Promise<void>;
   listen: (fn: (ev: TerminalPtyEvent) => void) => Promise<() => void>;
 };
@@ -129,7 +135,7 @@ export function createTerminalSessionStore(io: TerminalSessionIo) {
     sessions.set(id, session);
     emitState(session);
     try {
-      const ptyId = await io.openGrok(workspace, cols, rows);
+      const ptyId = await io.openGrok(workspace, cols, rows, id);
       const current = sessions.get(id);
       if (!current) {
         await io.kill(ptyId);

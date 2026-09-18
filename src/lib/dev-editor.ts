@@ -1,6 +1,13 @@
 export type MarkdownOpenMode = "editor" | "viewer";
 
-export type EditorTab = { path: string; preview?: boolean; markdownView?: MarkdownOpenMode };
+export type EditorFileView = "edit" | "diff";
+
+export type EditorTab = {
+  path: string;
+  preview?: boolean;
+  markdownView?: MarkdownOpenMode;
+  view?: EditorFileView;
+};
 
 export type EditorFocus = "chat" | "file";
 
@@ -27,12 +34,24 @@ export function emptyEditor(): EditorState {
   return { tabs: [], activePath: null, focus: "chat" };
 }
 
-export function editorTabTitle(path: string): string {
+export const ALL_DIFF_PATH = "diff:all";
+
+export function isAllDiffPath(path: string): boolean {
+  return path === ALL_DIFF_PATH;
+}
+
+export function editorTabTitle(path: string, journeyTitles?: Record<string, string>): string {
+  if (isAllDiffPath(path)) return "All changes";
+  if (path.startsWith("journey:")) {
+    const id = path.slice("journey:".length);
+    return journeyTitles?.[id] || "Knowledge";
+  }
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] || path || "Untitled";
 }
 
 export function normalizeEditorPath(path: string): string {
+  if (path.startsWith("journey:") || isAllDiffPath(path)) return path;
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
@@ -57,6 +76,40 @@ export function previewEditorTab(state: EditorState, path: string): EditorState 
   return { tabs: [...state.tabs, tab], activePath: next, focus: "file" };
 }
 
+export function editorFileView(tab?: EditorTab | null): EditorFileView {
+  return tab?.view === "diff" ? "diff" : "edit";
+}
+
+function tabFields(tab: EditorTab, preview?: boolean): EditorTab {
+  return {
+    path: tab.path,
+    ...(preview ? { preview: true } : {}),
+    ...(tab.markdownView ? { markdownView: tab.markdownView } : {}),
+    ...(tab.view === "diff" ? { view: "diff" as const } : {}),
+  };
+}
+
+export function setEditorFileView(state: EditorState, path: string, view: EditorFileView): EditorState {
+  const target = normalizeEditorPath(path);
+  const idx = state.tabs.findIndex((tab) => tab.path === target);
+  if (idx < 0) return state;
+  const current = state.tabs[idx];
+  const nextView = view === "diff" ? ("diff" as const) : undefined;
+  if (current.view === nextView && state.activePath === target && state.focus === "file") return state;
+  const tabs = state.tabs.map((tab, i) =>
+    i === idx ? tabFields({ ...tab, view: nextView }, tab.preview) : tab,
+  );
+  return { ...state, tabs, activePath: target, focus: "file" };
+}
+
+export function openGitDiffTab(state: EditorState, path: string): EditorState {
+  return setEditorFileView(pinEditorTab(state, path), path, "diff");
+}
+
+export function previewGitDiffTab(state: EditorState, path: string): EditorState {
+  return setEditorFileView(previewEditorTab(state, path), path, "diff");
+}
+
 export function pinEditorTab(state: EditorState, path: string): EditorState {
   const next = normalizeEditorPath(path);
   if (!next) return state;
@@ -65,14 +118,7 @@ export function pinEditorTab(state: EditorState, path: string): EditorState {
     const current = state.tabs[idx];
     if (!current.preview && state.activePath === next && state.focus === "file") return state;
     const tabs = current.preview
-      ? state.tabs.map((tab, i) =>
-          i === idx
-            ? {
-                path: next,
-                ...(current.markdownView ? { markdownView: current.markdownView } : {}),
-              }
-            : tab,
-        )
+      ? state.tabs.map((tab, i) => (i === idx ? tabFields({ ...current, path: next }) : tab))
       : state.tabs;
     return { ...state, tabs, activePath: next, focus: "file" };
   }
@@ -104,6 +150,16 @@ export function selectEditorTab(state: EditorState, path: string): EditorState {
   const target = normalizeEditorPath(path);
   if (!state.tabs.some((tab) => tab.path === target)) return state;
   return { ...state, activePath: target, focus: "file" };
+}
+
+export function focusEditor(state: EditorState): EditorState {
+  if (state.tabs.length === 0) return state;
+  const path =
+    state.activePath && state.tabs.some((tab) => tab.path === state.activePath)
+      ? state.activePath
+      : state.tabs[0].path;
+  if (state.focus === "file" && state.activePath === path) return state;
+  return { ...state, activePath: path, focus: "file" };
 }
 
 export function selectChatTab(state: EditorState): EditorState {
@@ -143,6 +199,7 @@ function fileExtension(path: string): string {
 }
 
 export function isMarkdownPath(path: string): boolean {
+  if (path.startsWith("journey:")) return true;
   const ext = fileExtension(path);
   return ext === "md" || ext === "markdown";
 }

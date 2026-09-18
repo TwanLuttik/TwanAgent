@@ -78,6 +78,7 @@ export function editorTheme(mode: "light" | "dark"): Extension {
         fontSize: "12px",
         lineHeight: "18px",
         overflow: "auto",
+        overscrollBehavior: "contain",
       },
       ".cm-content": {
         caretColor: "var(--color-ink)",
@@ -87,6 +88,9 @@ export function editorTheme(mode: "light" | "dark"): Extension {
         backgroundColor: "var(--color-panel)",
         color: "var(--color-muted)",
         borderRight: "1px solid var(--color-line)",
+      },
+      ".cm-gitGutter": {
+        backgroundColor: "var(--color-panel)",
       },
       ".cm-lineNumbers .cm-gutterElement": {
         minWidth: "2.4rem",

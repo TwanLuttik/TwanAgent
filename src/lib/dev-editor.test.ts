@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   closeEditorTab,
+  editorFileView,
+  editorTabTitle,
   emptyEditor,
+  isAllDiffPath,
   formatPlayerTime,
   isMarkdownPath,
   languageForPath,
@@ -10,15 +13,25 @@ import {
   mediaKindForPath,
   mediaMimeForPath,
   openEditorTab,
+  openGitDiffTab,
   pinEditorTab,
   previewEditorTab,
+  previewGitDiffTab,
   requestCloseEditorTab,
+  focusEditor,
   selectChatTab,
   selectEditorTab,
+  setEditorFileView,
   setEditorMarkdownView,
 } from "./dev-editor.ts";
 
 describe("openEditorTab", () => {
+  it("titles the all-changes tab", () => {
+    assert.equal(editorTabTitle("diff:all"), "All changes");
+    assert.equal(isAllDiffPath("diff:all"), true);
+    assert.equal(isAllDiffPath("src/a.ts"), false);
+  });
+
   it("opens a file and focuses the editor", () => {
     const next = openEditorTab(emptyEditor(), "src/lib.rs");
     assert.deepEqual(next.tabs.map((t) => t.path), ["src/lib.rs"]);
@@ -154,6 +167,38 @@ describe("pinEditorTab", () => {
   });
 });
 
+describe("git diff tabs", () => {
+  it("opens a pinned changes tab", () => {
+    const next = openGitDiffTab(emptyEditor(), "src/lib.rs");
+    assert.deepEqual(next.tabs, [{ path: "src/lib.rs", view: "diff" }]);
+    assert.equal(next.activePath, "src/lib.rs");
+    assert.equal(next.focus, "file");
+    assert.equal(editorFileView(next.tabs[0]), "diff");
+  });
+
+  it("opens a preview changes tab and can switch an existing file to diff", () => {
+    const start = openEditorTab(emptyEditor(), "a.ts");
+    const preview = previewGitDiffTab(start, "b.ts");
+    assert.deepEqual(preview.tabs, [{ path: "a.ts" }, { path: "b.ts", preview: true, view: "diff" }]);
+    const switched = openGitDiffTab(preview, "a.ts");
+    assert.equal(editorFileView(switched.tabs[0]), "diff");
+    assert.equal(switched.activePath, "a.ts");
+  });
+
+  it("can switch a changes tab back to the editor", () => {
+    const start = openGitDiffTab(emptyEditor(), "a.ts");
+    const next = setEditorFileView(start, "a.ts", "edit");
+    assert.equal(editorFileView(next.tabs[0]), "edit");
+    assert.deepEqual(next.tabs, [{ path: "a.ts" }]);
+  });
+
+  it("keeps the changes view when a preview is pinned", () => {
+    const start = previewGitDiffTab(emptyEditor(), "a.ts");
+    const pinned = pinEditorTab(start, "a.ts");
+    assert.deepEqual(pinned.tabs, [{ path: "a.ts", view: "diff" }]);
+  });
+});
+
 describe("selectEditorTab", () => {
   it("selects an open tab and ignores unknown paths", () => {
     let state = openEditorTab(emptyEditor(), "a.ts");
@@ -174,6 +219,27 @@ describe("selectChatTab", () => {
   });
 });
 
+describe("focusEditor", () => {
+  it("shows the last active file when returning from chat", () => {
+    let state = openEditorTab(emptyEditor(), "a.ts");
+    state = openEditorTab(state, "b.ts");
+    state = selectChatTab(state);
+    const next = focusEditor(state);
+    assert.equal(next.focus, "file");
+    assert.equal(next.activePath, "b.ts");
+  });
+
+  it("is a no-op when the editor is already focused", () => {
+    const state = openEditorTab(emptyEditor(), "a.ts");
+    assert.equal(focusEditor(state), state);
+  });
+
+  it("does nothing when no files are open", () => {
+    const state = emptyEditor();
+    assert.equal(focusEditor(state), state);
+  });
+});
+
 describe("isMarkdownPath", () => {
   it("treats .md and .markdown as Markdown, case-insensitive", () => {
     assert.equal(isMarkdownPath("notes.md"), true);
@@ -186,6 +252,13 @@ describe("isMarkdownPath", () => {
     assert.equal(isMarkdownPath("src/App.tsx"), false);
     assert.equal(isMarkdownPath("readme"), false);
     assert.equal(isMarkdownPath("notes.md.bak"), false);
+  });
+
+  it("treats journey knowledge tabs as Markdown", () => {
+    assert.equal(isMarkdownPath("journey:abc"), true);
+    assert.equal(markdownViewForTab("journey:abc", "editor"), "editor");
+    assert.equal(editorTabTitle("journey:abc"), "Knowledge");
+    assert.equal(editorTabTitle("journey:abc", { abc: "Marketing" }), "Marketing");
   });
 });
 

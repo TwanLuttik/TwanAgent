@@ -42,6 +42,15 @@ describe("conversationDraft", () => {
       messages: [],
       kind: "chat",
     });
+    assert.deepEqual(conversationDraft("chat", "id-3", "t2", "j1"), {
+      id: "id-3",
+      title: "New chat",
+      created_at: "t2",
+      updated_at: "t2",
+      messages: [],
+      kind: "chat",
+      journey_id: "j1",
+    });
     assert.deepEqual(conversationDraft("terminal", "id-2", "t1"), {
       id: "id-2",
       title: "Terminal",
@@ -80,7 +89,7 @@ describe("appendOutput", () => {
 
 describe("terminal session store", () => {
   function fakeStore(opts?: {
-    open?: () => Promise<string>;
+    open?: (workspace: string, cols: number, rows: number, sessionId: string) => Promise<string>;
     kill?: (id: string) => Promise<void>;
   }) {
     let next = 0;
@@ -117,6 +126,18 @@ describe("terminal session store", () => {
     const again = await store.attach("c1", "/ws", 80, 24);
     assert.equal(again.ptyId, "pty-1");
     assert.equal(again.phase, "running");
+  });
+
+  it("passes the conversation id so grok can resume that session", async () => {
+    const seen: string[] = [];
+    const { store } = fakeStore({
+      open: async (_workspace, _cols, _rows, sessionId) => {
+        seen.push(sessionId);
+        return "pty-1";
+      },
+    });
+    await store.attach("conv-uuid", "/ws", 80, 24);
+    assert.deepEqual(seen, ["conv-uuid"]);
   });
 
   it("does not auto-restart while the exited terminal is still on screen", async () => {

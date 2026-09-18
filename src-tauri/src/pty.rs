@@ -75,9 +75,13 @@ pub fn require_grok_bin(bin: Option<PathBuf>) -> Result<PathBuf> {
     bin.ok_or_else(|| Error::Other(grok_missing_message().into()))
 }
 
-fn grok_command(workspace: &Path) -> Result<CommandBuilder> {
+fn grok_command(workspace: &Path, session_id: Option<&str>) -> Result<CommandBuilder> {
     let bin = require_grok_bin(crate::grok_cli::grok_bin())?;
     let mut cmd = CommandBuilder::new(&bin);
+    let existing = session_id.is_some_and(crate::grok_cli::session_exists);
+    for arg in crate::grok_cli::grok_launch_args(session_id, existing) {
+        cmd.arg(arg);
+    }
     apply_pty_env(&mut cmd, workspace);
     Ok(cmd)
 }
@@ -94,8 +98,20 @@ pub fn spawn_pty(app: AppHandle, workspace: &Path, cols: u16, rows: u16) -> Resu
     spawn_command_pty(app, cols, rows, shell_command(workspace), "start shell")
 }
 
-pub fn spawn_grok_pty(app: AppHandle, workspace: &Path, cols: u16, rows: u16) -> Result<String> {
-    spawn_command_pty(app, cols, rows, grok_command(workspace)?, "start grok")
+pub fn spawn_grok_pty(
+    app: AppHandle,
+    workspace: &Path,
+    cols: u16,
+    rows: u16,
+    session_id: Option<&str>,
+) -> Result<String> {
+    spawn_command_pty(
+        app,
+        cols,
+        rows,
+        grok_command(workspace, session_id)?,
+        "start grok",
+    )
 }
 
 fn spawn_command_pty(
@@ -247,9 +263,15 @@ pub fn dev_pty_open(app: AppHandle, workspace: String, cols: u16, rows: u16) -> 
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_pty_open_grok(app: AppHandle, workspace: String, cols: u16, rows: u16) -> Result<String> {
+pub fn dev_pty_open_grok(
+    app: AppHandle,
+    workspace: String,
+    cols: u16,
+    rows: u16,
+    session_id: Option<String>,
+) -> Result<String> {
     let root = app.state::<AppState>().require_workspace(&workspace)?;
-    spawn_grok_pty(app, &root, cols, rows)
+    spawn_grok_pty(app, &root, cols, rows, session_id.as_deref())
 }
 
 #[tauri::command(rename_all = "snake_case")]

@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { ThemePicker } from "../components/ThemePicker";
 import {
+  loadFileHoverCard,
   loadMarkdownOpenMode,
   loadSpaceCorner,
   saveMarkdownOpenMode,
+  setFileHoverCard,
   setSpaceCorner,
   type MarkdownOpenMode,
 } from "../lib/prefs";
@@ -33,6 +35,7 @@ export function SettingsView({
   const { setFlash } = useApp();
   const [theme, setThemeSel] = useState<ThemeSelection>(() => loadTheme());
   const [spaceArt, setSpaceArt] = useState(() => loadSpaceCorner());
+  const [fileHoverCard, setFileHoverCardOn] = useState(() => loadFileHoverCard());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const [version, setVersion] = useState("");
   const [xaiKey, setXaiKey] = useState("");
@@ -116,6 +119,24 @@ export function SettingsView({
                   <span className="block text-[13px] font-medium text-ink">Space corner</span>
                   <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
                     Show a faded starfield in the top-left of the sidebar.
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2.5">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={fileHoverCard}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setFileHoverCardOn(next);
+                    setFileHoverCard(next);
+                  }}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-medium text-ink">File hover cards</span>
+                  <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
+                    Show a small preview when you hover a file name in chat.
                   </span>
                 </span>
               </label>

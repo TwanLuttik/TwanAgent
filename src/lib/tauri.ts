@@ -13,7 +13,12 @@ export async function pickDir(): Promise<string | null> {
 
 export type DevKeyStatus = { saved: boolean; env: boolean };
 export type DevEffort = { id: string; label: string };
-export type DevModel = { id: string; name: string; efforts: DevEffort[] };
+export type DevModel = {
+  id: string;
+  name: string;
+  efforts: DevEffort[];
+  context_window?: number | null;
+};
 export type DevRuntime = {
   installed: boolean;
   logged_in: boolean;
@@ -45,14 +50,35 @@ export type DevConversationSummary = {
   created_at: string;
   updated_at: string;
   kind?: string;
+  journey_id?: string | null;
+  sort_order?: number;
 };
-export type DevConversation = DevConversationSummary & { messages: unknown[] };
+export type DevConversation = DevConversationSummary & {
+  messages: unknown[];
+  context_usage?: DevChatUsage | null;
+};
+export type DevJourney = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  sort_order: number;
+  collapsed: boolean;
+  color?: string;
+};
+export type DevSidebarItem = { kind: "journey" | "conversation" | string; id: string };
 export type DevToolCall = { id: string; name: string; arguments: string };
+export type DevChatUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
 export type DevChatEvent = {
   stream_id: string;
   kind: "delta" | "done" | "error" | string;
   text?: string | null;
   tool_calls?: DevToolCall[] | null;
+  usage?: DevChatUsage | null;
 };
 
 export function devProjectsRoot(): Promise<string> {
@@ -103,6 +129,24 @@ export function devReadFile(workspace: string, path: string): Promise<string> {
 
 export function devResolveFile(workspace: string, path: string): Promise<string> {
   return invoke("dev_resolve_file", { workspace, path });
+}
+
+export function devExistingFiles(workspace: string, paths: string[]): Promise<string[]> {
+  return invoke("dev_existing_files", { workspace, paths });
+}
+
+export type DevFilePreview = {
+  path: string;
+  name: string;
+  size: number;
+  binary: boolean;
+  lines?: number | null;
+  preview?: string | null;
+  modified?: number | null;
+};
+
+export function devFilePreview(workspace: string, path: string): Promise<DevFilePreview> {
+  return invoke("dev_file_preview", { workspace, path });
 }
 
 export function devWriteFile(workspace: string, path: string, contents: string): Promise<void> {
@@ -168,11 +212,97 @@ export function devDeleteConversation(workspace: string, id: string): Promise<vo
   return invoke("dev_delete_conversation", { workspace, id });
 }
 
+export function devListJourneys(workspace: string): Promise<DevJourney[]> {
+  return invoke("dev_list_journeys", { workspace });
+}
+
+export function devCreateJourney(workspace: string, conversationId: string): Promise<DevJourney> {
+  return invoke("dev_create_journey", {
+    workspace,
+    conversationId,
+    conversation_id: conversationId,
+  });
+}
+
+export function devRenameJourney(workspace: string, id: string, title: string): Promise<DevJourney> {
+  return invoke("dev_rename_journey", { workspace, id, title });
+}
+
+export function devDeleteJourney(workspace: string, id: string, deleteChats: boolean): Promise<void> {
+  return invoke("dev_delete_journey", {
+    workspace,
+    id,
+    deleteChats,
+    delete_chats: deleteChats,
+  });
+}
+
+export function devSetJourneyCollapsed(workspace: string, id: string, collapsed: boolean): Promise<void> {
+  return invoke("dev_set_journey_collapsed", { workspace, id, collapsed });
+}
+
+export function devSetJourneyColor(workspace: string, id: string, color: string): Promise<DevJourney> {
+  return invoke("dev_set_journey_color", { workspace, id, color });
+}
+
+export function devMoveConversation(
+  workspace: string,
+  id: string,
+  journeyId: string | null,
+): Promise<DevConversation> {
+  return invoke("dev_move_conversation", {
+    workspace,
+    id,
+    journeyId,
+    journey_id: journeyId,
+  });
+}
+
+export function devReorderSidebar(workspace: string, items: DevSidebarItem[]): Promise<DevConversationSummary[]> {
+  return invoke("dev_reorder_sidebar", { workspace, items });
+}
+
+export function devGetJourneyKnowledge(workspace: string, journeyId: string): Promise<string> {
+  return invoke("dev_get_journey_knowledge", {
+    workspace,
+    journeyId,
+    journey_id: journeyId,
+  });
+}
+
+export function devSaveJourneyKnowledge(workspace: string, journeyId: string, contents: string): Promise<void> {
+  return invoke("dev_save_journey_knowledge", {
+    workspace,
+    journeyId,
+    journey_id: journeyId,
+    contents,
+  });
+}
+
+export function devUpdateJourneyKnowledge(
+  workspace: string,
+  journeyId: string,
+  args: { mode: string; contents?: string; oldString?: string; newString?: string },
+): Promise<string> {
+  return invoke("dev_update_journey_knowledge", {
+    workspace,
+    journeyId,
+    journey_id: journeyId,
+    mode: args.mode,
+    contents: args.contents ?? null,
+    oldString: args.oldString ?? null,
+    newString: args.newString ?? null,
+    old_string: args.oldString ?? null,
+    new_string: args.newString ?? null,
+  });
+}
+
 export function devChatStart(
   streamId: string,
   messages: unknown[],
   model?: string,
   effort?: string,
+  journeyId?: string,
 ): Promise<void> {
   return invoke("dev_chat_start", {
     streamId,
@@ -180,6 +310,8 @@ export function devChatStart(
     messages,
     model,
     effort,
+    journeyId,
+    journey_id: journeyId ?? null,
   });
 }
 
@@ -187,8 +319,28 @@ export function devChatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
 }
 
-export function onDevChat(fn: (ev: DevChatEvent) => void): Promise<UnlistenFn> {
-  return listen<DevChatEvent>("dev-chat", (ev) => fn(ev.payload));
+const chatListeners = new Map<string, (ev: DevChatEvent) => void>();
+let chatListen: Promise<UnlistenFn> | null = null;
+
+function ensureChatListen(): Promise<UnlistenFn> {
+  if (!chatListen) {
+    chatListen = listen<DevChatEvent>("dev-chat", (ev) => {
+      const payload = ev.payload;
+      if (!payload) return;
+      for (const fn of chatListeners.values()) fn(payload);
+    });
+  }
+  return chatListen;
+}
+
+export async function onDevChat(fn: (ev: DevChatEvent) => void): Promise<UnlistenFn> {
+  await ensureChatListen();
+  const key = `tmp-${crypto.randomUUID()}`;
+  const wrapped = (ev: DevChatEvent) => fn(ev);
+  chatListeners.set(key, wrapped);
+  return () => {
+    chatListeners.delete(key);
+  };
 }
 
 export type DevPtyEvent = {
@@ -201,8 +353,19 @@ export function devPtyOpen(workspace: string, cols: number, rows: number): Promi
   return invoke("dev_pty_open", { workspace, cols, rows });
 }
 
-export function devPtyOpenGrok(workspace: string, cols: number, rows: number): Promise<string> {
-  return invoke("dev_pty_open_grok", { workspace, cols, rows });
+export function devPtyOpenGrok(
+  workspace: string,
+  cols: number,
+  rows: number,
+  sessionId?: string,
+): Promise<string> {
+  return invoke("dev_pty_open_grok", {
+    workspace,
+    cols,
+    rows,
+    sessionId,
+    session_id: sessionId,
+  });
 }
 
 export function devPtyWrite(id: string, data: string): Promise<void> {
