@@ -27,9 +27,6 @@ export function GitDiffView({
 
   useEffect(() => {
     let cancelled = false;
-    setSections(null);
-    setFiles(null);
-    setError(null);
     void (async () => {
       try {
         if (all) {

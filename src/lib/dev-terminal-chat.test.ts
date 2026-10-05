@@ -188,6 +188,16 @@ describe("terminal session store", () => {
     assert.equal(next.ptyId, "pty-2");
   });
 
+  it("disposeWorkspace kills only that project's terminals", async () => {
+    const { store, killed } = fakeStore();
+    await store.attach("c1", "/app/alpha", 80, 24);
+    await store.attach("c2", "/app/beta/", 80, 24);
+    await store.disposeWorkspace("/app/Alpha");
+    assert.deepEqual(killed, ["pty-1"]);
+    assert.equal(store.get("c1"), undefined);
+    assert.equal(store.get("c2")?.phase, "running");
+  });
+
   it("restart starts a new process even while viewing, and dispose kills the pty", async () => {
     const { store, killed, emit } = fakeStore();
     await store.attach("c1", "/ws", 80, 24);

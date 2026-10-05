@@ -12,6 +12,7 @@ export type SubagentRecord = {
   status: SubagentStatus;
   prompt: string;
   streamText: string;
+  streamReasoning: string;
   tools: string[];
   messages: ChatMessage[];
   summary: string;
@@ -21,6 +22,7 @@ export type SubagentRecord = {
 export type SubagentEvent =
   | { type: "start"; record: SubagentRecord }
   | { type: "delta"; id: string; text: string }
+  | { type: "reasoning"; id: string; text: string }
   | { type: "tool"; id: string; label: string }
   | { type: "update"; id: string; messages: ChatMessage[] }
   | { type: "done"; id: string; status: Exclude<SubagentStatus, "running">; summary: string; messages: ChatMessage[] }
@@ -49,7 +51,7 @@ export function parseSpawnArgs(raw: string): SpawnArgs {
 }
 
 export function childCanUseTool(type: SubagentType, name: string): boolean {
-  if (name === "spawn_subagent" || name === "update_journey_knowledge") return false;
+  if (name === "spawn_subagent" || name === "update_journey_knowledge" || name === "todo_write") return false;
   if (type === "explore" || type === "plan") {
     return name !== "write_file" && name !== "edit_file" && name !== "run_command";
   }
@@ -62,6 +64,23 @@ export function summarizeSubagent(messages: ChatMessage[]): string {
     if (msg.role === "assistant" && (msg.content ?? "").trim()) return String(msg.content).trim();
   }
   return "Subagent finished with no summary.";
+}
+
+export function subagentTranscript(agent: SubagentRecord): string[] {
+  const parts: string[] = [];
+  for (const msg of agent.messages) {
+    if (msg.role !== "assistant") continue;
+    const thought = String(msg.reasoning ?? "").trim();
+    if (thought) parts.push(thought);
+    const text = String(msg.content ?? "").trim();
+    if (text) parts.push(text);
+  }
+  const liveThought = agent.streamReasoning.trim();
+  if (liveThought && parts[parts.length - 1] !== liveThought) parts.push(agent.streamReasoning);
+  const live = agent.streamText.trim();
+  if (live) parts.push(agent.streamText);
+  else if (parts.length === 0 && agent.summary.trim()) parts.push(agent.summary);
+  return parts;
 }
 
 export function subagentSystemPrompt(
@@ -102,6 +121,7 @@ export function emptySubagent(partial: {
     status: "running",
     prompt: partial.prompt,
     streamText: "",
+    streamReasoning: "",
     tools: [],
     messages: [],
     summary: "",
@@ -116,8 +136,11 @@ export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent)
   return rows.map((row) => {
     if (row.id !== event.id) return row;
     if (event.type === "delta") return { ...row, streamText: row.streamText + event.text };
+    if (event.type === "reasoning") return { ...row, streamReasoning: event.text };
     if (event.type === "tool") return { ...row, tools: [...row.tools, event.label] };
-    if (event.type === "update") return { ...row, messages: event.messages, streamText: "" };
+    if (event.type === "update") {
+      return { ...row, messages: event.messages, streamText: "", streamReasoning: "" };
+    }
     if (event.type === "done") {
       return {
         ...row,
@@ -125,6 +148,7 @@ export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent)
         summary: event.summary,
         messages: event.messages,
         streamText: "",
+        streamReasoning: "",
       };
     }
     return { ...row, status: row.status === "running" ? "error" : row.status, error: event.error };

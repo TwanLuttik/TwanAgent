@@ -1,13 +1,21 @@
 import {
   createContext,
+  memo,
   useContext,
   useEffect,
   useMemo,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  fileExistsSnapshot,
+  publishFileExists,
+  refreshFileExists,
+  subscribeFileExists,
+  watchFileRefresh,
+} from "../lib/file-exists";
 import * as api from "../lib/tauri";
 import {
   inlineCodeValues,
@@ -19,11 +27,10 @@ import { FileIcon } from "./FileIcon";
 
 type FileLinkCtx = {
   workspace: string | null;
-  tick: number;
   onOpenFile?: (path: string) => void;
 };
 
-const FileLinkContext = createContext<FileLinkCtx>({ workspace: null, tick: 0 });
+const FileLinkContext = createContext<FileLinkCtx>({ workspace: null });
 const InPreContext = createContext(false);
 
 export function useWorkspaceFileLinks(): FileLinkCtx {
@@ -41,20 +48,20 @@ export function WorkspaceFileLinks({
   onOpenFile?: (path: string) => void;
   children: ReactNode;
 }) {
-  const value = useMemo(
-    () => ({ workspace, tick, onOpenFile }),
-    [workspace, tick, onOpenFile],
-  );
+  const value = useMemo(() => ({ workspace, onOpenFile }), [workspace, onOpenFile]);
+  useEffect(() => {
+    refreshFileExists();
+  }, [tick]);
   return <FileLinkContext.Provider value={value}>{children}</FileLinkContext.Provider>;
 }
 
-export function ChatMarkdown({ text }: { text: string }) {
-  const { workspace, tick, onOpenFile } = useContext(FileLinkContext);
+export const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
+  const { workspace, onOpenFile } = useContext(FileLinkContext);
   const candidates = useMemo(() => fileCandidates(text), [text]);
-  const existing = useExistingFiles(workspace, candidates, tick);
+  const existing = useExistingFiles(workspace, candidates);
   const components = useMemo(
-    () => markdownComponents(existing, workspace, tick, onOpenFile),
-    [existing, workspace, tick, onOpenFile],
+    () => markdownComponents(existing, workspace, onOpenFile),
+    [existing, workspace, onOpenFile],
   );
   if (!text) return null;
   return (
@@ -64,7 +71,7 @@ export function ChatMarkdown({ text }: { text: string }) {
       </Markdown>
     </div>
   );
-}
+});
 
 function fileCandidates(text: string): string[] {
   const seen = new Set<string>();
@@ -79,50 +86,35 @@ function fileCandidates(text: string): string[] {
   return out;
 }
 
-const existsCache = new Map<string, boolean>();
-let existsCacheTick = -1;
-let existsCacheWorkspace = "";
-
-function cacheKey(workspace: string, path: string): string {
-  return `${workspace}\0${path}`;
-}
-
-function useExistingFiles(workspace: string | null, paths: string[], tick: number): Set<string> {
-  const [existing, setExisting] = useState<Set<string>>(() => new Set());
+function useExistingFiles(workspace: string | null, paths: string[]): Set<string> {
   const key = paths.join("\0");
+  const existing = useSyncExternalStore(
+    subscribeFileExists,
+    () => fileExistsSnapshot(workspace, key),
+    () => fileExistsSnapshot(workspace, key),
+  );
   useEffect(() => {
     if (!workspace || paths.length === 0) {
-      setExisting(new Set());
+      if (workspace) publishFileExists(workspace, key, paths, new Set());
       return;
     }
-    if (existsCacheWorkspace !== workspace || existsCacheTick !== tick) {
-      existsCache.clear();
-      existsCacheWorkspace = workspace;
-      existsCacheTick = tick;
-    }
-    const known = paths.filter((path) => existsCache.get(cacheKey(workspace, path)));
-    setExisting(new Set(known));
-    const unknown = paths.filter((path) => !existsCache.has(cacheKey(workspace, path)));
-    if (unknown.length === 0) return;
     let cancelled = false;
-    void api
-      .devExistingFiles(workspace, unknown)
-      .then((rows) => {
-        const found = new Set(rows.map(normalizeWorkspacePath));
-        for (const path of unknown) {
-          existsCache.set(cacheKey(workspace, path), found.has(path));
-        }
-        if (!cancelled) {
-          setExisting(new Set(paths.filter((path) => existsCache.get(cacheKey(workspace, path)))));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setExisting(new Set(known));
-      });
+    const run = () => {
+      void api
+        .devExistingFiles(workspace, paths)
+        .then((rows) => {
+          if (cancelled) return;
+          publishFileExists(workspace, key, paths, new Set(rows.map(normalizeWorkspacePath)));
+        })
+        .catch(() => undefined);
+    };
+    run();
+    const stop = watchFileRefresh(run);
     return () => {
       cancelled = true;
+      stop();
     };
-  }, [workspace, key, tick, paths]);
+  }, [workspace, key, paths]);
   return existing;
 }
 
@@ -141,7 +133,6 @@ function nodeText(node: ReactNode): string {
 function markdownComponents(
   existing: Set<string>,
   workspace: string | null,
-  tick: number,
   onOpenFile?: (path: string) => void,
 ): Components {
   return {
@@ -182,13 +173,13 @@ function markdownComponents(
       </a>
     ),
     code: ({ children }) => (
-      <MarkdownCode existing={existing} workspace={workspace} tick={tick} onOpenFile={onOpenFile}>
+      <MarkdownCode existing={existing} workspace={workspace} onOpenFile={onOpenFile}>
         {children}
       </MarkdownCode>
     ),
     pre: ({ children }) => (
       <InPreContext.Provider value={true}>
-        <pre className="my-2.5 overflow-x-auto rounded-md bg-panel px-3 py-2.5 font-mono text-[12px] leading-relaxed whitespace-pre first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
+        <pre className="my-2.5 overflow-x-auto overflow-y-hidden rounded-md bg-panel px-3 py-2.5 font-mono text-[12px] leading-relaxed whitespace-pre first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
           {children}
         </pre>
       </InPreContext.Provider>
@@ -200,7 +191,7 @@ function markdownComponents(
     ),
     hr: () => <hr className="my-4 border-line" />,
     table: ({ children }) => (
-      <div className="my-3 overflow-x-auto rounded-md border border-line first:mt-0 last:mb-0">
+      <div className="my-3 overflow-x-auto overflow-y-hidden rounded-md border border-line first:mt-0 last:mb-0">
         <table className="min-w-full border-collapse text-[13px] [overflow-wrap:normal]">
           {children}
         </table>
@@ -233,13 +224,11 @@ function MarkdownCode({
   children,
   existing,
   workspace,
-  tick,
   onOpenFile,
 }: {
   children: ReactNode;
   existing: Set<string>;
   workspace: string | null;
-  tick: number;
   onOpenFile?: (path: string) => void;
 }) {
   const inPre = useContext(InPreContext);
@@ -275,7 +264,7 @@ function MarkdownCode({
   );
   if (!workspace) return chip;
   return (
-    <FileHoverCard workspace={workspace} path={path} tick={tick} enabled onOpen={onOpenFile}>
+    <FileHoverCard workspace={workspace} path={path} enabled onOpen={onOpenFile}>
       {chip}
     </FileHoverCard>
   );

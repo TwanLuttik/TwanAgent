@@ -1,7 +1,19 @@
 export const PERMISSION_MODES = [
-  { id: "ask", label: "Ask" },
-  { id: "approve-all", label: "Approve all" },
-  { id: "read-only", label: "Read only" },
+  {
+    id: "ask",
+    label: "Ask",
+    detail: "Edits apply immediately. Shell commands wait for approval.",
+  },
+  {
+    id: "approve-all",
+    label: "Approve all",
+    detail: "Edits and shell commands run without asking.",
+  },
+  {
+    id: "read-only",
+    label: "Read only",
+    detail: "Grok can read this folder, but not edit files or run commands.",
+  },
 ] as const;
 
 export type PermissionMode = (typeof PERMISSION_MODES)[number]["id"];
@@ -15,6 +27,10 @@ export function parsePermissionMode(raw: unknown): PermissionMode {
 
 export function permissionLabel(mode: PermissionMode): string {
   return PERMISSION_MODES.find((item) => item.id === mode)?.label ?? "Ask";
+}
+
+export function permissionDetail(mode: PermissionMode): string {
+  return PERMISSION_MODES.find((item) => item.id === mode)?.detail ?? PERMISSION_MODES[0].detail;
 }
 
 export function toolDeniedByPermission(mode: PermissionMode, tool: string): string | null {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   parsePermissionMode,
+  permissionDetail,
   permissionLabel,
   permissionSystemLine,
   shouldPromptShell,
@@ -31,6 +32,7 @@ describe("permission policy", () => {
     assert.equal(toolDeniedByPermission("read-only", "edit_file"), "Error: edit_file is blocked in read-only mode.");
     assert.equal(toolDeniedByPermission("read-only", "run_command"), "Error: run_command is blocked in read-only mode.");
     assert.equal(toolDeniedByPermission("read-only", "read_file"), null);
+    assert.equal(toolDeniedByPermission("read-only", "todo_write"), null);
     assert.equal(toolDeniedByPermission("ask", "write_file"), null);
     assert.equal(toolDeniedByPermission("approve-all", "run_command"), null);
   });
@@ -39,6 +41,9 @@ describe("permission policy", () => {
     assert.equal(permissionLabel("ask"), "Ask");
     assert.equal(permissionLabel("approve-all"), "Approve all");
     assert.equal(permissionLabel("read-only"), "Read only");
+    assert.match(permissionDetail("ask"), /approval/);
+    assert.match(permissionDetail("approve-all"), /without asking/);
+    assert.match(permissionDetail("read-only"), /not edit/);
   });
 
   it("describes the policy in the system prompt", () => {

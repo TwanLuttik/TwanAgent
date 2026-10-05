@@ -276,7 +276,12 @@ mod tests {
     #[test]
     fn file_preview_returns_excerpt_and_line_count() {
         let dir = temp_ws();
-        write_file(dir.path(), "src/hello.ts", "export const a = 1;\nexport const b = 2;\n").unwrap();
+        write_file(
+            dir.path(),
+            "src/hello.ts",
+            "export const a = 1;\nexport const b = 2;\n",
+        )
+        .unwrap();
         let preview = file_preview(dir.path(), "src/hello.ts").unwrap();
         assert_eq!(preview.name, "hello.ts");
         assert_eq!(preview.lines, Some(2));

@@ -72,6 +72,13 @@ const ICONS: Record<string, ReactNode> = {
       {...stroke}
     />
   ),
+  "cable.connector": (
+    <>
+      <path d="M8 4.6h8M10 4.6v3.2M14 4.6v3.2" {...stroke} />
+      <rect x="7.2" y="7.6" width="9.6" height="5.2" rx="1.4" {...stroke} />
+      <path d="M12 12.8v3.2M9.4 16h5.2a2 2 0 0 1 2 2v1.4" {...stroke} />
+    </>
+  ),
   desktopcomputer: (
     <>
       <rect x="2.8" y="3.6" width="18.4" height="12.2" rx="2" {...stroke} />
@@ -318,10 +325,22 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M13.2 5.4h5.4V10.8M18.6 5.4 11 13" {...stroke} />
     </>
   ),
+  copy: (
+    <>
+      <rect x="8.4" y="4.6" width="10.2" height="12.4" rx="1.6" {...stroke} />
+      <path d="M5.6 8.2H4.8A1.6 1.6 0 0 0 3.2 9.8v9.6A1.6 1.6 0 0 0 4.8 21h8.8a1.6 1.6 0 0 0 1.6-1.6v-1" {...stroke} />
+    </>
+  ),
   "doc.on.doc": (
     <>
       <rect x="8.4" y="6.6" width="10.2" height="12.8" rx="1.6" {...stroke} />
       <path d="M5.4 16.2V6.8A1.8 1.8 0 0 1 7.2 5h7.2" {...stroke} />
+    </>
+  ),
+  "chart.xyaxis.line": (
+    <>
+      <path d="M4.4 4.4v15.2H19.6" {...stroke} />
+      <path d="m6.6 14.4 3.2-3.6 2.8 2.2 5.2-6.4" {...stroke} />
     </>
   ),
   photo: (
@@ -361,6 +380,16 @@ const ICONS: Record<string, ReactNode> = {
     <>
       <rect x="5.6" y="10.6" width="12.8" height="9.2" rx="1.8" fill="currentColor" />
       <path d="M8.2 10.6V8a3.8 3.8 0 0 1 7.6 0v2.6" {...stroke} />
+    </>
+  ),
+  sparkles: (
+    <>
+      <path
+        d="M12 3.4 13.55 8.2 18.4 9.8 13.55 11.4 12 16.2 10.45 11.4 5.6 9.8 10.45 8.2Z"
+        fill="currentColor"
+      />
+      <path d="M18.2 14.2v3.6M16.4 16h3.6" {...stroke} strokeWidth="1.7" />
+      <path d="M6.2 15.4v2.4M5 16.6h2.4" {...stroke} strokeWidth="1.6" />
     </>
   ),
   person: (
@@ -421,6 +450,15 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M7.2 8.5v6.6M9.2 7.6c3.2.4 5.4 2 5.6 4.4" {...stroke} />
     </>
   ),
+  "arrow.triangle.branch.fill": (
+    <>
+      <path d="M7.2 8.7v6.2" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />
+      <path d="M9.15 7.55c2.65.4 4.65 1.8 5.05 3.9" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" fill="none" />
+      <circle cx="7.2" cy="6.15" r="2.45" fill="currentColor" />
+      <circle cx="7.2" cy="17.85" r="2.45" fill="currentColor" />
+      <circle cx="16.9" cy="12" r="2.45" fill="currentColor" />
+    </>
+  ),
   terminal: (
     <>
       <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2.2" {...stroke} />
@@ -428,10 +466,11 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   "terminal.fill": (
-    <>
-      <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2.2" fill="currentColor" />
-      <path d="M7.2 9.2 10.2 12 7.2 14.8M12.4 15.2h4.4" stroke="#fff" strokeWidth={2.15} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-    </>
+    <path
+      fill="currentColor"
+      fillRule="evenodd"
+      d="M5.6 4.4h12.8a2.2 2.2 0 0 1 2.2 2.2v10.8a2.2 2.2 0 0 1-2.2 2.2H5.6a2.2 2.2 0 0 1-2.2-2.2V6.6a2.2 2.2 0 0 1 2.2-2.2zM6.5 8.9l4.05 3.1L6.5 15.1l1.25 1.05 5.15-4.15L7.75 7.85 6.5 8.9zM12.2 14.35h4.7v1.6h-4.7v-1.6z"
+    />
   ),
   pencil: (
     <path

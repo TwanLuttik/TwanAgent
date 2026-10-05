@@ -7,6 +7,7 @@ import {
   parseSpawnArgs,
   parseSubagentType,
   subagentSystemPrompt,
+  subagentTranscript,
   summarizeSubagent,
 } from "./dev-subagent.ts";
 
@@ -42,6 +43,12 @@ describe("childCanUseTool", () => {
   it("never lets a child update journey knowledge", () => {
     assert.equal(childCanUseTool("general-purpose", "update_journey_knowledge"), false);
     assert.equal(childCanUseTool("explore", "update_journey_knowledge"), false);
+  });
+
+  it("never lets a child write parent todos", () => {
+    assert.equal(childCanUseTool("general-purpose", "todo_write"), false);
+    assert.equal(childCanUseTool("explore", "todo_write"), false);
+    assert.equal(childCanUseTool("plan", "todo_write"), false);
   });
 
   it("blocks file edits for explore and plan", () => {
@@ -128,5 +135,66 @@ describe("applySubagentEvent", () => {
     rows = applySubagentEvent(rows, { type: "error", id: "s1", error: "boom" });
     assert.equal(rows[0].status, "error");
     assert.equal(rows[0].error, "boom");
+  });
+});
+
+describe("subagentTranscript", () => {
+  const start = emptySubagent({
+    id: "s1",
+    description: "Analyze current code",
+    type: "explore",
+    prompt: "Analyze",
+  });
+
+  it("shows live stream tokens", () => {
+    let rows = applySubagentEvent([], { type: "start", record: start });
+    rows = applySubagentEvent(rows, { type: "delta", id: "s1", text: "Looking at " });
+    rows = applySubagentEvent(rows, { type: "delta", id: "s1", text: "src/" });
+    assert.deepEqual(subagentTranscript(rows[0]), ["Looking at src/"]);
+  });
+
+  it("keeps committed assistant text after an update clears the live stream", () => {
+    let rows = applySubagentEvent([], { type: "start", record: start });
+    rows = applySubagentEvent(rows, { type: "delta", id: "s1", text: "Found the parser." });
+    rows = applySubagentEvent(rows, {
+      type: "update",
+      id: "s1",
+      messages: [
+        { role: "user", content: "Analyze" },
+        { role: "assistant", content: "Found the parser." },
+      ],
+    });
+    assert.equal(rows[0].streamText, "");
+    assert.equal(rows[0].streamReasoning, "");
+    assert.deepEqual(subagentTranscript(rows[0]), ["Found the parser."]);
+  });
+
+  it("keeps thinking after the live stream is cleared", () => {
+    let rows = applySubagentEvent([], { type: "start", record: start });
+    rows = applySubagentEvent(rows, { type: "reasoning", id: "s1", text: "Check the join rule." });
+    rows = applySubagentEvent(rows, {
+      type: "update",
+      id: "s1",
+      messages: [
+        { role: "user", content: "Analyze" },
+        { role: "assistant", content: "Found the parser.", reasoning: "Check the join rule." },
+      ],
+    });
+    assert.equal(rows[0].streamReasoning, "");
+    assert.deepEqual(subagentTranscript(rows[0]), ["Check the join rule.", "Found the parser."]);
+  });
+
+  it("appends a new stream after earlier assistant messages", () => {
+    const agent = {
+      ...start,
+      messages: [{ role: "assistant", content: "Read the file." }],
+      streamText: "Now checking tests.",
+    };
+    assert.deepEqual(subagentTranscript(agent), ["Read the file.", "Now checking tests."]);
+  });
+
+  it("falls back to the summary when nothing else is present", () => {
+    assert.deepEqual(subagentTranscript({ ...start, summary: "All clear." }), ["All clear."]);
+    assert.deepEqual(subagentTranscript(start), []);
   });
 });

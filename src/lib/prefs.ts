@@ -1,3 +1,4 @@
+import { projectKey } from "./dev.ts";
 import type { MarkdownOpenMode } from "./dev-editor";
 
 export type { MarkdownOpenMode };
@@ -49,6 +50,66 @@ export function pushDevRecentWorkspace(path: string): string[] {
   return next;
 }
 
+export function removeDevRecentWorkspace(path: string): string[] {
+  const key = projectKey(path);
+  const next = loadDevRecentWorkspaces().filter((item) => projectKey(item) !== key);
+  localStorage.setItem(DEV_RECENTS_KEY, JSON.stringify(next));
+  return next;
+}
+
+export type ProjectPathMove = { from: string; to: string };
+
+export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
+  const map = new Map<string, string>();
+  for (const move of moves) {
+    if (!move.from || !move.to) continue;
+    if (projectKey(move.from) === projectKey(move.to)) continue;
+    map.set(projectKey(move.from), move.to);
+  }
+  if (map.size === 0) return;
+  const remap = (path: string) => map.get(projectKey(path)) ?? path;
+
+  const current = loadDevWorkspace();
+  if (current) {
+    const next = remap(current);
+    if (next !== current) saveDevWorkspace(next);
+  }
+
+  const seen = new Set<string>();
+  const recents: string[] = [];
+  for (const path of loadDevRecentWorkspaces()) {
+    const next = remap(path);
+    const key = projectKey(next);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recents.push(next);
+  }
+  localStorage.setItem(DEV_RECENTS_KEY, JSON.stringify(recents.slice(0, DEV_RECENTS_MAX)));
+
+  let saved: Record<string, string> = {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(DEV_CONVERSATION_KEY) ?? "");
+    if (raw && typeof raw === "object") saved = raw as Record<string, string>;
+  } catch {
+    saved = {};
+  }
+  const nextSaved: Record<string, string> = {};
+  for (const [path, id] of Object.entries(saved)) {
+    if (typeof id !== "string" || !id) continue;
+    const dest = remap(path);
+    if (!nextSaved[dest]) nextSaved[dest] = id;
+  }
+  localStorage.setItem(DEV_CONVERSATION_KEY, JSON.stringify(nextSaved));
+
+  const collapsed = new Set(
+    loadCollapsedProjects().map((key) => {
+      const dest = map.get(projectKey(key));
+      return dest ? projectKey(dest) : key;
+    }),
+  );
+  saveCollapsedProjects([...collapsed]);
+}
+
 export function loadDevConversation(workspace: string): string {
   try {
     const raw = JSON.parse(localStorage.getItem(DEV_CONVERSATION_KEY) ?? "");
@@ -64,6 +125,7 @@ export function loadDevConversation(workspace: string): string {
 
 const DEV_MODEL_KEY = "twanagent.model";
 const DEV_EFFORT_KEY = "twanagent.effort";
+const DEV_CONTEXT_WINDOW_KEY = "twanagent.contextWindow";
 const DEV_PERMISSION_KEY = "twanagent.permission";
 
 export function loadDevModel(): string {
@@ -76,6 +138,16 @@ export function saveDevModel(id: string): void {
 
 export function loadDevEffort(): string {
   return localStorage.getItem(DEV_EFFORT_KEY) ?? "";
+}
+
+export function loadDevContextWindow(): number {
+  const raw = Number(localStorage.getItem(DEV_CONTEXT_WINDOW_KEY) ?? "");
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+export function saveDevContextWindow(tokens: number): void {
+  if (!Number.isFinite(tokens) || tokens <= 0) return;
+  localStorage.setItem(DEV_CONTEXT_WINDOW_KEY, String(Math.floor(tokens)));
 }
 
 export function saveDevEffort(id: string): void {
@@ -165,6 +237,45 @@ export function applyFileHoverCard(on: boolean): void {
 export function setFileHoverCard(on: boolean): void {
   localStorage.setItem(FILE_HOVER_CARD_KEY, on ? "on" : "off");
   applyFileHoverCard(on);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
+const ALL_PROJECTS_KEY = "twanagent.allProjects";
+
+export function loadAllProjects(): boolean {
+  const raw = localStorage.getItem(ALL_PROJECTS_KEY);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function setAllProjects(on: boolean): void {
+  localStorage.setItem(ALL_PROJECTS_KEY, on ? "on" : "off");
+}
+
+const ALL_PROJECTS_COLLAPSED_KEY = "twanagent.allProjects.collapsed";
+
+export function loadCollapsedProjects(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ALL_PROJECTS_COLLAPSED_KEY) ?? "");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveCollapsedProjects(keys: string[]): void {
+  localStorage.setItem(ALL_PROJECTS_COLLAPSED_KEY, JSON.stringify(keys));
+}
+
+const PERF_OVERLAY_KEY = "twanagent.perfOverlay";
+
+export function loadPerfOverlay(): boolean {
+  const raw = localStorage.getItem(PERF_OVERLAY_KEY);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function setPerfOverlay(on: boolean): void {
+  localStorage.setItem(PERF_OVERLAY_KEY, on ? "on" : "off");
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 

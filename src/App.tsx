@@ -1,9 +1,11 @@
-import { DevView } from "./views/DevView";
+import { PerformanceOverlay } from "./components/PerformanceOverlay";
+import { MainView } from "./views/MainView";
 
 export function App() {
   return (
     <div className="h-full overflow-hidden bg-sidebar">
-      <DevView />
+      <MainView />
+      <PerformanceOverlay />
     </div>
   );
 }

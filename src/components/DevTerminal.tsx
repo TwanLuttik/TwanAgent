@@ -28,6 +28,8 @@ export function DevTerminal({
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       theme: xtermTheme(),
       scrollback: 4000,
+      macOptionClickForcesSelection: true,
+      rightClickSelectsWord: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -105,7 +107,11 @@ export function DevTerminal({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-panel">
       {error ? <p className="px-3 py-2 text-[12px] text-err">{error}</p> : null}
-      <div ref={host} className="dev-term min-h-0 flex-1 px-1.5 py-1.5" />
+      <div
+        ref={host}
+        className="dev-term min-h-0 flex-1 px-1.5 py-1.5"
+        onMouseDown={() => termRef.current?.focus()}
+      />
     </div>
   );
 }

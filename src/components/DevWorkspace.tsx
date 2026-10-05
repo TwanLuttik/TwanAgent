@@ -70,27 +70,38 @@ export function DevWorkspace({
     [workspace],
   );
 
-  const refresh = useCallback(async () => {
+  const refreshTree = useCallback(async () => {
     if (!workspace) return;
     setError(null);
     try {
       const open = Object.keys(expanded).filter((k) => expanded[k]);
-      await Promise.all(open.map((p) => loadDir(p)));
-      const [nextChanges, nextBranches] = await Promise.all([
+      const [nextChanges] = await Promise.all([
         api.devGitStatus(workspace),
-        api.devGitBranches(workspace),
+        ...open.map((p) => loadDir(p)),
       ]);
       setChanges(nextChanges);
-      setBranches(nextBranches);
-      setBranchError(null);
     } catch (e) {
       setError(String(e));
     }
   }, [workspace, expanded, loadDir]);
 
+  const refreshBranches = useCallback(async () => {
+    if (!workspace) return;
+    try {
+      setBranches(await api.devGitBranches(workspace));
+      setBranchError(null);
+    } catch (e) {
+      setBranchError(String(e));
+    }
+  }, [workspace]);
+
   useEffect(() => {
-    void refresh();
-  }, [workspace, tick, refresh]);
+    void refreshTree();
+  }, [workspace, tick, refreshTree]);
+
+  useEffect(() => {
+    void refreshBranches();
+  }, [workspace, refreshBranches]);
 
   async function toggle(path: string) {
     setExpanded((prev) => {
@@ -166,7 +177,7 @@ export function DevWorkspace({
 
   return (
     <aside
-      className="relative flex min-h-0 shrink-0 flex-col border-l border-line bg-panel"
+      className="relative flex min-h-0 shrink-0 flex-col border-l border-line/35 bg-canvas"
       style={{ width }}
     >
       <div
@@ -179,10 +190,15 @@ export function DevWorkspace({
           setWidth(DEV_PANE_DEFAULT);
           saveDevPaneWidth(DEV_PANE_DEFAULT);
         }}
-        className={`absolute inset-y-0 left-0 z-10 w-2 cursor-col-resize touch-none ${
-          dragging ? "bg-accent/20" : "hover:bg-accent/15"
-        }`}
-      />
+        className="group absolute inset-y-0 left-0 z-10 w-2 cursor-col-resize touch-none"
+      >
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute inset-y-0 left-0 w-0.5 ${
+            dragging ? "bg-accent/40" : "group-hover:bg-accent/30"
+          }`}
+        />
+      </div>
       <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} />
       <div className="relative min-h-0 flex-1">
         {pane.tabs.map((tab) => {
@@ -263,18 +279,16 @@ function PaneTabs({
   }
 
   return (
-    <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Pane">
+    <div className="flex h-9 shrink-0 items-stretch border-b border-line/35">
+      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto" role="tablist" aria-label="Pane">
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeId;
           const meta = paneMeta(tab.kind);
           return (
             <div
               key={tab.id}
-              className={`group flex h-7 max-w-[10rem] shrink-0 items-center rounded-md ${
-                active
-                  ? "bg-wash-strong text-ink ring-1 ring-line/80"
-                  : "text-muted hover:bg-wash hover:text-ink"
+              className={`group flex max-w-[11rem] min-w-0 shrink-0 items-center border-r border-line/35 ${
+                active ? "bg-canvas text-ink" : "text-muted hover:bg-wash hover:text-ink"
               }`}
               onMouseDown={(ev) => {
                 if (ev.button === 1) ev.preventDefault();
@@ -291,11 +305,11 @@ function PaneTabs({
                 role="tab"
                 aria-selected={active}
                 onClick={() => onChange(selectPane(pane, tab.id))}
-                className={`flex min-w-0 items-center gap-1.5 py-0 pr-1 pl-2 text-left text-[12px] ${
-                  active ? "font-medium" : ""
-                } ${canClose ? "" : "pr-2"}`}
+                className={`flex min-w-0 items-center gap-1.5 py-0 pr-1 pl-2.5 text-left text-[12px] ${
+                  canClose ? "" : "pr-2.5"
+                }`}
               >
-                <Symbol name={meta.icon} className="size-3.5 shrink-0" weight="regular" />
+                <Symbol name={meta.icon} className="size-3.5 shrink-0" />
                 <span className="min-w-0 truncate">{tab.title}</span>
               </button>
               {canClose ? (
@@ -303,8 +317,8 @@ function PaneTabs({
                   type="button"
                   aria-label={`Close ${tab.title}`}
                   onClick={() => onChange(closePane(pane, tab.id))}
-                  className={`mr-1 flex size-4 items-center justify-center rounded-[4px] text-muted hover:bg-wash-strong hover:text-ink ${
-                    active ? "opacity-70" : "opacity-0 group-hover:opacity-100"
+                  className={`mr-1 flex size-5 shrink-0 items-center justify-center rounded-[5px] text-muted hover:bg-wash-strong hover:text-ink ${
+                    active ? "opacity-80" : "opacity-0 group-hover:opacity-100"
                   }`}
                 >
                   <Symbol name="xmark" className="size-2.5" weight="regular" />
@@ -325,7 +339,7 @@ function PaneTabs({
             if (kinds.length === 1) add(kinds[0]);
             else setMenu((open) => !open);
           }}
-          className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-wash hover:text-ink"
+          className="flex h-full w-9 items-center justify-center text-muted hover:bg-wash hover:text-ink"
         >
           <Symbol name="plus" className="size-3.5" weight="regular" />
         </button>
@@ -344,7 +358,7 @@ function PaneTabs({
                   onClick={() => add(kind)}
                   className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-inset"
                 >
-                  <Symbol name={meta.icon} className="size-3.5 text-muted" weight="regular" />
+                  <Symbol name={meta.icon} className="size-3.5 text-muted" />
                   <span>{meta.label}</span>
                 </button>
               );

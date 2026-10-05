@@ -6,6 +6,15 @@ export function appVersion(): Promise<string> {
   return invoke("app_version");
 }
 
+export type AppPerfSnapshot = {
+  cpu_percent: number;
+  memory_bytes: number;
+};
+
+export function appPerfSnapshot(): Promise<AppPerfSnapshot> {
+  return invoke("app_perf_snapshot");
+}
+
 export async function pickDir(): Promise<string | null> {
   const selected = await open({ directory: true, multiple: false });
   return typeof selected === "string" ? selected : null;
@@ -18,6 +27,7 @@ export type DevModel = {
   name: string;
   efforts: DevEffort[];
   context_window?: number | null;
+  context_windows?: number[] | null;
 };
 export type DevRuntime = {
   installed: boolean;
@@ -34,6 +44,40 @@ export type DevRuntime = {
 
 export function devRuntime(): Promise<DevRuntime> {
   return invoke("dev_runtime");
+}
+
+export type GrokCliInfo = {
+  installed: boolean;
+  path: string;
+  version: string | null;
+  logged_in: boolean;
+  email: string | null;
+};
+
+export function devCliInfo(): Promise<GrokCliInfo> {
+  return invoke("dev_cli_info");
+}
+
+export type UsageDbInfo = {
+  path: string;
+  bytes: number;
+  exists: boolean;
+};
+
+export function devUsageDbInfo(): Promise<UsageDbInfo> {
+  return invoke("dev_usage_db_info");
+}
+
+export function devUsageDbReset(): Promise<UsageDbInfo> {
+  return invoke("dev_usage_db_reset");
+}
+
+export function devOpenedWorkspaces(): Promise<string[]> {
+  return invoke("dev_opened_workspaces");
+}
+
+export function devForgetWorkspace(path: string): Promise<boolean> {
+  return invoke("dev_forget_workspace", { path });
 }
 export type DevEntry = { name: string; path: string; kind: "file" | "dir" | string; size: number | null };
 export type DevGitChange = {
@@ -53,9 +97,14 @@ export type DevConversationSummary = {
   journey_id?: string | null;
   sort_order?: number;
 };
+export type DevCompaction = {
+  summary: string;
+  through: number;
+};
 export type DevConversation = DevConversationSummary & {
   messages: unknown[];
   context_usage?: DevChatUsage | null;
+  compaction?: DevCompaction | null;
 };
 export type DevJourney = {
   id: string;
@@ -73,6 +122,28 @@ export type DevChatUsage = {
   completion_tokens: number;
   total_tokens: number;
 };
+export type DevUsageEvent = {
+  id: number;
+  recorded_at: string;
+  workspace_path: string;
+  workspace_name: string;
+  conversation_id: string;
+  conversation_title: string;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+export type DevUsageRecord = {
+  workspace_path: string;
+  workspace_name: string;
+  conversation_id?: string;
+  conversation_title?: string;
+  model?: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
 export type DevChatEvent = {
   stream_id: string;
   kind: "delta" | "done" | "error" | string;
@@ -83,6 +154,18 @@ export type DevChatEvent = {
 
 export function devProjectsRoot(): Promise<string> {
   return invoke("dev_projects_root");
+}
+
+export type ProjectPathMove = { from: string; to: string };
+
+export type ProjectsLocation = {
+  root: string;
+  legacy_root: string;
+  moves: ProjectPathMove[];
+};
+
+export function devProjectsLocation(): Promise<ProjectsLocation> {
+  return invoke("dev_projects_location");
 }
 
 export function devListProjects(): Promise<DevFolderSuggestion[]> {
@@ -101,6 +184,10 @@ export function devSuggestFolders(path: string): Promise<DevFolderSuggestion[]> 
 
 export function devCreateProject(name: string): Promise<string> {
   return invoke("dev_create_project", { name });
+}
+
+export function devDeleteProject(path: string): Promise<void> {
+  return invoke("dev_delete_project", { path });
 }
 
 export function devCloneRepo(url: string, name?: string): Promise<string> {
@@ -125,6 +212,45 @@ export function devListDir(workspace: string, path = ""): Promise<DevEntry[]> {
 
 export function devReadFile(workspace: string, path: string): Promise<string> {
   return invoke("dev_read_file", { workspace, path });
+}
+
+export function devReadUserMcp(path: string): Promise<string> {
+  return invoke("dev_read_user_mcp", { path });
+}
+
+export function devWriteUserMcp(path: string, contents: string): Promise<void> {
+  return invoke("dev_write_user_mcp", { path, contents });
+}
+
+export function devOpenUserMcp(path: string): Promise<void> {
+  return invoke("dev_open_user_mcp", { path });
+}
+
+export function devMcpAuthNames(): Promise<string[]> {
+  return invoke("dev_mcp_auth_names");
+}
+
+export function devMcpClearAuth(name: string): Promise<void> {
+  return invoke("dev_mcp_clear_auth", { name });
+}
+
+export type DevSkillFile = {
+  path: string;
+  read_path: string;
+  home: boolean;
+  origin: string;
+};
+
+export function devListSkillFiles(workspace?: string | null): Promise<DevSkillFile[]> {
+  return invoke("dev_list_skill_files", { workspace: workspace || null });
+}
+
+export function devReadUserSkill(path: string): Promise<string> {
+  return invoke("dev_read_user_skill", { path });
+}
+
+export function devOpenUserSkill(path: string): Promise<void> {
+  return invoke("dev_open_user_skill", { path });
 }
 
 export function devResolveFile(workspace: string, path: string): Promise<string> {
@@ -297,13 +423,54 @@ export function devUpdateJourneyKnowledge(
   });
 }
 
+export type DevPreparedImage = {
+  id: string;
+  path: string;
+  name: string;
+  mime: string;
+  width: number;
+  height: number;
+  resized: boolean;
+};
+
+export function devPrepareImage(
+  bytesBase64: string,
+  name: string,
+  conversationId?: string,
+): Promise<DevPreparedImage> {
+  return invoke("dev_prepare_image", {
+    bytesBase64,
+    bytes_base64: bytesBase64,
+    name,
+    conversationId: conversationId ?? null,
+    conversation_id: conversationId ?? null,
+  });
+}
+
+export function devPrepareImagePath(
+  path: string,
+  conversationId?: string,
+): Promise<DevPreparedImage> {
+  return invoke("dev_prepare_image_path", {
+    path,
+    conversationId: conversationId ?? null,
+    conversation_id: conversationId ?? null,
+  });
+}
+
+export function devImageDataUrl(path: string): Promise<string> {
+  return invoke("dev_image_data_url", { path });
+}
+
 export function devChatStart(
   streamId: string,
   messages: unknown[],
   model?: string,
   effort?: string,
   journeyId?: string,
+  contextWindow?: number,
 ): Promise<void> {
+  const tokens = contextWindow && contextWindow > 0 ? Math.floor(contextWindow) : null;
   return invoke("dev_chat_start", {
     streamId,
     stream_id: streamId,
@@ -312,11 +479,21 @@ export function devChatStart(
     effort,
     journeyId,
     journey_id: journeyId ?? null,
+    contextWindow: tokens,
+    context_window: tokens,
   });
 }
 
 export function devChatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
+}
+
+export function devUsageRecord(event: DevUsageRecord): Promise<DevUsageEvent | null> {
+  return invoke("dev_usage_record", { event });
+}
+
+export function devUsageList(since?: string): Promise<DevUsageEvent[]> {
+  return invoke("dev_usage_list", { since: since ?? null });
 }
 
 const chatListeners = new Map<string, (ev: DevChatEvent) => void>();
@@ -351,6 +528,21 @@ export type DevPtyEvent = {
 
 export function devPtyOpen(workspace: string, cols: number, rows: number): Promise<string> {
   return invoke("dev_pty_open", { workspace, cols, rows });
+}
+
+export type DevGrokPlan = {
+  found: boolean;
+  state: string;
+  awaiting_approval: boolean;
+  content: string;
+};
+
+export function devGrokPlan(workspace: string, sessionId: string): Promise<DevGrokPlan> {
+  return invoke("dev_grok_plan", {
+    workspace,
+    sessionId,
+    session_id: sessionId,
+  });
 }
 
 export function devPtyOpenGrok(

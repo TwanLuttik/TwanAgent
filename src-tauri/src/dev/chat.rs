@@ -120,13 +120,14 @@ fn tools_json(include_journey: bool) -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "Run a shell command in the workspace. The user must approve it first.",
+                "description": "Run a shell command in the workspace. The user must approve it first. Always set description to one short sentence of what the command does. That sentence is the chat line.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": { "type": "string" }
+                        "command": { "type": "string" },
+                        "description": { "type": "string", "description": "One short sentence shown in the chat, such as \"Run membership UI tests\"." }
                     },
-                    "required": ["command"]
+                    "required": ["command", "description"]
                 }
             }
         },
@@ -147,6 +148,38 @@ fn tools_json(include_journey: bool) -> serde_json::Value {
                         }
                     },
                     "required": ["prompt", "description"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "todo_write",
+                "description": "Create or update the step list shown above the user's input. Use for multi-step work. Call at the start of a turn or mid-turn as you progress. Keep at most one item in_progress.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "merge": {
+                            "type": "boolean",
+                            "description": "If true, merge by id into the current list. If false, replace the list. Defaults to true."
+                        },
+                        "todos": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string" },
+                                    "content": { "type": "string" },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["pending", "in_progress", "completed", "cancelled"]
+                                    }
+                                },
+                                "required": ["id", "content", "status"]
+                            }
+                        }
+                    },
+                    "required": ["todos"]
                 }
             }
         }
@@ -176,6 +209,7 @@ pub async fn dev_chat_start(
     messages: serde_json::Value,
     model: Option<String>,
     effort: Option<String>,
+    context_window: Option<u64>,
     journey_id: Option<String>,
 ) -> Result<()> {
     let Some(auth) = grok_cli::resolve_auth(&state.data_dir) else {
@@ -187,6 +221,7 @@ pub async fn dev_chat_start(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "grok-4.6".into());
     let effort = effort.filter(|s| !s.trim().is_empty());
+    let context_window = context_window.filter(|n| *n > 0);
     let cancel = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = streams().lock() {
         map.insert(stream_id.clone(), cancel.clone());
@@ -206,6 +241,7 @@ pub async fn dev_chat_start(
             messages,
             model,
             effort,
+            context_window,
             include_journey,
             cancel,
         )
@@ -236,6 +272,7 @@ async fn stream_chat(
     messages: serde_json::Value,
     model: String,
     effort: Option<String>,
+    context_window: Option<u64>,
     include_journey: bool,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -257,6 +294,9 @@ async fn stream_chat(
         .header("content-type", "application/json")
         .header("x-grok-conv-id", stream_id);
     if auth.via_cli {
+        if let Some(tokens) = grok_cli::context_window_header_value(context_window) {
+            req = req.header("x-grok-context-window", tokens);
+        }
         let version = grok_cli::cli_proxy_version(
             grok_cli::grok_bin()
                 .as_ref()
@@ -298,7 +338,9 @@ async fn stream_chat(
     let mut tool_acc: HashMap<u32, (String, String, String)> = HashMap::new();
     let mut last_usage: Option<DevChatUsage> = None;
     let mut emitted_text = false;
+    let mut emitted_reasoning = false;
     let mut fallback_text = String::new();
+    let mut fallback_reasoning = String::new();
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
             let _ = app.emit(
@@ -326,7 +368,14 @@ async fn stream_chat(
                 continue;
             }
             if data == "[DONE]" {
-                emit_done(app, stream_id, &tool_acc, last_usage.clone(), fallback_done_text(emitted_text, &fallback_text));
+                emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
+                emit_done(
+                    app,
+                    stream_id,
+                    &tool_acc,
+                    last_usage.clone(),
+                    fallback_done_text(emitted_text, &fallback_text),
+                );
                 return Ok(());
             }
             let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
@@ -372,9 +421,27 @@ async fn stream_chat(
                     },
                 );
             }
+            let thought = reasoning_from_delta(&delta);
+            if !thought.is_empty() {
+                emitted_reasoning = true;
+                let _ = app.emit(
+                    "dev-chat",
+                    DevChatEvent {
+                        stream_id: stream_id.into(),
+                        kind: "reasoning".into(),
+                        text: Some(thought),
+                        tool_calls: None,
+                        usage: None,
+                    },
+                );
+            }
             let fallback = fallback_choice_text(choice);
             if !fallback.is_empty() {
                 fallback_text = fallback;
+            }
+            let thought_fallback = message_reasoning(choice);
+            if !thought_fallback.is_empty() {
+                fallback_reasoning = thought_fallback;
             }
             if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
                 for call in calls {
@@ -417,6 +484,7 @@ async fn stream_chat(
             }
         }
     }
+    emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
     emit_done(
         app,
         stream_id,
@@ -425,6 +493,13 @@ async fn stream_chat(
         fallback_done_text(emitted_text, &fallback_text),
     );
     Ok(())
+}
+
+fn is_reasoning_part(kind: &str) -> bool {
+    matches!(
+        kind,
+        "reasoning" | "thinking" | "reasoning_text" | "reasoning_summary"
+    )
 }
 
 fn text_from_content(value: &serde_json::Value) -> String {
@@ -440,11 +515,95 @@ fn text_from_content(value: &serde_json::Value) -> String {
             out.push_str(s);
             continue;
         }
+        let kind = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        if is_reasoning_part(kind) {
+            continue;
+        }
         if let Some(s) = part.get("text").and_then(|t| t.as_str()) {
             out.push_str(s);
         }
     }
     out
+}
+
+fn part_text(part: &serde_json::Value) -> String {
+    part.get("text")
+        .or_else(|| part.get("content"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn reasoning_text(value: &serde_json::Value) -> String {
+    if let Some(s) = value.as_str() {
+        return s.to_string();
+    }
+    if let Some(parts) = value.as_array() {
+        let mut out = String::new();
+        for part in parts {
+            let kind = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if is_reasoning_part(kind) {
+                out.push_str(&part_text(part));
+            }
+        }
+        return out;
+    }
+    let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if kind.is_empty() || is_reasoning_part(kind) {
+        return part_text(value);
+    }
+    String::new()
+}
+
+fn reasoning_from_delta(delta: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if let Some(value) = delta.get("reasoning_content").filter(|v| !v.is_null()) {
+        out.push_str(&reasoning_text(value));
+    } else if let Some(value) = delta.get("reasoning").filter(|v| !v.is_null()) {
+        out.push_str(&reasoning_text(value));
+    }
+    if let Some(content) = delta.get("content").filter(|v| v.is_array()) {
+        out.push_str(&reasoning_text(content));
+    }
+    out
+}
+
+fn message_reasoning(choice: &serde_json::Value) -> String {
+    let Some(message) = choice.get("message") else {
+        return String::new();
+    };
+    if let Some(value) = message.get("reasoning_content").filter(|v| !v.is_null()) {
+        let text = reasoning_text(value);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    if let Some(value) = message.get("reasoning").filter(|v| !v.is_null()) {
+        let text = reasoning_text(value);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    message
+        .get("content")
+        .map(reasoning_text)
+        .unwrap_or_default()
+}
+
+fn emit_pending_reasoning(app: &AppHandle, stream_id: &str, emitted: bool, fallback: &str) {
+    if emitted || fallback.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "dev-chat",
+        DevChatEvent {
+            stream_id: stream_id.into(),
+            kind: "reasoning".into(),
+            text: Some(fallback.to_string()),
+            tool_calls: None,
+            usage: None,
+        },
+    );
 }
 
 fn fallback_choice_text(choice: &serde_json::Value) -> String {
@@ -489,15 +648,34 @@ fn emit_done(
 
 fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
     let usage = json.get("usage")?;
-    let prompt_tokens = usage.get("prompt_tokens")?.as_u64()?;
-    let completion_tokens = usage
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .and_then(|v| v.as_u64())?;
+    let mut completion_tokens = usage
         .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let total_tokens = usage
+    let reasoning = usage
+        .get("completion_tokens_details")
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if reasoning > 0 && completion_tokens < reasoning {
+        completion_tokens = completion_tokens.saturating_add(reasoning);
+    }
+    let mut total_tokens = usage
         .get("total_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(prompt_tokens.saturating_add(completion_tokens));
+    let sum = prompt_tokens.saturating_add(completion_tokens);
+    if total_tokens < sum {
+        total_tokens = sum;
+    }
+    if total_tokens > prompt_tokens.saturating_add(completion_tokens) {
+        completion_tokens = total_tokens.saturating_sub(prompt_tokens);
+    }
     Some(DevChatUsage {
         prompt_tokens,
         completion_tokens,
@@ -552,6 +730,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_usage_folds_reasoning_tokens_into_completion() {
+        let json = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 136,
+                "completion_tokens": 3,
+                "total_tokens": 736,
+                "completion_tokens_details": { "reasoning_tokens": 597 }
+            }
+        });
+        assert_eq!(
+            parse_usage(&json),
+            Some(DevChatUsage {
+                prompt_tokens: 136,
+                completion_tokens: 600,
+                total_tokens: 736,
+            })
+        );
+    }
+
+    #[test]
     fn parse_usage_returns_none_without_prompt_tokens() {
         assert_eq!(parse_usage(&serde_json::json!({})), None);
         assert_eq!(
@@ -586,9 +784,32 @@ mod tests {
     fn fallback_done_text_only_when_nothing_was_streamed() {
         assert_eq!(fallback_done_text(true, "Saved."), None);
         assert_eq!(fallback_done_text(false, ""), None);
-        assert_eq!(
-            fallback_done_text(false, "Saved."),
-            Some("Saved.".into())
-        );
+        assert_eq!(fallback_done_text(false, "Saved."), Some("Saved.".into()));
+    }
+
+    #[test]
+    fn reasoning_from_delta_reads_reasoning_content() {
+        let delta = serde_json::json!({ "reasoning_content": "The ", "role": "assistant" });
+        assert_eq!(reasoning_from_delta(&delta), "The ");
+    }
+
+    #[test]
+    fn text_and_reasoning_stay_split_in_content_parts() {
+        let delta = serde_json::json!({
+            "content": [
+                { "type": "reasoning", "text": "secret" },
+                { "type": "text", "text": "Hi" }
+            ]
+        });
+        assert_eq!(text_from_content(delta.get("content").unwrap()), "Hi");
+        assert_eq!(reasoning_from_delta(&delta), "secret");
+    }
+
+    #[test]
+    fn message_reasoning_reads_the_final_message() {
+        let choice = serde_json::json!({
+            "message": { "reasoning_content": "Thought.", "content": "Answer" }
+        });
+        assert_eq!(message_reasoning(&choice), "Thought.");
     }
 }

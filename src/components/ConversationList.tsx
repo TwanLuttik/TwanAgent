@@ -42,7 +42,7 @@ export function ConversationList({
   conversations,
   journeys,
   activeId,
-  runningId,
+  runningIds,
   loadingId,
   runningPreview,
   showSettings,
@@ -63,9 +63,9 @@ export function ConversationList({
   conversations: DevConversationSummary[];
   journeys: JourneySummary[];
   activeId: string;
-  runningId: string;
+  runningIds: Record<string, unknown>;
   loadingId?: string;
-  runningPreview: string;
+  runningPreview: (id: string) => string;
   showSettings: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
@@ -195,9 +195,13 @@ export function ConversationList({
                   selected={item.kind === "chat" && item.conversation.id === activeId && !showSettings}
                   running={
                     item.kind === "chat" &&
-                    (runningId === item.conversation.id || loadingId === item.conversation.id)
+                    (item.conversation.id in runningIds || loadingId === item.conversation.id)
                   }
-                  preview={item.kind === "chat" && runningId === item.conversation.id ? runningPreview : ""}
+                  preview={
+                    item.kind === "chat" && item.conversation.id in runningIds
+                      ? runningPreview(item.conversation.id)
+                      : ""
+                  }
                   dragging={draggingId === item.key}
                   insert={Boolean(draggingId && overId === item.key && draggingId !== item.key)}
                   insertAfter={
@@ -207,7 +211,7 @@ export function ConversationList({
                   renaming={item.kind === "journey" && renameId === item.journey.id}
                   age={
                     item.kind === "chat" &&
-                    runningId !== item.conversation.id &&
+                    !(item.conversation.id in runningIds) &&
                     loadingId !== item.conversation.id
                       ? formatRelativeAge(item.conversation.updated_at, nowMs)
                       : ""
@@ -250,12 +254,14 @@ export function ConversationList({
                 row={dragging.conversation}
                 selected={dragging.conversation.id === activeId && !showSettings}
                 running={
-                  runningId === dragging.conversation.id || loadingId === dragging.conversation.id
+                  dragging.conversation.id in runningIds || loadingId === dragging.conversation.id
                 }
-                preview={runningId === dragging.conversation.id ? runningPreview : ""}
+                preview={
+                  dragging.conversation.id in runningIds ? runningPreview(dragging.conversation.id) : ""
+                }
                 indent={dragging.indent}
                 age={
-                  runningId !== dragging.conversation.id && loadingId !== dragging.conversation.id
+                  !(dragging.conversation.id in runningIds) && loadingId !== dragging.conversation.id
                     ? formatRelativeAge(dragging.conversation.updated_at, nowMs)
                     : ""
                 }
@@ -275,7 +281,7 @@ export function ConversationList({
           x={menu.x}
           y={menu.y}
           target={menu.target}
-          runningId={runningId}
+          runningIds={runningIds}
           onClose={() => setMenu(null)}
           onCreateJourney={() => {
             if (menu.target.type === "chat") onCreateJourney(menu.target.id);
@@ -705,7 +711,7 @@ function ContextMenu({
   x,
   y,
   target,
-  runningId,
+  runningIds,
   onClose,
   onCreateJourney,
   onDeleteChat,
@@ -718,7 +724,7 @@ function ContextMenu({
   x: number;
   y: number;
   target: MenuTarget;
-  runningId: string;
+  runningIds: Record<string, unknown>;
   onClose: () => void;
   onCreateJourney: () => void;
   onDeleteChat: () => void;
@@ -735,7 +741,7 @@ function ContextMenu({
           { label: "Delete", onClick: onDeleteJourney },
         ]
       : [
-          ...(!target.journeyId && target.id !== runningId
+          ...(!target.journeyId && !(target.id in runningIds)
             ? [{ label: "Create Journey", onClick: onCreateJourney }]
             : []),
           ...(target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),

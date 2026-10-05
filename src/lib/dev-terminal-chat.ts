@@ -1,3 +1,5 @@
+import { projectKey } from "./dev.ts";
+
 export type ConversationKind = "chat" | "terminal";
 
 export function parseConversationKind(value: unknown): ConversationKind {
@@ -192,7 +194,11 @@ export function createTerminalSessionStore(io: TerminalSessionIo) {
   }
 
   async function disposeWorkspace(workspace: string) {
-    const ids = [...sessions.values()].filter((s) => s.workspace === workspace).map((s) => s.conversationId);
+    const key = projectKey(workspace);
+    if (!key) return;
+    const ids = [...sessions.values()]
+      .filter((session) => projectKey(session.workspace) === key)
+      .map((session) => session.conversationId);
     for (const id of ids) await dispose(id);
   }
 

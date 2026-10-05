@@ -3,7 +3,10 @@ import { describe, it } from "node:test";
 import {
   contextUsageSnapshot,
   contextUsageTone,
+  contextWindowChoices,
   contextWindowForModel,
+  contextWindowLabel,
+  resolveContextWindow,
   formatContextUsage,
   formatTokenCount,
   parseChatUsage,
@@ -38,6 +41,18 @@ describe("parseChatUsage", () => {
       totalTokens: 12,
     });
   });
+
+  it("folds reasoning tokens that xAI leaves out of completion_tokens", () => {
+    assert.deepEqual(
+      parseChatUsage({
+        prompt_tokens: 136,
+        completion_tokens: 3,
+        total_tokens: 736,
+        completion_tokens_details: { reasoning_tokens: 597 },
+      }),
+      { promptTokens: 136, completionTokens: 600, totalTokens: 736 },
+    );
+  });
 });
 
 describe("contextWindowForModel", () => {
@@ -54,6 +69,29 @@ describe("contextWindowForModel", () => {
   });
 });
 
+describe("context window choices", () => {
+  it("hides a single catalog window and keeps listed sizes in order", () => {
+    assert.deepEqual(contextWindowChoices([256000, 500000, 256000], 256000), [256000, 500000]);
+    assert.deepEqual(contextWindowChoices(undefined, 131072), []);
+    assert.deepEqual(contextWindowChoices([500000], 256000), [256000, 500000]);
+  });
+
+  it("labels sizes the way the CLI slash command does", () => {
+    assert.equal(contextWindowLabel(256000), "256k");
+    assert.equal(contextWindowLabel(500000), "500k");
+    assert.equal(contextWindowLabel(1_000_000), "1M");
+    assert.equal(contextWindowLabel(131072), "131,072");
+  });
+
+  it("keeps a saved size when the model offers it", () => {
+    const choices = [256000, 500000];
+    assert.equal(resolveContextWindow(choices, 500000, 256000, "grok-4.6"), 500000);
+    assert.equal(resolveContextWindow(choices, 128000, 256000, "grok-4.6"), 256000);
+    assert.equal(resolveContextWindow([], 500000, 131072, "grok-3"), 131072);
+    assert.equal(resolveContextWindow([], 0, null, "grok-4.6"), 500000);
+  });
+});
+
 describe("formatTokenCount", () => {
   it("uses compact k and M suffixes", () => {
     assert.equal(formatTokenCount(12), "12");
@@ -65,11 +103,11 @@ describe("formatTokenCount", () => {
 });
 
 describe("context usage snapshot", () => {
-  it("builds a percent label from prompt tokens and the model window", () => {
+  it("builds a percent label from the last request total and the model window", () => {
     const usage = parseChatUsage({ prompt_tokens: 24100, completion_tokens: 10, total_tokens: 24110 })!;
     const snap = contextUsageSnapshot(usage, 500000);
     assert.equal(snap.percent, 5);
-    assert.equal(snap.used, 24100);
+    assert.equal(snap.used, 24110);
     assert.equal(snap.window, 500000);
     assert.equal(snap.tone, "ok");
     assert.equal(formatContextUsage(usage, 500000), "5% · 24k / 500k");

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { isCompactionSummary } from "./dev-compact.ts";
 import {
   activityFromToolCall,
   conversationActivityLabel,
@@ -31,12 +32,16 @@ import {
   toApiMessages,
   toolFileChange,
   toolSummary,
+  foldToolTrailRows,
+  toolDetail,
   toolTrailFileChanges,
   toolTrailSummary,
   toolTrailTypeCountText,
   toolTrailTypeCounts,
+  toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
+  groupTranscriptTurns,
   systemPrompt,
   withSystem,
   type ChatMessage,
@@ -91,6 +96,27 @@ describe("conversationTitleFrom", () => {
     const title = conversationTitleFrom(messages);
     assert.ok(title.endsWith("…"));
     assert.ok(title.length <= 43);
+  });
+
+  it("uses the image name when the first user message has no text", () => {
+    const title = conversationTitleFrom([
+      {
+        role: "user",
+        content: "  ",
+        images: [
+          {
+            id: "img-1",
+            path: "/tmp/a.jpg",
+            name: "login.png",
+            mime: "image/png",
+            width: 10,
+            height: 10,
+            resized: false,
+          },
+        ],
+      },
+    ]);
+    assert.equal(title, "login.png");
   });
 });
 
@@ -171,9 +197,39 @@ describe("tool helpers", () => {
   it("labels tools and flags shell confirms", () => {
     assert.equal(needsShellConfirm("run_command"), true);
     assert.equal(needsShellConfirm("read_file"), false);
-    assert.equal(toolSummary("run_command", { command: "cargo test" }), "$ cargo test");
+    assert.equal(toolSummary("run_command", { command: "cargo test" }), "Run cargo test");
+    assert.equal(
+      toolSummary("run_command", { command: "npm test", description: "Run membership UI tests" }),
+      "Run membership UI tests",
+    );
     assert.equal(toolSummary("read_file", { path: "src/lib.rs" }), "Read src/lib.rs");
+    assert.equal(toolSummary("edit_file", { path: "src/lib.rs" }), "Edit lib.rs");
     assert.equal(toolSummary("spawn_subagent", { description: "Find parser" }), "Subagent: Find parser");
+    assert.equal(toolSummary("todo_write", { todos: [{ id: "a", content: "Read", status: "pending" }] }), "Updated todos");
+  });
+
+  it("keeps todo_write out of the tool trail", () => {
+    const items = transcriptItems([
+      { role: "user", content: "fix it" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "todo_write",
+            arguments: JSON.stringify({
+              todos: [{ id: "a", content: "Read", status: "in_progress" }],
+            }),
+          },
+          { id: "2", name: "read_file", arguments: '{"path":"src/lib.rs"}' },
+        ],
+      },
+    ]);
+    assert.deepEqual(items, [
+      { kind: "user", content: "fix it" },
+      { kind: "tools", labels: ["Read src/lib.rs"], files: [], details: [null], commands: ["src/lib.rs"] },
+    ]);
   });
 
   it("hides tool results and groups consecutive tool calls", () => {
@@ -197,11 +253,48 @@ describe("tool helpers", () => {
       { kind: "user", content: "fix the bug" },
       {
         kind: "tools",
-        labels: ["Read src/lib.rs", "Edit src/lib.rs"],
+        labels: ["Read src/lib.rs", "Edit lib.rs"],
         files: [{ path: "src/lib.rs", name: "lib.rs", additions: 0, deletions: 0, added: [], removed: [] }],
+        details: [
+          null,
+          { path: "src/lib.rs", name: "lib.rs", additions: 0, deletions: 0, added: [], removed: [] },
+        ],
+        commands: ["src/lib.rs", ""],
       },
       { kind: "assistant", content: "Updated the file." },
     ]);
+  });
+
+  it("keeps an edit's added and removed lines on the tool row", () => {
+    const items = transcriptItems([
+      { role: "user", content: "fix it" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "edit_file",
+            arguments: JSON.stringify({
+              path: "src/app.ts",
+              old_string: "one",
+              new_string: "one\ntwo",
+            }),
+          },
+        ],
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.details[0], {
+      path: "src/app.ts",
+      name: "app.ts",
+      additions: 2,
+      deletions: 1,
+      added: ["one", "two"],
+      removed: ["one"],
+    });
   });
 
   it("keeps a failed continuation visible in the transcript", () => {
@@ -216,6 +309,179 @@ describe("tool helpers", () => {
       { role: "assistant", content: "Couldn't continue: xAI error 503: unavailable" },
     ]);
     assert.equal(items[items.length - 1]?.kind, "error");
+  });
+
+  it("keeps user images on the transcript item", () => {
+    const images = [
+      {
+        id: "img-1",
+        path: "/tmp/a.jpg",
+        name: "a.jpg",
+        mime: "image/jpeg",
+        width: 10,
+        height: 10,
+        resized: false,
+      },
+    ];
+    const items = transcriptItems([{ role: "user", content: "see this", images }]);
+    assert.deepEqual(items[0], { kind: "user", content: "see this", images });
+  });
+
+  it("keeps thinking between tool rounds instead of folding them together", () => {
+    const items = transcriptItems([
+      { role: "user", content: "check membership" },
+      {
+        role: "assistant",
+        content: "I'll start with the UI tests.",
+        reasoning: "The banner bug is probably in the membership page.",
+        tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"src/a.ts"}' }],
+      },
+      { role: "tool", tool_call_id: "1", content: "..." },
+      {
+        role: "assistant",
+        content: "",
+        reasoning: "The join rule is in the API.",
+        tool_calls: [
+          { id: "2", name: "read_file", arguments: '{"path":"src/b.ts"}' },
+          { id: "3", name: "read_file", arguments: '{"path":"src/c.ts"}' },
+          { id: "4", name: "read_file", arguments: '{"path":"src/d.ts"}' },
+        ],
+      },
+      { role: "tool", tool_call_id: "2", content: "..." },
+      { role: "assistant", content: "The join rule is members only." },
+    ]);
+    assert.deepEqual(
+      items.map((item) => item.kind),
+      ["user", "thinking", "assistant", "tools", "thinking", "tools", "assistant"],
+    );
+    assert.equal(items[1]?.kind === "thinking" && items[1].content, "The banner bug is probably in the membership page.");
+    assert.equal(items[4]?.kind === "thinking" && items[4].content, "The join rule is in the API.");
+    assert.deepEqual(foldToolTrailRows(items[3]?.kind === "tools" ? items[3].labels : []), [
+      { label: "Read 1 file", change: null, detail: "" },
+    ]);
+    assert.deepEqual(foldToolTrailRows(items[5]?.kind === "tools" ? items[5].labels : []), [
+      { label: "Read 3 files", change: null, detail: "" },
+    ]);
+  });
+
+  it("folds tool lines the way the CLI list does", () => {
+    assert.deepEqual(
+      foldToolTrailRows([
+        "Run membership UI tests and typecheck Next",
+        "Run membership CTA and feed time tests",
+        "Read src/a.ts",
+        "Run membership tests with bracket-safe globs",
+        "Read src/b.ts",
+        "Read src/c.ts",
+        "Read src/d.ts",
+      ]),
+      [
+        { label: "Run membership UI tests and typecheck Next", change: null, detail: "" },
+        { label: "Run membership CTA and feed time tests", change: null, detail: "" },
+        { label: "Read 1 file", change: null, detail: "" },
+        { label: "Run membership tests with bracket-safe globs", change: null, detail: "" },
+        { label: "Read 3 files", change: null, detail: "" },
+      ],
+    );
+    assert.deepEqual(foldToolTrailRows(["List .", "List src"]), [
+      { label: "List 2 directories", change: null, detail: "" },
+    ]);
+  });
+
+  it("keeps the shell command so a row can expand to it", () => {
+    const items = transcriptItems([
+      { role: "user", content: "find the server" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "run_command",
+            arguments: JSON.stringify({
+              command: "lsof -nP -iTCP:3000 -sTCP:LISTEN",
+              description: "Find the Next dev server process",
+            }),
+          },
+        ],
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Run Find the Next dev server process"]);
+    assert.deepEqual(tools.commands, ["lsof -nP -iTCP:3000 -sTCP:LISTEN"]);
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
+      {
+        label: "Run Find the Next dev server process",
+        change: null,
+        detail: "lsof -nP -iTCP:3000 -sTCP:LISTEN",
+      },
+    ]);
+    assert.equal(
+      toolDetail({
+        id: "1",
+        name: "run_command",
+        arguments: '{"command":"cat .next/dev/lock","description":"Read Next lock file"}',
+      }),
+      "cat .next/dev/lock",
+    );
+  });
+
+  it("keeps paths for a folded read so the row can expand to them", () => {
+    const items = transcriptItems([
+      { role: "user", content: "read these" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "1", name: "read_file", arguments: '{"path":"src/a.ts"}' },
+          { id: "2", name: "read_file", arguments: '{"path":"src/b.ts"}' },
+        ],
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
+      { label: "Read 2 files", change: null, detail: "src/a.ts\nsrc/b.ts" },
+    ]);
+  });
+
+  it("keeps a live thought under earlier tool rounds", () => {
+    const items = liveTranscriptItems(
+      [
+        { role: "user", content: "check membership" },
+        {
+          role: "assistant",
+          content: "",
+          reasoning: "Look at the page first.",
+          tool_calls: [{ id: "1", name: "run_command", arguments: '{"command":"npm test","description":"Run membership UI tests"}' }],
+        },
+      ],
+      "",
+      [],
+      "The API still needs a check.",
+    );
+    assert.deepEqual(
+      items.map((item) => (item.kind === "thinking" ? item.content : item.kind)),
+      ["user", "Look at the page first.", "tools", "The API still needs a check."],
+    );
+    const live = items[3];
+    assert.equal(live?.kind === "thinking" && live.live, true);
+  });
+
+  it("does not send reasoning back to the model", () => {
+    const out = toApiMessages([
+      {
+        role: "assistant",
+        content: "Done.",
+        reasoning: "private thought",
+        tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"a.ts"}' }],
+      },
+    ]);
+    assert.equal("reasoning" in (out[0] ?? {}), false);
+    assert.equal(out[0]?.content, "Done.");
   });
 
   it("keeps committed tool calls above newly streaming text", () => {
@@ -275,6 +541,88 @@ describe("tool helpers", () => {
       items.map((item) => item.kind),
       ["user", "assistant", "tools"],
     );
+  });
+
+  it("keeps an in-progress edit's added and removed lines", () => {
+    const items = liveTranscriptItems(
+      [{ role: "user", content: "fix it" }],
+      "",
+      [
+        {
+          label: "Edit src/app.ts",
+          change: {
+            path: "src/app.ts",
+            name: "app.ts",
+            additions: 2,
+            deletions: 1,
+            added: ["one", "two"],
+            removed: ["one"],
+          },
+        },
+      ],
+    );
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Edit src/app.ts"]);
+    assert.deepEqual(tools.details[0]?.added, ["one", "two"]);
+    assert.deepEqual(tools.details[0]?.removed, ["one"]);
+  });
+});
+
+describe("groupTranscriptTurns", () => {
+  it("returns no turns for an empty transcript", () => {
+    assert.deepEqual(groupTranscriptTurns([]), []);
+  });
+
+  it("groups a user message with the following reply and tools", () => {
+    const items = liveTranscriptItems(
+      [
+        { role: "user", content: "fix the scroll" },
+        { role: "assistant", content: "Looking." },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"a.ts"}' }],
+        },
+        { role: "tool", tool_call_id: "1", content: "..." },
+        { role: "assistant", content: "Done." },
+      ],
+      "",
+    );
+    const turns = groupTranscriptTurns(items);
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.user?.content, "fix the scroll");
+    assert.deepEqual(
+      turns[0]?.rest.map((item) => item.kind),
+      ["assistant", "tools", "assistant"],
+    );
+  });
+
+  it("starts a new turn on each later user message", () => {
+    const turns = groupTranscriptTurns(
+      transcriptItems([
+        { role: "user", content: "first" },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "second" },
+        { role: "assistant", content: "also ok" },
+      ]),
+    );
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0]?.user?.content, "first");
+    assert.equal(turns[1]?.user?.content, "second");
+    assert.equal(turns[1]?.rest[0]?.kind === "assistant" && turns[1].rest[0].content, "also ok");
+  });
+
+  it("keeps a leading assistant reply in a turn without a user bubble", () => {
+    const turns = groupTranscriptTurns([
+      { kind: "assistant", content: "hello" },
+      { kind: "user", content: "hi" },
+    ]);
+    assert.equal(turns.length, 2);
+    assert.equal(turns[0]?.user, undefined);
+    assert.equal(turns[0]?.rest[0]?.kind === "assistant" && turns[0].rest[0].content, "hello");
+    assert.equal(turns[1]?.user?.content, "hi");
   });
 });
 
@@ -362,6 +710,11 @@ describe("tool trail collapse", () => {
       ],
     );
     assert.equal(toolTrailTypeCountText("Read", 15), "Read ×15");
+    assert.equal(toolTrailTypeIcon("Read"), "doc");
+    assert.equal(toolTrailTypeIcon("$"), "terminal");
+    assert.equal(toolTrailTypeIcon("Edit"), "pencil");
+    assert.equal(toolTrailTypeIcon("List"), "folder");
+    assert.equal(toolTrailTypeIcon("Subagent"), "person.2");
   });
 
   it("keeps special tool types intact when grouping", () => {
@@ -563,12 +916,55 @@ describe("toApiMessages", () => {
     });
   });
 
+  it("sends a compaction summary as context and keeps it out of the workspace prompt", () => {
+    const summary = {
+      role: "system" as const,
+      content:
+        "Your conversation was summarized due to context constraints.\n<summary_content>\n<compaction_summary>\nFixed login.\n</compaction_summary>\n</summary_content>",
+    };
+    const out = toApiMessages([summary, { role: "user", content: "continue" }]);
+    assert.equal(out[0]?.role, "user");
+    assert.match(String(out[0]?.content), /Fixed login/);
+    const withPrompt = withSystem("/tmp/app", [summary, { role: "user", content: "continue" }]);
+    assert.match(String(withPrompt[0]?.content), /\/tmp\/app/);
+    assert.equal(isCompactionSummary(withPrompt[1]), true);
+    assert.equal(withPrompt[2]?.content, "continue");
+  });
+
   it("drops a failed-turn notice so a retry does not send it back to the model", () => {
     const out = toApiMessages([
       { role: "user", content: "go" },
       { role: "assistant", content: "Couldn't continue: xAI error 503: unavailable", error: true },
     ]);
     assert.deepEqual(out, [{ role: "user", content: "go" }]);
+  });
+
+  it("sends user images as multimodal content parts", () => {
+    const out = toApiMessages([
+      {
+        role: "user",
+        content: "what is this",
+        images: [
+          {
+            id: "img-1",
+            path: "/tmp/a.jpg",
+            name: "a.jpg",
+            mime: "image/jpeg",
+            width: 800,
+            height: 600,
+            resized: false,
+            dataUrl: "data:image/jpeg;base64,abc",
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(out[0], {
+      role: "user",
+      content: [
+        { type: "text", text: "what is this" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
+      ],
+    });
   });
 });
 
@@ -588,6 +984,7 @@ describe("withSystem", () => {
   it("describes the selected permission mode", () => {
     assert.match(String(systemPrompt("/tmp/app", "approve-all").content), /without asking/);
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
+    assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
   });
 
   it("appends journey knowledge and omits an empty file", () => {
@@ -598,5 +995,53 @@ describe("withSystem", () => {
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", "  ").content), /Journey knowledge:/);
     const injected = withSystem("/tmp/app", [{ role: "user", content: "hi" }], undefined, "ask", "- keep tone short");
     assert.match(String(injected[0].content), /keep tone short/);
+  });
+
+  it("mentions detected MCP servers and omits them when none exist", () => {
+    const mcp = [
+      {
+        name: "github",
+        source: ".cursor/mcp.json",
+        sources: [".cursor/mcp.json"],
+        transport: "stdio" as const,
+        enabled: true,
+        authed: false,
+      },
+    ];
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, mcp).content), /github \(\.cursor\/mcp\.json\)/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /MCP servers/);
+    const custom = withSystem(
+      "/tmp/app",
+      [{ role: "user", content: "hi" }],
+      { role: "system", content: "custom" },
+      "ask",
+      undefined,
+      mcp,
+    );
+    assert.match(String(custom[0].content), /custom/);
+    assert.match(String(custom[0].content), /github \(\.cursor\/mcp\.json\)/);
+  });
+
+  it("mentions detected skills", () => {
+    const skills = [
+      {
+        name: "commit",
+        source: ".grok/skills/commit/SKILL.md",
+        origin: "project" as const,
+        description: "Commit.",
+        enabled: true,
+      },
+    ];
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, skills).content), /commit/);
+    const custom = withSystem(
+      "/tmp/app",
+      [{ role: "user", content: "hi" }],
+      { role: "system", content: "custom" },
+      "ask",
+      undefined,
+      undefined,
+      skills,
+    );
+    assert.match(String(custom[0].content), /not auto-loaded/);
   });
 });

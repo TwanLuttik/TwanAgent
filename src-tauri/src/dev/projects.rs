@@ -4,7 +4,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use super::paths::{path_string, projects_dir, resolve_typed_path};
+use super::paths::{path_string, resolve_typed_path};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,9 +138,10 @@ fn validate_git_url(url: &str) -> Result<&str> {
     Ok(url)
 }
 
-pub fn create_project(data_dir: &Path, name: &str) -> Result<PathBuf> {
+pub fn create_project(root: &Path, name: &str) -> Result<PathBuf> {
     let name = sanitize_project_name(name)?;
-    let dest = projects_dir(data_dir).join(&name);
+    fs::create_dir_all(root)?;
+    let dest = root.join(&name);
     if dest.exists() {
         return Err(Error::Conflict(format!("{name} already exists")));
     }
@@ -148,30 +149,81 @@ pub fn create_project(data_dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 
-pub fn list_projects(data_dir: &Path) -> Vec<FolderSuggestion> {
-    let dir = projects_dir(data_dir);
-    if !dir.is_dir() {
-        return Vec::new();
-    }
-    let mut rows = Vec::new();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
+pub fn delete_project(roots: &[&Path], raw: &str) -> Result<PathBuf> {
+    let requested = resolve_typed_path(raw)?;
+    let name = requested
+        .file_name()
+        .filter(|n| *n != "." && *n != "..")
+        .ok_or_else(|| Error::Other("invalid project".into()))?;
+    let mut dest = None;
+    for projects in roots {
+        if !projects.is_dir() {
+            continue;
+        }
+        let Ok(projects_canon) = fs::canonicalize(projects) else {
             continue;
         };
-        if !ft.is_dir() {
+        let candidate = projects.join(name);
+        let allowed = if requested.exists() {
+            fs::canonicalize(&requested)
+                .ok()
+                .and_then(|canon| canon.parent().map(|parent| parent == projects_canon))
+                .unwrap_or(false)
+        } else {
+            crate::paths::same_dir(&requested, &candidate)
+                || crate::paths::relative_to(projects, &requested)
+                    .is_some_and(|rel| Path::new(&rel) == Path::new(name))
+        };
+        if allowed {
+            dest = Some(candidate);
+            break;
+        }
+    }
+    let Some(dest) = dest else {
+        return Err(Error::Other(
+            "can only delete projects in the app projects folder".into(),
+        ));
+    };
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
+    } else if requested.exists() {
+        fs::remove_dir_all(fs::canonicalize(&requested)?)?;
+    }
+    Ok(dest)
+}
+
+pub fn list_projects(roots: &[&Path]) -> Vec<FolderSuggestion> {
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for dir in roots {
+        if !dir.is_dir() {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        let Ok(entries) = fs::read_dir(dir) else {
             continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = dir.join(&name);
+            let key =
+                path_string(&fs::canonicalize(&path).unwrap_or(path.clone())).to_ascii_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+            rows.push(FolderSuggestion {
+                name: name.clone(),
+                path: path_string(&path),
+            });
         }
-        rows.push(FolderSuggestion {
-            name: name.clone(),
-            path: path_string(&dir.join(&name)),
-        });
     }
     rows.sort_by(|a, b| {
         a.name
@@ -181,17 +233,17 @@ pub fn list_projects(data_dir: &Path) -> Vec<FolderSuggestion> {
     rows
 }
 
-pub fn clone_repo(data_dir: &Path, url: &str, name: Option<&str>) -> Result<PathBuf> {
+pub fn clone_repo(root: &Path, url: &str, name: Option<&str>) -> Result<PathBuf> {
     let url = validate_git_url(url)?;
     let folder = match name {
         Some(n) if !n.trim().is_empty() => sanitize_project_name(n)?,
         _ => repo_name_from_url(url)?,
     };
-    let dest = projects_dir(data_dir).join(&folder);
+    let dest = root.join(&folder);
     if dest.exists() {
         return Err(Error::Conflict(format!("{folder} already exists")));
     }
-    fs::create_dir_all(projects_dir(data_dir))?;
+    fs::create_dir_all(root)?;
     let dest_str = dest
         .to_str()
         .ok_or_else(|| Error::Other("invalid path".into()))?;
@@ -214,7 +266,6 @@ pub fn clone_repo(data_dir: &Path, url: &str, name: Option<&str>) -> Result<Path
 
 #[cfg(test)]
 mod tests {
-    use super::super::paths::projects_dir;
     use super::*;
     use std::fs;
     use std::process::Command;
@@ -273,24 +324,47 @@ mod tests {
     #[test]
     fn create_project_makes_a_folder_once() {
         let dir = temp_ws();
-        let path = create_project(dir.path(), "Demo App").unwrap();
+        let root = dir.path().join("projects");
+        let path = create_project(&root, "Demo App").unwrap();
         assert!(path.is_dir());
         assert_eq!(path.file_name().unwrap(), "Demo-App");
-        assert!(path.starts_with(dir.path().join("projects")));
-        let err = create_project(dir.path(), "Demo App").unwrap_err();
+        assert!(path.starts_with(&root));
+        let err = create_project(&root, "Demo App").unwrap_err();
         assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn delete_project_removes_an_app_project_and_rejects_outsiders() {
+        let dir = temp_ws();
+        let root = dir.path().join("projects");
+        let path = create_project(&root, "Demo").unwrap();
+        fs::write(path.join("readme.txt"), "x").unwrap();
+        let roots = [root.as_path()];
+        let deleted = delete_project(&roots, path.to_str().unwrap()).unwrap();
+        assert_eq!(deleted, path);
+        assert!(!path.exists());
+
+        let outside = dir.path().join("not-a-project");
+        fs::create_dir_all(&outside).unwrap();
+        assert!(delete_project(&roots, outside.to_str().unwrap()).is_err());
+        assert!(outside.is_dir());
+
+        assert!(delete_project(&roots, root.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn list_projects_returns_folders_and_skips_files() {
         let dir = temp_ws();
-        create_project(dir.path(), "Alpha").unwrap();
-        create_project(dir.path(), "Beta").unwrap();
-        fs::write(projects_dir(dir.path()).join("readme.txt"), "nope").unwrap();
-        let rows = list_projects(dir.path());
+        let root = dir.path().join("projects");
+        create_project(&root, "Alpha").unwrap();
+        create_project(&root, "Beta").unwrap();
+        fs::write(root.join("readme.txt"), "nope").unwrap();
+        let roots = [root.as_path()];
+        let rows = list_projects(&roots);
         let names: Vec<_> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["Alpha", "Beta"]);
-        assert!(list_projects(&dir.path().join("missing")).is_empty());
+        let missing = dir.path().join("missing");
+        assert!(list_projects(&[&missing]).is_empty());
     }
 
     #[test]

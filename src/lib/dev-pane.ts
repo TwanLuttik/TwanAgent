@@ -12,9 +12,9 @@ export type PaneState = {
 };
 
 export const PANE_KINDS: { id: PaneKind; label: string; icon: string }[] = [
-  { id: "terminal", label: "Terminal", icon: "terminal" },
-  { id: "files", label: "Files", icon: "folder" },
-  { id: "git", label: "Git", icon: "arrow.triangle.branch" },
+  { id: "terminal", label: "Terminal", icon: "terminal.fill" },
+  { id: "files", label: "Files", icon: "folder.fill" },
+  { id: "git", label: "Git", icon: "arrow.triangle.branch.fill" },
 ];
 
 export function paneMeta(kind: PaneKind) {

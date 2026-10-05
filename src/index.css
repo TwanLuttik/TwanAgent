@@ -35,9 +35,12 @@ body,
 }
 
 .overflow-auto,
-.overflow-x-auto,
 .overflow-y-auto {
   overscroll-behavior: contain;
+}
+
+.overflow-x-auto {
+  overscroll-behavior-x: contain;
 }
 
 body {
@@ -62,9 +65,13 @@ textarea {
   min-width: 5.5rem;
   flex-shrink: 0;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 12px;
   font-size: 12px;
   line-height: 1;
+}
+
+.chrome-tab + .chrome-tab {
+  margin-left: 3px;
 }
 
 .chrome-tab-on {
@@ -76,39 +83,27 @@ textarea {
   color: var(--color-muted);
 }
 
-.chrome-tab-off + .chrome-tab-off::before {
-  content: "";
-  position: absolute;
-  top: 9px;
-  bottom: 9px;
-  left: 0;
-  width: 1px;
-  background: var(--color-line);
-  opacity: 0.7;
-}
-
 .chrome-tab-face {
   position: absolute;
   inset: 0;
-  border: 1px solid var(--color-line);
+  border: 1px solid color-mix(in srgb, var(--color-line) 35%, transparent);
   border-bottom: none;
   border-radius: 10px 10px 0 0;
   background: var(--color-canvas);
 }
 
-.chrome-tab-hover {
-  position: absolute;
-  inset: 5px 4px 4px;
-  border-radius: 8px;
-  background: transparent;
+.chrome-tab-face-off {
+  background: color-mix(in srgb, var(--color-canvas) 42%, transparent);
+  border-color: color-mix(in srgb, var(--color-line) 18%, transparent);
 }
 
 .chrome-tab-off:hover {
   color: var(--color-ink);
 }
 
-.chrome-tab-off:hover .chrome-tab-hover {
-  background: var(--color-wash-strong);
+.chrome-tab-off:hover .chrome-tab-face-off {
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+  border-color: color-mix(in srgb, var(--color-line) 28%, transparent);
 }
 
 .chrome-tab-inner {
@@ -172,6 +167,36 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   opacity: 0.28;
 }
 
+.usage-cell {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 10%, transparent);
+}
+
+.usage-cell-0 {
+  background: color-mix(in srgb, var(--color-ink) 8%, var(--color-canvas));
+}
+
+.usage-cell-1 {
+  background: color-mix(in srgb, var(--color-ok) 30%, var(--color-canvas));
+}
+
+.usage-cell-2 {
+  background: color-mix(in srgb, var(--color-ok) 52%, var(--color-canvas));
+}
+
+.usage-cell-3 {
+  background: color-mix(in srgb, var(--color-ok) 76%, var(--color-canvas));
+}
+
+.usage-cell-4 {
+  background: var(--color-ok);
+}
+
 .media-check {
   background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-canvas));
   background-image:
@@ -198,6 +223,11 @@ html[data-theme-mode="light"] .sidebar-space-dots {
 /* Viewport is a full-size overlay; let clicks/wheel reach the screen so TUIs get mouse reports. */
 .dev-term .xterm-viewport {
   pointer-events: none;
+}
+
+/* Mouse tracking turns the cursor into a pointer. Keep the text cursor so dragging reads as selection. */
+.dev-term .xterm.enable-mouse-events {
+  cursor: text;
 }
 
 .dev-term .xterm-screen {

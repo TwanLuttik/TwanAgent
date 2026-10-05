@@ -1,5 +1,6 @@
 node_modules
 dist
+src/build-stamp.ts
 src-tauri/target
 src-tauri/gen
 .DS_Store

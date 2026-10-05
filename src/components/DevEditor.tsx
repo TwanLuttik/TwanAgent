@@ -1,8 +1,9 @@
 import { Prec, type Extension } from "@codemirror/state";
-import { keymap } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { langs } from "@uiw/codemirror-extensions-langs";
 import CodeMirror from "@uiw/react-codemirror";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   editorTabTitle,
   isAllDiffPath,
@@ -17,6 +18,7 @@ import { addedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } fro
 import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
 import { normalizeGitPath } from "../lib/dev";
+import { selectionPromptSnippet, selectionRangeFromOffsets } from "../lib/editor-selection";
 import * as api from "../lib/tauri";
 import { isMacOS } from "./WindowButtons";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -47,6 +49,7 @@ export function DevEditor({
   onSelectTab,
   onPinTab,
   onCloseTab,
+  onSendToChat,
 }: {
   workspace: string;
   path: string;
@@ -62,11 +65,15 @@ export function DevEditor({
   onSelectTab: (path: string) => void;
   onPinTab: (path: string) => void;
   onCloseTab: (path: string) => void;
+  onSendToChat?: (snippet: string) => void;
 }) {
   const [buffers, setBuffers] = useState<Record<string, Buffer>>({});
   const [saving, setSaving] = useState(false);
   const [mediaMeta, setMediaMeta] = useState<MediaMeta | null>(null);
   const [gutterMarks, setGutterMarks] = useState<Map<number, GutterMark>>(() => new Map());
+  const [selectionTip, setSelectionTip] = useState<{ top: number; left: number; snippet: string } | null>(
+    null,
+  );
   const buf = buffers[path];
   const dirty = Boolean(buf && buf.draft !== buf.original && !buf.error);
   const media = mediaKindForPath(path);
@@ -109,6 +116,19 @@ export function DevEditor({
   useEffect(() => {
     if (path) void load(path);
   }, [path, load]);
+
+  useEffect(() => {
+    setSelectionTip(null);
+  }, [path, fileView, markdownView]);
+
+  useEffect(() => {
+    if (!selectionTip) return;
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key === "Escape") setSelectionTip(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectionTip]);
 
   useEffect(() => {
     if (!path || tick === 0) return;
@@ -194,7 +214,32 @@ export function DevEditor({
         },
       ]),
     );
-    return [...(lang ? [lang] : []), editorTheme(mode), gitChangeGutter(gutterMarks), saveKey];
+    const selection = EditorView.updateListener.of((update) => {
+      if (!update.selectionSet && !update.docChanged && !update.geometryChanged) return;
+      const sel = update.state.selection.main;
+      if (sel.empty) {
+        setSelectionTip(null);
+        return;
+      }
+      const doc = update.state.doc.toString();
+      const range = selectionRangeFromOffsets(path, doc, sel.from, sel.to);
+      if (!range.text.trim()) {
+        setSelectionTip(null);
+        return;
+      }
+      const start = update.view.coordsAtPos(sel.from);
+      const end = update.view.coordsAtPos(sel.to);
+      if (!start) {
+        setSelectionTip(null);
+        return;
+      }
+      setSelectionTip({
+        top: start.top,
+        left: (start.left + (end?.right ?? start.right)) / 2,
+        snippet: selectionPromptSnippet(range),
+      });
+    });
+    return [...(lang ? [lang] : []), editorTheme(mode), gitChangeGutter(gutterMarks), saveKey, selection];
   }, [path, mode, save, gutterMarks]);
 
   function setDraft(draft: string) {
@@ -258,6 +303,23 @@ export function DevEditor({
             onChange={setDraft}
             className="h-full"
           />
+          {selectionTip
+            ? createPortal(
+                <SelectionChatTooltip
+                  top={selectionTip.top}
+                  left={selectionTip.left}
+                  onSend={() => {
+                    onSendToChat?.(selectionTip.snippet);
+                    setSelectionTip(null);
+                  }}
+                  onCopy={() => {
+                    void navigator.clipboard.writeText(selectionTip.snippet).catch(() => undefined);
+                    setSelectionTip(null);
+                  }}
+                />,
+                document.body,
+              )
+            : null}
         </div>
       ) : (
         <div className="min-h-0 flex-1 px-4 py-3 text-[12px] text-muted">Opening…</div>
@@ -351,6 +413,47 @@ function EditorChromeActions({
           {saving ? "Saving…" : "Save"}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+function SelectionChatTooltip({
+  top,
+  left,
+  onSend,
+  onCopy,
+}: {
+  top: number;
+  left: number;
+  onSend: () => void;
+  onCopy: () => void;
+}) {
+  const x = Math.min(Math.max(12, left), window.innerWidth - 12);
+  const y = Math.max(8, top - 8);
+  return (
+    <div
+      role="toolbar"
+      aria-label="Selection actions"
+      className="fixed z-50 flex items-center gap-0.5 rounded-lg border border-line bg-canvas px-1 py-0.5 shadow-card"
+      style={{ top: y, left: x, transform: "translate(-50%, -100%)" }}
+      onMouseDown={(ev) => ev.preventDefault()}
+    >
+      <button
+        type="button"
+        onClick={onSend}
+        className="rounded-md px-2 py-1 text-[12px] text-ink hover:bg-wash"
+      >
+        Send to chat
+      </button>
+      <button
+        type="button"
+        aria-label="Copy"
+        title="Copy"
+        onClick={onCopy}
+        className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-wash hover:text-ink"
+      >
+        <Symbol name="copy" className="size-3.5" />
+      </button>
     </div>
   );
 }

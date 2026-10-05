@@ -2,7 +2,20 @@ import type { DevToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./dev-context.ts";
 import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage } from "./dev.ts";
+import type { DetectedMcpServer } from "./dev-mcp.ts";
+import type { DetectedSkill } from "./dev-skill.ts";
+import { withImageDataUrls } from "./dev-image.ts";
 import { parsePermissionMode, toolDeniedByPermission, type PermissionMode } from "./dev-permission.ts";
+import { formatTodoWriteResult, parseTodoWriteArgs } from "./dev-todo.ts";
+import {
+  compactionPrompt,
+  isContextLengthError,
+  messagesForContext,
+  readCompactionState,
+  shouldAutoCompact,
+  splitForCompaction,
+  type CompactionState,
+} from "./dev-compact.ts";
 import {
   EMPTY_COMPLETION_MESSAGE,
   isEmptyCompletion,
@@ -65,6 +78,11 @@ export async function executeTool(
         return await api.devGitDiff(workspace, String(args.path ?? ""));
       case "run_command":
         return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
+      case "todo_write": {
+        const parsed = parseTodoWriteArgs(call.arguments);
+        if (parsed.error) return `Error: ${parsed.error}`;
+        return formatTodoWriteResult(parsed.todos);
+      }
       case "update_journey_knowledge":
         if (!journeyId) return "Error: update_journey_knowledge is only available in a Journey chat.";
         return api.devUpdateJourneyKnowledge(workspace, journeyId, {
@@ -95,17 +113,18 @@ async function runOrSkip(
   return api.devRunCommand(workspace, command);
 }
 
-const MAX_TURNS = 20;
-
 export type TurnOpts = {
   workspace: string;
   messages: ChatMessage[];
   model?: string;
   effort?: string;
+  contextWindow?: number;
   system?: ChatMessage;
   allowSpawn?: boolean;
   childType?: SubagentType;
   onDelta: (text: string) => void;
+  /** Full reasoning text for the current model round. Empty clears the live block. */
+  onReasoning?: (text: string) => void;
   onError: (text: string) => void;
   confirmShell: ConfirmShell;
   getPermission?: () => PermissionMode;
@@ -114,65 +133,107 @@ export type TurnOpts = {
   onRefresh?: () => void;
   onSubagent?: (event: SubagentEvent) => void;
   onUsage?: (usage: ChatUsage) => void;
+  /** Last prompt size for this conversation. Used for the CLI's 80% auto-compact. */
+  priorPromptTokens?: number;
+  /** Summary already stored for this conversation. The visible transcript is not rewritten. */
+  compaction?: CompactionState | null;
+  /** Persist a new summary. `through` is the first transcript index that stays verbatim. */
+  onCompact?: (state: CompactionState) => void;
   signal: AbortSignal;
   journeyId?: string;
   journeyKnowledge?: string;
+  mcpServers?: DetectedMcpServer[];
+  skills?: DetectedSkill[];
 };
 
+function assistantMessage(text: string, reasoning: string, toolCalls: DevToolCall[]): ChatMessage {
+  const thought = reasoning.trim();
+  return {
+    role: "assistant",
+    content: text,
+    ...(thought ? { reasoning: thought } : {}),
+    tool_calls: toolCalls.length ? toolCalls : undefined,
+  };
+}
+
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
-  let messages = opts.messages;
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    if (opts.signal.aborted) return messages;
+  let transcript = opts.messages;
+  let compaction = opts.compaction ?? null;
+  if (
+    opts.allowSpawn !== false &&
+    shouldAutoCompact(opts.priorPromptTokens ?? 0, opts.contextWindow ?? 0)
+  ) {
+    const next = await compactContext(transcript, compaction, opts);
+    if (next) {
+      compaction = next;
+      opts.onCompact?.(next);
+    }
+  }
+  let compactedAfterOverflow = false;
+  for (;;) {
+    if (opts.signal.aborted) return transcript;
     const permission = parsePermissionMode(opts.getPermission?.());
+    const context = messagesForContext(transcript, compaction).messages;
     let result = await streamCompletion(
-      withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
+      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
       opts,
     );
-    if (opts.signal.aborted) return messages;
+    if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
-        withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
         opts,
       );
     }
-    if (opts.signal.aborted) return messages;
+    if (opts.signal.aborted) return transcript;
+    if (result.error && !compactedAfterOverflow && isContextLengthError(result.error) && opts.allowSpawn !== false) {
+      const next = await compactContext(transcript, compaction, opts);
+      if (next && next.through !== compaction?.through) {
+        compactedAfterOverflow = true;
+        compaction = next;
+        opts.onCompact?.(next);
+        continue;
+      }
+    }
     if (result.error) {
       opts.onError(result.error);
       if (result.error !== "Stopped.") {
-        messages = [...messages, turnFailureMessage(result.error)];
-        opts.onUpdate?.(messages);
+        const thought = result.reasoning.trim();
+        if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+        transcript = [...transcript, turnFailureMessage(result.error)];
+        opts.onUpdate?.(transcript);
+        return transcript;
       }
-      return messages;
+      return transcript;
     }
-    if (isEmptyCompletion(result.text, result.toolCalls)) {
+    const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
+    if (empty) {
       result = await streamCompletion(
-        withSystem(opts.workspace, messages, opts.system, permission, opts.journeyKnowledge),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
         opts,
       );
-      if (opts.signal.aborted) return messages;
+      if (opts.signal.aborted) return transcript;
       if (result.error) {
         opts.onError(result.error);
         if (result.error !== "Stopped.") {
-          messages = [...messages, turnFailureMessage(result.error)];
-          opts.onUpdate?.(messages);
+          const thought = result.reasoning.trim();
+          if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+          transcript = [...transcript, turnFailureMessage(result.error)];
+          opts.onUpdate?.(transcript);
+          return transcript;
         }
-        return messages;
+        return transcript;
       }
     }
-    if (isEmptyCompletion(result.text, result.toolCalls)) {
-      messages = [...messages, turnFailureMessage(EMPTY_COMPLETION_MESSAGE)];
-      opts.onUpdate?.(messages);
-      return messages;
+    if (isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim()) {
+      transcript = [...transcript, turnFailureMessage(EMPTY_COMPLETION_MESSAGE)];
+      opts.onUpdate?.(transcript);
+      return transcript;
     }
     if (result.usage) opts.onUsage?.(result.usage);
-    const assistant: ChatMessage = {
-      role: "assistant",
-      content: result.text || (result.toolCalls.length ? "" : result.text),
-      tool_calls: result.toolCalls.length ? result.toolCalls : undefined,
-    };
-    messages = [...messages, assistant];
-    opts.onUpdate?.(messages);
-    if (!result.toolCalls.length) return messages;
+    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls)];
+    opts.onUpdate?.(transcript);
+    if (!result.toolCalls.length) return transcript;
     const contents: string[] = new Array(result.toolCalls.length);
     const spawnWaits: Promise<void>[] = [];
     for (let i = 0; i < result.toolCalls.length; i++) {
@@ -215,11 +276,34 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       tool_call_id: call.id,
       content: contents[i] ?? "",
     }));
-    messages = [...messages, ...toolMsgs];
-    opts.onUpdate?.(messages);
+    transcript = [...transcript, ...toolMsgs];
+    opts.onUpdate?.(transcript);
   }
-  opts.onError("Stopped after too many tool turns.");
-  return messages;
+}
+
+async function compactContext(
+  stored: ChatMessage[],
+  current: CompactionState | null,
+  opts: TurnOpts,
+): Promise<CompactionState | null> {
+  if (opts.signal.aborted) return null;
+  const source = messagesForContext(stored, current).messages;
+  const { older, cut } = splitForCompaction(source);
+  if (!older.length || cut >= source.length) return null;
+  const previous = readCompactionState(source)?.summary ?? current?.summary ?? "";
+  const result = await streamCompletion(compactionPrompt(older, previous), {
+    ...opts,
+    onDelta: () => undefined,
+    onReasoning: () => undefined,
+  });
+  if (opts.signal.aborted || result.error) return null;
+  const summary = result.text.trim();
+  if (!summary) return null;
+  const recent = source.slice(cut);
+  const through = stored.length - recent.length;
+  if (through <= 0 || through >= stored.length) return null;
+  if (current && current.through === through && current.summary === summary) return null;
+  return { summary, through };
 }
 
 async function runSubagent(call: DevToolCall, opts: TurnOpts): Promise<string> {
@@ -245,6 +329,7 @@ async function runSubagent(call: DevToolCall, opts: TurnOpts): Promise<string> {
       messages: [{ role: "user", content: parsed.prompt }],
       model: opts.model,
       effort: opts.effort,
+      contextWindow: opts.contextWindow,
       system: subagentSystemPrompt(
         opts.workspace,
         parsed.subagentType,
@@ -257,6 +342,7 @@ async function runSubagent(call: DevToolCall, opts: TurnOpts): Promise<string> {
       childType: parsed.subagentType,
       getPermission: opts.getPermission,
       onDelta: (text) => opts.onSubagent?.({ type: "delta", id, text }),
+      onReasoning: (text) => opts.onSubagent?.({ type: "reasoning", id, text }),
       onError: (err) => {
         failed = err;
         opts.onSubagent?.({ type: "error", id, error: err });
@@ -269,6 +355,8 @@ async function runSubagent(call: DevToolCall, opts: TurnOpts): Promise<string> {
       onUpdate: (messages) => opts.onSubagent?.({ type: "update", id, messages }),
       onRefresh: opts.onRefresh,
       signal: opts.signal,
+      mcpServers: opts.mcpServers,
+      skills: opts.skills,
     });
     const summary = summarizeSubagent(done);
     if (opts.signal.aborted) {
@@ -294,21 +382,30 @@ async function streamCompletion(
   opts: {
     model?: string;
     effort?: string;
+    contextWindow?: number;
     onDelta: (text: string) => void;
+    onReasoning?: (text: string) => void;
     onError: (text: string) => void;
     onUsage?: (usage: ChatUsage) => void;
     signal: AbortSignal;
     journeyId?: string;
   },
-): Promise<{ text: string; toolCalls: DevToolCall[]; error?: string; usage?: ChatUsage }> {
+): Promise<{ text: string; reasoning: string; toolCalls: DevToolCall[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
+  let reasoning = "";
   let toolCalls: DevToolCall[] = [];
   let usage: ChatUsage | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
     let unlisten: (() => void) | undefined;
-    const finish = (value: { text: string; toolCalls: DevToolCall[]; error?: string; usage?: ChatUsage }) => {
+    const finish = (value: {
+      text: string;
+      reasoning: string;
+      toolCalls: DevToolCall[];
+      error?: string;
+      usage?: ChatUsage;
+    }) => {
       if (settled) return;
       settled = true;
       opts.signal.removeEventListener("abort", onAbort);
@@ -317,35 +414,44 @@ async function streamCompletion(
     };
     const onAbort = () => {
       void api.devChatCancel(streamId);
-      finish({ text, toolCalls, error: "Stopped." });
+      finish({ text, reasoning, toolCalls, error: "Stopped." });
     };
     void (async () => {
       try {
         unlisten = await api.onDevChat((ev) => {
           if (ev.stream_id !== streamId) return;
-          if (ev.kind === "delta" && ev.text) {
+          if (ev.kind === "reasoning" && ev.text) {
+            reasoning += ev.text;
+            opts.onReasoning?.(reasoning);
+          } else if (ev.kind === "delta" && ev.text) {
             text += ev.text;
             opts.onDelta(ev.text);
           } else if (ev.kind === "usage") {
             const next = parseChatUsage(ev.usage);
-            if (next) {
-              usage = next;
-              opts.onUsage?.(next);
-            }
+            if (next) usage = next;
           } else if (ev.kind === "done") {
             if (ev.tool_calls?.length) toolCalls = ev.tool_calls;
             usage = parseChatUsage(ev.usage) ?? usage;
-            finish({ text: text || ev.text || "", toolCalls, usage });
+            finish({ text: text || ev.text || "", reasoning, toolCalls, usage });
           } else if (ev.kind === "error") {
-            finish({ text, toolCalls, error: ev.text || "xAI request failed.", usage });
+            finish({ text, reasoning, toolCalls, error: ev.text || "xAI request failed.", usage });
           }
         });
+        opts.onReasoning?.("");
         if (opts.signal.aborted) {
           onAbort();
           return;
         }
         opts.signal.addEventListener("abort", onAbort);
-        await api.devChatStart(streamId, toApiMessages(messages), opts.model, opts.effort, opts.journeyId);
+        const hydrated = await withImageDataUrls(messages, (path) => api.devImageDataUrl(path));
+        await api.devChatStart(
+          streamId,
+          toApiMessages(hydrated),
+          opts.model,
+          opts.effort,
+          opts.journeyId,
+          opts.contextWindow,
+        );
       } catch (e) {
         opts.signal.removeEventListener("abort", onAbort);
         unlisten?.();

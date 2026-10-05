@@ -1,170 +1,147 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
 import {
-  TOOL_TRAIL_LIVE_ROWS,
-  toolTrailSummary,
-  toolTrailTypeCountText,
-  toolTrailTypeCounts,
+  foldToolTrailRows,
   type ToolFileChange,
 } from "../lib/dev";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
 
-const ROW = 18;
-const EASE = [0.22, 1, 0.36, 1] as const;
-const DURATION = 0.32;
-const EXPANDED_ROWS = 12;
 const PEEK_DELAY = 220;
-const PEEK_LINES = 10;
+const PEEK_LINES = 8;
+const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
 
 export function ToolTrail({
   labels,
   files = [],
+  details = [],
+  commands = [],
   live,
 }: {
   labels: string[];
   files?: ToolFileChange[];
+  details?: (ToolFileChange | null)[];
+  commands?: string[];
   live: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [tip, setTip] = useState(false);
-  const summaryRef = useRef<HTMLButtonElement>(null);
-  const [tipPos, setTipPos] = useState<{ left: number; bottom: number } | null>(null);
-
-  useEffect(() => {
-    if (live) setExpanded(false);
-  }, [live]);
-
-  useLayoutEffect(() => {
-    if (!tip || !summaryRef.current) return;
-    const box = summaryRef.current.getBoundingClientRect();
-    setTipPos({
-      left: Math.min(Math.max(8, box.left), window.innerWidth - 16),
-      bottom: window.innerHeight - box.top + 6,
-    });
-  }, [tip]);
-
-  if (labels.length === 0) return null;
-
-  const summary = toolTrailSummary(labels.length);
-  const typeCounts = toolTrailTypeCounts(labels);
-  const showTip = tip && !expanded && tipPos && typeCounts.length > 0;
+  const rows = foldToolTrailRows(labels, details, commands);
+  if (rows.length === 0) return null;
 
   return (
-    <div className="mb-3 px-0.5" aria-label="Tool activity">
-      {live ? (
-        <LiveStack labels={labels} files={files} />
-      ) : (
-        <>
-          {createPortal(
-            <AnimatePresence>
-              {showTip ? (
-                <motion.div
-                  key="tool-type-badges"
-                  role="tooltip"
-                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 6, scale: 0.98 }}
-                  transition={{ duration: DURATION, ease: EASE }}
-                  className="pointer-events-none fixed z-50 flex max-w-[min(20rem,calc(100vw-16px))] flex-wrap gap-1"
-                  style={{ left: tipPos.left, bottom: tipPos.bottom, transformOrigin: "bottom left" }}
-                >
-                  {typeCounts.map(({ type, count }) => (
-                    <span
-                      key={type}
-                      className="inline-flex items-center rounded-full bg-inset px-2 py-0.5 font-mono text-[10px] leading-none text-ink/80 tabular-nums"
-                    >
-                      {toolTrailTypeCountText(type, count)}
-                    </span>
-                  ))}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>,
-            document.body,
-          )}
-          <button
-            ref={summaryRef}
-            type="button"
-            aria-expanded={expanded}
-            aria-label={summary}
-            onClick={() => setExpanded((open) => !open)}
-            onMouseEnter={() => setTip(true)}
-            onMouseLeave={() => setTip(false)}
-            onFocus={() => setTip(true)}
-            onBlur={() => setTip(false)}
-            className="block h-[18px] w-full truncate text-left text-[11px] leading-[18px] text-muted/55 hover:text-muted"
-          >
-            {summary}
-          </button>
-          <FileChangeBadges files={files} />
-          <AnimatePresence initial={false}>
-            {expanded ? (
-              <motion.div
-                key="labels"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: DURATION, ease: EASE }}
-                className="overflow-hidden"
-              >
-                <div className="overflow-auto" style={{ maxHeight: EXPANDED_ROWS * ROW }}>
-                  {labels.map((label, i) => (
-                    <div
-                      key={`${label}-${i}`}
-                      className="truncate text-[11px] text-muted/55"
-                      style={{ height: ROW, lineHeight: `${ROW}px` }}
-                    >
-                      {label}
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
-        </>
-      )}
+    <div className="mb-3" aria-label="Tool activity">
+      <div>
+        {rows.map((row, i) => (
+          <ToolCallBlock
+            key={`${row.label}-${i}`}
+            label={row.label}
+            change={row.change}
+            detail={row.detail}
+            spinning={live && i === rows.length - 1}
+          />
+        ))}
+      </div>
+      <FileChangeBadges files={files} />
     </div>
   );
 }
 
-function LiveStack({ labels, files }: { labels: string[]; files: ToolFileChange[] }) {
-  const offset = Math.max(0, labels.length - TOOL_TRAIL_LIVE_ROWS);
-  const rows = Math.min(labels.length, TOOL_TRAIL_LIVE_ROWS);
+function LiveSpinner() {
   return (
-    <div>
-      <FileChangeBadges files={files} />
-      <div
-        className={
-          offset > 0
-            ? "overflow-hidden [mask-image:linear-gradient(to_bottom,transparent,black_12px)]"
-            : "overflow-hidden"
-        }
-        style={{ height: rows * ROW }}
+    <span
+      className="size-2 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+      aria-hidden
+    />
+  );
+}
+
+function ToolCallBlock({
+  label,
+  change,
+  detail,
+  spinning = false,
+}: {
+  label: string;
+  change: ToolFileChange | null;
+  detail: string;
+  spinning?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const hasDiff = change != null && (change.added.length > 0 || change.removed.length > 0);
+  const command = detail.trim();
+  const canOpen = hasDiff || command.length > 0;
+  const show = open && canOpen;
+  return (
+    <div className={show ? "py-0.5" : undefined}>
+      <button
+        type="button"
+        disabled={!canOpen}
+        aria-expanded={canOpen ? show : undefined}
+        onClick={() => {
+          if (canOpen) setOpen((value) => !value);
+        }}
+        className={`group flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 text-muted transition-colors duration-200 ${
+          canOpen ? "w-full rounded-md hover:text-ink" : "cursor-default"
+        }`}
       >
-        <motion.div
-          initial={false}
-          animate={{ y: -offset * ROW }}
-          transition={{ duration: DURATION, ease: EASE }}
+        <span
+          className="w-3 shrink-0 text-center text-[11px] text-muted/80 transition-colors duration-200 group-hover:text-ink"
+          aria-hidden
         >
-          {labels.map((label, i) => (
-            <div
-              key={i}
-              className="flex items-center gap-1.5 truncate text-[11px] text-muted/55"
-              style={{ height: ROW, lineHeight: `${ROW}px` }}
-            >
-              <span className="min-w-0 truncate">{label}</span>
-              {i === labels.length - 1 ? (
-                <span
-                  className="size-2 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-                  aria-hidden
-                />
-              ) : null}
+          ◆
+        </span>
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {spinning ? <LiveSpinner /> : null}
+      </button>
+      <AnimatePresence initial={false}>
+        {show ? (
+          <motion.div
+            key="detail"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={REVEAL}
+            className="overflow-hidden"
+          >
+            <div className="mt-0.5 mb-1 ml-5 min-w-0">
+              {hasDiff && change ? <InlineEditDiff change={change} /> : <ToolDetail text={command} />}
             </div>
-          ))}
-        </motion.div>
-      </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
+  );
+}
+
+function ToolDetail({ text }: { text: string }) {
+  const lines = text.split("\n").filter((line) => line.trim());
+  return (
+    <div className="font-mono text-[11px] leading-[1.35] text-muted">
+      {lines.map((line, i) => (
+        <div key={i} className="truncate">
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InlineEditDiff({ change }: { change: ToolFileChange }) {
+  return (
+    <pre className="overflow-x-hidden font-mono text-[11px] leading-[1.35]">
+      {change.removed.map((line, i) => (
+        <div key={`-${i}`} className="flex gap-2 text-err">
+          <span className="w-3 shrink-0 select-none">−</span>
+          <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
+        </div>
+      ))}
+      {change.added.map((line, i) => (
+        <div key={`+${i}`} className="flex gap-2 text-ok">
+          <span className="w-3 shrink-0 select-none">+</span>
+          <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
+        </div>
+      ))}
+    </pre>
   );
 }
 

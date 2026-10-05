@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { watchFileRefresh } from "../lib/file-exists";
 import { fileFolderLabel, fileKindLabel, formatFileBytes, formatLineCount } from "../lib/file-preview";
 import { loadFileHoverCard, subscribePrefs } from "../lib/prefs";
 import * as api from "../lib/tauri";
@@ -20,14 +21,14 @@ function cacheKey(workspace: string, path: string): string {
 export function FileHoverCard({
   workspace,
   path,
-  tick,
+  tick = 0,
   enabled,
   onOpen,
   children,
 }: {
   workspace: string;
   path: string;
-  tick: number;
+  tick?: number;
   enabled: boolean;
   onOpen?: (path: string) => void;
   children: ReactNode;
@@ -50,6 +51,12 @@ export function FileHoverCard({
       previewCacheTick = tick;
     }
   }, [workspace, tick]);
+
+  useEffect(() => {
+    return watchFileRefresh(() => {
+      previewCache.delete(cacheKey(workspace, path));
+    });
+  }, [workspace, path]);
 
   useEffect(() => {
     if (!on || !open) return;

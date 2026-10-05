@@ -8,13 +8,27 @@ import {
   loadDevPermission,
   loadDevSidebarWidth,
   loadFileHoverCard,
+  loadAllProjects,
+  loadCollapsedProjects,
+  loadDevConversation,
+  loadDevRecentWorkspaces,
+  loadDevWorkspace,
+  loadPerfOverlay,
   loadGitChangesView,
   loadMarkdownOpenMode,
   saveDevPermission,
   saveDevSidebarWidth,
   saveGitChangesView,
+  pushDevRecentWorkspace,
+  removeDevRecentWorkspace,
+  rewriteStoredProjectPaths,
+  saveCollapsedProjects,
+  saveDevConversation,
+  saveDevWorkspace,
   saveMarkdownOpenMode,
+  setAllProjects,
   setFileHoverCard,
+  setPerfOverlay,
 } from "./prefs.ts";
 
 function mockStorage() {
@@ -126,6 +140,84 @@ describe("file hover card", () => {
     assert.equal(loadFileHoverCard(), false);
     localStorage.setItem("twanagent.fileHoverCard", "0");
     assert.equal(loadFileHoverCard(), false);
+  });
+});
+
+describe("project path migration", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("rewrites the open project, recents, chats, and collapsed keys", () => {
+    saveDevWorkspace("/App/projects/Demo/");
+    pushDevRecentWorkspace("/App/projects/Demo");
+    pushDevRecentWorkspace("/Users/me/code");
+    saveDevConversation("/app/projects/demo", "chat-1");
+    saveCollapsedProjects(["/app/projects/demo"]);
+    rewriteStoredProjectPaths([
+      { from: "/app/projects/Demo", to: "/Users/me/twanagent/projects/Demo" },
+    ]);
+    assert.equal(loadDevWorkspace(), "/Users/me/twanagent/projects/Demo");
+    assert.deepEqual(loadDevRecentWorkspaces(), [
+      "/Users/me/code",
+      "/Users/me/twanagent/projects/Demo",
+    ]);
+    assert.equal(loadDevConversation("/Users/me/twanagent/projects/Demo"), "chat-1");
+    assert.equal(loadDevConversation("/app/projects/demo"), "");
+    assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
+  });
+});
+
+describe("recent workspaces", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("removes a recent by normalized path", () => {
+    pushDevRecentWorkspace("/app/demo");
+    pushDevRecentWorkspace("/app/other");
+    assert.deepEqual(removeDevRecentWorkspace("/app/Demo/"), ["/app/other"]);
+    assert.deepEqual(loadDevRecentWorkspaces(), ["/app/other"]);
+  });
+});
+
+describe("all projects sidebar", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to off when nothing is stored", () => {
+    assert.equal(loadAllProjects(), false);
+  });
+
+  it("saves and reloads the preference", () => {
+    setAllProjects(true);
+    assert.equal(loadAllProjects(), true);
+    setAllProjects(false);
+    assert.equal(loadAllProjects(), false);
+  });
+
+  it("saves collapsed project keys", () => {
+    assert.deepEqual(loadCollapsedProjects(), []);
+    saveCollapsedProjects(["/app/demo", "/app/other"]);
+    assert.deepEqual(loadCollapsedProjects(), ["/app/demo", "/app/other"]);
+  });
+});
+
+describe("performance overlay", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to off when nothing is stored", () => {
+    assert.equal(loadPerfOverlay(), false);
+  });
+
+  it("saves and reloads the preference", () => {
+    setPerfOverlay(true);
+    assert.equal(loadPerfOverlay(), true);
+    setPerfOverlay(false);
+    assert.equal(loadPerfOverlay(), false);
   });
 });
 

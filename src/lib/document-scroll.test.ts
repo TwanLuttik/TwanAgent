@@ -56,6 +56,21 @@ describe("shouldPreventDocumentWheel", () => {
     });
     assert.equal(shouldPreventDocumentWheel(child, 0, -20), false);
   });
+
+  it("lets a horizontal-only code or table region pass vertical wheel to the parent", () => {
+    const region: WheelBox = pane({
+      overflowX: "auto",
+      overflowY: "hidden",
+      scrollTop: 0,
+      scrollHeight: 48,
+      clientHeight: 48,
+      scrollWidth: 640,
+      clientWidth: 320,
+      parent: pane({ scrollTop: 80 }),
+    });
+    assert.equal(shouldPreventDocumentWheel(region, 0, 40), false);
+    assert.equal(shouldPreventDocumentWheel(region, 0, -20), false);
+  });
 });
 
 describe("installDocumentScrollLock", () => {

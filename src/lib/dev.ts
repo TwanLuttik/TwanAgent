@@ -1,5 +1,8 @@
+import { isCompactionSummary } from "./dev-compact.ts";
 import { permissionSystemLine, type PermissionMode } from "./dev-permission.ts";
 import { fileBaseName } from "./file-icon.ts";
+import { mcpSystemLine, type DetectedMcpServer } from "./dev-mcp.ts";
+import { skillSystemLine, type DetectedSkill } from "./dev-skill.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -7,12 +10,26 @@ export const TURN_FAILURE_PREFIX = "Couldn't continue: ";
 
 export type ChatToolCall = { id: string; name: string; arguments: string };
 
+export type ChatImage = {
+  id: string;
+  path: string;
+  name: string;
+  mime: string;
+  width: number;
+  height: number;
+  resized: boolean;
+  dataUrl?: string;
+};
+
 export type ChatMessage = {
   role: ChatRole;
   content?: string | null;
+  /** Model reasoning for this assistant step. Kept in the transcript, not sent back to the API. */
+  reasoning?: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   error?: boolean;
+  images?: ChatImage[];
 };
 
 export const HEAVY_DIRS = new Set([
@@ -160,10 +177,13 @@ export function pathWithSlash(path: string): string {
 }
 
 export function conversationTitleFrom(messages: ChatMessage[]): string {
-  const first = messages.find((m) => m.role === "user" && typeof m.content === "string");
+  const first = messages.find((m) => m.role === "user");
   const text = (first?.content ?? "").trim().replace(/\s+/g, " ");
-  if (!text) return "New chat";
-  return text.length > 42 ? `${text.slice(0, 41)}…` : text;
+  if (text) return text.length > 42 ? `${text.slice(0, 41)}…` : text;
+  const named = first?.images?.map((img) => img.name.trim()).find(Boolean);
+  if (named) return named.length > 42 ? `${named.slice(0, 41)}…` : named;
+  if (first?.images?.length) return first.images.length === 1 ? "Image" : `${first.images.length} images`;
+  return "New chat";
 }
 
 export function moveById<T extends { id: string }>(rows: T[], fromId: string, toId: string): T[] {
@@ -186,7 +206,7 @@ export function clipPreview(text: string, max = 72): string {
 export function latestAssistantPreview(
   messages: ChatMessage[],
   streamText = "",
-  liveTools: string[] = [],
+  liveTools: LiveToolInput[] = [],
 ): string {
   const stream = clipPreview(streamText);
   if (stream) return stream;
@@ -197,7 +217,7 @@ export function latestAssistantPreview(
     if (text) return text;
   }
   const tool = liveTools[liveTools.length - 1];
-  if (tool) return clipPreview(tool);
+  if (tool) return clipPreview(liveToolLabel(tool));
   return "Working…";
 }
 
@@ -239,12 +259,20 @@ export function needsShellConfirm(name: string): boolean {
 export function toolSummary(name: string, args: Record<string, unknown>): string {
   const path = String(args.path ?? "");
   if (name === "read_file") return `Read ${path}`;
-  if (name === "write_file") return `Write ${path}`;
-  if (name === "edit_file") return `Edit ${path}`;
+  if (name === "write_file") return `Write ${fileBaseName(path) || path || "file"}`;
+  if (name === "edit_file") return `Edit ${fileBaseName(path) || path || "file"}`;
   if (name === "list_dir") return `List ${path || "."}`;
   if (name === "git_status") return "Git status";
-  if (name === "git_diff") return `Diff ${path || "."}`;
-  if (name === "run_command") return `$ ${String(args.command ?? "")}`;
+  if (name === "git_diff") return path ? `Diff ${fileBaseName(path) || path}` : "Diff";
+  if (name === "run_command") {
+    const description = String(args.description ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/^run\s+/i, "");
+    if (description) return `Run ${description}`;
+    const command = String(args.command ?? "").trim().replace(/\s+/g, " ");
+    return command ? `Run ${command}` : "Run command";
+  }
   if (name === "spawn_subagent") {
     const label = String(args.description ?? "").trim();
     return label ? `Subagent: ${label}` : "Subagent";
@@ -252,6 +280,7 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
   if (name === "update_journey_knowledge") {
     return String(args.mode ?? "") === "edit" ? "Edit journey knowledge" : "Update journey knowledge";
   }
+  if (name === "todo_write") return "Updated todos";
   return name;
 }
 
@@ -267,6 +296,30 @@ export type ToolFileChange = {
   added: string[];
   removed: string[];
 };
+
+/** Slim one-line detail shown when a tool row is expanded. */
+export function toolDetail(call: ChatToolCall): string {
+  const args = parseToolArgs(call.arguments);
+  if (call.name === "run_command") {
+    return String(args.command ?? "").trim().replace(/\s+/g, " ");
+  }
+  if (call.name === "spawn_subagent") {
+    return String(args.prompt ?? "").trim().replace(/\s+/g, " ");
+  }
+  if (call.name === "git_diff") {
+    const path = String(args.path ?? "").trim();
+    return path ? `git diff ${path}` : "git diff";
+  }
+  if (call.name === "git_status") return "git status";
+  if (call.name === "read_file" || call.name === "list_dir") {
+    return String(args.path ?? "").trim();
+  }
+  if (call.name === "update_journey_knowledge") {
+    const mode = String(args.mode ?? "").trim();
+    return mode ? `journey knowledge (${mode})` : "journey knowledge";
+  }
+  return "";
+}
 
 const SNIPPET_CAP = 40;
 
@@ -464,13 +517,78 @@ export function gitChangesTree<T extends GitDecorChange>(changes: T[]): GitChang
   return sortNodes(root.children);
 }
 
+export type LiveToolRow = { label: string; change: ToolFileChange | null; detail?: string };
+
+export type LiveToolInput = string | LiveToolRow;
+
+export function liveToolLabel(tool: LiveToolInput): string {
+  return typeof tool === "string" ? tool : tool.label;
+}
+
+export function liveToolChange(tool: LiveToolInput): ToolFileChange | null {
+  return typeof tool === "string" ? null : tool.change;
+}
+
+export function liveToolDetail(tool: LiveToolInput): string {
+  return typeof tool === "string" ? "" : (tool.detail ?? "");
+}
+
 export type TranscriptItem =
-  | { kind: "user"; content: string }
+  | { kind: "user"; content: string; images?: ChatImage[] }
+  | { kind: "thinking"; content: string; live?: boolean }
   | { kind: "assistant"; content: string }
   | { kind: "error"; content: string }
-  | { kind: "tools"; labels: string[]; files: ToolFileChange[] };
+  | {
+      kind: "tools";
+      labels: string[];
+      files: ToolFileChange[];
+      details: (ToolFileChange | null)[];
+      commands: string[];
+    };
 
-export const TOOL_TRAIL_LIVE_ROWS = 3;
+export type ToolTrailRow = { label: string; change: ToolFileChange | null; detail: string };
+
+function trailGroup(label: string): "read" | "list" | null {
+  if (label.startsWith("Read ")) return "read";
+  if (label.startsWith("List ")) return "list";
+  return null;
+}
+
+/** Fold a run of reads or lists into one line, matching the CLI tool list. */
+export function foldToolTrailRows(
+  labels: string[],
+  details: (ToolFileChange | null)[] = [],
+  commands: string[] = [],
+): ToolTrailRow[] {
+  const rows: ToolTrailRow[] = [];
+  let i = 0;
+  while (i < labels.length) {
+    const group = trailGroup(labels[i] ?? "");
+    if (group) {
+      let j = i + 1;
+      while (j < labels.length && trailGroup(labels[j] ?? "") === group) j += 1;
+      const count = j - i;
+      const paths = commands.slice(i, j).map((item) => item.trim()).filter(Boolean);
+      rows.push({
+        label:
+          group === "read"
+            ? count === 1
+              ? "Read 1 file"
+              : `Read ${count} files`
+            : count === 1
+              ? "List 1 directory"
+              : `List ${count} directories`,
+        change: null,
+        detail: paths.join("\n"),
+      });
+      i = j;
+      continue;
+    }
+    rows.push({ label: labels[i] ?? "", change: details[i] ?? null, detail: commands[i] ?? "" });
+    i += 1;
+  }
+  return rows;
+}
 
 export function toolTrailSummary(count: number): string {
   if (count <= 0) return "";
@@ -504,6 +622,18 @@ export function toolTrailTypeCountText(type: string, count: number): string {
   return `${type} ×${count}`;
 }
 
+export function toolTrailTypeIcon(type: string): string {
+  if (type === "$") return "terminal";
+  if (type === "Subagent") return "person.2";
+  if (type === "Git status" || type === "Diff") return "arrow.triangle.branch";
+  if (type.includes("journey knowledge")) return "sparkles";
+  if (type === "Read") return "doc";
+  if (type === "Write") return "square.and.arrow.down";
+  if (type === "Edit") return "pencil";
+  if (type === "List") return "folder";
+  return "ellipsis";
+}
+
 export function isLiveToolTrail(items: TranscriptItem[], index: number, busy: boolean): boolean {
   return busy && items[index]?.kind === "tools" && index === items.length - 1;
 }
@@ -511,9 +641,11 @@ export function isLiveToolTrail(items: TranscriptItem[], index: number, busy: bo
 export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
   const out: TranscriptItem[] = [];
   for (const msg of messages) {
-    if (msg.role === "system" || msg.role === "tool") continue;
+    if (msg.role === "tool" || msg.role === "system") continue;
     if (msg.role === "user") {
-      out.push({ kind: "user", content: String(msg.content ?? "") });
+      const item: TranscriptItem = { kind: "user", content: String(msg.content ?? "") };
+      if (msg.images?.length) item.images = msg.images;
+      out.push(item);
       continue;
     }
     if (msg.error || String(msg.content ?? "").startsWith(TURN_FAILURE_PREFIX)) {
@@ -521,37 +653,87 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
       continue;
     }
     const text = (msg.content ?? "").trim();
-    const calls = msg.tool_calls ?? [];
+    const reasoning = String(msg.reasoning ?? "").trim();
+    const calls = (msg.tool_calls ?? []).filter((call) => call.name !== "todo_write");
     const labels = calls.map(toolActivityLabel);
+    const details = calls.map((call) => toolFileChange(call));
+    const commands = calls.map(toolDetail);
     const files = toolTrailFileChanges(calls);
+    if (reasoning) out.push({ kind: "thinking", content: reasoning });
     if (text) out.push({ kind: "assistant", content: String(msg.content ?? "") });
     if (labels.length) {
       const last = out[out.length - 1];
       if (last?.kind === "tools") {
         last.labels.push(...labels);
+        last.details.push(...details);
+        last.commands.push(...commands);
         last.files = mergeToolFileChanges([...last.files, ...files]);
-      } else out.push({ kind: "tools", labels, files });
+      } else out.push({ kind: "tools", labels, files, details, commands });
     }
   }
   return out;
 }
 
+export type TranscriptUserItem = Extract<TranscriptItem, { kind: "user" }>;
+export type TranscriptFollowItem = Exclude<TranscriptItem, { kind: "user" }>;
+
+export type TranscriptTurn = {
+  user?: TranscriptUserItem;
+  rest: TranscriptFollowItem[];
+};
+
+export function groupTranscriptTurns(items: TranscriptItem[]): TranscriptTurn[] {
+  const turns: TranscriptTurn[] = [];
+  let current: TranscriptTurn = { rest: [] };
+  for (const item of items) {
+    if (item.kind === "user") {
+      if (current.user || current.rest.length) turns.push(current);
+      current = { user: item, rest: [] };
+      continue;
+    }
+    current.rest.push(item);
+  }
+  if (current.user || current.rest.length) turns.push(current);
+  return turns;
+}
+
+function thinkingAlreadyShown(items: TranscriptItem[], text: string): boolean {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (!item || item.kind === "user") return false;
+    if (item.kind === "thinking") return item.content === text;
+  }
+  return false;
+}
+
 export function liveTranscriptItems(
   messages: ChatMessage[],
   streamText: string,
-  liveTools: string[] = [],
+  liveTools: LiveToolInput[] = [],
+  streamReasoning = "",
 ): TranscriptItem[] {
   const out = transcriptItems(messages);
   const seen = new Set(out.flatMap((item) => (item.kind === "tools" ? item.labels : [])));
-  const pending = liveTools.filter((label) => !seen.has(label));
+  const pending = liveTools.filter((tool) => !seen.has(liveToolLabel(tool)));
+  if (streamReasoning && !thinkingAlreadyShown(out, streamReasoning)) {
+    out.push({ kind: "thinking", content: streamReasoning, live: true });
+  }
   const last = out[out.length - 1];
   if (streamText && !(last?.kind === "assistant" && last.content === streamText)) {
     out.push({ kind: "assistant", content: streamText });
   }
   if (pending.length) {
-    const last = out[out.length - 1];
-    if (last?.kind === "tools") last.labels.push(...pending);
-    else out.push({ kind: "tools", labels: pending, files: [] });
+    const labels = pending.map(liveToolLabel);
+    const details = pending.map(liveToolChange);
+    const commands = pending.map(liveToolDetail);
+    const files = mergeToolFileChanges(details.flatMap((change) => (change ? [change] : [])));
+    const tail = out[out.length - 1];
+    if (tail?.kind === "tools") {
+      tail.labels.push(...labels);
+      tail.details.push(...details);
+      tail.commands.push(...commands);
+      tail.files = mergeToolFileChanges([...tail.files, ...files]);
+    } else out.push({ kind: "tools", labels, files, details, commands });
   }
   return out;
 }
@@ -560,17 +742,21 @@ export function systemPrompt(
   workspace: string,
   permission: PermissionMode = "ask",
   knowledge?: string,
+  mcpServers?: DetectedMcpServer[],
+  skills?: DetectedSkill[],
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
     : "";
+  const extra = extraSystemLines(mcpServers, skills);
   return {
     role: "system",
     content: `You are Grok, a coding agent in TwanAgent. Only Grok is available — do not suggest other models.
 Workspace: ${workspace}
 ${permissionSystemLine(permission)}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
-Prefer edit_file for small changes. Don't commit unless asked. Be concise.${knowledgeBlock}`,
+For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
+Prefer edit_file for small changes. Don't commit unless asked. Be concise.${knowledgeBlock}${extra}`,
   };
 }
 
@@ -580,11 +766,21 @@ export function withSystem(
   system?: ChatMessage,
   permission: PermissionMode = "ask",
   knowledge?: string,
+  mcpServers?: DetectedMcpServer[],
+  skills?: DetectedSkill[],
 ): ChatMessage[] {
-  return [
-    system ?? systemPrompt(workspace, permission, knowledge),
-    ...messages.filter((m) => m.role !== "system"),
-  ];
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills);
+  const extra = system ? extraSystemLines(mcpServers, skills) : "";
+  const content =
+    extra && !String(base.content ?? "").includes(extra.trim())
+      ? `${base.content ?? ""}${extra}`
+      : base.content;
+  return [{ ...base, content }, ...messages.filter((m) => m.role !== "system" || isCompactionSummary(m))];
+}
+
+function extraSystemLines(mcpServers?: DetectedMcpServer[], skills?: DetectedSkill[]): string {
+  const blocks = [mcpSystemLine(mcpServers ?? []), skillSystemLine(skills ?? [])].filter(Boolean);
+  return blocks.length ? `\n${blocks.join("\n")}` : "";
 }
 
 export type ApiToolCall = {
@@ -593,9 +789,13 @@ export type ApiToolCall = {
   function: { name: string; arguments: string };
 };
 
+export type ApiContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export type ApiChatMessage = {
   role: ChatRole;
-  content?: string | null;
+  content?: string | null | ApiContentPart[];
   tool_calls?: ApiToolCall[];
   tool_call_id?: string;
 };
@@ -628,6 +828,19 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
         content: msg.content?.trim() ? msg.content : null,
         tool_calls: msg.tool_calls.map(toApiToolCall),
       };
+    }
+    if (isCompactionSummary(msg)) {
+      return { role: "user", content: String(msg.content ?? "") };
+    }
+    if (msg.role === "user" && msg.images?.length) {
+      const parts: ApiContentPart[] = [];
+      const text = (msg.content ?? "").trim();
+      if (text) parts.push({ type: "text", text });
+      for (const img of msg.images) {
+        if (!img.dataUrl) continue;
+        parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
+      }
+      return { role: "user", content: parts };
     }
     return {
       role: msg.role,

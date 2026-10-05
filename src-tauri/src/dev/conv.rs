@@ -55,7 +55,7 @@ pub(crate) fn save_conversations_json(
 }
 
 pub(crate) fn conv_store_dir(data_dir: &Path, workspace: &str) -> PathBuf {
-    conv_dir(data_dir, workspace)
+    super::project_location::resolve_conv_dir(data_dir, workspace)
 }
 
 pub(crate) fn open_store(data_dir: &Path, workspace: &str) -> Result<rusqlite::Connection> {
@@ -392,6 +392,7 @@ mod tests {
                 kind: "chat".into(),
                 messages: vec![],
                 context_usage: None,
+                compaction: None,
                 journey_id: None,
                 sort_order: 0,
             }
@@ -420,6 +421,7 @@ mod tests {
                 completion_tokens: 800,
                 total_tokens: 24900,
             }),
+            compaction: None,
             journey_id: None,
             sort_order: 0,
         };

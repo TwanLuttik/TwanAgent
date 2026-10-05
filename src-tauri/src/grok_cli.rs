@@ -25,6 +25,18 @@ pub struct DevModel {
     pub efforts: Vec<DevEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Selectable sizes from the CLI catalog. Empty when the model has a single window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub context_windows: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GrokCliInfo {
+    pub installed: bool,
+    pub path: String,
+    pub version: Option<String>,
+    pub logged_in: bool,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +101,111 @@ pub fn session_exists_in(home: &Path, session_id: &str) -> bool {
 
 pub fn session_exists(session_id: &str) -> bool {
     grok_home().is_some_and(|home| session_exists_in(&home, session_id))
+}
+
+const PLAN_CAP: usize = 400_000;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GrokPlanSnapshot {
+    pub found: bool,
+    pub state: String,
+    pub awaiting_approval: bool,
+    pub content: String,
+}
+
+impl GrokPlanSnapshot {
+    fn missing() -> Self {
+        Self {
+            found: false,
+            state: "Inactive".into(),
+            awaiting_approval: false,
+            content: String::new(),
+        }
+    }
+}
+
+pub fn encode_session_cwd(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let mut out = String::new();
+    for byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+fn session_dir(home: &Path, workspace: &Path, session_id: &str) -> Option<PathBuf> {
+    if !session_id_safe(session_id) {
+        return None;
+    }
+    let id = session_id.trim();
+    let root = home.join("sessions");
+    let preferred = root.join(encode_session_cwd(workspace)).join(id);
+    if preferred.is_dir() {
+        return Some(preferred);
+    }
+    let entries = fs::read_dir(root).ok()?;
+    entries.flatten().find_map(|entry| {
+        let candidate = entry.path().join(id);
+        candidate.is_dir().then_some(candidate)
+    })
+}
+
+fn parse_plan_mode(text: &str) -> (String, bool) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return ("Inactive".into(), false);
+    };
+    let state = match value
+        .get("state")
+        .and_then(|item| item.as_str())
+        .unwrap_or("Inactive")
+    {
+        "Pending" => "Pending",
+        "Active" => "Active",
+        "ExitPending" => "ExitPending",
+        _ => "Inactive",
+    };
+    let awaiting = value
+        .get("awaiting_plan_approval")
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false);
+    (state.into(), awaiting)
+}
+
+fn read_capped(path: &Path) -> String {
+    let Ok(bytes) = fs::read(path) else {
+        return String::new();
+    };
+    let end = bytes.len().min(PLAN_CAP);
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+pub fn read_grok_plan(home: &Path, workspace: &Path, session_id: &str) -> GrokPlanSnapshot {
+    let Some(dir) = session_dir(home, workspace, session_id) else {
+        return GrokPlanSnapshot::missing();
+    };
+    let (state, awaiting_approval) =
+        parse_plan_mode(&fs::read_to_string(dir.join("plan_mode.json")).unwrap_or_default());
+    GrokPlanSnapshot {
+        found: true,
+        state,
+        awaiting_approval,
+        content: read_capped(&dir.join("plan.md")),
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_grok_plan(workspace: String, session_id: String) -> GrokPlanSnapshot {
+    let Some(home) = grok_home() else {
+        return GrokPlanSnapshot::missing();
+    };
+    let path = PathBuf::from(&workspace);
+    let path = fs::canonicalize(&path).unwrap_or(path);
+    read_grok_plan(&home, &path, &session_id)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -280,6 +397,7 @@ pub fn parse_models_cache(src: &str) -> Vec<DevModel> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let context_window = info.get("context_window").and_then(json_u64);
         rows.push(DevModel {
             id: info
                 .get("id")
@@ -288,11 +406,50 @@ pub fn parse_models_cache(src: &str) -> Vec<DevModel> {
                 .to_string(),
             name,
             efforts,
-            context_window: info.get("context_window").and_then(|v| v.as_u64()),
+            context_window,
+            context_windows: context_windows_from(info, context_window),
         });
     }
     rows.sort_by(|a, b| b.id.cmp(&a.id));
     rows
+}
+
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|n| n.is_finite() && *n > 0.0 && *n <= u64::MAX as f64)
+            .map(|n| n as u64)
+    })
+}
+
+/// Sizes the CLI offers when a model lists more than one. A lone default stays empty
+/// so the picker stays hidden, matching `/context-window`.
+fn context_windows_from(info: &serde_json::Value, default_window: Option<u64>) -> Vec<u64> {
+    let mut rows = Vec::new();
+    if let Some(arr) = info.get("context_windows").and_then(|v| v.as_array()) {
+        for value in arr {
+            let Some(n) = json_u64(value).filter(|n| *n > 0) else {
+                continue;
+            };
+            if !rows.contains(&n) {
+                rows.push(n);
+            }
+        }
+    }
+    if let Some(n) = default_window.filter(|n| *n > 0) {
+        if !rows.contains(&n) {
+            rows.insert(0, n);
+        }
+    }
+    if rows.len() < 2 {
+        return Vec::new();
+    }
+    rows
+}
+
+pub fn context_window_header_value(tokens: Option<u64>) -> Option<String> {
+    tokens.filter(|n| *n > 0).map(|n| n.to_string())
 }
 
 fn friendly_effort_label(raw: &str, id: &str) -> String {
@@ -322,7 +479,8 @@ fn fallback_models() -> Vec<DevModel> {
                     label: effort_label(e),
                 })
                 .collect(),
-            context_window: Some(500_000),
+            context_window: Some(256_000),
+            context_windows: vec![256_000, 500_000],
         })
         .collect()
 }
@@ -425,6 +583,20 @@ pub fn resolve_auth(data_dir: &Path) -> Option<GrokAuth> {
     })
 }
 
+pub fn cli_info(data_dir: &Path) -> GrokCliInfo {
+    let status = runtime(data_dir);
+    let path = grok_bin()
+        .map(|bin| bin.display().to_string())
+        .unwrap_or_default();
+    GrokCliInfo {
+        installed: status.installed,
+        path,
+        version: status.version,
+        logged_in: status.logged_in,
+        email: status.email,
+    }
+}
+
 pub fn runtime(data_dir: &Path) -> DevRuntime {
     let has_key = secrets::resolve_xai_key_on_disk(data_dir).is_some();
     let bin = grok_bin();
@@ -517,7 +689,8 @@ mod tests {
                   {"id": "xhigh", "label": "Extra High Effort"},
                   {"id": "high", "label": "High Effort"}
                 ],
-                "context_window": 500000
+                "context_window": 256000,
+                "context_windows": [256000, 500000, 256000]
               }
             },
             "sxs-claude-opus-4-6": {
@@ -533,7 +706,37 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "grok-4.6");
         assert_eq!(rows[0].efforts[0].label, "Extra high");
-        assert_eq!(rows[0].context_window, Some(500_000));
+        assert_eq!(rows[0].context_window, Some(256_000));
+        assert_eq!(rows[0].context_windows, vec![256_000, 500_000]);
+    }
+
+    #[test]
+    fn single_context_window_stays_hidden() {
+        let src = r#"{
+          "models": {
+            "grok-3": {
+              "info": {
+                "id": "grok-3",
+                "name": "Grok 3",
+                "model_family": "xai",
+                "context_window": 131072
+              }
+            }
+          }
+        }"#;
+        let rows = parse_models_cache(src);
+        assert_eq!(rows[0].context_window, Some(131_072));
+        assert!(rows[0].context_windows.is_empty());
+    }
+
+    #[test]
+    fn context_window_header_is_a_positive_token_count() {
+        assert_eq!(
+            context_window_header_value(Some(500_000)).as_deref(),
+            Some("500000")
+        );
+        assert_eq!(context_window_header_value(Some(0)), None);
+        assert_eq!(context_window_header_value(None), None);
     }
 
     #[test]
@@ -589,6 +792,83 @@ mod tests {
         assert_eq!(grok_launch_args(Some("c1"), false), ["--session-id", "c1"]);
         assert_eq!(grok_launch_args(Some("c1"), true), ["--resume", "c1"]);
         assert_eq!(grok_launch_args(Some("  "), false), Vec::<String>::new());
+    }
+
+    #[test]
+    fn read_grok_plan_returns_the_session_plan() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b70";
+        let workspace = PathBuf::from("/tmp/project");
+        let missing = read_grok_plan(dir.path(), &workspace, id);
+        assert!(!missing.found);
+        assert_eq!(missing.state, "Inactive");
+        assert!(!missing.awaiting_approval);
+        assert!(missing.content.is_empty());
+
+        let session = dir
+            .path()
+            .join("sessions")
+            .join("%2Ftmp%2Fproject")
+            .join(id);
+        fs::create_dir_all(&session).unwrap();
+        fs::write(session.join("plan.md"), "# Ship it\n\nReuse the helper.\n").unwrap();
+        fs::write(
+            session.join("plan_mode.json"),
+            r#"{"state":"Active","awaiting_plan_approval":false}"#,
+        )
+        .unwrap();
+
+        let plan = read_grok_plan(dir.path(), &workspace, id);
+        assert!(plan.found);
+        assert_eq!(plan.state, "Active");
+        assert!(!plan.awaiting_approval);
+        assert!(plan.content.contains("Reuse the helper."));
+    }
+
+    #[test]
+    fn read_grok_plan_prefers_the_workspace_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b71";
+        let other = dir.path().join("sessions").join("%2Fother").join(id);
+        let matched = dir
+            .path()
+            .join("sessions")
+            .join("%2Ftmp%2Fproject")
+            .join(id);
+        fs::create_dir_all(&other).unwrap();
+        fs::create_dir_all(&matched).unwrap();
+        fs::write(other.join("plan.md"), "other plan").unwrap();
+        fs::write(matched.join("plan.md"), "workspace plan").unwrap();
+        fs::write(
+            matched.join("plan_mode.json"),
+            r#"{"state":"Inactive","awaiting_plan_approval":true}"#,
+        )
+        .unwrap();
+
+        let plan = read_grok_plan(dir.path(), Path::new("/tmp/project"), id);
+        assert!(plan.found);
+        assert_eq!(plan.content, "workspace plan");
+        assert!(plan.awaiting_approval);
+        assert_eq!(plan.state, "Inactive");
+    }
+
+    #[test]
+    fn read_grok_plan_falls_back_and_rejects_unsafe_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b72";
+        let session = dir.path().join("sessions").join("%2Felsewhere").join(id);
+        fs::create_dir_all(&session).unwrap();
+        fs::write(session.join("plan.md"), "saved plan").unwrap();
+        fs::write(session.join("plan_mode.json"), "not json").unwrap();
+
+        let plan = read_grok_plan(dir.path(), Path::new("/tmp/missing"), id);
+        assert!(plan.found);
+        assert_eq!(plan.content, "saved plan");
+        assert_eq!(plan.state, "Inactive");
+        assert!(!plan.awaiting_approval);
+
+        let escaped = read_grok_plan(dir.path(), Path::new("/tmp/missing"), "../escape");
+        assert!(!escaped.found);
     }
 
     #[test]

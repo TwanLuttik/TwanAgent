@@ -8,15 +8,19 @@ use crate::workspace::OpenedRoots;
 
 pub struct AppState {
     pub data_dir: PathBuf,
+    pub projects_root: PathBuf,
+    pub legacy_projects_root: PathBuf,
     opened: Mutex<OpenedRoots>,
 }
 
 impl AppState {
     pub fn load(data_dir: PathBuf) -> Self {
-        let projects = data_dir.join("projects");
-        let opened = OpenedRoots::load(&data_dir, projects);
+        let location = crate::dev::project_location::prepare(&data_dir);
+        let opened = OpenedRoots::load(&data_dir, location.root.clone());
         Self {
             data_dir,
+            projects_root: location.root,
+            legacy_projects_root: location.legacy,
             opened: Mutex::new(opened),
         }
     }
@@ -38,6 +42,22 @@ impl AppState {
         let _ = opened.persist(&self.data_dir);
         let _ = app.asset_protocol_scope().allow_directory(&canon, true);
         Ok(canon)
+    }
+
+    pub fn opened_workspaces(&self) -> Vec<PathBuf> {
+        self.opened
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .list()
+    }
+
+    pub fn forget_workspace(&self, root: &Path) -> Result<bool> {
+        let mut opened = self.opened.lock().unwrap_or_else(|e| e.into_inner());
+        let removed = opened.forget(root);
+        if removed {
+            let _ = opened.persist(&self.data_dir);
+        }
+        Ok(removed)
     }
 
     pub fn allow_persisted_assets<R: Runtime, M: Manager<R>>(&self, app: &M) {

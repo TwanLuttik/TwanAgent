@@ -104,10 +104,6 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub(crate) fn projects_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join("projects")
-}
-
 pub(crate) fn path_string(path: &Path) -> String {
     crate::paths::native_source(&path.to_string_lossy())
 }

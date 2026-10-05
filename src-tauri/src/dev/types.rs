@@ -51,6 +51,9 @@ pub struct Conversation {
     pub messages: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<DevChatUsage>,
+    /// CLI-style compaction: one summary covering messages before `through`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<DevCompaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journey_id: Option<String>,
     #[serde(default)]
@@ -97,6 +100,12 @@ pub struct SidebarItem {
 pub struct KeyStatus {
     pub saved: bool,
     pub env: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DevCompaction {
+    pub summary: String,
+    pub through: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

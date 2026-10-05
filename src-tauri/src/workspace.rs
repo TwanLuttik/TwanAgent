@@ -113,6 +113,29 @@ impl OpenedRoots {
     pub fn iter(&self) -> impl Iterator<Item = &PathBuf> {
         self.roots.iter()
     }
+
+    pub fn forget(&mut self, root: &Path) -> bool {
+        let Ok(canon) = fs::canonicalize(root) else {
+            return false;
+        };
+        self.roots.remove(&canon)
+    }
+
+    pub fn list(&self) -> Vec<PathBuf> {
+        let mut rows: Vec<PathBuf> = self.roots.iter().cloned().collect();
+        rows.sort();
+        rows
+    }
+}
+
+pub fn remember_roots(data_dir: &Path, projects_dir: &Path, extra: &[PathBuf]) -> Result<()> {
+    let mut opened = OpenedRoots::load(data_dir, projects_dir.to_path_buf());
+    for root in extra {
+        if root.is_dir() {
+            let _ = opened.register(root);
+        }
+    }
+    opened.persist(data_dir)
 }
 
 #[cfg(test)]
@@ -126,6 +149,21 @@ mod tests {
         assert!(!opened.is_allowed(dir.path()));
         let err = opened.require(dir.path().to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("not an opened workspace"));
+    }
+
+    #[test]
+    fn forgets_a_registered_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let mut opened = OpenedRoots::new(None);
+        let dir = tempfile::tempdir().unwrap();
+        opened.register(dir.path()).unwrap();
+        opened.persist(data.path()).unwrap();
+        assert!(opened.forget(dir.path()));
+        assert!(!opened.is_allowed(dir.path()));
+        opened.persist(data.path()).unwrap();
+        let loaded = OpenedRoots::load(data.path(), PathBuf::from("/unused"));
+        assert!(!loaded.is_allowed(dir.path()));
+        assert!(loaded.list().is_empty());
     }
 
     #[test]

@@ -2,11 +2,24 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   canPersistTurn,
+  liveTurnMessages,
+  clearPendingForChat,
+  dequeuePending,
   draftForChat,
+  enqueuePending,
   isEmptyCompletion,
   isRetryableChatError,
+  pendingEditBlocksSend,
+  pendingForChat,
+  pendingIndexAfterRemove,
+  removePending,
   setDraftForChat,
   skipToolIfAborted,
+  chatHasRunningTurn,
+  runningTurnStartedAt,
+  shouldQueueForChat,
+  takeNextPending,
+  updatePending,
   turnAppliesToChat,
   turnFailureMessage,
 } from "./dev-turn.ts";
@@ -17,6 +30,66 @@ describe("turnAppliesToChat", () => {
     assert.equal(turnAppliesToChat("chat-a", "chat-b"), false);
     assert.equal(turnAppliesToChat("chat-a", ""), false);
     assert.equal(turnAppliesToChat("", "chat-a"), false);
+  });
+});
+
+describe("liveTurnMessages", () => {
+  const live = [{ role: "assistant" as const, content: "still working" }];
+
+  it("keeps the in-memory transcript for the project that owns the turn", () => {
+    assert.deepEqual(
+      liveTurnMessages({
+        workspace: "/app/beta/",
+        conversationId: "chat-b",
+        runningWorkspace: "/app/Beta",
+        runningId: "chat-b",
+        live,
+      }),
+      live,
+    );
+  });
+
+  it("uses the per-conversation live transcript when another chat is the foreground turn", () => {
+    const other = [{ role: "user" as const, content: "from chat a" }];
+    assert.deepEqual(
+      liveTurnMessages({
+        workspace: "/app/beta",
+        conversationId: "chat-a",
+        runningWorkspace: "/app/beta",
+        runningId: "chat-b",
+        live,
+        liveByChat: new Map([["chat-a", { messages: other }]]),
+      }),
+      other,
+    );
+  });
+
+  it("keeps a chat's live transcript while another project is in front", () => {
+    const alpha = [{ role: "assistant" as const, content: "alpha live" }];
+    assert.deepEqual(
+      liveTurnMessages({
+        workspace: "/app/alpha",
+        conversationId: "chat-a",
+        runningWorkspace: "/app/beta",
+        runningId: "chat-b",
+        live,
+        liveByChat: new Map([["chat-a", { messages: alpha }]]),
+      }),
+      alpha,
+    );
+  });
+
+  it("ignores a saved transcript from another project or another chat", () => {
+    const other = {
+      workspace: "/app/alpha",
+      conversationId: "chat-b",
+      runningWorkspace: "/app/beta",
+      runningId: "chat-b",
+      live,
+    };
+    assert.equal(liveTurnMessages(other), null);
+    assert.equal(liveTurnMessages({ ...other, workspace: "/app/beta", conversationId: "chat-a" }), null);
+    assert.equal(liveTurnMessages({ ...other, workspace: "/app/beta", live: null }), null);
   });
 });
 
@@ -87,5 +160,156 @@ describe("skipToolIfAborted", () => {
     const ac = new AbortController();
     ac.abort();
     assert.equal(skipToolIfAborted(ac.signal), "Skipped: stopped.");
+  });
+});
+
+describe("per-conversation pending queue", () => {
+  it("keeps queued messages isolated by chat id", () => {
+    let pending = enqueuePending({}, "a", "first a");
+    pending = enqueuePending(pending, "b", "first b");
+    pending = enqueuePending(pending, "a", "second a");
+    assert.deepEqual(pendingForChat(pending, "a"), [{ text: "first a" }, { text: "second a" }]);
+    assert.deepEqual(pendingForChat(pending, "b"), [{ text: "first b" }]);
+    assert.deepEqual(pendingForChat(pending, "c"), []);
+  });
+
+  it("ignores blank messages and missing chat ids", () => {
+    assert.deepEqual(enqueuePending({}, "a", "   "), {});
+    assert.deepEqual(enqueuePending({}, "", "hello"), {});
+  });
+
+  it("trims queued text and keeps attached images", () => {
+    const image = {
+      id: "img-1",
+      path: "/tmp/a.jpg",
+      name: "a.jpg",
+      mime: "image/jpeg",
+      width: 10,
+      height: 10,
+      resized: false,
+    };
+    const pending = enqueuePending({}, "a", "  hello  ", [image]);
+    assert.deepEqual(pendingForChat(pending, "a"), [{ text: "hello", images: [image] }]);
+    assert.deepEqual(pendingForChat(enqueuePending({}, "a", "  ", [image]), "a"), [
+      { text: "", images: [image] },
+    ]);
+  });
+
+  it("removes a queued message by index", () => {
+    let pending = enqueuePending({}, "a", "one");
+    pending = enqueuePending(pending, "a", "two");
+    pending = enqueuePending(pending, "a", "three");
+    pending = removePending(pending, "a", 1);
+    assert.deepEqual(pendingForChat(pending, "a"), [{ text: "one" }, { text: "three" }]);
+  });
+
+  it("drops the chat key when the last pending message is removed", () => {
+    let pending = enqueuePending({}, "a", "only");
+    pending = enqueuePending(pending, "b", "keep");
+    pending = removePending(pending, "a", 0);
+    assert.equal(Object.hasOwn(pending, "a"), false);
+    assert.deepEqual(pendingForChat(pending, "b"), [{ text: "keep" }]);
+  });
+
+  it("dequeues the oldest message first", () => {
+    let pending = enqueuePending({}, "a", "one");
+    pending = enqueuePending(pending, "a", "two");
+    const first = dequeuePending(pending, "a");
+    assert.equal(first.item?.text, "one");
+    assert.deepEqual(pendingForChat(first.pending, "a"), [{ text: "two" }]);
+    const second = dequeuePending(first.pending, "a");
+    assert.equal(second.item?.text, "two");
+    assert.equal(Object.hasOwn(second.pending, "a"), false);
+    const empty = dequeuePending(second.pending, "a");
+    assert.equal(empty.item, null);
+  });
+
+  it("only continues the conversation whose turn just finished", () => {
+    let pending = enqueuePending({}, "finished", "next on finished");
+    pending = enqueuePending(pending, "other", "stays on other");
+    const fromFinished = takeNextPending(pending, "finished");
+    assert.equal(fromFinished.chatId, "finished");
+    assert.equal(fromFinished.item?.text, "next on finished");
+    assert.deepEqual(pendingForChat(fromFinished.pending, "other"), [{ text: "stays on other" }]);
+    const none = takeNextPending(fromFinished.pending, "finished");
+    assert.equal(none.chatId, null);
+    assert.equal(none.item, null);
+    assert.deepEqual(pendingForChat(none.pending, "other"), [{ text: "stays on other" }]);
+  });
+
+  it("queues a send only while that same conversation is running", () => {
+    assert.equal(shouldQueueForChat("chat-a", "chat-a"), true);
+    assert.equal(shouldQueueForChat("chat-a", "chat-b"), false);
+    assert.equal(shouldQueueForChat("", "chat-b"), false);
+  });
+
+  it("keeps every live turn running when a second chat becomes foreground", () => {
+    const running = {
+      "chat-a": { activity: { kind: "tool" as const, label: "Read a.ts" }, startedAt: 10 },
+      "chat-b": { activity: null, startedAt: 20 },
+    };
+    assert.equal(chatHasRunningTurn(running, "chat-a"), true);
+    assert.equal(chatHasRunningTurn(running, "chat-b"), true);
+    assert.equal(chatHasRunningTurn(running, "chat-c"), false);
+    assert.equal(chatHasRunningTurn({}, "chat-a"), false);
+    assert.equal(runningTurnStartedAt(running, "chat-a"), 10);
+    assert.equal(runningTurnStartedAt(running, "chat-c"), 0);
+  });
+
+  it("updates one queued message and keeps its place", () => {
+    let pending = enqueuePending({}, "a", "one");
+    pending = enqueuePending(pending, "a", "two");
+    pending = enqueuePending(pending, "a", "three");
+    const saved = updatePending(pending, "a", 1, "  two edited  ");
+    assert.equal(saved.saved, true);
+    assert.deepEqual(pendingForChat(saved.pending, "a"), [
+      { text: "one" },
+      { text: "two edited" },
+      { text: "three" },
+    ]);
+    const blank = updatePending(pending, "a", 1, "   ");
+    assert.equal(blank.saved, false);
+    assert.deepEqual(pendingForChat(blank.pending, "a"), pendingForChat(pending, "a"));
+  });
+
+  it("holds the queue while the next message or a middle one is being edited", () => {
+    assert.equal(pendingEditBlocksSend(1, 0), true);
+    assert.equal(pendingEditBlocksSend(3, 0), true);
+    assert.equal(pendingEditBlocksSend(3, 1), true);
+    assert.equal(pendingEditBlocksSend(3, 2), false);
+    assert.equal(pendingEditBlocksSend(2, 1), false);
+    assert.equal(pendingEditBlocksSend(3, null), false);
+    assert.equal(pendingEditBlocksSend(3, 4), false);
+  });
+
+  it("does not send the next message while a middle edit is open", () => {
+    let pending = enqueuePending({}, "a", "first");
+    pending = enqueuePending(pending, "a", "middle");
+    pending = enqueuePending(pending, "a", "last");
+    const held = takeNextPending(pending, "a", { chatId: "a", index: 1 });
+    assert.equal(held.item, null);
+    assert.deepEqual(pendingForChat(held.pending, "a"), [
+      { text: "first" },
+      { text: "middle" },
+      { text: "last" },
+    ]);
+    const ready = takeNextPending(pending, "a", null);
+    assert.equal(ready.item?.text, "first");
+  });
+
+  it("shifts the open edit when a queued message above it is removed", () => {
+    assert.equal(pendingIndexAfterRemove(1, 1), null);
+    assert.equal(pendingIndexAfterRemove(2, 0), 1);
+    assert.equal(pendingIndexAfterRemove(1, 2), 1);
+    assert.equal(pendingIndexAfterRemove(null, 0), null);
+  });
+
+  it("clears every pending message for a deleted chat", () => {
+    let pending = enqueuePending({}, "a", "one");
+    pending = enqueuePending(pending, "a", "two");
+    pending = enqueuePending(pending, "b", "keep");
+    pending = clearPendingForChat(pending, "a");
+    assert.equal(Object.hasOwn(pending, "a"), false);
+    assert.deepEqual(pendingForChat(pending, "b"), [{ text: "keep" }]);
   });
 });

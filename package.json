@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/stamp-build.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "node --experimental-strip-types --test src/lib/*.test.ts"

@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { folderName } from "../lib/dev";
-import type { ChatUsage } from "../lib/dev-context";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { folderName, type ChatImage } from "../lib/dev";
+import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../lib/dev-image";
+import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/dev-context";
+import { textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/dev-permission";
+import { todosAreOpen, type AgentTodo } from "../lib/dev-todo";
 import type { DevEffort, DevModel } from "../lib/tauri";
 import { ContextUsageChip } from "./ContextUsageChip";
+import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
+import { TodoSteps } from "./TodoSteps";
+
+const TODO_EASE = [0.22, 1, 0.36, 1] as const;
+const TODO_DURATION = 0.32;
 
 const COMPACT_MAX = 160;
 const LANDING_MAX = 220;
@@ -24,12 +33,18 @@ export function DevComposer({
   onModel,
   effort,
   onEffort,
+  contextWindow,
+  onContextWindow,
   permission,
   onPermission,
   autoFocus,
   compact,
   usage,
   usageWindow,
+  images = [],
+  onImages,
+  onAddImages,
+  todos = [],
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -45,33 +60,90 @@ export function DevComposer({
   onModel: (id: string) => void;
   effort: string;
   onEffort: (id: string) => void;
+  contextWindow?: number;
+  onContextWindow?: (tokens: number) => void;
   permission: string;
   onPermission: (id: string) => void;
   autoFocus?: boolean;
   compact?: boolean;
   usage?: ChatUsage | null;
   usageWindow?: number;
+  images?: ChatImage[];
+  onImages?: (images: ChatImage[]) => void;
+  onAddImages?: (files: File[]) => void;
+  todos?: AgentTodo[];
 }) {
   const selected = models.find((m) => m.id === model) ?? models[0];
   const efforts = selected?.efforts ?? [];
   const effortLabel = efforts.find((e) => e.id === effort)?.label ?? "Thinking";
+  const windows = contextWindowChoices(selected?.context_windows, selected?.context_window);
+  const windowLabel = contextWindow && windows.includes(contextWindow) ? contextWindowLabel(contextWindow) : "";
   const permissionMode = parsePermissionMode(permission);
+  const box = useRef<HTMLFormElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const [usageHover, setUsageHover] = useState(false);
-  const canSend = Boolean(draft.trim()) && !busy && ready;
+  const [dragOver, setDragOver] = useState(false);
+  const canSend = canSendPrompt(draft, images) && ready;
   const showUsage = Boolean(usage && usageWindow);
 
-  useEffect(() => {
+  function takeImageFiles(list: File[]) {
+    if (!list.length) return;
+    onAddImages?.(list);
+  }
+
+  function onDragOver(ev: DragEvent<HTMLDivElement>) {
+    if (![...ev.dataTransfer.types].includes("Files")) return;
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = "copy";
+    setDragOver(true);
+  }
+
+  function onDrop(ev: DragEvent<HTMLDivElement>) {
+    ev.preventDefault();
+    setDragOver(false);
+    takeImageFiles(imageFilesFromDrop(ev.dataTransfer.files) as File[]);
+  }
+
+  useLayoutEffect(() => {
     const el = area.current;
     if (!el) return;
     const max = compact ? COMPACT_MAX : LANDING_MAX;
-    el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`;
+
+    function fit() {
+      const node = area.current;
+      if (!node) return;
+      const cs = getComputedStyle(node);
+      const fontSize = parseFloat(cs.fontSize);
+      const lh = parseFloat(cs.lineHeight);
+      const lineHeight = Number.isFinite(lh) && cs.lineHeight !== "normal" ? lh : fontSize * 1.625;
+      const paddingY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      node.style.height = "0px";
+      node.style.height = `${textareaFitHeight({
+        value: node.value,
+        scrollHeight: node.scrollHeight,
+        lineHeight: Number.isFinite(lineHeight) ? lineHeight : 0,
+        paddingY,
+        max,
+      })}px`;
+    }
+
+    fit();
+    const host = box.current;
+    if (!host || typeof ResizeObserver === "undefined") return;
+    let width = host.getBoundingClientRect().width;
+    const ro = new ResizeObserver(() => {
+      const next = host.getBoundingClientRect().width;
+      if (next === width) return;
+      width = next;
+      fit();
+    });
+    ro.observe(host);
+    return () => ro.disconnect();
   }, [draft, compact]);
 
   function submit(ev?: FormEvent) {
     ev?.preventDefault();
-    if (!draft.trim() || busy || !ready) return;
+    if (!canSendPrompt(draft, images) || !ready) return;
     onSend();
   }
 
@@ -83,25 +155,68 @@ export function DevComposer({
   }
 
   return (
-    <form onSubmit={submit} className="w-full">
+    <form ref={box} onSubmit={submit} className="w-full">
       <div
-        className={`relative border border-line/90 bg-panel focus-within:border-accent/80 ${
-          compact ? "rounded-2xl" : "rounded-[22px] shadow-card"
-        }`}
+        className={`relative border bg-panel focus-within:border-accent/30 ${
+          dragOver ? "border-accent/55" : "border-line/35"
+        } ${compact ? "rounded-2xl" : "rounded-[22px] shadow-card"}`}
+        onDragEnter={onDragOver}
+        onDragOver={onDragOver}
+        onDragLeave={(ev) => {
+          if (!ev.currentTarget.contains(ev.relatedTarget as Node)) setDragOver(false);
+        }}
+        onDrop={onDrop}
       >
+        <AnimatePresence initial={false}>
+          {todosAreOpen(todos) ? (
+            <motion.div
+              key="todos"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: TODO_DURATION, ease: TODO_EASE }}
+              className="overflow-hidden"
+            >
+              <TodoSteps todos={todos} compact={compact} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
         {usage && usageWindow ? (
           <ContextUsageChip usage={usage} windowSize={usageWindow} expanded={usageHover} />
+        ) : null}
+        {images.length ? (
+          <div className={compact ? "px-3.5 pt-2.5" : "px-4 pt-3"}>
+            <PromptImages
+              images={images}
+              onRemove={
+                onImages
+                  ? (id) => onImages(images.filter((img) => img.id !== id))
+                  : undefined
+              }
+            />
+          </div>
+        ) : null}
+        {dragOver ? (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[inherit] bg-panel/80 text-[13px] text-ink">
+            Drop images
+          </div>
         ) : null}
         <textarea
           ref={area}
           value={draft}
           onChange={(e) => onDraft(e.target.value)}
+          onPaste={(e) => {
+            const files = imageFilesFromClipboard(e.clipboardData) as File[];
+            if (!files.length) return;
+            e.preventDefault();
+            takeImageFiles(files);
+          }}
           onKeyDown={onKey}
           onMouseEnter={() => {
             if (showUsage) setUsageHover(true);
           }}
           onMouseLeave={() => setUsageHover(false)}
-          rows={compact ? 1 : 2}
+          rows={1}
           autoFocus={autoFocus}
           placeholder={placeholder}
           className={`block w-full resize-none overflow-y-auto border-0 bg-transparent text-[14px] leading-relaxed outline-none placeholder:text-muted/80 ${
@@ -116,6 +231,21 @@ export function DevComposer({
             value={model}
             onChange={onModel}
           />
+          {windows.length > 1 && onContextWindow ? (
+            <ChipSelect
+              label={windowLabel || "Context"}
+              title="Context size"
+              items={windows.map((tokens) => ({
+                id: String(tokens),
+                label: contextWindowLabel(tokens),
+              }))}
+              value={String(contextWindow ?? "")}
+              onChange={(id) => {
+                const tokens = Number(id);
+                if (tokens > 0) onContextWindow(tokens);
+              }}
+            />
+          ) : null}
           {efforts.length > 0 && (
             <ChipSelect
               label={effortLabel}
@@ -152,17 +282,16 @@ export function DevComposer({
             >
               <Symbol name="stop.fill" className="size-2.5" />
             </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!canSend}
-              aria-label="Send"
-              title="Send"
-              className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:bg-wash-strong disabled:text-muted disabled:opacity-70"
-            >
-              <Symbol name="arrow.up" className="size-3.5" />
-            </button>
-          )}
+          ) : null}
+          <button
+            type="submit"
+            disabled={!canSend}
+            aria-label={busy ? "Queue" : "Send"}
+            title={busy ? "Queue" : "Send"}
+            className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:bg-wash-strong disabled:text-muted disabled:opacity-70"
+          >
+            <Symbol name="arrow.up" className="size-3.5" />
+          </button>
         </div>
       </div>
     </form>
