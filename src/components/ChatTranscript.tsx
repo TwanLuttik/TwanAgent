@@ -14,7 +14,17 @@ import {
   type TranscriptItem,
   type TranscriptTurn,
 } from "../lib/dev";
+import { displayFileMentions, type MentionFile } from "../lib/dev-mention";
 import { formatElapsed } from "../lib/relative-time";
+
+function FinishedLine({ durationMs }: { durationMs: number }) {
+  return (
+    <div className="mt-2 text-[11px] text-muted/55">
+      Finished
+      <span className="ml-1.5 tabular-nums text-muted/40">{formatElapsed(durationMs)}</span>
+    </div>
+  );
+}
 
 function RoleBadge({ role }: { role: "user" | "assistant" }) {
   const user = role === "user";
@@ -33,7 +43,16 @@ function RoleBadge({ role }: { role: "user" | "assistant" }) {
 
 const USER_MESSAGE_MAX = "max-h-32";
 
-function UserBubble({ text, images }: { text: string; images?: ChatImage[] }) {
+function UserBubble({
+  text,
+  images,
+  mentionFiles,
+}: {
+  text: string;
+  images?: ChatImage[];
+  mentionFiles?: MentionFile[];
+}) {
+  const shown = displayFileMentions(text, mentionFiles ?? []);
   const body = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [overflow, setOverflow] = useState(false);
@@ -49,9 +68,9 @@ function UserBubble({ text, images }: { text: string; images?: ChatImage[] }) {
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [text, open]);
-  if (!text && !images?.length) return null;
-  const clipped = Boolean(text) && !open && overflow;
+  }, [shown, open]);
+  if (!shown && !images?.length) return null;
+  const clipped = Boolean(shown) && !open && overflow;
   return (
     <div className="max-w-[min(100%,36rem)] rounded-2xl bg-inset px-3 py-2">
       {images?.length ? (
@@ -59,7 +78,7 @@ function UserBubble({ text, images }: { text: string; images?: ChatImage[] }) {
           <PromptImages images={images} />
         </div>
       ) : null}
-      {text ? (
+      {shown ? (
         <div className="relative">
           <div
             ref={body}
@@ -67,14 +86,14 @@ function UserBubble({ text, images }: { text: string; images?: ChatImage[] }) {
               open ? "" : `${USER_MESSAGE_MAX} overflow-hidden`
             }`}
           >
-            {text}
+            {shown}
           </div>
           {clipped ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-inset to-transparent" />
           ) : null}
         </div>
       ) : null}
-      {text && (overflow || open) ? (
+      {shown && (overflow || open) ? (
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
@@ -135,6 +154,7 @@ export function ChatTranscript({
   liveTools,
   busy,
   conversationId = "",
+  mentionFiles = [],
   onLoadOlder,
 }: {
   messages: ChatMessage[];
@@ -143,6 +163,7 @@ export function ChatTranscript({
   liveTools: LiveToolInput[];
   busy: boolean;
   conversationId?: string;
+  mentionFiles?: MentionFile[];
   /** Called before older turns mount so the scroller can keep its place. */
   onLoadOlder?: () => void;
 }) {
@@ -181,6 +202,7 @@ export function ChatTranscript({
           items={items}
           start={starts[i] ?? 0}
           busy={busy}
+          mentionFiles={mentionFiles}
         />
       ))}
     </>
@@ -206,6 +228,7 @@ export function PendingUserMessage({
   onSave,
   onCancel,
   onRemove,
+  mentionFiles,
 }: {
   text: string;
   images?: ChatImage[];
@@ -214,6 +237,7 @@ export function PendingUserMessage({
   onSave: (text: string) => void;
   onCancel: () => void;
   onRemove: () => void;
+  mentionFiles?: MentionFile[];
 }) {
   const [draft, setDraft] = useState(text);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -295,7 +319,7 @@ export function PendingUserMessage({
           </div>
         </div>
       ) : (
-        <UserBubble text={text} images={images} />
+        <UserBubble text={text} images={images} mentionFiles={mentionFiles} />
       )}
     </div>
   );
@@ -306,11 +330,13 @@ function TranscriptTurn({
   items,
   start,
   busy,
+  mentionFiles,
 }: {
   turn: TranscriptTurn;
   items: TranscriptItem[];
   start: number;
   busy: boolean;
+  mentionFiles?: MentionFile[];
 }) {
   const userOffset = turn.user ? 1 : 0;
   return (
@@ -320,7 +346,7 @@ function TranscriptTurn({
           <div className="mb-1">
             <RoleBadge role="user" />
           </div>
-          <UserBubble text={turn.user.content} images={turn.user.images} />
+          <UserBubble text={turn.user.content} images={turn.user.images} mentionFiles={mentionFiles} />
         </StickyTurnHeader>
       ) : null}
       {turn.rest.map((item, i) => {
@@ -367,6 +393,7 @@ function TranscriptTurn({
           <div key={index} className={last ? undefined : "mb-4"}>
             {!turn.user && i === 0 ? <StickyTurnHeader>{badge}</StickyTurnHeader> : badge}
             <ChatMarkdown text={item.content} />
+            {typeof item.durationMs === "number" ? <FinishedLine durationMs={item.durationMs} /> : null}
           </div>
         );
       })}

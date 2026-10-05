@@ -30,9 +30,7 @@ export function ProjectSettingsView({
         </div>
         <section className="grid gap-1">
           <h2 className="m-0 text-[11px] font-semibold tracking-wide text-muted uppercase">Folder path</h2>
-          <p className="m-0 rounded-md border border-line bg-inset px-2.5 py-2 font-mono text-[12px] leading-relaxed break-all text-ink">
-            {path}
-          </p>
+          <p className="m-0 font-mono text-[12px] leading-relaxed break-all text-ink">{path}</p>
         </section>
       </div>
     </div>

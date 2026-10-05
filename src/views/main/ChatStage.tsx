@@ -21,7 +21,7 @@ import { permissionLabel } from "../../lib/dev-permission";
 import { parseConversationKind } from "../../lib/dev-terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/dev-turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
-import { loadMarkdownOpenMode } from "../../lib/prefs";
+import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
@@ -42,6 +42,7 @@ export function ChatStage() {
     folderOpen,
     journeys,
     opened,
+    openChat,
     openWorkspaceFile,
     pendingClosePath,
     permission,
@@ -54,6 +55,8 @@ export function ChatStage() {
     setShowSettings,
     setShowUsage,
     bumpFiles,
+    chatTabs,
+    closeChatTab,
     showSettings,
     showUsage,
     tick,
@@ -68,8 +71,13 @@ export function ChatStage() {
         {!fullPage ? (
           <CenterTabs
             editor={editor}
-            chatKind={chatKind}
-            onChat={() => setEditor((prev: typeof editor) => selectChatTab(prev))}
+            chats={chatTabs}
+            activeChatId={activeId}
+            onChat={(id) => {
+              setEditor((prev: typeof editor) => selectChatTab(prev));
+              if (id !== activeId) void openChat(id);
+            }}
+            onCloseChat={closeChatTab}
             onCode={() => setEditor((prev: typeof editor) => focusEditor(prev))}
           />
         ) : (
@@ -125,9 +133,11 @@ export function ChatStage() {
                 setShowUsage(false);
                 closeProjectSettings();
                 setEditor((prev: typeof editor) => selectChatTab(prev));
-                setDrafts((prev: Record<string, string>) =>
-                  setDraftForChat(prev, activeId, appendSelectionToDraft(draftForChat(prev, activeId), snippet)),
-                );
+                setDrafts((prev: Record<string, string>) => {
+                  const next = appendSelectionToDraft(draftForChat(prev, activeId), snippet);
+                  saveComposerDraft(activeId, next);
+                  return setDraftForChat(prev, activeId, next);
+                });
               }}
             />
           ) : chatKind === "terminal" && workspace && opened && activeId ? (
@@ -169,6 +179,7 @@ function ChatColumn() {
     liveTools,
     mcpBusy,
     mcpServers,
+    mentionFiles,
     messages,
     model,
     models,
@@ -196,7 +207,7 @@ function ChatColumn() {
   const current = models.find((row: { id: string; name: string; context_windows?: number[]; context_window?: number; efforts: { id: string; label: string }[] }) => row.id === model);
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
     return (
-      <div className="relative min-h-0 min-w-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1">
         <ConversationDocks align="end">
           <McpDock
             servers={mcpServers}
@@ -224,7 +235,7 @@ function ChatColumn() {
         {fileDrag ? <DropImagesHint /> : null}
         <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]">
           <div
-            className="mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5"
+            className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5"
             style={{ paddingBottom: composerPad }}
           >
             <div className="mb-5">
@@ -254,6 +265,7 @@ function ChatColumn() {
               liveTools={liveTools}
               busy={activeRunning}
               conversationId={activeId}
+              mentionFiles={mentionFiles}
               onLoadOlder={holdScrollForOlder}
             />
             {openingId && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
@@ -292,6 +304,7 @@ function ChatColumn() {
                 key={`${activeId}-${i}`}
                 text={item.text}
                 images={item.images}
+                mentionFiles={mentionFiles}
                 editing={editingPending?.chatId === activeId && editingPending.index === i}
                 onEdit={() => beginPendingEdit(i)}
                 onSave={(text) => savePendingEdit(i, text)}

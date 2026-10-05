@@ -13,6 +13,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     busy,
     contextWindow,
     draft,
+    mentionFiles,
     effort,
     messages,
     model,
@@ -70,6 +71,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
                 models.find((row: { id: string; context_window?: number }) => row.id === model)?.context_window,
               )
       }
+      mentionFiles={mentionFiles}
       images={promptImages}
       onImages={(next: ChatImage[]) =>
         setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, activeId, next))

@@ -10,12 +10,14 @@ import {
   loadFileHoverCard,
   loadAllProjects,
   loadCollapsedProjects,
+  loadComposerDrafts,
   loadDevConversation,
   loadDevRecentWorkspaces,
   loadDevWorkspace,
   loadPerfOverlay,
   loadGitChangesView,
   loadMarkdownOpenMode,
+  loadOpenFileTree,
   saveDevPermission,
   saveDevSidebarWidth,
   saveGitChangesView,
@@ -23,9 +25,11 @@ import {
   removeDevRecentWorkspace,
   rewriteStoredProjectPaths,
   saveCollapsedProjects,
+  saveComposerDraft,
   saveDevConversation,
   saveDevWorkspace,
   saveMarkdownOpenMode,
+  saveOpenFileTree,
   setAllProjects,
   setFileHoverCard,
   setPerfOverlay,
@@ -201,6 +205,42 @@ describe("all projects sidebar", () => {
     assert.deepEqual(loadCollapsedProjects(), []);
     saveCollapsedProjects(["/app/demo", "/app/other"]);
     assert.deepEqual(loadCollapsedProjects(), ["/app/demo", "/app/other"]);
+  });
+});
+
+describe("composer drafts", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("keeps each conversation's prompt after a reload", () => {
+    saveComposerDraft("chat-a", "finish the sidebar");
+    saveComposerDraft("chat-b", "check the terminal");
+    assert.deepEqual(loadComposerDrafts(), {
+      "chat-a": "finish the sidebar",
+      "chat-b": "check the terminal",
+    });
+    saveComposerDraft("chat-a", "");
+    assert.deepEqual(loadComposerDrafts(), { "chat-b": "check the terminal" });
+  });
+});
+
+describe("open file tree", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("keeps opened folders for a project across a reload", () => {
+    assert.deepEqual(loadOpenFileTree("/app/demo"), []);
+    saveOpenFileTree("/app/demo/", ["src", "src/components"]);
+    assert.deepEqual(loadOpenFileTree("/app/Demo"), ["src", "src/components"]);
+    assert.deepEqual(loadOpenFileTree("/app/other"), []);
+  });
+
+  it("drops a project when every folder is closed", () => {
+    saveOpenFileTree("/app/demo", ["src"]);
+    saveOpenFileTree("/app/demo", []);
+    assert.deepEqual(loadOpenFileTree("/app/demo"), []);
   });
 });
 

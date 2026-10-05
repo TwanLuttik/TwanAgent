@@ -287,11 +287,19 @@ async fn stream_chat(
     if let Some(effort) = effort {
         body["reasoning_effort"] = serde_json::Value::String(effort);
     }
-    let client = reqwest::Client::new();
+    // SSE breaks when the body is gzip-decoded mid-stream: reqwest then reports
+    // "error decoding response body" and the turn stops after the last tool.
+    let client = reqwest::Client::builder()
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .build()
+        .map_err(|e| Error::Other(format!("xAI request failed: {e}")))?;
     let mut req = client
         .post(grok_cli::endpoint(auth.via_cli))
         .bearer_auth(&auth.token)
         .header("content-type", "application/json")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .header("x-grok-conv-id", stream_id);
     if auth.via_cli {
         if let Some(tokens) = grok_cli::context_window_header_value(context_window) {
@@ -355,7 +363,24 @@ async fn stream_chat(
             );
             return Ok(());
         }
-        let chunk = chunk.map_err(|e| Error::Other(e.to_string()))?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                // A dropped body after we already have text or tool calls is still a usable reply.
+                if emitted_text || emitted_reasoning || !tool_acc.is_empty() {
+                    emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
+                    emit_done(
+                        app,
+                        stream_id,
+                        &tool_acc,
+                        last_usage.clone(),
+                        fallback_done_text(emitted_text, &fallback_text),
+                    );
+                    return Ok(());
+                }
+                return Err(Error::Other(format!("error decoding response body: {err}")));
+            }
+        };
         buf.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(idx) = buf.find('\n') {
             let line = buf[..idx].trim().to_string();

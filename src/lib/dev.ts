@@ -30,6 +30,8 @@ export type ChatMessage = {
   tool_call_id?: string;
   error?: boolean;
   images?: ChatImage[];
+  /** How long this prompt took, in milliseconds. Kept on the final assistant reply. */
+  durationMs?: number;
 };
 
 export const HEAVY_DIRS = new Set([
@@ -536,7 +538,7 @@ export function liveToolDetail(tool: LiveToolInput): string {
 export type TranscriptItem =
   | { kind: "user"; content: string; images?: ChatImage[] }
   | { kind: "thinking"; content: string; live?: boolean }
-  | { kind: "assistant"; content: string }
+  | { kind: "assistant"; content: string; durationMs?: number }
   | { kind: "error"; content: string }
   | {
       kind: "tools";
@@ -660,7 +662,13 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     const commands = calls.map(toolDetail);
     const files = toolTrailFileChanges(calls);
     if (reasoning) out.push({ kind: "thinking", content: reasoning });
-    if (text) out.push({ kind: "assistant", content: String(msg.content ?? "") });
+    if (text) {
+      const item: TranscriptItem = { kind: "assistant", content: String(msg.content ?? "") };
+      if (!calls.length && typeof msg.durationMs === "number" && msg.durationMs >= 0) {
+        item.durationMs = msg.durationMs;
+      }
+      out.push(item);
+    }
     if (labels.length) {
       const last = out[out.length - 1];
       if (last?.kind === "tools") {
@@ -847,6 +855,21 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
       content: msg.content ?? "",
     };
   });
+}
+
+export function stampTurnDuration(messages: ChatMessage[], durationMs: number): ChatMessage[] {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return messages;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role === "user") return messages;
+    if (msg.role !== "assistant" || msg.error) continue;
+    if (!(msg.content ?? "").trim() || msg.tool_calls?.length) continue;
+    if (msg.durationMs === durationMs) return messages;
+    const next = messages.slice();
+    next[i] = { ...msg, durationMs };
+    return next;
+  }
+  return messages;
 }
 
 export function newConversationId(): string {

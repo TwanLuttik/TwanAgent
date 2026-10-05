@@ -7,7 +7,10 @@ import {
   isProjectCollapsed,
   isSameProject,
   removeProjectGroup,
+  renameConversationInGroups,
   toggleCollapsedProject,
+  applyLiveProjectChats,
+  placeProjectChats,
   upsertProjectGroup,
 } from "./dev-all-projects.ts";
 import type { JourneySummary } from "./dev-journey.ts";
@@ -65,6 +68,79 @@ describe("buildProjectGroups", () => {
   });
 });
 
+describe("applyLiveProjectChats", () => {
+  it("does not copy the open project's chats into another project while they are still loading", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+      ],
+      [],
+      {
+        "/app/alpha": { conversations: [chat("a1", "Alpha chat")], journeys: [] },
+        "/app/beta": { conversations: [chat("b1", "Beta chat")], journeys: [] },
+      },
+    );
+    const next = applyLiveProjectChats(
+      groups,
+      { workspace: "/app/beta", conversations: [chat("a1", "Alpha chat")], journeys: [] },
+      "/app/alpha",
+    );
+    assert.equal(next, groups);
+    assert.deepEqual(
+      next.map((group) => group.conversations.map((row) => row.id)),
+      [["a1"], ["b1"]],
+    );
+  });
+
+  it("updates only the project whose chats have finished loading", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+      ],
+      [],
+      {
+        "/app/alpha": { conversations: [chat("a1", "Alpha chat")], journeys: [] },
+        "/app/beta": { conversations: [chat("b1", "Beta chat")], journeys: [] },
+      },
+    );
+    const next = applyLiveProjectChats(
+      groups,
+      { workspace: "/app/beta", conversations: [chat("b1", "Beta chat"), chat("b2", "New")], journeys: [] },
+      "/app/beta",
+    );
+    assert.deepEqual(
+      next.map((group) => group.conversations.map((row) => row.id)),
+      [["a1"], ["b1", "b2"]],
+    );
+  });
+});
+
+describe("placeProjectChats", () => {
+  it("removes a chat from the other project when it belongs to this one", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+      ],
+      [],
+      {
+        "/app/alpha": {
+          conversations: [chat("a1", "Alpha"), chat("b-run", "Running in beta")],
+          journeys: [],
+        },
+        "/app/beta": { conversations: [chat("b-run", "Running in beta"), chat("b1", "Beta")], journeys: [] },
+      },
+    );
+    const next = placeProjectChats(groups, "/app/beta", [chat("b-run", "Running in beta"), chat("b1", "Beta")], []);
+    assert.deepEqual(
+      next.map((group) => group.conversations.map((row) => row.id)),
+      [["a1"], ["b-run", "b1"]],
+    );
+  });
+});
+
 describe("upsertProjectGroup", () => {
   it("patches an existing group and prepends a missing project", () => {
     const start = buildProjectGroups([{ name: "demo", path: "/app/demo" }], [], {});
@@ -81,6 +157,32 @@ describe("upsertProjectGroup", () => {
     assert.equal(added[0].path, "/app/other");
     assert.equal(added[0].name, "other");
     assert.equal(added[1].path, "/app/demo");
+  });
+});
+
+describe("renameConversationInGroups", () => {
+  it("renames the chat in its own project and does not copy it into another", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+      ],
+      [],
+      {
+        "/app/alpha": { conversations: [chat("a1", "New chat")], journeys: [] },
+        "/app/beta": { conversations: [chat("b1", "Beta")], journeys: [] },
+      },
+    );
+    const renamed = renameConversationInGroups(groups, "a1", { title: "Fix the login" });
+    assert.equal(renamed.found, true);
+    assert.equal(renamed.groups[0].conversations[0]?.title, "Fix the login");
+    assert.deepEqual(
+      renamed.groups[1].conversations.map((row) => row.id),
+      ["b1"],
+    );
+    const missing = renameConversationInGroups(groups, "nope", { title: "x" });
+    assert.equal(missing.found, false);
+    assert.equal(missing.groups, groups);
   });
 });
 

@@ -11,6 +11,8 @@ export type MainModel = {
   applyWorkspace: MainFn;
   beginPendingEdit: MainFn;
   busy: any;
+  chatTabs: { id: string; title: string; kind: "chat" | "terminal" }[];
+  closeChatTab: MainFn;
   closeFileTab: MainFn;
   closePendingEdit: MainFn;
   closeProjectSettings: MainFn;
@@ -27,6 +29,7 @@ export type MainModel = {
   deleteProjectFromSidebar: MainFn;
   dirtyFiles: any;
   draft: any;
+  mentionFiles: any;
   editingPending: any;
   editMcpServer: MainFn;
   editor: any;

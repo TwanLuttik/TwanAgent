@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   canPersistTurn,
+  closeDanglingToolCalls,
   liveTurnMessages,
   clearPendingForChat,
   dequeuePending,
@@ -93,6 +94,26 @@ describe("liveTurnMessages", () => {
   });
 });
 
+describe("closeDanglingToolCalls", () => {
+  it("adds a result for a tool call that never finished", () => {
+    const closed = closeDanglingToolCalls([
+      { role: "assistant", content: "", tool_calls: [{ id: "call-1", name: "run_command", arguments: "{}" }] },
+    ]);
+    assert.equal(closed.length, 2);
+    assert.equal(closed[1]?.role, "tool");
+    assert.equal(closed[1]?.tool_call_id, "call-1");
+    assert.match(closed[1]?.content ?? "", /did not finish/);
+  });
+
+  it("leaves a transcript alone when every tool call has a result", () => {
+    const messages = [
+      { role: "assistant" as const, content: "", tool_calls: [{ id: "call-1", name: "run_command", arguments: "{}" }] },
+      { role: "tool" as const, tool_call_id: "call-1", content: "ok" },
+    ];
+    assert.equal(closeDanglingToolCalls(messages), messages);
+  });
+});
+
 describe("canPersistTurn", () => {
   it("persists the owning conversation unless it was deleted", () => {
     assert.equal(canPersistTurn("chat-a", new Set()), true);
@@ -126,6 +147,7 @@ describe("isRetryableChatError", () => {
     assert.equal(isRetryableChatError("xAI request failed: error sending request"), true);
     assert.equal(isRetryableChatError("xAI error 429: rate limited"), true);
     assert.equal(isRetryableChatError("xAI error 503: unavailable"), true);
+    assert.equal(isRetryableChatError("error decoding response body"), true);
     assert.equal(isRetryableChatError("Stopped."), false);
     assert.equal(isRetryableChatError("Grok CLI login expired. Run grok login."), false);
     assert.equal(isRetryableChatError("xAI rejected the API key."), false);

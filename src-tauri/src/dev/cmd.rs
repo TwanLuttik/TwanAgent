@@ -1,14 +1,84 @@
-use std::io::Read;
-use std::path::Path;
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use super::paths::resolve_in_workspace;
+use super::paths::{home_dir, resolve_in_workspace};
 use crate::error::{Error, Result};
 
 pub(crate) const CMD_OUTPUT_LIMIT: usize = 80_000;
 const CMD_TIMEOUT_SECS: u64 = 60;
+
+/// GUI apps start with a short PATH, so `node` and `pnpm` are missing even when the CLI can see them.
+pub(crate) fn merge_command_path(current: &str, prefixes: &[String]) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for part in prefixes.iter().map(String::as_str).chain(current.split(':')) {
+        if part.is_empty() || !seen.insert(part.to_string()) {
+            continue;
+        }
+        out.push(part.to_string());
+    }
+    out.join(":")
+}
+
+fn installed_path_prefixes() -> Vec<String> {
+    let mut prefixes = Vec::new();
+    if let Some(home) = home_dir() {
+        for rel in [".local/share/pnpm", "Library/pnpm", ".local/bin"] {
+            push_dir(&mut prefixes, home.join(rel));
+        }
+    }
+    for extra in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
+        push_dir(&mut prefixes, PathBuf::from(extra));
+    }
+    prefixes
+}
+
+fn push_dir(prefixes: &mut Vec<String>, path: PathBuf) {
+    if path.is_dir() {
+        prefixes.push(path.to_string_lossy().into_owned());
+    }
+}
+
+fn command_path() -> String {
+    merge_command_path(
+        &std::env::var("PATH").unwrap_or_default(),
+        &installed_path_prefixes(),
+    )
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: i32) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+fn read_available(file: &mut impl Read, buf: &mut Vec<u8>) {
+    let mut chunk = [0u8; 8192];
+    loop {
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if buf.len() < CMD_OUTPUT_LIMIT + 1 {
+                    let room = (CMD_OUTPUT_LIMIT + 1).saturating_sub(buf.len());
+                    let take = n.min(room);
+                    if take > 0 {
+                        buf.extend_from_slice(&chunk[..take]);
+                    }
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+}
 
 fn kill_command_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
@@ -52,6 +122,7 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
             });
         }
     }
+    cmd.env("PATH", command_path());
     let mut child = cmd
         .current_dir(&root)
         .stdout(Stdio::piped())
@@ -66,37 +137,45 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
         .stderr
         .take()
         .ok_or_else(|| Error::Other("missing stderr pipe".into()))?;
-    let stdout_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    });
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        set_nonblocking(stdout.as_raw_fd());
+        set_nonblocking(stderr.as_raw_fd());
+    }
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
     let started = std::time::Instant::now();
-    let status = loop {
+    let timed_out = loop {
+        read_available(&mut stdout, &mut out_buf);
+        read_available(&mut stderr, &mut err_buf);
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                read_available(&mut stdout, &mut out_buf);
+                read_available(&mut stderr, &mut err_buf);
+                break Err(status);
+            }
             Ok(None) if started.elapsed() > Duration::from_secs(CMD_TIMEOUT_SECS) => {
                 kill_command_tree(&mut child);
-                let _ = stdout_thread.join();
-                let _ = stderr_thread.join();
-                return Err(Error::Other(format!(
-                    "command timed out after {CMD_TIMEOUT_SECS}s"
-                )));
+                read_available(&mut stdout, &mut out_buf);
+                read_available(&mut stderr, &mut err_buf);
+                break Ok(());
             }
             Ok(None) => thread::sleep(Duration::from_millis(40)),
             Err(e) => return Err(Error::Other(e.to_string())),
         }
     };
-    let stdout = stdout_thread.join().unwrap_or_default();
-    let stderr = stderr_thread.join().unwrap_or_default();
+    Ok(format_command_output(&out_buf, &err_buf, timed_out.err()))
+}
+
+fn format_command_output(
+    stdout: &[u8],
+    stderr: &[u8],
+    status: Option<std::process::ExitStatus>,
+) -> String {
     let mut text = String::new();
-    let stdout = String::from_utf8_lossy(&stdout);
-    let stderr = String::from_utf8_lossy(&stderr);
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
     if !stdout.is_empty() {
         text.push_str(&stdout);
     }
@@ -106,11 +185,20 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
         }
         text.push_str(&stderr);
     }
-    if !status.success() {
-        if !text.is_empty() {
-            text.push('\n');
+    match status {
+        Some(status) if !status.success() => {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("exit {}", status.code().unwrap_or(-1)));
         }
-        text.push_str(&format!("exit {}", status.code().unwrap_or(-1)));
+        None => {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("command timed out after {CMD_TIMEOUT_SECS}s"));
+        }
+        Some(_) => {}
     }
     if text.len() > CMD_OUTPUT_LIMIT {
         text.truncate(CMD_OUTPUT_LIMIT);
@@ -119,7 +207,7 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
     if text.is_empty() {
         text = "(no output)".into();
     }
-    Ok(text)
+    text
 }
 
 #[cfg(test)]
@@ -129,6 +217,18 @@ mod tests {
 
     fn temp_ws() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn merge_command_path_puts_developer_bins_first_without_duplicates() {
+        let merged = merge_command_path(
+            "/usr/bin:/bin:/opt/homebrew/bin",
+            &["/opt/homebrew/bin".into(), "/Users/me/Library/pnpm".into()],
+        );
+        assert_eq!(
+            merged,
+            "/opt/homebrew/bin:/Users/me/Library/pnpm:/usr/bin:/bin"
+        );
     }
 
     #[test]

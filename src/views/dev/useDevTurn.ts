@@ -6,6 +6,7 @@ import {
   folderName,
   newConversationId,
   nowIso,
+  stampTurnDuration,
   toolActivityLabel,
   toolDetail,
   toolFileChange,
@@ -25,6 +26,7 @@ import {
   persistableImages,
   setImagesForChat,
 } from "../../lib/dev-image";
+import { expandFileMentions, type MentionFile } from "../../lib/dev-mention";
 import { fileBaseName } from "../../lib/file-icon";
 import type { DetectedMcpServer } from "../../lib/dev-mcp";
 import { parsePermissionMode, shouldPromptShell, type PermissionMode } from "../../lib/dev-permission";
@@ -34,6 +36,7 @@ import { parseConversationKind } from "../../lib/dev-terminal-chat";
 import { isTodoTool } from "../../lib/dev-todo";
 import {
   clearPendingForChat,
+  closeDanglingToolCalls,
   enqueuePending,
   pendingIndexAfterRemove,
   removePending,
@@ -47,6 +50,7 @@ import {
   type RunningTurn,
 } from "../../lib/dev-turn";
 import {
+  saveComposerDraft,
   saveDevContextWindow,
   saveDevConversation,
   saveDevEffort,
@@ -65,6 +69,7 @@ export type DevTurnDeps = {
   messages: ChatMessage[];
   draft: string;
   promptImages: ChatImage[];
+  mentionFiles: MentionFile[];
   busy: boolean;
   ready: boolean;
   runtime: DevRuntime | null;
@@ -144,7 +149,7 @@ export type DevTurnDeps = {
 
 export function bindDevTurn(deps: DevTurnDeps) {
   const {
-    workspace, activeId, messages, draft, promptImages, ready, runtime, model, effort, contextWindow, models,
+    workspace, activeId, messages, draft, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setDrafts, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
@@ -404,6 +409,7 @@ function removePendingAt(index: number) {
 }
 
 function clearPrompt(id: string) {
+  saveComposerDraft(id, "");
   setDrafts((prev) => setDraftForChat(prev, id, ""));
   setDraftImages((prev) => {
     let next = setImagesForChat(prev, activeId, []);
@@ -417,7 +423,7 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
 }
 
 async function send() {
-  const text = draft.trim();
+  const text = expandFileMentions(draft, mentionFiles).trim();
   const images = persistableImages(promptImages);
   if (!canSendPrompt(text, images)) return;
   if (!ready) {
@@ -457,11 +463,11 @@ async function send() {
     setPending(enqueuePending(pendingRef.current, id, text, images));
     return;
   }
-  let history = messages;
+  let history = closeDanglingToolCalls(messages);
   if (!turnAppliesToChat(id, activeIdRef.current)) {
     try {
       const full = await api.devGetConversation(ws, id);
-      history = (full.messages as ChatMessage[]) ?? [];
+      history = closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []);
     } catch (e) {
       setFlash({ kind: "err", text: String(e) });
       return;
@@ -502,9 +508,16 @@ async function runTurn(
     runningWsRef.current = ws;
   }
   const visible = () => turnAppliesToChat(id, activeIdRef.current);
-  let latestMessages = next;
+  let latestMessages = closeDanglingToolCalls(next);
   let latestUsage = usageByChat[id];
   let latestCompaction: { summary: string; through: number } | null = compactionByChat[id] ?? null;
+  let persistQueue = Promise.resolve();
+  const saveMessages = (snapshot: ChatMessage[]) => {
+    latestMessages = snapshot;
+    persistQueue = persistQueue
+      .then(() => persist(snapshot, id, ws, latestUsage, latestCompaction))
+      .catch(() => undefined);
+  };
   const journeyId =
     journeyIdOverride || conversations.find((row) => row.id === id)?.journey_id || undefined;
   const kind = parseConversationKind(conversations.find((row) => row.id === id)?.kind);
@@ -547,7 +560,7 @@ async function runTurn(
       compaction: latestCompaction,
       onCompact: (state) => {
         latestCompaction = state;
-        void persist(latestMessages, id, ws, latestUsage, state);
+        saveMessages(latestMessages);
       },
       onTool: (call) => {
         if (call.name === "spawn_subagent" || isTodoTool(call.name)) return;
@@ -570,6 +583,7 @@ async function runTurn(
         }
       },
       onUpdate: (nextMessages) => {
+        saveMessages(nextMessages);
         rememberLive(id, { messages: nextMessages, streamText: "", streamReasoning: "", activity: null });
         markRunning(id, { activity: null });
         if (!visible()) return;
@@ -598,20 +612,25 @@ async function runTurn(
       },
       signal: ac.signal,
     });
-    latestMessages = done;
-    rememberLive(id, { messages: done, streamText: "", streamReasoning: "", liveTools: [], activity: null });
+    latestMessages = stampTurnDuration(closeDanglingToolCalls(done), Date.now() - startedAt);
+    saveMessages(latestMessages);
+    rememberLive(id, { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
     if (visible()) {
-      setMessages(done);
+      setMessages(latestMessages);
       setStreamText("");
       setStreamReasoning("");
       setLiveTools([]);
       setRunningActivity(null);
     }
-    await persist(done, id, ws, latestUsage, latestCompaction);
-    await after?.(done);
+    await persistQueue;
+    await after?.(latestMessages);
   } catch (e) {
-    latestMessages = liveByChatRef.current.get(id)?.messages ?? next;
-    if (latestMessages.length) await persist(latestMessages, id, ws, latestUsage, latestCompaction);
+    latestMessages = closeDanglingToolCalls(liveByChatRef.current.get(id)?.messages ?? next);
+    if (latestMessages.length) {
+      saveMessages(latestMessages);
+      if (visible()) setMessages(latestMessages);
+      await persistQueue;
+    }
     if (visible()) setFlash({ kind: "err", text: String(e) });
   } finally {
     if (turnsRef.current.get(id) === ac) turnsRef.current.delete(id);

@@ -18,27 +18,41 @@ export function ChromeTab({
   label,
   icon,
   onClick,
+  onClose,
 }: {
   selected: boolean;
   label: string;
   icon: ReactNode;
   onClick: () => void;
+  onClose?: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
       role="tab"
       aria-selected={selected}
       title={label}
-      onClick={onClick}
       data-tauri-drag-region="false"
-      className={`chrome-tab ${selected ? "chrome-tab-on" : "chrome-tab-off"}`}
+      className={`chrome-tab ${selected ? "chrome-tab-on" : "chrome-tab-off"}${onClose ? " chrome-tab-closable" : ""}`}
     >
       <span className={`chrome-tab-face${selected ? "" : " chrome-tab-face-off"}`} aria-hidden />
-      <span className="chrome-tab-inner">
+      <button type="button" className="chrome-tab-inner" onClick={onClick}>
         {icon}
         <span className="max-w-[9rem] truncate">{label}</span>
-      </span>
-    </button>
+      </button>
+      {onClose ? (
+        <button
+          type="button"
+          aria-label={`Close ${label}`}
+          title={`Close ${label}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose();
+          }}
+          className="chrome-tab-close"
+        >
+          <span aria-hidden>×</span>
+        </button>
+      ) : null}
+    </div>
   );
 }

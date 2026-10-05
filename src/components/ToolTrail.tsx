@@ -10,7 +10,69 @@ import { useWorkspaceFileLinks } from "./ChatMarkdown";
 
 const PEEK_DELAY = 220;
 const PEEK_LINES = 8;
+const ROW_STAGGER_MS = 200;
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** Reveal rows one at a time. A burst waits 200ms between rows; a row that arrives on its own does not. */
+function useStaggeredCount(total: number, signature: string): number {
+  const [shown, setShown] = useState(0);
+  const shownRef = useRef(0);
+  const queuedRef = useRef(0);
+  const nextAt = useRef(0);
+  const signatureRef = useRef(signature);
+  const timers = useRef<number[]>([]);
+
+  useEffect(() => {
+    const previous = signatureRef.current;
+    const appended =
+      total >= queuedRef.current &&
+      (signature === previous || (previous.length > 0 && signature.startsWith(`${previous}\n`)));
+    signatureRef.current = signature;
+    if (!appended) {
+      for (const id of timers.current) window.clearTimeout(id);
+      timers.current = [];
+      queuedRef.current = 0;
+      shownRef.current = 0;
+      nextAt.current = 0;
+      setShown(0);
+    }
+    if (total <= queuedRef.current) return;
+    if (prefersReducedMotion()) {
+      queuedRef.current = total;
+      shownRef.current = total;
+      nextAt.current = 0;
+      setShown(total);
+      return;
+    }
+    const now = performance.now();
+    let at = nextAt.current > now ? nextAt.current : now;
+    const from = queuedRef.current;
+    queuedRef.current = total;
+    for (let i = from; i < total; i++) {
+      const delay = at - now;
+      const timer = window.setTimeout(() => {
+        shownRef.current = Math.max(shownRef.current, i + 1);
+        setShown(shownRef.current);
+      }, delay);
+      timers.current.push(timer);
+      at += ROW_STAGGER_MS;
+    }
+    nextAt.current = at;
+  }, [total, signature]);
+
+  useEffect(
+    () => () => {
+      for (const id of timers.current) window.clearTimeout(id);
+    },
+    [],
+  );
+
+  return shown;
+}
 
 export function ToolTrail({
   labels,
@@ -27,18 +89,56 @@ export function ToolTrail({
 }) {
   const rows = foldToolTrailRows(labels, details, commands);
   if (rows.length === 0) return null;
+  if (!live) return <ToolTrailRows rows={rows} files={files} />;
+  return <LiveToolTrail rows={rows} files={files} signature={labels.join("\n")} />;
+}
 
+function LiveToolTrail({
+  rows,
+  files,
+  signature,
+}: {
+  rows: ReturnType<typeof foldToolTrailRows>;
+  files: ToolFileChange[];
+  signature: string;
+}) {
+  const shown = useStaggeredCount(rows.length, signature);
+  const visible = rows.slice(0, shown);
+  return (
+    <ToolTrailRows
+      rows={visible}
+      files={shown > 0 ? files : []}
+      spinningLast
+    />
+  );
+}
+
+function ToolTrailRows({
+  rows,
+  files,
+  spinningLast = false,
+}: {
+  rows: ReturnType<typeof foldToolTrailRows>;
+  files: ToolFileChange[];
+  spinningLast?: boolean;
+}) {
   return (
     <div className="mb-3" aria-label="Tool activity">
       <div>
         {rows.map((row, i) => (
-          <ToolCallBlock
+          <motion.div
             key={`${row.label}-${i}`}
-            label={row.label}
-            change={row.change}
-            detail={row.detail}
-            spinning={live && i === rows.length - 1}
-          />
+            initial={spinningLast ? { opacity: 0, y: 6 } : false}
+            animate={{ opacity: 1, y: 0 }}
+            transition={REVEAL}
+          >
+            <ToolCallBlock
+              label={row.label}
+              change={row.change}
+              detail={row.detail}
+              spinning={spinningLast && i === rows.length - 1}
+            />
+          </motion.div>
         ))}
       </div>
       <FileChangeBadges files={files} />

@@ -83,26 +83,36 @@ export function NewChatMenu({
 
 export function CenterTabs({
   editor,
-  chatKind,
+  chats,
+  activeChatId,
   onChat,
+  onCloseChat,
   onCode,
 }: {
   editor: EditorState;
-  chatKind: ConversationKind;
-  onChat: () => void;
+  chats: { id: string; title: string; kind: ConversationKind }[];
+  activeChatId: string;
+  onChat: (id: string) => void;
+  onCloseChat: (id: string) => void;
   onCode: () => void;
 }) {
   const chatOn = editor.focus === "chat";
   const codeOn = editor.focus === "file";
-  const terminal = chatKind === "terminal";
   return (
     <ChromeTabStrip>
-      <ChromeTab
-        selected={chatOn}
-        label={terminal ? "Terminal" : "Chat"}
-        icon={<Symbol name={terminal ? "terminal.fill" : "bubble.left.fill"} className="size-3.5 shrink-0" />}
-        onClick={onChat}
-      />
+      {chats.map((chat) => {
+        const terminal = chat.kind === "terminal";
+        return (
+          <ChromeTab
+            key={chat.id}
+            selected={chatOn && chat.id === activeChatId}
+            label={chat.title || (terminal ? "Terminal" : "Chat")}
+            icon={<Symbol name={terminal ? "terminal.fill" : "bubble.left.fill"} className="size-3.5 shrink-0" />}
+            onClick={() => onChat(chat.id)}
+            onClose={() => onCloseChat(chat.id)}
+          />
+        );
+      })}
       {editor.tabs.length > 0 ? (
         <ChromeTab
           selected={codeOn}

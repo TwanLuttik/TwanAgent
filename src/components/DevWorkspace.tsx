@@ -27,8 +27,10 @@ import {
   DEV_PANE_MIN,
   loadDevPaneWidth,
   loadGitChangesView,
+  loadOpenFileTree,
   saveDevPaneWidth,
   saveGitChangesView,
+  saveOpenFileTree,
   type GitChangesView,
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
@@ -53,7 +55,9 @@ export function DevWorkspace({
   const [pane, setPane] = useState<PaneState>(defaultPaneState);
   const [width, setWidth] = useState(loadDevPaneWidth);
   const [dragging, setDragging] = useState(false);
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({ "": true });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
+    openTreeState(loadOpenFileTree(workspace)),
+  );
   const [children, setChildren] = useState<Record<string, DevEntry[]>>({});
   const [selected, setSelected] = useState<string | null>(null);
   const [changes, setChanges] = useState<DevGitChange[]>([]);
@@ -96,6 +100,10 @@ export function DevWorkspace({
   }, [workspace]);
 
   useEffect(() => {
+    setExpanded(openTreeState(loadOpenFileTree(workspace)));
+  }, [workspace]);
+
+  useEffect(() => {
     void refreshTree();
   }, [workspace, tick, refreshTree]);
 
@@ -106,6 +114,7 @@ export function DevWorkspace({
   async function toggle(path: string) {
     setExpanded((prev) => {
       const next = { ...prev, [path]: !prev[path] };
+      saveOpenFileTree(workspace, openTreePaths(next));
       return next;
     });
     if (!expanded[path]) {
@@ -368,6 +377,18 @@ function PaneTabs({
       </div>
     </div>
   );
+}
+
+function openTreeState(paths: string[]): Record<string, boolean> {
+  const state: Record<string, boolean> = { "": true };
+  for (const path of paths) {
+    if (path) state[path] = true;
+  }
+  return state;
+}
+
+function openTreePaths(state: Record<string, boolean>): string[] {
+  return Object.keys(state).filter((path) => path && state[path]);
 }
 
 function FilesPane({

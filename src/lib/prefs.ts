@@ -21,6 +21,7 @@ export function setSpaceCorner(on: boolean): void {
 
 const DEV_WORKSPACE_KEY = "twanagent.workspace";
 const DEV_CONVERSATION_KEY = "twanagent.conversation";
+const DEV_DRAFTS_KEY = "twanagent.drafts";
 
 export function loadDevWorkspace(): string {
   return localStorage.getItem(DEV_WORKSPACE_KEY) ?? "";
@@ -108,6 +109,28 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
     }),
   );
   saveCollapsedProjects([...collapsed]);
+}
+
+export function loadComposerDrafts(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DEV_DRAFTS_KEY) ?? "");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [id, text] of Object.entries(raw)) {
+      if (typeof text === "string" && text) out[id] = text;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveComposerDraft(chatId: string, text: string): void {
+  if (!chatId) return;
+  const all = loadComposerDrafts();
+  if (text) all[chatId] = text;
+  else delete all[chatId];
+  localStorage.setItem(DEV_DRAFTS_KEY, JSON.stringify(all));
 }
 
 export function loadDevConversation(workspace: string): string {
@@ -265,6 +288,38 @@ export function loadCollapsedProjects(): string[] {
 
 export function saveCollapsedProjects(keys: string[]): void {
   localStorage.setItem(ALL_PROJECTS_COLLAPSED_KEY, JSON.stringify(keys));
+}
+
+const FILE_TREE_OPEN_KEY = "twanagent.fileTreeOpen";
+const FILE_TREE_OPEN_MAX = 80;
+
+export function loadOpenFileTree(workspace: string): string[] {
+  if (!workspace) return [];
+  try {
+    const raw = JSON.parse(localStorage.getItem(FILE_TREE_OPEN_KEY) ?? "");
+    if (!raw || typeof raw !== "object") return [];
+    const rows = (raw as Record<string, unknown>)[projectKey(workspace)];
+    if (!Array.isArray(rows)) return [];
+    return rows.filter((v): v is string => typeof v === "string");
+  } catch {
+    return [];
+  }
+}
+
+export function saveOpenFileTree(workspace: string, paths: string[]): void {
+  if (!workspace) return;
+  let all: Record<string, string[]> = {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(FILE_TREE_OPEN_KEY) ?? "");
+    if (raw && typeof raw === "object") all = raw as Record<string, string[]>;
+  } catch {
+    all = {};
+  }
+  const key = projectKey(workspace);
+  const next = [...new Set(paths.filter((path) => path !== ""))].slice(0, FILE_TREE_OPEN_MAX);
+  if (next.length === 0) delete all[key];
+  else all[key] = next;
+  localStorage.setItem(FILE_TREE_OPEN_KEY, JSON.stringify(all));
 }
 
 const PERF_OVERLAY_KEY = "twanagent.perfOverlay";

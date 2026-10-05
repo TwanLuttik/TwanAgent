@@ -13,6 +13,7 @@ import {
   isAppProject,
   isSameProject,
   removeProjectGroup,
+  renameConversationInGroups,
   toggleCollapsedProject,
   upsertProjectGroup,
   type ProjectChatGroup,
@@ -77,6 +78,8 @@ export type DevLibraryDeps = {
   runTurn: RunTurn;
   scroller: RefObject<HTMLDivElement | null>;
   runningWsRef: RefObject<string>;
+  /** Workspace currently on screen. Turn saves must follow this, not the workspace from when the turn started. */
+  workspaceRef: RefObject<string>;
   runningIdRef: RefObject<string>;
   abortRef: RefObject<AbortController | null>;
   turnsRef: RefObject<Map<string, AbortController>>;
@@ -142,7 +145,7 @@ export function useDevLibrary(deps: DevLibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef, openGeneration,
+    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowAllProjects, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -221,7 +224,6 @@ function applyProjectData(
 }
 
 function releaseProject(path: string) {
-  void terminalSessions.disposeWorkspace(path);
   if (!isSameProject(runningWsRef.current, path)) return;
   abortRef.current?.abort();
   setSubagents([]);
@@ -260,6 +262,7 @@ async function deleteProjectFromSidebar(path: string) {
     return;
   }
   saveDevConversation(path, "");
+  void terminalSessions.disposeWorkspace(path);
   const leftover = removeDevRecentWorkspace(path);
   setRecents(leftover);
   setAllProjectGroups((prev) => removeProjectGroup(prev, path));
@@ -279,7 +282,6 @@ async function deleteProjectFromSidebar(path: string) {
 function applyWorkspace(path: string) {
   if (!isSameProject(path, workspace)) {
     openGeneration.current += 1;
-    void terminalSessions.disposeWorkspace(workspace);
     setStreamText("");
     setStreamReasoning("");
     setLiveTools([]);
@@ -569,21 +571,31 @@ async function persist(
     context_usage: usageToPersist(usage, usageByChat[id]),
     compaction: persistableCompaction(compaction ?? compactionByChat[id]),
   });
-  setConversations((rows) => {
-    const prev = rows.find((row) => row.id === id);
-    const next = {
-      id,
-      title,
-      created_at: prev?.created_at ?? existing?.created_at ?? now,
-      updated_at: now,
-      kind,
-      journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
-      sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
-    };
-    const idx = rows.findIndex((r) => r.id === id);
-    if (idx < 0) return [next, ...rows];
-    return rows.map((r, i) => (i === idx ? { ...r, ...next } : r));
-  });
+  const summary = {
+    title,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    kind,
+    journey_id: existing?.journey_id ?? null,
+    sort_order: existing?.sort_order ?? 0,
+  };
+  if (isSameProject(ws, workspaceRef.current)) {
+    setConversations((rows) => {
+      const prev = rows.find((row) => row.id === id);
+      const next = {
+        id,
+        ...summary,
+        created_at: prev?.created_at ?? summary.created_at,
+        journey_id: prev?.journey_id ?? summary.journey_id,
+        sort_order: prev?.sort_order ?? summary.sort_order,
+      };
+      const idx = rows.findIndex((r) => r.id === id);
+      if (idx < 0) return [next, ...rows];
+      return rows.map((r, i) => (i === idx ? { ...r, ...next } : r));
+    });
+    return;
+  }
+  setAllProjectGroups((groups) => renameConversationInGroups(groups, id, summary).groups);
 }
 
 async function reorderChats(fromId: string, toId: string, path = workspace) {

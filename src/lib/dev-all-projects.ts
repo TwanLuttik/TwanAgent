@@ -28,6 +28,69 @@ export function buildProjectGroups(
   });
 }
 
+export function renameConversationInGroups(
+  groups: ProjectChatGroup[],
+  id: string,
+  patch: Partial<DevConversationSummary>,
+): { groups: ProjectChatGroup[]; found: boolean } {
+  let found = false;
+  const next = groups.map((group) => {
+    if (!group.conversations.some((row) => row.id === id)) return group;
+    found = true;
+    return {
+      ...group,
+      conversations: group.conversations.map((row) => (row.id === id ? { ...row, ...patch, id } : row)),
+    };
+  });
+  return { groups: found ? next : groups, found };
+}
+
+/** Keep a project's in-memory chats on that project only after they have finished loading. */
+export function applyLiveProjectChats(
+  groups: ProjectChatGroup[],
+  live: { workspace: string; conversations: DevConversationSummary[]; journeys: JourneySummary[] },
+  loadedFor: string,
+): ProjectChatGroup[] {
+  if (!live.workspace || !isSameProject(loadedFor, live.workspace)) return groups;
+  const patched = groups.map((group) =>
+    isSameProject(group.path, live.workspace)
+      ? { ...group, conversations: live.conversations, journeys: live.journeys }
+      : group,
+  );
+  if (patched.some((group) => isSameProject(group.path, live.workspace))) return patched;
+  return [
+    {
+      name: folderName(live.workspace),
+      path: live.workspace,
+      conversations: live.conversations,
+      journeys: live.journeys,
+    },
+    ...patched,
+  ];
+}
+
+/** Put this project's chats on its own group and drop those ids from every other group. */
+export function placeProjectChats(
+  groups: ProjectChatGroup[],
+  path: string,
+  conversations: DevConversationSummary[],
+  journeys: JourneySummary[],
+): ProjectChatGroup[] {
+  const own = new Set(conversations.map((row) => row.id));
+  const patched = groups.map((group) => {
+    if (isSameProject(group.path, path)) {
+      return { ...group, conversations, journeys };
+    }
+    if (!own.size || !group.conversations.some((row) => own.has(row.id))) return group;
+    return { ...group, conversations: group.conversations.filter((row) => !own.has(row.id)) };
+  });
+  if (patched.some((group) => isSameProject(group.path, path))) return patched;
+  return [
+    { name: folderName(path), path, conversations, journeys },
+    ...patched,
+  ];
+}
+
 export function upsertProjectGroup(
   groups: ProjectChatGroup[],
   path: string,

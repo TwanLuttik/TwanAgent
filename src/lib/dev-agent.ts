@@ -18,6 +18,8 @@ import {
 } from "./dev-compact.ts";
 import {
   EMPTY_COMPLETION_MESSAGE,
+  UNFINISHED_TOOL,
+  closeDanglingToolCalls,
   isEmptyCompletion,
   isRetryableChatError,
   skipToolIfAborted,
@@ -171,6 +173,11 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
   }
   let compactedAfterOverflow = false;
   for (;;) {
+    const repaired = closeDanglingToolCalls(transcript);
+    if (repaired !== transcript) {
+      transcript = repaired;
+      opts.onUpdate?.(transcript);
+    }
     if (opts.signal.aborted) return transcript;
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
@@ -243,24 +250,37 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         continue;
       }
       const call = result.toolCalls[i];
-      opts.onTool?.(call);
-      if (call.name === "spawn_subagent") {
-        spawnWaits.push(
-          runSubagent(call, opts).then((content) => {
-            contents[i] = content;
-          }),
-        );
+      if (!call) {
+        contents[i] = UNFINISHED_TOOL;
         continue;
       }
-      contents[i] = await executeTool(
-        opts.workspace,
-        call,
-        opts.confirmShell,
-        opts.childType,
-        parsePermissionMode(opts.getPermission?.()),
-        opts.signal,
-        opts.journeyId,
-      );
+      opts.onTool?.(call);
+      try {
+        if (call.name === "spawn_subagent") {
+          spawnWaits.push(
+            runSubagent(call, opts)
+              .then((content) => {
+                contents[i] = content || UNFINISHED_TOOL;
+              })
+              .catch((err) => {
+                contents[i] = `Error: ${String(err)}`;
+              }),
+          );
+          continue;
+        }
+        contents[i] =
+          (await executeTool(
+            opts.workspace,
+            call,
+            opts.confirmShell,
+            opts.childType,
+            parsePermissionMode(opts.getPermission?.()),
+            opts.signal,
+            opts.journeyId,
+          )) || UNFINISHED_TOOL;
+      } catch (err) {
+        contents[i] = `Error: ${String(err)}`;
+      }
       if (
         call.name === "write_file" ||
         call.name === "edit_file" ||
@@ -274,7 +294,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const toolMsgs: ChatMessage[] = result.toolCalls.map((call, i) => ({
       role: "tool",
       tool_call_id: call.id,
-      content: contents[i] ?? "",
+      content: contents[i] || UNFINISHED_TOOL,
     }));
     transcript = [...transcript, ...toolMsgs];
     opts.onUpdate?.(transcript);

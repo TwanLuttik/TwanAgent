@@ -42,6 +42,7 @@ import {
   transcriptItems,
   liveTranscriptItems,
   groupTranscriptTurns,
+  stampTurnDuration,
   systemPrompt,
   withSystem,
   type ChatMessage,
@@ -567,6 +568,23 @@ describe("tool helpers", () => {
     assert.deepEqual(tools.labels, ["Edit src/app.ts"]);
     assert.deepEqual(tools.details[0]?.added, ["one", "two"]);
     assert.deepEqual(tools.details[0]?.removed, ["one"]);
+  });
+});
+
+describe("stampTurnDuration", () => {
+  it("marks the final reply and leaves tool steps alone", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] },
+      { role: "assistant", content: "Done." },
+    ];
+    const stamped = stampTurnDuration(messages, 12_400);
+    assert.equal(stamped[2]?.durationMs, 12_400);
+    assert.equal(stamped[1]?.durationMs, undefined);
+    const items = transcriptItems(stamped);
+    const reply = items.find((item) => item.kind === "assistant");
+    assert.equal(reply?.kind === "assistant" && reply.durationMs, 12_400);
+    assert.equal(stampTurnDuration(stamped, 12_400), stamped);
   });
 });
 

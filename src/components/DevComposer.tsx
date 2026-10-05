@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { folderName, type ChatImage } from "../lib/dev";
+import { applyMention, draftMentionSpans, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/dev-mention";
 import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../lib/dev-image";
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/dev-context";
 import { textareaFitHeight } from "../lib/composer-size";
@@ -8,6 +9,7 @@ import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/d
 import { todosAreOpen, type AgentTodo } from "../lib/dev-todo";
 import type { DevEffort, DevModel } from "../lib/tauri";
 import { ContextUsageChip } from "./ContextUsageChip";
+import { FileIcon } from "./FileIcon";
 import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { TodoSteps } from "./TodoSteps";
@@ -44,6 +46,7 @@ export function DevComposer({
   images = [],
   onImages,
   onAddImages,
+  mentionFiles = [],
   todos = [],
 }: {
   draft: string;
@@ -71,6 +74,7 @@ export function DevComposer({
   images?: ChatImage[];
   onImages?: (images: ChatImage[]) => void;
   onAddImages?: (files: File[]) => void;
+  mentionFiles?: MentionFile[];
   todos?: AgentTodo[];
 }) {
   const selected = models.find((m) => m.id === model) ?? models[0];
@@ -81,8 +85,14 @@ export function DevComposer({
   const permissionMode = parsePermissionMode(permission);
   const box = useRef<HTMLFormElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
+  const mirror = useRef<HTMLDivElement>(null);
   const [usageHover, setUsageHover] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionClosed, setMentionClosed] = useState(false);
+  const mention = mentionClosed ? null : mentionAtCursor(draft, cursor);
+  const mentionRows = mention ? filterMentionFiles(mentionFiles, mention.query) : [];
   const canSend = canSendPrompt(draft, images) && ready;
   const showUsage = Boolean(usage && usageWindow);
 
@@ -141,6 +151,19 @@ export function DevComposer({
     return () => ro.disconnect();
   }, [draft, compact]);
 
+  function pickMention(file: MentionFile) {
+    if (!mention) return;
+    const next = applyMention(draft, mention, file);
+    onDraft(next.text);
+    setCursor(next.cursor);
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.cursor, next.cursor);
+    });
+  }
+
   function submit(ev?: FormEvent) {
     ev?.preventDefault();
     if (!canSendPrompt(draft, images) || !ready) return;
@@ -148,6 +171,24 @@ export function DevComposer({
   }
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mention && mentionRows.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        setMentionIndex((index) => (index + step + mentionRows.length) % mentionRows.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        pickMention(mentionRows[Math.min(mentionIndex, mentionRows.length - 1)]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionClosed(true);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
@@ -201,27 +242,56 @@ export function DevComposer({
             Drop images
           </div>
         ) : null}
-        <textarea
-          ref={area}
-          value={draft}
-          onChange={(e) => onDraft(e.target.value)}
-          onPaste={(e) => {
-            const files = imageFilesFromClipboard(e.clipboardData) as File[];
-            if (!files.length) return;
-            e.preventDefault();
-            takeImageFiles(files);
+        {mention && mentionRows.length ? (
+          <div
+            role="listbox"
+            aria-label="Files"
+            className="absolute bottom-full left-3 z-30 mb-1 max-h-56 w-[min(100%-1.5rem,22rem)] overflow-auto rounded-lg border border-line bg-canvas py-1 shadow-card"
+          >
+            {mentionRows.map((file, index) => (
+              <button
+                key={file.path}
+                type="button"
+                role="option"
+                aria-selected={index === mentionIndex}
+                onMouseEnter={() => setMentionIndex(index)}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pickMention(file);
+                }}
+                className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2 text-left transition-colors ${
+                  index === mentionIndex ? "bg-accent/10 text-accent" : "text-ink/80 hover:bg-accent/10 hover:text-accent"
+                }`}
+              >
+                <FileIcon name={file.name} className="size-3.5 shrink-0" />
+                <span className="shrink-0 truncate text-[12px] leading-none">{file.name}</span>
+                <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-none opacity-60">
+                  {file.path}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <MentionField
+          draft={draft}
+          files={mentionFiles}
+          compact={compact}
+          area={area}
+          mirror={mirror}
+          placeholder={placeholder}
+          autoFocus={autoFocus}
+          onDraft={onDraft}
+          onCursor={(next) => setCursor(next)}
+          onEdit={() => {
+            setMentionClosed(false);
+            setMentionIndex(0);
           }}
-          onKeyDown={onKey}
+          onPasteFiles={takeImageFiles}
+          onKey={onKey}
           onMouseEnter={() => {
             if (showUsage) setUsageHover(true);
           }}
           onMouseLeave={() => setUsageHover(false)}
-          rows={1}
-          autoFocus={autoFocus}
-          placeholder={placeholder}
-          className={`block w-full resize-none overflow-y-auto border-0 bg-transparent text-[14px] leading-relaxed outline-none placeholder:text-muted/80 ${
-            compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2"
-          }`}
         />
         <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
           <ChipSelect
@@ -295,6 +365,143 @@ export function DevComposer({
         </div>
       </div>
     </form>
+  );
+}
+
+function MentionField({
+  draft,
+  files,
+  compact,
+  area,
+  mirror,
+  placeholder,
+  autoFocus,
+  onDraft,
+  onCursor,
+  onEdit,
+  onPasteFiles,
+  onKey,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  draft: string;
+  files: MentionFile[];
+  compact?: boolean;
+  area: RefObject<HTMLTextAreaElement | null>;
+  mirror: RefObject<HTMLDivElement | null>;
+  placeholder: string;
+  autoFocus?: boolean;
+  onDraft: (value: string) => void;
+  onCursor: (cursor: number) => void;
+  onEdit: () => void;
+  onPasteFiles: (files: File[]) => void;
+  onKey: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}) {
+  const pad = compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2";
+  const type = "m-0 whitespace-pre-wrap break-words border-0 font-sans text-[14px] leading-relaxed";
+  const spans = draftMentionSpans(draft, files);
+  let cursor = 0;
+  const parts: ReactNode[] = [];
+  spans.forEach((span, index) => {
+    if (span.start > cursor) {
+      parts.push(
+        <span key={`gap-${cursor}`} className="text-transparent">
+          {draft.slice(cursor, span.start)}
+        </span>,
+      );
+    }
+    parts.push(
+      <span key={`${span.start}-${index}`} className="rounded-[3px] bg-panel text-accent">
+        {draft.slice(span.start, span.end)}
+      </span>,
+    );
+    cursor = span.end;
+  });
+  if (cursor < draft.length) {
+    parts.push(
+      <span key={`tail-${cursor}`} className="text-transparent">
+        {draft.slice(cursor)}
+      </span>,
+    );
+  }
+  if (draft.endsWith("\n")) parts.push(" ");
+
+  useLayoutEffect(() => {
+    const from = area.current;
+    const to = mirror.current;
+    if (!from || !to) return;
+    const sync = () => {
+      const cs = getComputedStyle(from);
+      to.style.boxSizing = cs.boxSizing;
+      to.style.width = `${from.offsetWidth}px`;
+      to.style.height = `${from.offsetHeight}px`;
+      to.style.font = cs.font;
+      to.style.lineHeight = cs.lineHeight;
+      to.style.letterSpacing = cs.letterSpacing;
+      to.style.wordSpacing = cs.wordSpacing;
+      to.style.paddingTop = cs.paddingTop;
+      to.style.paddingRight = cs.paddingRight;
+      to.style.paddingBottom = cs.paddingBottom;
+      to.style.paddingLeft = cs.paddingLeft;
+      to.style.borderTopWidth = cs.borderTopWidth;
+      to.style.borderRightWidth = cs.borderRightWidth;
+      to.style.borderBottomWidth = cs.borderBottomWidth;
+      to.style.borderLeftWidth = cs.borderLeftWidth;
+      to.style.textAlign = cs.textAlign;
+      to.style.textIndent = cs.textIndent;
+      to.style.tabSize = cs.tabSize;
+      to.style.whiteSpace = "pre-wrap";
+      to.style.overflowWrap = "anywhere";
+      to.style.wordBreak = "break-word";
+      to.scrollTop = from.scrollTop;
+      to.scrollLeft = from.scrollLeft;
+    };
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(sync);
+    ro.observe(from);
+    return () => ro.disconnect();
+  }, [draft, compact, area, mirror, spans.length]);
+
+  return (
+    <div className="relative">
+      <div ref={mirror} aria-hidden className={`pointer-events-none absolute top-0 left-0 z-[2] overflow-hidden ${type}`}>
+        {draft && spans.length ? parts : null}
+      </div>
+      <textarea
+        ref={area}
+        value={draft}
+        onChange={(e) => {
+          onEdit();
+          onCursor(e.target.selectionStart ?? e.target.value.length);
+          onDraft(e.target.value);
+        }}
+        onScroll={() => {
+          const from = area.current;
+          const to = mirror.current;
+          if (!from || !to) return;
+          to.scrollTop = from.scrollTop;
+          to.scrollLeft = from.scrollLeft;
+        }}
+        onSelect={(e) => onCursor(e.currentTarget.selectionStart ?? 0)}
+        onClick={(e) => onCursor(e.currentTarget.selectionStart ?? 0)}
+        onPaste={(e) => {
+          const pasted = imageFilesFromClipboard(e.clipboardData) as File[];
+          if (!pasted.length) return;
+          e.preventDefault();
+          onPasteFiles(pasted);
+        }}
+        onKeyDown={onKey}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+        rows={1}
+        autoFocus={autoFocus}
+        placeholder={placeholder}
+        className={`relative z-[1] block w-full resize-none overflow-y-auto bg-transparent text-ink caret-ink outline-none placeholder:text-muted/80 ${type} ${pad}`}
+      />
+    </div>
   );
 }
 

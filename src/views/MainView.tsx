@@ -5,9 +5,10 @@ import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { contextWindowChoices, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/dev-context";
 import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedMcpServer } from "../lib/dev-mcp";
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/dev-skill";
-import { folderName, mergeProjectRows, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/dev";
+import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
+import { mergeProjectRows, projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/dev";
 import { imagePathsFromDrop, imagesForChat } from "../lib/dev-image";
-import { isSameProject, upsertProjectGroup, type ProjectChatGroup } from "../lib/dev-all-projects";
+import { applyLiveProjectChats, isSameProject, placeProjectChats, type ProjectChatGroup } from "../lib/dev-all-projects";
 import type { JourneySummary } from "../lib/dev-journey";
 import { parseConversationKind } from "../lib/dev-terminal-chat";
 import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/dev-editor";
@@ -17,6 +18,7 @@ import {
   loadAllProjects,
   loadCollapsedProjects,
   loadDevContextWindow,
+  loadComposerDrafts,
   loadDevConversation,
   loadDevEffort,
   loadDevModel,
@@ -26,11 +28,13 @@ import {
   loadDevWorkspace,
   pushDevRecentWorkspace,
   rewriteStoredProjectPaths,
+  saveComposerDraft,
   saveDevConversation,
   saveDevSidebarWidth,
   saveDevWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode } from "../lib/dev-permission";
+import { collectWorkspaceFiles, type MentionFile } from "../lib/dev-mention";
 import { draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/dev-turn";
 import * as api from "../lib/tauri";
 import type { DevConversationSummary, DevRuntime } from "../lib/tauri";
@@ -54,11 +58,13 @@ export function MainView() {
   const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>(loadComposerDrafts);
+  const [mentionFiles, setMentionFiles] = useState<MentionFile[]>([]);
   const [draftImages, setDraftImages] = useState<Record<string, ChatImage[]>>({});
   const [pendingByChat, setPendingByChat] = useState<Record<string, PendingMessage[]>>({});
   const [editingPending, setEditingPending] = useState<PendingEdit | null>(null);
   const [busy, setBusy] = useState(false);
+  const [chatTabsByProject, setChatTabsByProject] = useState<Record<string, string[]>>({});
   const [runningId, setRunningId] = useState("");
   const [runningTurns, setRunningTurns] = useState<Record<string, RunningTurn>>({});
   const [streamText, setStreamText] = useState("");
@@ -154,6 +160,7 @@ export function MainView() {
   const queued = pendingForChat(pendingByChat, activeId);
 
   const setDraft = useCallback((text: string) => {
+    saveComposerDraft(activeId, text);
     setDrafts((prev) => setDraftForChat(prev, activeId, text));
   }, [activeId]);
 
@@ -332,6 +339,20 @@ export function MainView() {
   }, [pathsReady, workspace, reloadConversations, setFlash]);
 
   useEffect(() => {
+    if (!workspace || !opened) {
+      setMentionFiles([]);
+      return;
+    }
+    let gone = false;
+    void collectWorkspaceFiles((path) => api.devListDir(workspace, path)).then((files) => {
+      if (!gone) setMentionFiles(files);
+    });
+    return () => {
+      gone = true;
+    };
+  }, [workspace, opened, tick]);
+
+  useEffect(() => {
     if (!pathsReady || !showAllProjects) return;
     let cancelled = false;
     void (async () => {
@@ -348,24 +369,9 @@ export function MainView() {
           }),
         );
         if (!cancelled) {
-          const live = sidebarSyncRef.current;
-          let next = loaded.map((group) =>
-            isSameProject(group.path, live.workspace)
-              ? { ...group, conversations: live.conversations, journeys: live.journeys }
-              : group,
+          setAllProjectGroups(
+            applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current),
           );
-          if (live.workspace && !next.some((group) => isSameProject(group.path, live.workspace))) {
-            next = [
-              {
-                name: folderName(live.workspace),
-                path: live.workspace,
-                conversations: live.conversations,
-                journeys: live.journeys,
-              },
-              ...next,
-            ];
-          }
-          setAllProjectGroups(next);
         }
       } catch (e) {
         if (!cancelled) setFlash({ kind: "err", text: String(e) });
@@ -379,13 +385,7 @@ export function MainView() {
   useEffect(() => {
     if (!showAllProjects || !workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
-    setAllProjectGroups((prev) =>
-      upsertProjectGroup(prev, workspace, {
-        name: folderName(workspace),
-        conversations,
-        journeys,
-      }),
-    );
+    setAllProjectGroups((prev) => placeProjectChats(prev, workspace, conversations, journeys));
   }, [showAllProjects, workspace, conversations, journeys]);
 
   useEffect(() => {
@@ -611,6 +611,7 @@ export function MainView() {
     runTurn: (ws, id, next, after, journeyIdOverride) => runTurnRef.current(ws, id, next, after, journeyIdOverride),
     scroller,
     runningWsRef,
+    workspaceRef,
     runningIdRef,
     abortRef,
     turnsRef,
@@ -659,6 +660,7 @@ export function MainView() {
     messages,
     draft,
     promptImages,
+    mentionFiles,
     busy,
     ready,
     runtime,
@@ -736,6 +738,48 @@ export function MainView() {
     deleteJourney,
     moveConversation,
   } = library;
+
+  const chatTabKey = workspace ? projectKey(workspace) : "";
+  const chatTabIds = chatTabKey ? (chatTabsByProject[chatTabKey] ?? []) : [];
+  const chatTabs = chatTabIds.map((id) => {
+    const row = conversations.find((item) => item.id === id);
+    return {
+      id,
+      title: row?.title?.trim() || "Chat",
+      kind: row?.kind === "terminal" ? ("terminal" as const) : ("chat" as const),
+    };
+  });
+
+  useEffect(() => {
+    if (!workspace || !activeId) return;
+    const key = projectKey(workspace);
+    setChatTabsByProject((prev) => {
+      const tabs = prev[key] ?? [];
+      const next = openChatTab(tabs, activeId);
+      return next === tabs ? prev : { ...prev, [key]: next };
+    });
+  }, [workspace, activeId]);
+
+  const closeChatTab = useCallback(
+    (id: string) => {
+      if (!workspace) return;
+      const key = projectKey(workspace);
+      const result = closeChatTabList(chatTabsByProject[key] ?? [], id);
+      setChatTabsByProject((prev) => ({ ...prev, [key]: result.tabs }));
+      if (id !== activeId) return;
+      if (result.next) {
+        void openChat(result.next);
+        return;
+      }
+      setActiveId("");
+      setMessages([]);
+      setStreamText("");
+      setStreamReasoning("");
+      setLiveTools([]);
+    },
+    [workspace, chatTabsByProject, activeId, openChat],
+  );
+
   const {
     answerShell,
     pickModel,
@@ -923,6 +967,8 @@ export function MainView() {
     applyWorkspace,
     beginPendingEdit,
     busy,
+    chatTabs,
+    closeChatTab,
     closeFileTab,
     closePendingEdit,
     closeProjectSettings,
@@ -939,6 +985,7 @@ export function MainView() {
     deleteProjectFromSidebar,
     dirtyFiles,
     draft,
+    mentionFiles,
     editingPending,
     editMcpServer,
     editor,

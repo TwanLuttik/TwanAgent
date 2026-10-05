@@ -16,7 +16,10 @@ export function isRetryableChatError(error: string): boolean {
     text.includes("503") ||
     text.includes("504") ||
     text.includes("timed out") ||
-    text.includes("timeout")
+    text.includes("timeout") ||
+    text.includes("decoding response body") ||
+    text.includes("connection reset") ||
+    text.includes("broken pipe")
   );
 }
 
@@ -37,6 +40,26 @@ export const EMPTY_COMPLETION_MESSAGE = "Grok returned an empty reply.";
 
 export function isEmptyCompletion(text: string, toolCalls: { length: number }): boolean {
   return !(text || "").trim() && toolCalls.length === 0;
+}
+
+export const UNFINISHED_TOOL = "Error: the command did not finish.";
+
+/** Every assistant tool call needs a tool result or the next request is invalid and the turn looks finished. */
+export function closeDanglingToolCalls(messages: ChatMessage[]): ChatMessage[] {
+  const answered = new Set<string>();
+  for (const msg of messages) {
+    if (msg.role === "tool" && msg.tool_call_id) answered.add(msg.tool_call_id);
+  }
+  const missing: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role !== "assistant") continue;
+    for (const call of msg.tool_calls ?? []) {
+      if (!call.id || answered.has(call.id)) continue;
+      missing.push({ role: "tool", tool_call_id: call.id, content: UNFINISHED_TOOL });
+      answered.add(call.id);
+    }
+  }
+  return missing.length ? [...messages, ...missing] : messages;
 }
 
 export function turnAppliesToChat(turnId: string, visibleId: string): boolean {
