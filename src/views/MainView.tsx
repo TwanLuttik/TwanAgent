@@ -2,59 +2,59 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, scrollChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
-import { contextWindowChoices, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/dev-context";
-import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedMcpServer } from "../lib/dev-mcp";
-import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/dev-skill";
+import { contextWindowChoices, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
+import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
+import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
-import { mergeProjectRows, projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/dev";
-import { imagePathsFromDrop, imagesForChat } from "../lib/dev-image";
-import { applyLiveProjectChats, isSameProject, placeProjectChats, type ProjectChatGroup } from "../lib/dev-all-projects";
-import type { JourneySummary } from "../lib/dev-journey";
-import { parseConversationKind } from "../lib/dev-terminal-chat";
-import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/dev-editor";
+import { mergeProjectRows, projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
+import { imagePathsFromDrop, imagesForChat } from "../lib/image";
+import { applyLiveProjectChats, isSameProject, placeProjectChats, type ProjectChatGroup } from "../lib/all-projects";
+import type { JourneySummary } from "../lib/journey";
+import { parseConversationKind } from "../lib/terminal-chat";
+import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
 import {
-  DEV_SIDEBAR_MAX,
-  DEV_SIDEBAR_MIN,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
   loadAllProjects,
   loadCollapsedProjects,
-  loadDevContextWindow,
+  loadContextWindow,
   loadComposerDrafts,
-  loadDevConversation,
-  loadDevEffort,
-  loadDevModel,
-  loadDevPermission,
-  loadDevRecentWorkspaces,
-  loadDevSidebarWidth,
-  loadDevWorkspace,
-  pushDevRecentWorkspace,
+  loadConversation,
+  loadEffort,
+  loadModel,
+  loadPermission,
+  loadRecentWorkspaces,
+  loadSidebarWidth,
+  loadWorkspace,
+  pushRecentWorkspace,
   rewriteStoredProjectPaths,
   saveComposerDraft,
-  saveDevConversation,
-  saveDevSidebarWidth,
-  saveDevWorkspace,
+  saveConversation,
+  saveSidebarWidth,
+  saveWorkspace,
 } from "../lib/prefs";
-import { parsePermissionMode, type PermissionMode } from "../lib/dev-permission";
-import { collectWorkspaceFiles, type MentionFile } from "../lib/dev-mention";
-import { draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/dev-turn";
+import { parsePermissionMode, type PermissionMode } from "../lib/permission";
+import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
+import { draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
-import type { DevConversationSummary, DevRuntime } from "../lib/tauri";
+import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
-import type { SubagentRecord } from "../lib/dev-subagent";
-import { bindDevTurn } from "./dev/useDevTurn";
-import { useDevLibrary, type RunTurn } from "./dev/useDevLibrary";
+import type { SubagentRecord } from "../lib/subagent";
+import { bindTurn } from "./main/useTurn";
+import { useLibrary, type RunTurn } from "./main/useLibrary";
 import type { MainModel } from "./main/context";
 import { MainProvider } from "./main/context";
 import { MainShell } from "./main/MainShell";
 
 export function MainView() {
   const { setFlash } = useApp();
-  const [workspace, setWorkspace] = useState(loadDevWorkspace);
-  const [runtime, setRuntime] = useState<DevRuntime | null>(null);
+  const [workspace, setWorkspace] = useState(loadWorkspace);
+  const [runtime, setRuntime] = useState<Runtime | null>(null);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [contextWindow, setContextWindow] = useState(0);
-  const [permission, setPermission] = useState<PermissionMode>(() => parsePermissionMode(loadDevPermission()));
-  const [conversations, setConversations] = useState<DevConversationSummary[]>([]);
+  const [permission, setPermission] = useState<PermissionMode>(() => parsePermissionMode(loadPermission()));
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -87,7 +87,7 @@ export function MainView() {
   const [tick, setTick] = useState(0);
   const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
-  const [recents, setRecents] = useState(loadDevRecentWorkspaces);
+  const [recents, setRecents] = useState(loadRecentWorkspaces);
   const [showSettings, setShowSettings] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [projectSettings, setProjectSettings] = useState<{ path: string; name: string } | null>(null);
@@ -96,7 +96,7 @@ export function MainView() {
   const [editor, setEditor] = useState<EditorState>(emptyEditor);
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(loadDevSidebarWidth);
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
   const [showAllProjects, setShowAllProjects] = useState(loadAllProjects);
   const [allProjectGroups, setAllProjectGroups] = useState<ProjectChatGroup[]>([]);
@@ -180,14 +180,14 @@ export function MainView() {
       setMessages([]);
       return;
     }
-    const rows = await api.devListConversations(ws);
+    const rows = await api.listConversations(ws);
     if (!isSameProject(ws, workspaceRef.current)) return;
-    const nextJourneys = await api.devListJourneys(ws).catch(() => [] as JourneySummary[]);
+    const nextJourneys = await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
     if (!isSameProject(ws, workspaceRef.current)) return;
     sidebarLoadedForRef.current = ws;
     setConversations(rows);
     setJourneys(nextJourneys);
-    const want = preferId || loadDevConversation(ws) || rows[0]?.id || "";
+    const want = preferId || loadConversation(ws) || rows[0]?.id || "";
     if (!want) {
       setActiveId("");
       setMessages([]);
@@ -199,7 +199,7 @@ export function MainView() {
       setMessages([]);
       return;
     }
-    const full = await api.devGetConversation(ws, found.id);
+    const full = await api.getConversation(ws, found.id);
     if (!isSameProject(ws, workspaceRef.current)) return;
     stickToBottomRef.current = true;
     setActiveId(found.id);
@@ -226,17 +226,17 @@ export function MainView() {
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [found.id]: full.compaction! }));
     }
-    saveDevConversation(ws, found.id);
+    saveConversation(ws, found.id);
   }, []);
 
-  const applyRuntime = useCallback((next: DevRuntime) => {
+  const applyRuntime = useCallback((next: Runtime) => {
     setRuntime(next);
-    const savedModel = loadDevModel();
+    const savedModel = loadModel();
     const nextModel = next.models.some((m) => m.id === savedModel)
       ? savedModel
       : next.default_model;
     const chosen = next.models.find((m) => m.id === nextModel) ?? next.models[0];
-    const savedEffort = loadDevEffort();
+    const savedEffort = loadEffort();
     const nextEffort = chosen?.efforts.some((e) => e.id === savedEffort)
       ? savedEffort
       : next.default_effort;
@@ -247,12 +247,12 @@ export function MainView() {
         : (chosen?.efforts[0]?.id ?? ""),
     );
     const choices = contextWindowChoices(chosen?.context_windows, chosen?.context_window);
-    setContextWindow(resolveContextWindow(choices, loadDevContextWindow(), chosen?.context_window, nextModel));
+    setContextWindow(resolveContextWindow(choices, loadContextWindow(), chosen?.context_window, nextModel));
   }, []);
 
   const reloadRuntime = useCallback(() => {
     void api
-      .devRuntime()
+      .runtime()
       .then(applyRuntime)
       .catch(() =>
         applyRuntime({
@@ -289,21 +289,21 @@ export function MainView() {
 
   useEffect(() => {
     if (!pathsReady || !workspace) return;
-    setRecents(pushDevRecentWorkspace(workspace));
+    setRecents(pushRecentWorkspace(workspace));
   }, [pathsReady, workspace]);
 
   useEffect(() => {
     let cancelled = false;
     void api
-      .devProjectsLocation()
+      .projectsLocation()
       .then((loc) => {
         if (cancelled) return;
         rewriteStoredProjectPaths(loc.moves);
         setProjectsRoot(loc.root);
         setLegacyProjectsRoot(loc.legacy_root);
-        setRecents(loadDevRecentWorkspaces());
+        setRecents(loadRecentWorkspaces());
         setCollapsedProjects(loadCollapsedProjects());
-        const next = loadDevWorkspace();
+        const next = loadWorkspace();
         setWorkspace((current) => (current === next ? current : next));
       })
       .catch(() => undefined)
@@ -344,7 +344,7 @@ export function MainView() {
       return;
     }
     let gone = false;
-    void collectWorkspaceFiles((path) => api.devListDir(workspace, path)).then((files) => {
+    void collectWorkspaceFiles((path) => api.listDir(workspace, path)).then((files) => {
       if (!gone) setMentionFiles(files);
     });
     return () => {
@@ -357,13 +357,13 @@ export function MainView() {
     let cancelled = false;
     void (async () => {
       try {
-        const fromDisk = await api.devListProjects();
-        const rows = mergeProjectRows(fromDisk, loadDevRecentWorkspaces());
+        const fromDisk = await api.listProjects();
+        const rows = mergeProjectRows(fromDisk, loadRecentWorkspaces());
         const loaded = await Promise.all(
           rows.map(async (row) => {
             const [convs, nextJourneys] = await Promise.all([
-              api.devListConversations(row.path).catch(() => [] as DevConversationSummary[]),
-              api.devListJourneys(row.path).catch(() => [] as JourneySummary[]),
+              api.listConversations(row.path).catch(() => [] as ConversationSummary[]),
+              api.listJourneys(row.path).catch(() => [] as JourneySummary[]),
             ]);
             return { ...row, conversations: convs, journeys: nextJourneys };
           }),
@@ -397,11 +397,11 @@ export function MainView() {
     let cancelled = false;
     setOpened(false);
     void api
-      .devOpenFolder(workspace)
+      .openFolder(workspace)
       .then((path) => {
         if (cancelled) return;
         if (path !== workspace) {
-          saveDevWorkspace(path);
+          saveWorkspace(path);
           setWorkspace(path);
           return;
         }
@@ -422,7 +422,7 @@ export function MainView() {
     void detectMcp({
       readHome: async (path) => {
         try {
-          return await api.devReadUserMcp(path);
+          return await api.readUserMcp(path);
         } catch {
           return null;
         }
@@ -430,7 +430,7 @@ export function MainView() {
       readWorkspace: workspace
         ? async (path) => {
             try {
-              return await api.devReadFile(workspace, path);
+              return await api.readFile(workspace, path);
             } catch {
               return null;
             }
@@ -439,7 +439,7 @@ export function MainView() {
     }).then(async (rows) => {
       let authed: string[] = [];
       try {
-        authed = await api.devMcpAuthNames();
+        authed = await api.mcpAuthNames();
       } catch {
         authed = [];
       }
@@ -447,10 +447,10 @@ export function MainView() {
     });
     void (async () => {
       try {
-        const files = await api.devListSkillFiles(workspace || null);
+        const files = await api.listSkillFiles(workspace || null);
         let grokToml: string | null = null;
         try {
-          grokToml = await api.devReadUserMcp(".grok/config.toml");
+          grokToml = await api.readUserMcp(".grok/config.toml");
         } catch {
           grokToml = null;
         }
@@ -458,9 +458,9 @@ export function MainView() {
         for (const file of files) {
           try {
             const contents = file.home
-              ? await api.devReadUserSkill(file.read_path)
+              ? await api.readUserSkill(file.read_path)
               : workspace
-                ? await api.devReadFile(workspace, file.read_path)
+                ? await api.readFile(workspace, file.read_path)
                 : null;
             if (contents == null) continue;
             inputs.push({
@@ -562,8 +562,8 @@ export function MainView() {
 
     function onMove(move: PointerEvent) {
       const next = Math.min(
-        DEV_SIDEBAR_MAX,
-        Math.max(DEV_SIDEBAR_MIN, Math.round(startWidth + (move.clientX - startX))),
+        SIDEBAR_MAX,
+        Math.max(SIDEBAR_MIN, Math.round(startWidth + (move.clientX - startX))),
       );
       setSidebarWidth(next);
     }
@@ -574,7 +574,7 @@ export function MainView() {
       handle.removeEventListener("pointercancel", onUp);
       setSidebarDragging(false);
       setSidebarWidth((next) => {
-        saveDevSidebarWidth(next);
+        saveSidebarWidth(next);
         return next;
       });
     }
@@ -590,7 +590,7 @@ export function MainView() {
     fileRefreshTimer.current = window.setTimeout(() => setTick((n) => n + 1), 200);
   }, []);
 
-  const library = useDevLibrary({
+  const library = useLibrary({
     workspace,
     conversations,
     journeys,
@@ -654,7 +654,7 @@ export function MainView() {
     setFlash,
     bumpFiles,
   });
-  const turn = bindDevTurn({
+  const turn = bindTurn({
     workspace,
     activeId,
     messages,
@@ -814,8 +814,8 @@ export function MainView() {
     async (server: DetectedMcpServer, enabled: boolean) => {
       setMcpBusy(server.name);
       try {
-        const raw = await api.devReadUserMcp(".grok/config.toml");
-        await api.devWriteUserMcp(".grok/config.toml", setMcpEnabledInToml(raw, server.name, enabled));
+        const raw = await api.readUserMcp(".grok/config.toml");
+        await api.writeUserMcp(".grok/config.toml", setMcpEnabledInToml(raw, server.name, enabled));
         bumpFiles();
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });
@@ -830,7 +830,7 @@ export function MainView() {
     async (server: DetectedMcpServer) => {
       const rel = userMcpRel(server.source);
       try {
-        if (rel) await api.devOpenUserMcp(rel);
+        if (rel) await api.openUserMcp(rel);
         else openWorkspaceFile(server.source);
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });
@@ -843,7 +843,7 @@ export function MainView() {
     async (server: DetectedMcpServer) => {
       setMcpBusy(server.name);
       try {
-        await api.devMcpClearAuth(server.name);
+        await api.mcpClearAuth(server.name);
         bumpFiles();
         setFlash({
           kind: "ok",
@@ -864,8 +864,8 @@ export function MainView() {
     async (skill: DetectedSkill, enabled: boolean) => {
       setSkillBusy(skill.name);
       try {
-        const raw = await api.devReadUserMcp(".grok/config.toml");
-        await api.devWriteUserMcp(".grok/config.toml", setSkillEnabledInToml(raw, skill.name, enabled));
+        const raw = await api.readUserMcp(".grok/config.toml");
+        await api.writeUserMcp(".grok/config.toml", setSkillEnabledInToml(raw, skill.name, enabled));
         bumpFiles();
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });
@@ -880,7 +880,7 @@ export function MainView() {
     async (skill: DetectedSkill) => {
       const rel = userSkillRel(skill.source);
       try {
-        if (rel) await api.devOpenUserSkill(rel);
+        if (rel) await api.openUserSkill(rel);
         else openWorkspaceFile(skill.source);
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });

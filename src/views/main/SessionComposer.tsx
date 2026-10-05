@@ -1,9 +1,9 @@
-import { DevComposer } from "../../components/DevComposer";
-import { contextWindowForModel } from "../../lib/dev-context";
-import { setImagesForChat } from "../../lib/dev-image";
-import type { ChatImage } from "../../lib/dev";
-import { todosFromMessages } from "../../lib/dev-todo";
-import { chatHasRunningTurn } from "../../lib/dev-turn";
+import { Composer } from "../../components/Composer";
+import { contextWindowForModel } from "../../lib/context";
+import { setImagesForChat } from "../../lib/image";
+import type { ChatImage } from "../../lib/core";
+import { todosFromMessages } from "../../lib/todo";
+import { chatHasRunningTurn } from "../../lib/turn";
 import { useMain } from "./context";
 
 export function SessionComposer({ placement }: { placement: "landing" | "chat" }) {
@@ -37,7 +37,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
   } = useMain();
   const landing = placement === "landing";
   return (
-    <DevComposer
+    <Composer
       draft={draft}
       onDraft={setDraft}
       onSend={() => void send()}

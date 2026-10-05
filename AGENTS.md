@@ -12,7 +12,4 @@ Do not depend on the BackupAnything repo.
 
 ## File names
 
-The `dev-` prefix is leftover from an older migration that split the app in two. Ignore it.
-
-- New files do not use a `dev-` prefix.
-- When you edit an existing file whose name starts with `dev-`, rename it in that same change and drop the prefix. `dev-agent.ts` becomes `agent.ts`. Rename its test file the same way, and update every import that points at the old path.
+Frontend files do not use a `dev` or `dev-` prefix. Rust command names such as `dev_list_conversations` stay as they are.

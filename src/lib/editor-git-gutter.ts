@@ -1,6 +1,6 @@
 import { RangeSetBuilder, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, gutter } from "@codemirror/view";
-import type { GutterMark } from "./dev-git-diff";
+import type { GutterMark } from "./git-diff";
 
 class GitChangeMarker extends GutterMarker {
   constructor(readonly kind: GutterMark) {

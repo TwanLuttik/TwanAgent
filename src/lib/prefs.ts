@@ -1,5 +1,5 @@
-import { projectKey } from "./dev.ts";
-import type { MarkdownOpenMode } from "./dev-editor";
+import { projectKey } from "./core.ts";
+import type { MarkdownOpenMode } from "./editor";
 
 export type { MarkdownOpenMode };
 
@@ -19,25 +19,25 @@ export function setSpaceCorner(on: boolean): void {
   applySpaceCorner(on);
 }
 
-const DEV_WORKSPACE_KEY = "twanagent.workspace";
-const DEV_CONVERSATION_KEY = "twanagent.conversation";
-const DEV_DRAFTS_KEY = "twanagent.drafts";
+const WORKSPACE_KEY = "twanagent.workspace";
+const CONVERSATION_KEY = "twanagent.conversation";
+const DRAFTS_KEY = "twanagent.drafts";
 
-export function loadDevWorkspace(): string {
-  return localStorage.getItem(DEV_WORKSPACE_KEY) ?? "";
+export function loadWorkspace(): string {
+  return localStorage.getItem(WORKSPACE_KEY) ?? "";
 }
 
-export function saveDevWorkspace(path: string): void {
-  if (path) localStorage.setItem(DEV_WORKSPACE_KEY, path);
-  else localStorage.removeItem(DEV_WORKSPACE_KEY);
+export function saveWorkspace(path: string): void {
+  if (path) localStorage.setItem(WORKSPACE_KEY, path);
+  else localStorage.removeItem(WORKSPACE_KEY);
 }
 
-const DEV_RECENTS_KEY = "twanagent.recentWorkspaces";
-const DEV_RECENTS_MAX = 20;
+const RECENTS_KEY = "twanagent.recentWorkspaces";
+const RECENTS_MAX = 20;
 
-export function loadDevRecentWorkspaces(): string[] {
+export function loadRecentWorkspaces(): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(DEV_RECENTS_KEY) ?? "");
+    const raw = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "");
     if (!Array.isArray(raw)) return [];
     return raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
   } catch {
@@ -45,16 +45,16 @@ export function loadDevRecentWorkspaces(): string[] {
   }
 }
 
-export function pushDevRecentWorkspace(path: string): string[] {
-  const next = [path, ...loadDevRecentWorkspaces().filter((p) => p !== path)].slice(0, DEV_RECENTS_MAX);
-  localStorage.setItem(DEV_RECENTS_KEY, JSON.stringify(next));
+export function pushRecentWorkspace(path: string): string[] {
+  const next = [path, ...loadRecentWorkspaces().filter((p) => p !== path)].slice(0, RECENTS_MAX);
+  localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   return next;
 }
 
-export function removeDevRecentWorkspace(path: string): string[] {
+export function removeRecentWorkspace(path: string): string[] {
   const key = projectKey(path);
-  const next = loadDevRecentWorkspaces().filter((item) => projectKey(item) !== key);
-  localStorage.setItem(DEV_RECENTS_KEY, JSON.stringify(next));
+  const next = loadRecentWorkspaces().filter((item) => projectKey(item) !== key);
+  localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -70,26 +70,26 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
   if (map.size === 0) return;
   const remap = (path: string) => map.get(projectKey(path)) ?? path;
 
-  const current = loadDevWorkspace();
+  const current = loadWorkspace();
   if (current) {
     const next = remap(current);
-    if (next !== current) saveDevWorkspace(next);
+    if (next !== current) saveWorkspace(next);
   }
 
   const seen = new Set<string>();
   const recents: string[] = [];
-  for (const path of loadDevRecentWorkspaces()) {
+  for (const path of loadRecentWorkspaces()) {
     const next = remap(path);
     const key = projectKey(next);
     if (seen.has(key)) continue;
     seen.add(key);
     recents.push(next);
   }
-  localStorage.setItem(DEV_RECENTS_KEY, JSON.stringify(recents.slice(0, DEV_RECENTS_MAX)));
+  localStorage.setItem(RECENTS_KEY, JSON.stringify(recents.slice(0, RECENTS_MAX)));
 
   let saved: Record<string, string> = {};
   try {
-    const raw = JSON.parse(localStorage.getItem(DEV_CONVERSATION_KEY) ?? "");
+    const raw = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? "");
     if (raw && typeof raw === "object") saved = raw as Record<string, string>;
   } catch {
     saved = {};
@@ -100,7 +100,7 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
     const dest = remap(path);
     if (!nextSaved[dest]) nextSaved[dest] = id;
   }
-  localStorage.setItem(DEV_CONVERSATION_KEY, JSON.stringify(nextSaved));
+  localStorage.setItem(CONVERSATION_KEY, JSON.stringify(nextSaved));
 
   const collapsed = new Set(
     loadCollapsedProjects().map((key) => {
@@ -113,7 +113,7 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
 
 export function loadComposerDrafts(): Record<string, string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(DEV_DRAFTS_KEY) ?? "");
+    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const out: Record<string, string> = {};
     for (const [id, text] of Object.entries(raw)) {
@@ -130,12 +130,12 @@ export function saveComposerDraft(chatId: string, text: string): void {
   const all = loadComposerDrafts();
   if (text) all[chatId] = text;
   else delete all[chatId];
-  localStorage.setItem(DEV_DRAFTS_KEY, JSON.stringify(all));
+  localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
 }
 
-export function loadDevConversation(workspace: string): string {
+export function loadConversation(workspace: string): string {
   try {
-    const raw = JSON.parse(localStorage.getItem(DEV_CONVERSATION_KEY) ?? "");
+    const raw = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? "");
     if (raw && typeof raw === "object") {
       const id = (raw as Record<string, unknown>)[workspace];
       return typeof id === "string" ? id : "";
@@ -146,81 +146,81 @@ export function loadDevConversation(workspace: string): string {
   return "";
 }
 
-const DEV_MODEL_KEY = "twanagent.model";
-const DEV_EFFORT_KEY = "twanagent.effort";
-const DEV_CONTEXT_WINDOW_KEY = "twanagent.contextWindow";
-const DEV_PERMISSION_KEY = "twanagent.permission";
+const MODEL_KEY = "twanagent.model";
+const EFFORT_KEY = "twanagent.effort";
+const CONTEXT_WINDOW_KEY = "twanagent.contextWindow";
+const PERMISSION_KEY = "twanagent.permission";
 
-export function loadDevModel(): string {
-  return localStorage.getItem(DEV_MODEL_KEY) ?? "";
+export function loadModel(): string {
+  return localStorage.getItem(MODEL_KEY) ?? "";
 }
 
-export function saveDevModel(id: string): void {
-  localStorage.setItem(DEV_MODEL_KEY, id);
+export function saveModel(id: string): void {
+  localStorage.setItem(MODEL_KEY, id);
 }
 
-export function loadDevEffort(): string {
-  return localStorage.getItem(DEV_EFFORT_KEY) ?? "";
+export function loadEffort(): string {
+  return localStorage.getItem(EFFORT_KEY) ?? "";
 }
 
-export function loadDevContextWindow(): number {
-  const raw = Number(localStorage.getItem(DEV_CONTEXT_WINDOW_KEY) ?? "");
+export function loadContextWindow(): number {
+  const raw = Number(localStorage.getItem(CONTEXT_WINDOW_KEY) ?? "");
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
-export function saveDevContextWindow(tokens: number): void {
+export function saveContextWindow(tokens: number): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return;
-  localStorage.setItem(DEV_CONTEXT_WINDOW_KEY, String(Math.floor(tokens)));
+  localStorage.setItem(CONTEXT_WINDOW_KEY, String(Math.floor(tokens)));
 }
 
-export function saveDevEffort(id: string): void {
-  localStorage.setItem(DEV_EFFORT_KEY, id);
+export function saveEffort(id: string): void {
+  localStorage.setItem(EFFORT_KEY, id);
 }
 
-export function loadDevPermission(): string {
-  return localStorage.getItem(DEV_PERMISSION_KEY) ?? "";
+export function loadPermission(): string {
+  return localStorage.getItem(PERMISSION_KEY) ?? "";
 }
 
-export function saveDevPermission(id: string): void {
-  localStorage.setItem(DEV_PERMISSION_KEY, id);
+export function savePermission(id: string): void {
+  localStorage.setItem(PERMISSION_KEY, id);
 }
 
-const DEV_PANE_WIDTH_KEY = "twanagent.paneWidth";
-export const DEV_PANE_DEFAULT = 300;
-export const DEV_PANE_MIN = 200;
-export const DEV_PANE_MAX = 720;
+const PANE_WIDTH_KEY = "twanagent.paneWidth";
+export const PANE_DEFAULT = 300;
+export const PANE_MIN = 200;
+export const PANE_MAX = 720;
 
-export function clampDevPaneWidth(width: number): number {
-  if (!Number.isFinite(width)) return DEV_PANE_DEFAULT;
-  return Math.min(DEV_PANE_MAX, Math.max(DEV_PANE_MIN, Math.round(width)));
+export function clampPaneWidth(width: number): number {
+  if (!Number.isFinite(width)) return PANE_DEFAULT;
+  return Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(width)));
 }
 
-export function loadDevPaneWidth(): number {
-  return clampDevPaneWidth(Number(localStorage.getItem(DEV_PANE_WIDTH_KEY)));
+export function loadPaneWidth(): number {
+  return clampPaneWidth(Number(localStorage.getItem(PANE_WIDTH_KEY)));
 }
 
-export function saveDevPaneWidth(width: number): void {
-  localStorage.setItem(DEV_PANE_WIDTH_KEY, String(clampDevPaneWidth(width)));
+export function savePaneWidth(width: number): void {
+  localStorage.setItem(PANE_WIDTH_KEY, String(clampPaneWidth(width)));
 }
 
-const DEV_SIDEBAR_WIDTH_KEY = "twanagent.sidebarWidth";
-export const DEV_SIDEBAR_DEFAULT = 220;
-export const DEV_SIDEBAR_MIN = 160;
-export const DEV_SIDEBAR_MAX = 420;
+const SIDEBAR_WIDTH_KEY = "twanagent.sidebarWidth";
+export const SIDEBAR_DEFAULT = 220;
+export const SIDEBAR_MIN = 160;
+export const SIDEBAR_MAX = 420;
 
-export function clampDevSidebarWidth(width: number): number {
-  if (!Number.isFinite(width)) return DEV_SIDEBAR_DEFAULT;
-  return Math.min(DEV_SIDEBAR_MAX, Math.max(DEV_SIDEBAR_MIN, Math.round(width)));
+export function clampSidebarWidth(width: number): number {
+  if (!Number.isFinite(width)) return SIDEBAR_DEFAULT;
+  return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(width)));
 }
 
-export function loadDevSidebarWidth(): number {
-  const raw = localStorage.getItem(DEV_SIDEBAR_WIDTH_KEY);
-  if (raw == null || raw === "") return DEV_SIDEBAR_DEFAULT;
-  return clampDevSidebarWidth(Number(raw));
+export function loadSidebarWidth(): number {
+  const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+  if (raw == null || raw === "") return SIDEBAR_DEFAULT;
+  return clampSidebarWidth(Number(raw));
 }
 
-export function saveDevSidebarWidth(width: number): void {
-  localStorage.setItem(DEV_SIDEBAR_WIDTH_KEY, String(clampDevSidebarWidth(width)));
+export function saveSidebarWidth(width: number): void {
+  localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clampSidebarWidth(width)));
 }
 
 const MARKDOWN_OPEN_KEY = "twanagent.markdownOpen";
@@ -344,15 +344,15 @@ export function subscribePrefs(onChange: () => void): () => void {
   };
 }
 
-export function saveDevConversation(workspace: string, id: string): void {
+export function saveConversation(workspace: string, id: string): void {
   let all: Record<string, string> = {};
   try {
-    const raw = JSON.parse(localStorage.getItem(DEV_CONVERSATION_KEY) ?? "");
+    const raw = JSON.parse(localStorage.getItem(CONVERSATION_KEY) ?? "");
     if (raw && typeof raw === "object") all = raw as Record<string, string>;
   } catch {
     all = {};
   }
   if (id) all[workspace] = id;
   else delete all[workspace];
-  localStorage.setItem(DEV_CONVERSATION_KEY, JSON.stringify(all));
+  localStorage.setItem(CONVERSATION_KEY, JSON.stringify(all));
 }

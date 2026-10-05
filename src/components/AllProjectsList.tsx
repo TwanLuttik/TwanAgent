@@ -4,8 +4,8 @@ import {
   isProjectCollapsed,
   isSameProject,
   type ProjectChatGroup,
-} from "../lib/dev-all-projects";
-import { projectKey } from "../lib/dev";
+} from "../lib/all-projects";
+import { projectKey } from "../lib/core";
 import { Symbol } from "./Symbol";
 
 export function AllProjectsList({

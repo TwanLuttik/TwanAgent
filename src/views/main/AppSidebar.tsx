@@ -5,11 +5,11 @@ import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
-import { conversationActivityLabel, folderName } from "../../lib/dev";
-import type { JourneySummary } from "../../lib/dev-journey";
-import { DEV_SIDEBAR_DEFAULT, saveDevSidebarWidth } from "../../lib/prefs";
-import type { DevConversationSummary } from "../../lib/tauri";
-import { NewChatMenu } from "../dev/DevChrome";
+import { conversationActivityLabel, folderName } from "../../lib/core";
+import type { JourneySummary } from "../../lib/journey";
+import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
+import type { ConversationSummary } from "../../lib/tauri";
+import { NewChatMenu } from "./AppChrome";
 import { useMain } from "./context";
 
 export function AppSidebar() {
@@ -53,8 +53,8 @@ export function AppSidebar() {
         title="Drag to resize"
         onPointerDown={onSidebarResizeStart}
         onDoubleClick={() => {
-          setSidebarWidth(DEV_SIDEBAR_DEFAULT);
-          saveDevSidebarWidth(DEV_SIDEBAR_DEFAULT);
+          setSidebarWidth(SIDEBAR_DEFAULT);
+          saveSidebarWidth(SIDEBAR_DEFAULT);
         }}
         className="group absolute inset-y-0 right-0 z-20 w-2 cursor-col-resize touch-none"
       >
@@ -192,7 +192,7 @@ function ProjectConversations({
   path,
   dimmed,
 }: {
-  conversations: DevConversationSummary[];
+  conversations: ConversationSummary[];
   journeys: JourneySummary[];
   path?: string;
   dimmed: boolean;

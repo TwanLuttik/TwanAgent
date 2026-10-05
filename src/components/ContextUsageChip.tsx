@@ -1,5 +1,5 @@
-import type { ChatUsage, UsageTone } from "../lib/dev-context";
-import { contextUsageSnapshot, formatContextUsage, formatTokenCount } from "../lib/dev-context";
+import type { ChatUsage, UsageTone } from "../lib/context";
+import { contextUsageSnapshot, formatContextUsage, formatTokenCount } from "../lib/context";
 
 const TONE_TEXT: Record<UsageTone, string> = {
   ok: "text-muted",

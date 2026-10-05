@@ -1,13 +1,13 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
-import { formatTokenCount } from "../lib/dev-context";
+import { formatTokenCount } from "../lib/context";
 import {
   linePath,
   USAGE_TEASER_WINDOWS,
   usageSeries,
   usageTotalSince,
   type UsageEvent,
-} from "../lib/dev-usage";
+} from "../lib/usage";
 import * as api from "../lib/tauri";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -28,7 +28,7 @@ export function UsageTeaser({ refresh = 0, hover = false }: { refresh?: number; 
     function load() {
       const since = new Date(Date.now() - WINDOW_MS).toISOString();
       void api
-        .devUsageList(since)
+        .usageList(since)
         .then((rows) => {
           if (!gone) setEvents(rows);
         })

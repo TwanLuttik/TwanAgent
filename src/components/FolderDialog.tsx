@@ -14,9 +14,9 @@ import {
   sanitizeProjectName,
   type FolderActionId,
   type ProjectRow,
-} from "../lib/dev";
+} from "../lib/core";
 import * as api from "../lib/tauri";
-import type { DevFolderSuggestion } from "../lib/tauri";
+import type { FolderSuggestion } from "../lib/tauri";
 import { Symbol } from "./Symbol";
 
 type Focus =
@@ -41,7 +41,7 @@ export function FolderDialog({
   const [focus, setFocus] = useState<Focus>(
     showProjects ? { kind: "project", index: 0 } : { kind: "action", id: "open" },
   );
-  const [folders, setFolders] = useState<DevFolderSuggestion[]>([]);
+  const [folders, setFolders] = useState<FolderSuggestion[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export function FolderDialog({
     if (!showProjects) return;
     let gone = false;
     void api
-      .devListProjects()
+      .listProjects()
       .then((rows) => {
         if (!gone) setProjects(mergeProjectRows(rows, recents));
       })
@@ -101,7 +101,7 @@ export function FolderDialog({
     let gone = false;
     const handle = window.setTimeout(() => {
       void api
-        .devSuggestFolders(query.trim())
+        .suggestFolders(query.trim())
         .then((rows) => {
           if (!gone) setFolders(rows);
         })
@@ -177,7 +177,7 @@ export function FolderDialog({
     window.setTimeout(focusSearch, 0);
   }
 
-  function applyFolder(row: DevFolderSuggestion, open: boolean) {
+  function applyFolder(row: FolderSuggestion, open: boolean) {
     if (open) {
       void runOpen(row.path);
       return;
@@ -204,7 +204,7 @@ export function FolderDialog({
       return;
     }
     setBusy(true);
-    onPick(await api.devOpenFolder(trimmed));
+    onPick(await api.openFolder(trimmed));
   }
 
   async function run(id: FolderActionId) {
@@ -230,7 +230,7 @@ export function FolderDialog({
           return;
         }
         setBusy(true);
-        onPick(await api.devCreateProject(query));
+        onPick(await api.createProject(query));
         return;
       }
       if (!looksLikeGitUrl(query)) {
@@ -239,7 +239,7 @@ export function FolderDialog({
         return;
       }
       setBusy(true);
-      onPick(await api.devCloneRepo(query.trim()));
+      onPick(await api.cloneRepo(query.trim()));
     } catch (e) {
       setError(String(e));
       setBusy(false);

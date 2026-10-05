@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { UsageChart } from "../components/UsageChart";
-import { formatTokenCount } from "../lib/dev-context";
+import { formatTokenCount } from "../lib/context";
 import {
   buildUsageSnapshot,
   rangeStartMs,
   type UsageEvent,
   type UsageRange,
-} from "../lib/dev-usage";
+} from "../lib/usage";
 import * as api from "../lib/tauri";
 
 const RANGES: { id: UsageRange; label: string }[] = [
@@ -37,7 +37,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     let gone = false;
     const since = new Date(rangeStartMs(range)).toISOString();
     void api
-      .devUsageList(since)
+      .usageList(since)
       .then((rows) => {
         if (!gone) {
           setEvents(rows);

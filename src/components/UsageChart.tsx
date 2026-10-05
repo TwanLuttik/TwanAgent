@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { formatTokenCount } from "../lib/dev-context";
+import { formatTokenCount } from "../lib/context";
 import {
   buildUsageGrid,
   type UsageDay,
   type UsageGridCell,
   type UsageLevel,
-} from "../lib/dev-usage";
+} from "../lib/usage";
 
 const LEVELS: UsageLevel[] = [0, 1, 2, 3, 4];
 const DAY_LABELS = ["", "Mon", "", "Wed", "", "Fri", ""];

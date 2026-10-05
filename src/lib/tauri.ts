@@ -20,29 +20,29 @@ export async function pickDir(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export type DevKeyStatus = { saved: boolean; env: boolean };
-export type DevEffort = { id: string; label: string };
-export type DevModel = {
+export type KeyStatus = { saved: boolean; env: boolean };
+export type Effort = { id: string; label: string };
+export type Model = {
   id: string;
   name: string;
-  efforts: DevEffort[];
+  efforts: Effort[];
   context_window?: number | null;
   context_windows?: number[] | null;
 };
-export type DevRuntime = {
+export type Runtime = {
   installed: boolean;
   logged_in: boolean;
   version: string | null;
   email: string | null;
   default_model: string;
   default_effort: string;
-  models: DevModel[];
+  models: Model[];
   has_key: boolean;
   ready: boolean;
   hint: string;
 };
 
-export function devRuntime(): Promise<DevRuntime> {
+export function runtime(): Promise<Runtime> {
   return invoke("dev_runtime");
 }
 
@@ -54,7 +54,7 @@ export type GrokCliInfo = {
   email: string | null;
 };
 
-export function devCliInfo(): Promise<GrokCliInfo> {
+export function cliInfo(): Promise<GrokCliInfo> {
   return invoke("dev_cli_info");
 }
 
@@ -64,31 +64,31 @@ export type UsageDbInfo = {
   exists: boolean;
 };
 
-export function devUsageDbInfo(): Promise<UsageDbInfo> {
+export function usageDbInfo(): Promise<UsageDbInfo> {
   return invoke("dev_usage_db_info");
 }
 
-export function devUsageDbReset(): Promise<UsageDbInfo> {
+export function usageDbReset(): Promise<UsageDbInfo> {
   return invoke("dev_usage_db_reset");
 }
 
-export function devOpenedWorkspaces(): Promise<string[]> {
+export function openedWorkspaces(): Promise<string[]> {
   return invoke("dev_opened_workspaces");
 }
 
-export function devForgetWorkspace(path: string): Promise<boolean> {
+export function forgetWorkspace(path: string): Promise<boolean> {
   return invoke("dev_forget_workspace", { path });
 }
-export type DevEntry = { name: string; path: string; kind: "file" | "dir" | string; size: number | null };
-export type DevGitChange = {
+export type Entry = { name: string; path: string; kind: "file" | "dir" | string; size: number | null };
+export type GitChange = {
   path: string;
   status: string;
   staged: boolean;
   additions: number;
   deletions: number;
 };
-export type DevGitBranches = { current: string | null; branches: string[] };
-export type DevConversationSummary = {
+export type GitBranches = { current: string | null; branches: string[] };
+export type ConversationSummary = {
   id: string;
   title: string;
   created_at: string;
@@ -97,16 +97,16 @@ export type DevConversationSummary = {
   journey_id?: string | null;
   sort_order?: number;
 };
-export type DevCompaction = {
+export type Compaction = {
   summary: string;
   through: number;
 };
-export type DevConversation = DevConversationSummary & {
+export type Conversation = ConversationSummary & {
   messages: unknown[];
-  context_usage?: DevChatUsage | null;
-  compaction?: DevCompaction | null;
+  context_usage?: ApiChatUsage | null;
+  compaction?: Compaction | null;
 };
-export type DevJourney = {
+export type Journey = {
   id: string;
   title: string;
   created_at: string;
@@ -115,14 +115,14 @@ export type DevJourney = {
   collapsed: boolean;
   color?: string;
 };
-export type DevSidebarItem = { kind: "journey" | "conversation" | string; id: string };
-export type DevToolCall = { id: string; name: string; arguments: string };
-export type DevChatUsage = {
+export type SidebarItem = { kind: "journey" | "conversation" | string; id: string };
+export type ToolCall = { id: string; name: string; arguments: string };
+export type ApiChatUsage = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
 };
-export type DevUsageEvent = {
+export type ApiUsageEvent = {
   id: number;
   recorded_at: string;
   workspace_path: string;
@@ -134,7 +134,7 @@ export type DevUsageEvent = {
   completion_tokens: number;
   total_tokens: number;
 };
-export type DevUsageRecord = {
+export type ApiUsageRecord = {
   workspace_path: string;
   workspace_name: string;
   conversation_id?: string;
@@ -144,15 +144,15 @@ export type DevUsageRecord = {
   completion_tokens: number;
   total_tokens: number;
 };
-export type DevChatEvent = {
+export type ChatEvent = {
   stream_id: string;
   kind: "delta" | "done" | "error" | string;
   text?: string | null;
-  tool_calls?: DevToolCall[] | null;
-  usage?: DevChatUsage | null;
+  tool_calls?: ToolCall[] | null;
+  usage?: ApiChatUsage | null;
 };
 
-export function devProjectsRoot(): Promise<string> {
+export function projectsRoot(): Promise<string> {
   return invoke("dev_projects_root");
 }
 
@@ -164,104 +164,104 @@ export type ProjectsLocation = {
   moves: ProjectPathMove[];
 };
 
-export function devProjectsLocation(): Promise<ProjectsLocation> {
+export function projectsLocation(): Promise<ProjectsLocation> {
   return invoke("dev_projects_location");
 }
 
-export function devListProjects(): Promise<DevFolderSuggestion[]> {
+export function listProjects(): Promise<FolderSuggestion[]> {
   return invoke("dev_list_projects");
 }
 
-export function devOpenFolder(path: string): Promise<string> {
+export function openFolder(path: string): Promise<string> {
   return invoke("dev_open_folder", { path });
 }
 
-export type DevFolderSuggestion = { name: string; path: string };
+export type FolderSuggestion = { name: string; path: string };
 
-export function devSuggestFolders(path: string): Promise<DevFolderSuggestion[]> {
+export function suggestFolders(path: string): Promise<FolderSuggestion[]> {
   return invoke("dev_suggest_folders", { path });
 }
 
-export function devCreateProject(name: string): Promise<string> {
+export function createProject(name: string): Promise<string> {
   return invoke("dev_create_project", { name });
 }
 
-export function devDeleteProject(path: string): Promise<void> {
+export function deleteProject(path: string): Promise<void> {
   return invoke("dev_delete_project", { path });
 }
 
-export function devCloneRepo(url: string, name?: string): Promise<string> {
+export function cloneRepo(url: string, name?: string): Promise<string> {
   return invoke("dev_clone_repo", { url, name: name ?? null });
 }
 
-export function devKeyStatus(): Promise<DevKeyStatus> {
+export function keyStatus(): Promise<KeyStatus> {
   return invoke("dev_key_status");
 }
 
-export function devSetKey(key: string): Promise<DevKeyStatus> {
+export function setKey(key: string): Promise<KeyStatus> {
   return invoke("dev_set_key", { key });
 }
 
-export function devClearKey(): Promise<DevKeyStatus> {
+export function clearKey(): Promise<KeyStatus> {
   return invoke("dev_clear_key");
 }
 
-export function devListDir(workspace: string, path = ""): Promise<DevEntry[]> {
+export function listDir(workspace: string, path = ""): Promise<Entry[]> {
   return invoke("dev_list_dir", { workspace, path });
 }
 
-export function devReadFile(workspace: string, path: string): Promise<string> {
+export function readFile(workspace: string, path: string): Promise<string> {
   return invoke("dev_read_file", { workspace, path });
 }
 
-export function devReadUserMcp(path: string): Promise<string> {
+export function readUserMcp(path: string): Promise<string> {
   return invoke("dev_read_user_mcp", { path });
 }
 
-export function devWriteUserMcp(path: string, contents: string): Promise<void> {
+export function writeUserMcp(path: string, contents: string): Promise<void> {
   return invoke("dev_write_user_mcp", { path, contents });
 }
 
-export function devOpenUserMcp(path: string): Promise<void> {
+export function openUserMcp(path: string): Promise<void> {
   return invoke("dev_open_user_mcp", { path });
 }
 
-export function devMcpAuthNames(): Promise<string[]> {
+export function mcpAuthNames(): Promise<string[]> {
   return invoke("dev_mcp_auth_names");
 }
 
-export function devMcpClearAuth(name: string): Promise<void> {
+export function mcpClearAuth(name: string): Promise<void> {
   return invoke("dev_mcp_clear_auth", { name });
 }
 
-export type DevSkillFile = {
+export type SkillFile = {
   path: string;
   read_path: string;
   home: boolean;
   origin: string;
 };
 
-export function devListSkillFiles(workspace?: string | null): Promise<DevSkillFile[]> {
+export function listSkillFiles(workspace?: string | null): Promise<SkillFile[]> {
   return invoke("dev_list_skill_files", { workspace: workspace || null });
 }
 
-export function devReadUserSkill(path: string): Promise<string> {
+export function readUserSkill(path: string): Promise<string> {
   return invoke("dev_read_user_skill", { path });
 }
 
-export function devOpenUserSkill(path: string): Promise<void> {
+export function openUserSkill(path: string): Promise<void> {
   return invoke("dev_open_user_skill", { path });
 }
 
-export function devResolveFile(workspace: string, path: string): Promise<string> {
+export function resolveFile(workspace: string, path: string): Promise<string> {
   return invoke("dev_resolve_file", { workspace, path });
 }
 
-export function devExistingFiles(workspace: string, paths: string[]): Promise<string[]> {
+export function existingFiles(workspace: string, paths: string[]): Promise<string[]> {
   return invoke("dev_existing_files", { workspace, paths });
 }
 
-export type DevFilePreview = {
+export type FilePreview = {
   path: string;
   name: string;
   size: number;
@@ -271,15 +271,15 @@ export type DevFilePreview = {
   modified?: number | null;
 };
 
-export function devFilePreview(workspace: string, path: string): Promise<DevFilePreview> {
+export function filePreview(workspace: string, path: string): Promise<FilePreview> {
   return invoke("dev_file_preview", { workspace, path });
 }
 
-export function devWriteFile(workspace: string, path: string, contents: string): Promise<void> {
+export function writeFile(workspace: string, path: string, contents: string): Promise<void> {
   return invoke("dev_write_file", { workspace, path, contents });
 }
 
-export function devEditFile(
+export function editFile(
   workspace: string,
   path: string,
   oldString: string,
@@ -295,54 +295,54 @@ export function devEditFile(
   });
 }
 
-export function devGitStatus(workspace: string): Promise<DevGitChange[]> {
+export function gitStatus(workspace: string): Promise<GitChange[]> {
   return invoke("dev_git_status", { workspace });
 }
 
-export function devGitDiff(workspace: string, path = ""): Promise<string> {
+export function gitDiff(workspace: string, path = ""): Promise<string> {
   return invoke("dev_git_diff", { workspace, path });
 }
 
-export function devGitBranches(workspace: string): Promise<DevGitBranches> {
+export function gitBranches(workspace: string): Promise<GitBranches> {
   return invoke("dev_git_branches", { workspace });
 }
 
-export function devGitSwitch(workspace: string, name: string): Promise<DevGitBranches> {
+export function gitSwitch(workspace: string, name: string): Promise<GitBranches> {
   return invoke("dev_git_switch", { workspace, name });
 }
 
-export function devRunCommand(workspace: string, command: string): Promise<string> {
+export function runCommand(workspace: string, command: string): Promise<string> {
   return invoke("dev_run_command", { workspace, command });
 }
 
-export function devListConversations(workspace: string): Promise<DevConversationSummary[]> {
+export function listConversations(workspace: string): Promise<ConversationSummary[]> {
   return invoke("dev_list_conversations", { workspace });
 }
 
-export function devGetConversation(workspace: string, id: string): Promise<DevConversation> {
+export function getConversation(workspace: string, id: string): Promise<Conversation> {
   return invoke("dev_get_conversation", { workspace, id });
 }
 
-export function devSaveConversation(workspace: string, conversation: DevConversation): Promise<DevConversation> {
+export function saveConversation(workspace: string, conversation: Conversation): Promise<Conversation> {
   return invoke("dev_save_conversation", { workspace, conversation });
 }
 
-export function devReorderConversations(
+export function reorderConversations(
   workspace: string,
   ids: string[],
-): Promise<DevConversationSummary[]> {
+): Promise<ConversationSummary[]> {
   return invoke("dev_reorder_conversations", { workspace, ids });
 }
 
-export function devDeleteConversation(workspace: string, id: string): Promise<void> {
+export function deleteConversation(workspace: string, id: string): Promise<void> {
   return invoke("dev_delete_conversation", { workspace, id });
 }
 
-export function devListJourneys(workspace: string): Promise<DevJourney[]> {
+export function listJourneys(workspace: string): Promise<Journey[]> {
   return invoke("dev_list_journeys", { workspace });
 }
 
-export function devCreateJourney(workspace: string, conversationId: string): Promise<DevJourney> {
+export function createJourney(workspace: string, conversationId: string): Promise<Journey> {
   return invoke("dev_create_journey", {
     workspace,
     conversationId,
@@ -350,11 +350,11 @@ export function devCreateJourney(workspace: string, conversationId: string): Pro
   });
 }
 
-export function devRenameJourney(workspace: string, id: string, title: string): Promise<DevJourney> {
+export function renameJourney(workspace: string, id: string, title: string): Promise<Journey> {
   return invoke("dev_rename_journey", { workspace, id, title });
 }
 
-export function devDeleteJourney(workspace: string, id: string, deleteChats: boolean): Promise<void> {
+export function deleteJourney(workspace: string, id: string, deleteChats: boolean): Promise<void> {
   return invoke("dev_delete_journey", {
     workspace,
     id,
@@ -363,19 +363,19 @@ export function devDeleteJourney(workspace: string, id: string, deleteChats: boo
   });
 }
 
-export function devSetJourneyCollapsed(workspace: string, id: string, collapsed: boolean): Promise<void> {
+export function setJourneyCollapsed(workspace: string, id: string, collapsed: boolean): Promise<void> {
   return invoke("dev_set_journey_collapsed", { workspace, id, collapsed });
 }
 
-export function devSetJourneyColor(workspace: string, id: string, color: string): Promise<DevJourney> {
+export function setJourneyColor(workspace: string, id: string, color: string): Promise<Journey> {
   return invoke("dev_set_journey_color", { workspace, id, color });
 }
 
-export function devMoveConversation(
+export function moveConversation(
   workspace: string,
   id: string,
   journeyId: string | null,
-): Promise<DevConversation> {
+): Promise<Conversation> {
   return invoke("dev_move_conversation", {
     workspace,
     id,
@@ -384,11 +384,11 @@ export function devMoveConversation(
   });
 }
 
-export function devReorderSidebar(workspace: string, items: DevSidebarItem[]): Promise<DevConversationSummary[]> {
+export function reorderSidebar(workspace: string, items: SidebarItem[]): Promise<ConversationSummary[]> {
   return invoke("dev_reorder_sidebar", { workspace, items });
 }
 
-export function devGetJourneyKnowledge(workspace: string, journeyId: string): Promise<string> {
+export function getJourneyKnowledge(workspace: string, journeyId: string): Promise<string> {
   return invoke("dev_get_journey_knowledge", {
     workspace,
     journeyId,
@@ -396,7 +396,7 @@ export function devGetJourneyKnowledge(workspace: string, journeyId: string): Pr
   });
 }
 
-export function devSaveJourneyKnowledge(workspace: string, journeyId: string, contents: string): Promise<void> {
+export function saveJourneyKnowledge(workspace: string, journeyId: string, contents: string): Promise<void> {
   return invoke("dev_save_journey_knowledge", {
     workspace,
     journeyId,
@@ -405,7 +405,7 @@ export function devSaveJourneyKnowledge(workspace: string, journeyId: string, co
   });
 }
 
-export function devUpdateJourneyKnowledge(
+export function updateJourneyKnowledge(
   workspace: string,
   journeyId: string,
   args: { mode: string; contents?: string; oldString?: string; newString?: string },
@@ -423,7 +423,7 @@ export function devUpdateJourneyKnowledge(
   });
 }
 
-export type DevPreparedImage = {
+export type PreparedImage = {
   id: string;
   path: string;
   name: string;
@@ -433,11 +433,11 @@ export type DevPreparedImage = {
   resized: boolean;
 };
 
-export function devPrepareImage(
+export function prepareImage(
   bytesBase64: string,
   name: string,
   conversationId?: string,
-): Promise<DevPreparedImage> {
+): Promise<PreparedImage> {
   return invoke("dev_prepare_image", {
     bytesBase64,
     bytes_base64: bytesBase64,
@@ -447,10 +447,10 @@ export function devPrepareImage(
   });
 }
 
-export function devPrepareImagePath(
+export function prepareImagePath(
   path: string,
   conversationId?: string,
-): Promise<DevPreparedImage> {
+): Promise<PreparedImage> {
   return invoke("dev_prepare_image_path", {
     path,
     conversationId: conversationId ?? null,
@@ -458,11 +458,11 @@ export function devPrepareImagePath(
   });
 }
 
-export function devImageDataUrl(path: string): Promise<string> {
+export function imageDataUrl(path: string): Promise<string> {
   return invoke("dev_image_data_url", { path });
 }
 
-export function devChatStart(
+export function chatStart(
   streamId: string,
   messages: unknown[],
   model?: string,
@@ -484,24 +484,24 @@ export function devChatStart(
   });
 }
 
-export function devChatCancel(streamId: string): Promise<void> {
+export function chatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
 }
 
-export function devUsageRecord(event: DevUsageRecord): Promise<DevUsageEvent | null> {
+export function usageRecord(event: ApiUsageRecord): Promise<ApiUsageEvent | null> {
   return invoke("dev_usage_record", { event });
 }
 
-export function devUsageList(since?: string): Promise<DevUsageEvent[]> {
+export function usageList(since?: string): Promise<ApiUsageEvent[]> {
   return invoke("dev_usage_list", { since: since ?? null });
 }
 
-const chatListeners = new Map<string, (ev: DevChatEvent) => void>();
+const chatListeners = new Map<string, (ev: ChatEvent) => void>();
 let chatListen: Promise<UnlistenFn> | null = null;
 
 function ensureChatListen(): Promise<UnlistenFn> {
   if (!chatListen) {
-    chatListen = listen<DevChatEvent>("dev-chat", (ev) => {
+    chatListen = listen<ChatEvent>("dev-chat", (ev) => {
       const payload = ev.payload;
       if (!payload) return;
       for (const fn of chatListeners.values()) fn(payload);
@@ -510,34 +510,34 @@ function ensureChatListen(): Promise<UnlistenFn> {
   return chatListen;
 }
 
-export async function onDevChat(fn: (ev: DevChatEvent) => void): Promise<UnlistenFn> {
+export async function onChat(fn: (ev: ChatEvent) => void): Promise<UnlistenFn> {
   await ensureChatListen();
   const key = `tmp-${crypto.randomUUID()}`;
-  const wrapped = (ev: DevChatEvent) => fn(ev);
+  const wrapped = (ev: ChatEvent) => fn(ev);
   chatListeners.set(key, wrapped);
   return () => {
     chatListeners.delete(key);
   };
 }
 
-export type DevPtyEvent = {
+export type PtyEvent = {
   id: string;
   kind: "data" | "exit" | string;
   data?: string | null;
 };
 
-export function devPtyOpen(workspace: string, cols: number, rows: number): Promise<string> {
+export function ptyOpen(workspace: string, cols: number, rows: number): Promise<string> {
   return invoke("dev_pty_open", { workspace, cols, rows });
 }
 
-export type DevGrokPlan = {
+export type ApiGrokPlan = {
   found: boolean;
   state: string;
   awaiting_approval: boolean;
   content: string;
 };
 
-export function devGrokPlan(workspace: string, sessionId: string): Promise<DevGrokPlan> {
+export function grokPlan(workspace: string, sessionId: string): Promise<ApiGrokPlan> {
   return invoke("dev_grok_plan", {
     workspace,
     sessionId,
@@ -545,7 +545,7 @@ export function devGrokPlan(workspace: string, sessionId: string): Promise<DevGr
   });
 }
 
-export function devPtyOpenGrok(
+export function ptyOpenGrok(
   workspace: string,
   cols: number,
   rows: number,
@@ -560,22 +560,22 @@ export function devPtyOpenGrok(
   });
 }
 
-export function devPtyWrite(id: string, data: string): Promise<void> {
+export function ptyWrite(id: string, data: string): Promise<void> {
   return invoke("dev_pty_write", { id, data });
 }
 
-export function devPtyWriteBytes(id: string, data: number[]): Promise<void> {
+export function ptyWriteBytes(id: string, data: number[]): Promise<void> {
   return invoke("dev_pty_write_bytes", { id, data });
 }
 
-export function devPtyResize(id: string, cols: number, rows: number): Promise<void> {
+export function ptyResize(id: string, cols: number, rows: number): Promise<void> {
   return invoke("dev_pty_resize", { id, cols, rows });
 }
 
-export function devPtyKill(id: string): Promise<void> {
+export function ptyKill(id: string): Promise<void> {
   return invoke("dev_pty_kill", { id });
 }
 
-export function onDevPty(fn: (ev: DevPtyEvent) => void): Promise<UnlistenFn> {
-  return listen<DevPtyEvent>("dev-pty", (ev) => fn(ev.payload));
+export function onPty(fn: (ev: PtyEvent) => void): Promise<UnlistenFn> {
+  return listen<PtyEvent>("dev-pty", (ev) => fn(ev.payload));
 }

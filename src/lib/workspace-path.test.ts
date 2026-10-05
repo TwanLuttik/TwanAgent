@@ -8,7 +8,7 @@ import {
 
 describe("looksLikeWorkspacePath", () => {
   it("accepts relative files and nested paths", () => {
-    assert.equal(looksLikeWorkspacePath("src/lib/dev.ts"), true);
+    assert.equal(looksLikeWorkspacePath("src/lib/core.ts"), true);
     assert.equal(looksLikeWorkspacePath("src-tauri/Cargo.toml"), true);
     assert.equal(looksLikeWorkspacePath("store.rs"), true);
     assert.equal(looksLikeWorkspacePath("README.md"), true);
@@ -28,15 +28,15 @@ describe("looksLikeWorkspacePath", () => {
 
 describe("normalizeWorkspacePath", () => {
   it("trims and drops a leading ./", () => {
-    assert.equal(normalizeWorkspacePath("  ./src/lib/dev.ts  "), "src/lib/dev.ts");
-    assert.equal(normalizeWorkspacePath("src\\lib\\dev.ts"), "src/lib/dev.ts");
+    assert.equal(normalizeWorkspacePath("  ./src/lib/core.ts  "), "src/lib/core.ts");
+    assert.equal(normalizeWorkspacePath("src\\lib\\core.ts"), "src/lib/core.ts");
   });
 });
 
 describe("inlineCodeValues", () => {
   it("collects inline code and skips fenced blocks", () => {
     const text = [
-      "See `src/lib/dev.ts` and `TBD`.",
+      "See `src/lib/core.ts` and `TBD`.",
       "",
       "```",
       "src/lib/ignored.ts",
@@ -44,6 +44,6 @@ describe("inlineCodeValues", () => {
       "",
       "Also `./src-tauri/src/lib.rs`.",
     ].join("\n");
-    assert.deepEqual(inlineCodeValues(text), ["src/lib/dev.ts", "TBD", "./src-tauri/src/lib.rs"]);
+    assert.deepEqual(inlineCodeValues(text), ["src/lib/core.ts", "TBD", "./src-tauri/src/lib.rs"]);
   });
 });

@@ -1,4 +1,4 @@
-import { skillPillSummary, type DetectedSkill } from "../lib/dev-skill";
+import { skillPillSummary, type DetectedSkill } from "../lib/skill";
 import { Button } from "./Button";
 import { DockShell } from "./DockShell";
 

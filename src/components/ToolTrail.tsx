@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   foldToolTrailRows,
   type ToolFileChange,
-} from "../lib/dev";
+} from "../lib/core";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
 

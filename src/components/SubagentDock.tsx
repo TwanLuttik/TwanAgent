@@ -2,8 +2,8 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
-import { foldToolTrailRows, liveTranscriptItems } from "../lib/dev";
-import { subagentTypeLabel, type SubagentRecord } from "../lib/dev-subagent";
+import { foldToolTrailRows, liveTranscriptItems } from "../lib/core";
+import { subagentTypeLabel, type SubagentRecord } from "../lib/subagent";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const DURATION = 0.32;

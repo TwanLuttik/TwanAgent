@@ -21,7 +21,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Symbol } from "./Symbol";
-import type { DevConversationSummary } from "../lib/tauri";
+import type { ConversationSummary } from "../lib/tauri";
 import {
   buildSidebar,
   JOURNEY_COLORS,
@@ -30,8 +30,8 @@ import {
   type JourneyColor,
   type JourneySummary,
   type SidebarNode,
-} from "../lib/dev-journey";
-import type { ConversationKind } from "../lib/dev-terminal-chat";
+} from "../lib/journey";
+import type { ConversationKind } from "../lib/terminal-chat";
 import { formatRelativeAge } from "../lib/relative-time";
 
 type MenuTarget =
@@ -60,7 +60,7 @@ export function ConversationList({
   onMoveToJourney,
   onSetColor,
 }: {
-  conversations: DevConversationSummary[];
+  conversations: ConversationSummary[];
   journeys: JourneySummary[];
   activeId: string;
   runningIds: Record<string, unknown>;
@@ -333,7 +333,7 @@ export function ConversationList({
 
 type FlatItem =
   | { key: string; kind: "journey"; journey: JourneySummary; indent: boolean }
-  | { key: string; kind: "chat"; conversation: DevConversationSummary; indent: boolean };
+  | { key: string; kind: "chat"; conversation: ConversationSummary; indent: boolean };
 
 function groupItems(items: FlatItem[]): { key: string; wash?: string; items: FlatItem[] }[] {
   const groups: { key: string; wash?: string; items: FlatItem[] }[] = [];
@@ -628,7 +628,7 @@ function ConversationCard({
   onOpen,
   onDelete,
 }: {
-  row: DevConversationSummary;
+  row: ConversationSummary;
   selected: boolean;
   running: boolean;
   preview: string;

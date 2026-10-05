@@ -4,13 +4,13 @@ import { watchFileRefresh } from "../lib/file-exists";
 import { fileFolderLabel, fileKindLabel, formatFileBytes, formatLineCount } from "../lib/file-preview";
 import { loadFileHoverCard, subscribePrefs } from "../lib/prefs";
 import * as api from "../lib/tauri";
-import type { DevFilePreview } from "../lib/tauri";
+import type { FilePreview } from "../lib/tauri";
 import { FileIcon } from "./FileIcon";
 
 const SHOW_DELAY = 260;
 const HIDE_DELAY = 140;
 
-const previewCache = new Map<string, DevFilePreview | "error">();
+const previewCache = new Map<string, FilePreview | "error">();
 let previewCacheTick = -1;
 let previewCacheWorkspace = "";
 
@@ -38,7 +38,7 @@ export function FileHoverCard({
   const wrap = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ left: number; top: number; above: boolean } | null>(null);
-  const [info, setInfo] = useState<DevFilePreview | "error" | null>(null);
+  const [info, setInfo] = useState<FilePreview | "error" | null>(null);
   const showTimer = useRef<number>(0);
   const hideTimer = useRef<number>(0);
 
@@ -69,7 +69,7 @@ export function FileHoverCard({
     let cancelled = false;
     setInfo(null);
     void api
-      .devFilePreview(workspace, path)
+      .filePreview(workspace, path)
       .then((row) => {
         previewCache.set(key, row);
         if (!cancelled) setInfo(row);
@@ -157,7 +157,7 @@ function PreviewBody({
   onOpen,
 }: {
   path: string;
-  info: DevFilePreview | "error" | null;
+  info: FilePreview | "error" | null;
   onOpen?: (path: string) => void;
 }) {
   const folder = fileFolderLabel(path);

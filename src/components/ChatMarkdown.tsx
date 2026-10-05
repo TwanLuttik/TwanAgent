@@ -101,7 +101,7 @@ function useExistingFiles(workspace: string | null, paths: string[]): Set<string
     let cancelled = false;
     const run = () => {
       void api
-        .devExistingFiles(workspace, paths)
+        .existingFiles(workspace, paths)
         .then((rows) => {
           if (cancelled) return;
           publishFileExists(workspace, key, paths, new Set(rows.map(normalizeWorkspacePath)));

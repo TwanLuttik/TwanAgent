@@ -4,7 +4,7 @@ import { fileBaseName, fileIconKind } from "./file-icon.ts";
 
 describe("fileBaseName", () => {
   it("uses the last path segment", () => {
-    assert.equal(fileBaseName("src/lib/dev.ts"), "dev.ts");
+    assert.equal(fileBaseName("src/lib/core.ts"), "core.ts");
     assert.equal(fileBaseName("C:\\src\\App.tsx"), "App.tsx");
     assert.equal(fileBaseName("README.md"), "README.md");
   });

@@ -13,8 +13,8 @@ import {
   type LiveToolInput,
   type TranscriptItem,
   type TranscriptTurn,
-} from "../lib/dev";
-import { displayFileMentions, type MentionFile } from "../lib/dev-mention";
+} from "../lib/core";
+import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed } from "../lib/relative-time";
 
 function FinishedLine({ durationMs }: { durationMs: number }) {

@@ -2,7 +2,7 @@ import { WorkspaceFileLinks } from "../../components/ChatMarkdown";
 import { DeleteProjectDialog, ProjectContextMenu } from "../../components/AllProjectsList";
 import { Flash } from "../../components/Flash";
 import { FolderDialog } from "../../components/FolderDialog";
-import { isAppProject } from "../../lib/dev-all-projects";
+import { isAppProject } from "../../lib/all-projects";
 import { AppSidebar } from "./AppSidebar";
 import { ChatStage } from "./ChatStage";
 import { useMain } from "./context";

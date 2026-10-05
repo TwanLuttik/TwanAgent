@@ -4,15 +4,15 @@ import { fileFolderLabel, fileKindLabel, formatFileBytes, formatLineCount } from
 
 describe("fileKindLabel", () => {
   it("names common source files", () => {
-    assert.equal(fileKindLabel("src/views/DevView.tsx"), "TSX");
-    assert.equal(fileKindLabel("src/lib/dev.ts"), "TypeScript");
+    assert.equal(fileKindLabel("src/views/MainView.tsx"), "TSX");
+    assert.equal(fileKindLabel("src/lib/core.ts"), "TypeScript");
     assert.equal(fileKindLabel("src-tauri/src/dev.rs"), "Rust");
   });
 });
 
 describe("fileFolderLabel", () => {
   it("returns the parent path", () => {
-    assert.equal(fileFolderLabel("src/lib/dev.ts"), "src/lib");
+    assert.equal(fileFolderLabel("src/lib/core.ts"), "src/lib");
     assert.equal(fileFolderLabel("README.md"), "");
   });
 });

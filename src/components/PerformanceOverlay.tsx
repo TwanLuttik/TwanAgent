@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { linePath } from "../lib/dev-usage";
+import { linePath } from "../lib/usage";
 import { formatPerfBytes, formatPerfCpu, formatPerfFps, pushPerfSample } from "../lib/perf";
 import { loadPerfOverlay, subscribePrefs } from "../lib/prefs";
 import * as api from "../lib/tauri";

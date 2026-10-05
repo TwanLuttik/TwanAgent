@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { isAllDiffPath } from "../lib/dev-editor";
+import { isAllDiffPath } from "../lib/editor";
 import {
   addedFileDiff,
   groupDiffByFile,
@@ -7,7 +7,7 @@ import {
   type DiffFile,
   type DiffLine,
   type DiffSection,
-} from "../lib/dev-git-diff";
+} from "../lib/git-diff";
 import * as api from "../lib/tauri";
 import { FileIcon } from "./FileIcon";
 
@@ -34,10 +34,10 @@ export function GitDiffView({
           if (!cancelled) setFiles(next);
           return;
         }
-        let text = await api.devGitDiff(workspace, path);
+        let text = await api.gitDiff(workspace, path);
         if (!text.trim()) {
           try {
-            const contents = await api.devReadFile(workspace, path);
+            const contents = await api.readFile(workspace, path);
             text = addedFileDiff(path, contents);
           } catch {
             text = "";
@@ -111,13 +111,13 @@ export function GitDiffView({
 }
 
 async function loadAllDiffs(workspace: string): Promise<DiffFile[]> {
-  const [text, changes] = await Promise.all([api.devGitDiff(workspace, ""), api.devGitStatus(workspace)]);
+  const [text, changes] = await Promise.all([api.gitDiff(workspace, ""), api.gitStatus(workspace)]);
   const files = groupDiffByFile(parseGitDiff(text));
   const seen = new Set(files.map((file) => file.path));
   for (const change of changes) {
     if (change.status !== "untracked" || seen.has(change.path)) continue;
     try {
-      const contents = await api.devReadFile(workspace, change.path);
+      const contents = await api.readFile(workspace, change.path);
       const parsed = parseGitDiff(addedFileDiff(change.path, contents));
       files.push({ path: change.path, lines: parsed[0]?.lines ?? [] });
     } catch {

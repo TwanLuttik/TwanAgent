@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { editorTabTitle, isAllDiffPath, type EditorState } from "../lib/dev-editor";
-import { parseJourneyId } from "../lib/dev-journey";
+import { editorTabTitle, isAllDiffPath, type EditorState } from "../lib/editor";
+import { parseJourneyId } from "../lib/journey";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
 

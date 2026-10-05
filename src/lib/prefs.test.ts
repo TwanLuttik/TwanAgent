@@ -1,33 +1,33 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 import {
-  clampDevSidebarWidth,
-  DEV_SIDEBAR_DEFAULT,
-  DEV_SIDEBAR_MAX,
-  DEV_SIDEBAR_MIN,
-  loadDevPermission,
-  loadDevSidebarWidth,
+  clampSidebarWidth,
+  SIDEBAR_DEFAULT,
+  SIDEBAR_MAX,
+  SIDEBAR_MIN,
+  loadPermission,
+  loadSidebarWidth,
   loadFileHoverCard,
   loadAllProjects,
   loadCollapsedProjects,
   loadComposerDrafts,
-  loadDevConversation,
-  loadDevRecentWorkspaces,
-  loadDevWorkspace,
+  loadConversation,
+  loadRecentWorkspaces,
+  loadWorkspace,
   loadPerfOverlay,
   loadGitChangesView,
   loadMarkdownOpenMode,
   loadOpenFileTree,
-  saveDevPermission,
-  saveDevSidebarWidth,
+  savePermission,
+  saveSidebarWidth,
   saveGitChangesView,
-  pushDevRecentWorkspace,
-  removeDevRecentWorkspace,
+  pushRecentWorkspace,
+  removeRecentWorkspace,
   rewriteStoredProjectPaths,
   saveCollapsedProjects,
   saveComposerDraft,
-  saveDevConversation,
-  saveDevWorkspace,
+  saveConversation,
+  saveWorkspace,
   saveMarkdownOpenMode,
   saveOpenFileTree,
   setAllProjects,
@@ -56,24 +56,24 @@ describe("sidebar width", () => {
   });
 
   it("clamps to the allowed range", () => {
-    assert.equal(clampDevSidebarWidth(Number.NaN), DEV_SIDEBAR_DEFAULT);
-    assert.equal(clampDevSidebarWidth(40), DEV_SIDEBAR_MIN);
-    assert.equal(clampDevSidebarWidth(900), DEV_SIDEBAR_MAX);
-    assert.equal(clampDevSidebarWidth(240.6), 241);
+    assert.equal(clampSidebarWidth(Number.NaN), SIDEBAR_DEFAULT);
+    assert.equal(clampSidebarWidth(40), SIDEBAR_MIN);
+    assert.equal(clampSidebarWidth(900), SIDEBAR_MAX);
+    assert.equal(clampSidebarWidth(240.6), 241);
   });
 
   it("saves and reloads the sidebar width", () => {
-    saveDevSidebarWidth(280);
-    assert.equal(loadDevSidebarWidth(), 280);
+    saveSidebarWidth(280);
+    assert.equal(loadSidebarWidth(), 280);
   });
 
   it("falls back to the default when nothing is stored", () => {
-    assert.equal(loadDevSidebarWidth(), DEV_SIDEBAR_DEFAULT);
+    assert.equal(loadSidebarWidth(), SIDEBAR_DEFAULT);
   });
 
   it("clamps a stored value that is out of range", () => {
     localStorage.setItem("twanagent.sidebarWidth", "40");
-    assert.equal(loadDevSidebarWidth(), DEV_SIDEBAR_MIN);
+    assert.equal(loadSidebarWidth(), SIDEBAR_MIN);
   });
 });
 
@@ -153,21 +153,21 @@ describe("project path migration", () => {
   });
 
   it("rewrites the open project, recents, chats, and collapsed keys", () => {
-    saveDevWorkspace("/App/projects/Demo/");
-    pushDevRecentWorkspace("/App/projects/Demo");
-    pushDevRecentWorkspace("/Users/me/code");
-    saveDevConversation("/app/projects/demo", "chat-1");
+    saveWorkspace("/App/projects/Demo/");
+    pushRecentWorkspace("/App/projects/Demo");
+    pushRecentWorkspace("/Users/me/code");
+    saveConversation("/app/projects/demo", "chat-1");
     saveCollapsedProjects(["/app/projects/demo"]);
     rewriteStoredProjectPaths([
       { from: "/app/projects/Demo", to: "/Users/me/twanagent/projects/Demo" },
     ]);
-    assert.equal(loadDevWorkspace(), "/Users/me/twanagent/projects/Demo");
-    assert.deepEqual(loadDevRecentWorkspaces(), [
+    assert.equal(loadWorkspace(), "/Users/me/twanagent/projects/Demo");
+    assert.deepEqual(loadRecentWorkspaces(), [
       "/Users/me/code",
       "/Users/me/twanagent/projects/Demo",
     ]);
-    assert.equal(loadDevConversation("/Users/me/twanagent/projects/Demo"), "chat-1");
-    assert.equal(loadDevConversation("/app/projects/demo"), "");
+    assert.equal(loadConversation("/Users/me/twanagent/projects/Demo"), "chat-1");
+    assert.equal(loadConversation("/app/projects/demo"), "");
     assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
   });
 });
@@ -178,10 +178,10 @@ describe("recent workspaces", () => {
   });
 
   it("removes a recent by normalized path", () => {
-    pushDevRecentWorkspace("/app/demo");
-    pushDevRecentWorkspace("/app/other");
-    assert.deepEqual(removeDevRecentWorkspace("/app/Demo/"), ["/app/other"]);
-    assert.deepEqual(loadDevRecentWorkspaces(), ["/app/other"]);
+    pushRecentWorkspace("/app/demo");
+    pushRecentWorkspace("/app/other");
+    assert.deepEqual(removeRecentWorkspace("/app/Demo/"), ["/app/other"]);
+    assert.deepEqual(loadRecentWorkspaces(), ["/app/other"]);
   });
 });
 
@@ -267,11 +267,11 @@ describe("permission mode", () => {
   });
 
   it("saves and reloads the permission mode", () => {
-    saveDevPermission("approve-all");
-    assert.equal(loadDevPermission(), "approve-all");
+    savePermission("approve-all");
+    assert.equal(loadPermission(), "approve-all");
   });
 
   it("falls back to empty when nothing is stored", () => {
-    assert.equal(loadDevPermission(), "");
+    assert.equal(loadPermission(), "");
   });
 });

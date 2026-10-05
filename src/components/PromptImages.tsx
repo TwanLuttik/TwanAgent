@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ChatImage } from "../lib/dev";
+import type { ChatImage } from "../lib/core";
 import { Symbol } from "./Symbol";
 
 export function PromptImages({

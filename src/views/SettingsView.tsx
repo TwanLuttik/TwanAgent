@@ -1,14 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "../components/Button";
 import { ThemePicker } from "../components/ThemePicker";
-import { formatBytes } from "../lib/dev-usage";
-import { folderName } from "../lib/dev";
+import { formatBytes } from "../lib/usage";
+import { folderName } from "../lib/core";
 import {
   PERMISSION_MODES,
   parsePermissionMode,
   permissionDetail,
   type PermissionMode,
-} from "../lib/dev-permission";
+} from "../lib/permission";
 import {
   loadFileHoverCard,
   loadMarkdownOpenMode,
@@ -84,25 +84,25 @@ export function SettingsView({
   useEffect(() => {
     let gone = false;
     void api
-      .devKeyStatus()
+      .keyStatus()
       .then((s) => {
         if (!gone) setKeyStatus(s);
       })
       .catch(() => undefined);
     void api
-      .devCliInfo()
+      .cliInfo()
       .then((info) => {
         if (!gone) setCli(info);
       })
       .catch(() => undefined);
     void api
-      .devUsageDbInfo()
+      .usageDbInfo()
       .then((info) => {
         if (!gone) setDb(info);
       })
       .catch(() => undefined);
     void api
-      .devOpenedWorkspaces()
+      .openedWorkspaces()
       .then((rows) => {
         if (!gone) setFolders(rows);
       })
@@ -246,7 +246,7 @@ export function SettingsView({
                     onClick={() => {
                       setSavingKey(true);
                       void api
-                        .devClearKey()
+                        .clearKey()
                         .then((s) => {
                           setKeyStatus(s);
                           setXaiKey("");
@@ -266,7 +266,7 @@ export function SettingsView({
                   onClick={() => {
                     setSavingKey(true);
                     void api
-                      .devSetKey(xaiKey.trim())
+                      .setKey(xaiKey.trim())
                       .then((s) => {
                         setKeyStatus(s);
                         setXaiKey("");
@@ -306,7 +306,7 @@ export function SettingsView({
                       onClick={() => {
                         setResettingDb(true);
                         void api
-                          .devUsageDbReset()
+                          .usageDbReset()
                           .then((info) => {
                             setDb(info);
                             setConfirmReset(false);
@@ -372,7 +372,7 @@ export function SettingsView({
                       .pickDir()
                       .then(async (path) => {
                         if (!path) return;
-                        const opened = await api.devOpenFolder(path);
+                        const opened = await api.openFolder(path);
                         setFolders((rows) => (rows.includes(opened) ? rows : [...rows, opened].sort()));
                         setFlash({ kind: "ok", text: `Allowed ${folderName(opened)}.` });
                       })
@@ -398,7 +398,7 @@ export function SettingsView({
                         variant="danger"
                         onClick={() => {
                           void api
-                            .devForgetWorkspace(path)
+                            .forgetWorkspace(path)
                             .then(() => {
                               setFolders((rows) => rows.filter((row) => row !== path));
                               setFlash({ kind: "ok", text: `Removed access to ${folderName(path)}.` });

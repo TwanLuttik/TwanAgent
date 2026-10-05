@@ -1,13 +1,13 @@
-import { DevEditor } from "../../components/DevEditor";
-import { DevWorkspace } from "../../components/DevWorkspace";
+import { Editor } from "../../components/Editor";
+import { Workspace } from "../../components/Workspace";
 import { GrokTerminal } from "../../components/GrokTerminal";
 import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
-import { conversationActivityLabel, folderName } from "../../lib/dev";
-import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/dev-turn";
-import { contextWindowChoices, contextWindowLabel } from "../../lib/dev-context";
+import { conversationActivityLabel, folderName } from "../../lib/core";
+import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
+import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
 import {
   editorFileView,
   focusEditor,
@@ -16,16 +16,16 @@ import {
   selectChatTab,
   selectEditorTab,
   setEditorMarkdownView,
-} from "../../lib/dev-editor";
-import { permissionLabel } from "../../lib/dev-permission";
-import { parseConversationKind } from "../../lib/dev-terminal-chat";
-import { draftForChat, setDraftForChat } from "../../lib/dev-turn";
+} from "../../lib/editor";
+import { permissionLabel } from "../../lib/permission";
+import { parseConversationKind } from "../../lib/terminal-chat";
+import { draftForChat, setDraftForChat } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
 import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
-import { CenterTabs } from "../dev/DevChrome";
+import { CenterTabs } from "./AppChrome";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
@@ -104,7 +104,7 @@ export function ChatStage() {
           ) : showUsage ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
           ) : editor.focus === "file" && editor.activePath && opened ? (
-            <DevEditor
+            <Editor
               workspace={workspace}
               path={editor.activePath}
               tick={tick}
@@ -147,7 +147,7 @@ export function ChatStage() {
           )}
         </div>
         {workspace && opened && !fullPage ? (
-          <DevWorkspace
+          <Workspace
             workspace={workspace}
             tick={tick}
             selectedPath={editor.activePath}

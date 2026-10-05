@@ -2,12 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { emptyGrokPlan, grokPlanFromPayload, planIsVisible, planOpenByDefault, type GrokPlan } from "../lib/dev-plan";
-import { attachXtermInput } from "../lib/dev-term-io";
-import { terminalSessions } from "../lib/dev-terminal-sessions";
-import type { TerminalSession } from "../lib/dev-terminal-chat";
+import { emptyGrokPlan, grokPlanFromPayload, planIsVisible, planOpenByDefault, type GrokPlan } from "../lib/plan";
+import { attachXtermInput } from "../lib/term-io";
+import { terminalSessions } from "../lib/terminal-sessions";
+import type { TerminalSession } from "../lib/terminal-chat";
 import * as api from "../lib/tauri";
-import { applyXtermTheme, xtermTheme } from "./DevTerminal";
+import { applyXtermTheme, xtermTheme } from "./Terminal";
 import { PlanPreview } from "./PlanPreview";
 
 export function GrokTerminal({
@@ -39,7 +39,7 @@ export function GrokTerminal({
     setPlanOpen(false);
     async function load() {
       try {
-        const next = grokPlanFromPayload(await api.devGrokPlan(workspace, conversationId));
+        const next = grokPlanFromPayload(await api.grokPlan(workspace, conversationId));
         if (stop) return;
         setPlan(next);
         if (next.awaitingApproval && !sawReview.current) {
@@ -97,16 +97,16 @@ export function GrokTerminal({
       term,
       (data) => {
         const live = terminalSessions.get(conversationId);
-        if (live?.ptyId) void api.devPtyWrite(live.ptyId, data);
+        if (live?.ptyId) void api.ptyWrite(live.ptyId, data);
       },
       (data) => {
         const live = terminalSessions.get(conversationId);
-        if (live?.ptyId) void api.devPtyWriteBytes(live.ptyId, data);
+        if (live?.ptyId) void api.ptyWriteBytes(live.ptyId, data);
       },
     );
     term.onResize(({ cols, rows }) => {
       const live = terminalSessions.get(conversationId);
-      if (live?.ptyId) void api.devPtyResize(live.ptyId, cols, rows);
+      if (live?.ptyId) void api.ptyResize(live.ptyId, cols, rows);
     });
 
     void (async () => {
@@ -116,7 +116,7 @@ export function GrokTerminal({
         return;
       }
       setSession(next);
-      if (next.ptyId) void api.devPtyResize(next.ptyId, term.cols, term.rows);
+      if (next.ptyId) void api.ptyResize(next.ptyId, term.cols, term.rows);
       if (next.buffer.length > written.current) {
         term.write(next.buffer.slice(written.current));
         written.current = next.buffer.length;
@@ -187,7 +187,7 @@ export function GrokTerminal({
           }}
         />
       ) : null}
-      <div ref={host} className="dev-term min-h-0 flex-1 px-1.5 py-1.5" />
+      <div ref={host} className="term min-h-0 flex-1 px-1.5 py-1.5" />
       {stopped ? (
         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-between gap-3 border-t border-line bg-panel/95 px-3 py-2">
           <p className="min-w-0 truncate text-[12px] text-muted">{message}</p>

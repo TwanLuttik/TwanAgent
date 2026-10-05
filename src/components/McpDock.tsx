@@ -1,4 +1,4 @@
-import { mcpPillSummary, type DetectedMcpServer } from "../lib/dev-mcp";
+import { mcpPillSummary, type DetectedMcpServer } from "../lib/mcp";
 import { Button } from "./Button";
 import { DockShell } from "./DockShell";
 

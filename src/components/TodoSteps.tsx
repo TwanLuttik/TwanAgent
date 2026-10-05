@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import type { AgentTodo, TodoStatus } from "../lib/dev-todo";
+import type { AgentTodo, TodoStatus } from "../lib/todo";
 import { Symbol } from "./Symbol";
 
 const EASE = [0.22, 1, 0.36, 1] as const;

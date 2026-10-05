@@ -248,29 +248,29 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   background-position: 0 0, 0 7px, 7px -7px, -7px 0;
 }
 
-.dev-term,
-.dev-term .xterm,
-.dev-term .xterm-screen {
+.term,
+.term .xterm,
+.term .xterm-screen {
   height: 100%;
   overscroll-behavior: none;
 }
 
-.dev-term .xterm {
+.term .xterm {
   width: 100%;
   padding: 0;
 }
 
 /* Viewport is a full-size overlay; let clicks/wheel reach the screen so TUIs get mouse reports. */
-.dev-term .xterm-viewport {
+.term .xterm-viewport {
   pointer-events: none;
 }
 
 /* Mouse tracking turns the cursor into a pointer. Keep the text cursor so dragging reads as selection. */
-.dev-term .xterm.enable-mouse-events {
+.term .xterm.enable-mouse-events {
   cursor: text;
 }
 
-.dev-term .xterm-screen {
+.term .xterm-screen {
   pointer-events: auto;
 }
 

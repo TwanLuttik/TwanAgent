@@ -1,6 +1,6 @@
 import { ChatMarkdown, WorkspaceFileLinks } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
-import { planShowsEmpty, planStatus, planTitle, type GrokPlan } from "../lib/dev-plan";
+import { planShowsEmpty, planStatus, planTitle, type GrokPlan } from "../lib/plan";
 
 export function PlanPreview({
   plan,
