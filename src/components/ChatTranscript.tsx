@@ -374,6 +374,15 @@ function TranscriptTurn({
             />
           );
         }
+        if (item.kind === "compaction") {
+          return (
+            <div key={index} className="mb-4 flex items-center gap-2 text-[11px] text-muted/70">
+              <span className="h-px min-w-4 flex-1 bg-line/70" />
+              <span>Conversation compacted</span>
+              <span className="h-px min-w-4 flex-1 bg-line/70" />
+            </div>
+          );
+        }
         if (item.kind === "error") {
           return (
             <p

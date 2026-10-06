@@ -27,6 +27,7 @@ import {
   setImagesForChat,
 } from "../../lib/image";
 import { expandFileMentions, type MentionFile } from "../../lib/mention";
+import { expandPasteTokens, type PasteBlock } from "../../lib/paste";
 import { fileBaseName } from "../../lib/file-icon";
 import type { DetectedMcpServer } from "../../lib/mcp";
 import { parsePermissionMode, shouldPromptShell, type PermissionMode } from "../../lib/permission";
@@ -51,6 +52,7 @@ import {
 } from "../../lib/turn";
 import {
   saveComposerDraft,
+  saveComposerPastes,
   saveContextWindow,
   saveConversation,
   saveEffort,
@@ -68,6 +70,7 @@ export type TurnDeps = {
   activeId: string;
   messages: ChatMessage[];
   draft: string;
+  draftPastes: PasteBlock[];
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
   busy: boolean;
@@ -93,6 +96,7 @@ export type TurnDeps = {
   setContextWindow: Update<number>;
   setPermission: Update<PermissionMode>;
   setDrafts: Update<Record<string, string>>;
+  setPastesByChat: Update<Record<string, PasteBlock[]>>;
   setDraftImages: Update<Record<string, ChatImage[]>>;
   setPendingByChat: Update<Record<string, PendingMessage[]>>;
   setEditingPending: Update<PendingEdit | null>;
@@ -149,9 +153,9 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
+    workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
-    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setDrafts, setTurnStartedAt,
+    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
     setShellQueue, permissionRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
     deletedIdsRef, mcpServersRef, skillsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef,
@@ -410,7 +414,14 @@ function removePendingAt(index: number) {
 
 function clearPrompt(id: string) {
   saveComposerDraft(id, "");
+  saveComposerPastes(id, []);
   setDrafts((prev) => setDraftForChat(prev, id, ""));
+  setPastesByChat((prev) => {
+    if (!(id in prev)) return prev;
+    const next = { ...prev };
+    delete next[id];
+    return next;
+  });
   setDraftImages((prev) => {
     let next = setImagesForChat(prev, activeId, []);
     if (id !== activeId) next = setImagesForChat(next, id, []);
@@ -423,7 +434,7 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
 }
 
 async function send() {
-  const text = expandFileMentions(draft, mentionFiles).trim();
+  const text = expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(promptImages);
   if (!canSendPrompt(text, images)) return;
   if (!ready) {

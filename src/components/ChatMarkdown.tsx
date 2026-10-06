@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
@@ -24,6 +25,7 @@ import {
 } from "../lib/workspace-path";
 import { FileHoverCard } from "./FileHoverCard";
 import { FileIcon } from "./FileIcon";
+import { Symbol } from "./Symbol";
 
 type FileLinkCtx = {
   workspace: string | null;
@@ -179,9 +181,7 @@ function markdownComponents(
     ),
     pre: ({ children }) => (
       <InPreContext.Provider value={true}>
-        <pre className="my-2.5 overflow-x-auto overflow-y-hidden rounded-md bg-panel px-3 py-2.5 font-mono text-[12px] leading-relaxed whitespace-pre first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
-          {children}
-        </pre>
+        <CodeBlock>{children}</CodeBlock>
       </InPreContext.Provider>
     ),
     blockquote: ({ children }) => (
@@ -218,6 +218,32 @@ function markdownComponents(
         <input type="checkbox" checked={Boolean(checked)} readOnly className="mr-1.5 align-middle" />
       ) : null,
   };
+}
+
+function CodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="group relative my-2.5 first:mt-0 last:mb-0">
+      <button
+        type="button"
+        aria-label={copied ? "Copied" : "Copy code"}
+        title={copied ? "Copied" : "Copy"}
+        onClick={() => {
+          const text = nodeText(children).replace(/\n$/, "");
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1200);
+          });
+        }}
+        className="absolute top-1.5 right-1.5 z-[1] flex size-6 items-center justify-center rounded-md bg-canvas/80 text-muted opacity-0 transition-opacity hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
+      >
+        <Symbol name={copied ? "checkmark" : "doc.on.doc"} className="size-3.5" />
+      </button>
+      <pre className="overflow-x-hidden rounded-md bg-panel px-3 py-2.5 pr-9 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
+        {children}
+      </pre>
+    </div>
+  );
 }
 
 function MarkdownCode({

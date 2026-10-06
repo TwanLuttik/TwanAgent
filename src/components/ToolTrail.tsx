@@ -5,6 +5,7 @@ import {
   foldToolTrailRows,
   type ToolFileChange,
 } from "../lib/core";
+import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
 
@@ -227,21 +228,59 @@ function ToolDetail({ text }: { text: string }) {
 }
 
 function InlineEditDiff({ change }: { change: ToolFileChange }) {
+  const rows = lineDiffRows(change.removed, change.added);
   return (
-    <pre className="overflow-x-hidden font-mono text-[11px] leading-[1.35]">
-      {change.removed.map((line, i) => (
-        <div key={`-${i}`} className="flex gap-2 text-err">
-          <span className="w-3 shrink-0 select-none">−</span>
-          <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
-        </div>
-      ))}
-      {change.added.map((line, i) => (
-        <div key={`+${i}`} className="flex gap-2 text-ok">
-          <span className="w-3 shrink-0 select-none">+</span>
-          <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
-        </div>
+    <pre className="overflow-x-hidden font-mono text-[11px] leading-[1.45]">
+      {rows.map((row, i) => (
+        <InlineDiffRow key={i} row={row} />
       ))}
     </pre>
+  );
+}
+
+function InlineDiffRow({ row }: { row: LineDiffRow }) {
+  if (row.kind === "same") {
+    return (
+      <div className="px-1.5 whitespace-pre-wrap break-all text-muted/80">{row.text || " "}</div>
+    );
+  }
+  if (row.kind === "change") {
+    return (
+      <>
+        <DiffToneLine tone="del" parts={row.removed} />
+        <DiffToneLine tone="add" parts={row.added} />
+      </>
+    );
+  }
+  return <DiffToneLine tone={row.kind === "del" ? "del" : "add"} text={row.text} />;
+}
+
+function DiffToneLine({
+  tone,
+  text,
+  parts,
+}: {
+  tone: "add" | "del";
+  text?: string;
+  parts?: LineDiffPart[];
+}) {
+  const removed = tone === "del";
+  return (
+    <div className={`px-1.5 whitespace-pre-wrap break-all ${removed ? "bg-err/10 text-err" : "bg-ok/10 text-ok"}`}>
+      {parts ? (
+        parts.map((part, i) =>
+          part.changed ? (
+            <span key={i} className={removed ? "bg-err/20" : "bg-ok/25"}>
+              {part.text}
+            </span>
+          ) : (
+            <span key={i}>{part.text}</span>
+          ),
+        )
+      ) : (
+        text || " "
+      )}
+    </div>
   );
 }
 

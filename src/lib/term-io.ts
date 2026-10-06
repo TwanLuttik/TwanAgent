@@ -28,9 +28,27 @@ export function pointerMovedPast(
 type XtermInput = {
   onData: (fn: (data: string) => void) => unknown;
   onBinary: (fn: (data: string) => void) => unknown;
+  hasSelection?: () => boolean;
   attachCustomKeyEventHandler?: (fn: (event: KeyboardEvent) => boolean) => void;
   element?: HTMLElement | null;
 };
+
+/**
+ * Ctrl/Cmd+C copies when text is selected. Otherwise it is the terminal
+ * interrupt (ETX), so a running command can be cancelled.
+ */
+export function terminalKeyReachesPty(
+  event: { type?: string; key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean },
+  hasSelection: boolean,
+): boolean {
+  if (event.type && event.type !== "keydown") return true;
+  const mod = event.metaKey || event.ctrlKey;
+  const plain = mod && !event.altKey && !event.shiftKey;
+  const key = event.key.toLowerCase();
+  if (plain && key === "c") return !hasSelection;
+  if (plain && key === "a") return false;
+  return true;
+}
 
 export function attachXtermInput(
   term: XtermInput,
@@ -67,12 +85,7 @@ export function attachXtermInput(
       drag = null;
     });
   }
-  term.attachCustomKeyEventHandler?.((event) => {
-    if (event.type !== "keydown") return true;
-    const mod = event.metaKey || event.ctrlKey;
-    const plain = mod && !event.altKey && !event.shiftKey;
-    const key = event.key.toLowerCase();
-    if (plain && (key === "c" || key === "a")) return false;
-    return true;
-  });
+  term.attachCustomKeyEventHandler?.((event) =>
+    terminalKeyReachesPty(event, Boolean(term.hasSelection?.())),
+  );
 }

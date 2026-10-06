@@ -18,8 +18,9 @@ import {
   upsertProjectGroup,
   type ProjectChatGroup,
 } from "../../lib/all-projects";
-import { putChatUsage, usageToPersist, type ChatUsage } from "../../lib/context";
+import { parseChatUsage, putChatUsage, usageToPersist, type ChatUsage } from "../../lib/context";
 import { closeEditorTab, emptyEditor, pinEditorTab, requestCloseEditorTab, selectChatTab, type EditorState } from "../../lib/editor";
+import { insertCompactionEvent } from "../../lib/compact";
 import { persistableCompaction, persistableMessages } from "../../lib/image";
 import {
   conversationHasSummarizeSource,
@@ -125,6 +126,7 @@ export type LibraryDeps = {
   setCollapsedProjects: Update<string[]>;
   setRecents: Update<string[]>;
   setDrafts: Update<Record<string, string>>;
+  setPastesByChat: Update<Record<string, import("../../lib/paste").PasteBlock[]>>;
   setDraftImages: Update<Record<string, import("../../lib/core").ChatImage[]>>;
   setUsageByChat: Update<Record<string, ChatUsage>>;
   setStreamText: Update<string>;
@@ -148,7 +150,7 @@ export function useLibrary(deps: LibraryDeps) {
     runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowAllProjects, setShowSettings, setShowUsage, setProjectSettings,
-    setCollapsedProjects, setRecents, setDrafts, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
+    setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setPendingByChat, setFlash, bumpFiles,
   } = deps;
@@ -242,6 +244,7 @@ function clearWorkspace() {
     setExpandedAgents({});
   }
   setDrafts({});
+  setPastesByChat({});
   setDraftImages({});
   setUsageByChat({});
   setConversations([]);
@@ -334,6 +337,7 @@ function applyWorkspace(path: string) {
   setDirtyFiles({});
   setPendingClosePath(null);
   setDrafts({});
+  setPastesByChat({});
   setDraftImages({});
   setUsageByChat({});
   setJourneys([]);
@@ -490,11 +494,19 @@ async function openChat(id: string) {
   try {
     const full = await api.getConversation(workspace, id);
     if (generation !== openGeneration.current) return;
+    const loaded = (full.messages as ChatMessage[]) ?? [];
+    const withNotice =
+      full.compaction?.summary && full.compaction.through > 0
+        ? insertCompactionEvent(loaded, full.compaction.through)
+        : loaded;
     setActiveId(id);
-    setMessages((full.messages as ChatMessage[]) ?? []);
+    setMessages(withNotice);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
+    }
+    if (withNotice !== loaded) {
+      void persist(withNotice, id, workspace, parseChatUsage(full.context_usage) ?? undefined, full.compaction);
     }
     saveConversation(workspace, id);
   } finally {

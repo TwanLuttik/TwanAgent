@@ -1,4 +1,4 @@
-import { isCompactionSummary } from "./compact.ts";
+import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
 import { permissionSystemLine, type PermissionMode } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
@@ -539,6 +539,7 @@ export type TranscriptItem =
   | { kind: "user"; content: string; images?: ChatImage[] }
   | { kind: "thinking"; content: string; live?: boolean }
   | { kind: "assistant"; content: string; durationMs?: number }
+  | { kind: "compaction" }
   | { kind: "error"; content: string }
   | {
       kind: "tools";
@@ -643,6 +644,10 @@ export function isLiveToolTrail(items: TranscriptItem[], index: number, busy: bo
 export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
   const out: TranscriptItem[] = [];
   for (const msg of messages) {
+    if (isCompactionEvent(msg)) {
+      out.push({ kind: "compaction" });
+      continue;
+    }
     if (msg.role === "tool" || msg.role === "system") continue;
     if (msg.role === "user") {
       const item: TranscriptItem = { kind: "user", content: String(msg.content ?? "") };
@@ -821,7 +826,7 @@ export function toApiToolCall(call: ChatToolCall): ApiToolCall {
 
 export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
   return messages
-    .filter((msg) => !msg.error && !String(msg.content ?? "").startsWith(TURN_FAILURE_PREFIX))
+    .filter((msg) => !isCompactionEvent(msg) && !msg.error && !String(msg.content ?? "").startsWith(TURN_FAILURE_PREFIX))
     .map((msg) => {
     if (msg.role === "tool") {
       return {

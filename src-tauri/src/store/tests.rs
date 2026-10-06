@@ -141,6 +141,25 @@ fn persists_message_images() {
 }
 
 #[test]
+fn persists_turn_duration() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let row = conv(
+        "c1",
+        "Hello",
+        vec![json!({
+            "role":"assistant",
+            "content":"Done.",
+            "durationMs": 12400
+        })],
+    );
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[0]["durationMs"], 12400);
+    assert_eq!(loaded.messages[0]["content"], "Done.");
+}
+
+#[test]
 fn persists_assistant_reasoning() {
     let dir = tempdir().unwrap();
     let conn = open(dir.path()).unwrap();

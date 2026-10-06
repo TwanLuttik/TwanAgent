@@ -22,6 +22,40 @@ export function setSpaceCorner(on: boolean): void {
 const WORKSPACE_KEY = "twanagent.workspace";
 const CONVERSATION_KEY = "twanagent.conversation";
 const DRAFTS_KEY = "twanagent.drafts";
+const PASTES_KEY = "twanagent.pastes";
+
+export type StoredPaste = { id: string; text: string };
+
+export function loadComposerPastes(): Record<string, StoredPaste[]> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PASTES_KEY) ?? "");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, StoredPaste[]> = {};
+    for (const [id, rows] of Object.entries(raw)) {
+      if (!Array.isArray(rows)) continue;
+      const pastes = rows.filter(
+        (row): row is StoredPaste =>
+          !!row &&
+          typeof row === "object" &&
+          typeof (row as StoredPaste).id === "string" &&
+          typeof (row as StoredPaste).text === "string" &&
+          (row as StoredPaste).text.length > 0,
+      );
+      if (pastes.length) out[id] = pastes;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveComposerPastes(chatId: string, pastes: StoredPaste[]): void {
+  if (!chatId) return;
+  const all = loadComposerPastes();
+  if (pastes.length) all[chatId] = pastes;
+  else delete all[chatId];
+  localStorage.setItem(PASTES_KEY, JSON.stringify(all));
+}
 
 export function loadWorkspace(): string {
   return localStorage.getItem(WORKSPACE_KEY) ?? "";

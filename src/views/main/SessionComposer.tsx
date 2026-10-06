@@ -13,6 +13,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     busy,
     contextWindow,
     draft,
+    draftPastes,
     mentionFiles,
     effort,
     messages,
@@ -30,6 +31,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     runningTurns,
     send,
     setDraft,
+    setDraftPastes,
     setDraftImages,
     stop,
     usageByChat,
@@ -72,6 +74,8 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
               )
       }
       mentionFiles={mentionFiles}
+      pastes={draftPastes}
+      onPastes={setDraftPastes}
       images={promptImages}
       onImages={(next: ChatImage[]) =>
         setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, activeId, next))

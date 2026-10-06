@@ -11,6 +11,17 @@ export const COMPACTION_SUMMARY_TAG = "compaction_summary";
 export const COMPACT_NOTICE =
   "Your conversation was summarized due to context constraints. Here is the summary of the conversation so far:";
 
+/** Shown in the transcript when earlier messages were folded. Not sent to the model. */
+export const COMPACTION_EVENT_TEXT = "Conversation compacted";
+
+export function compactionEventMessage(): ChatMessage {
+  return { role: "system", content: COMPACTION_EVENT_TEXT };
+}
+
+export function isCompactionEvent(msg: ChatMessage | undefined): boolean {
+  return msg?.role === "system" && String(msg.content ?? "").trim() === COMPACTION_EVENT_TEXT;
+}
+
 const SUMMARY_INSTRUCTIONS = `Summarize this coding conversation so work can continue in a fresh context window.
 Write a compact brief the assistant will read instead of the earlier messages. Include:
 - What the user asked for and the decisions already made
@@ -25,6 +36,18 @@ export type CompactionState = {
   /** Index into the full transcript of the first message that stays verbatim. */
   through: number;
 };
+
+/**
+ * Drop a visible compaction notice at `through` without moving later messages.
+ * The notice is a system message, so it is not sent to the model, and it does
+ * not change the stored boundary. Another compaction keeps the earlier notice.
+ */
+export function insertCompactionEvent(messages: ChatMessage[], through: number): ChatMessage[] {
+  const at = Math.floor(through);
+  if (!Number.isFinite(at) || at <= 0 || at > messages.length) return messages;
+  if (isCompactionEvent(messages[at]) || isCompactionEvent(messages[at - 1])) return messages;
+  return [...messages.slice(0, at), compactionEventMessage(), ...messages.slice(at)];
+}
 
 export type ContextMessages = {
   messages: ChatMessage[];

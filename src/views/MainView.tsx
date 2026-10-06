@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, scrollChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
-import { contextWindowChoices, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
+import { insertCompactionEvent } from "../lib/compact";
+import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
 import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
@@ -19,6 +20,8 @@ import {
   loadCollapsedProjects,
   loadContextWindow,
   loadComposerDrafts,
+  loadComposerPastes,
+  saveComposerPastes,
   loadConversation,
   loadEffort,
   loadModel,
@@ -35,6 +38,7 @@ import {
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
+import type { PasteBlock } from "../lib/paste";
 import { draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
@@ -59,6 +63,7 @@ export function MainView() {
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>(loadComposerDrafts);
+  const [pastesByChat, setPastesByChat] = useState<Record<string, PasteBlock[]>>(loadComposerPastes);
   const [mentionFiles, setMentionFiles] = useState<MentionFile[]>([]);
   const [draftImages, setDraftImages] = useState<Record<string, ChatImage[]>>({});
   const [pendingByChat, setPendingByChat] = useState<Record<string, PendingMessage[]>>({});
@@ -156,6 +161,7 @@ export function MainView() {
   const stickToBottomRef = useRef(true);
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
+  const draftPastes = pastesByChat[activeId] ?? [];
   const promptImages = imagesForChat(draftImages, activeId);
   const queued = pendingForChat(pendingByChat, activeId);
 
@@ -164,12 +170,26 @@ export function MainView() {
     setDrafts((prev) => setDraftForChat(prev, activeId, text));
   }, [activeId]);
 
+  const setDraftPastes = useCallback((next: PasteBlock[]) => {
+    saveComposerPastes(activeId, next);
+    setPastesByChat((prev) => {
+      if (!next.length) {
+        if (!(activeId in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[activeId];
+        return copy;
+      }
+      return { ...prev, [activeId]: next };
+    });
+  }, [activeId]);
+
   const ready = Boolean(runtime?.ready);
   const models = runtime?.models ?? [];
 
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
   const openGeneration = useRef(0);
+  const libraryRef = useRef<ReturnType<typeof useLibrary> | null>(null);
 
   const reloadConversations = useCallback(async (ws: string, preferId?: string) => {
     if (!ws) {
@@ -203,6 +223,11 @@ export function MainView() {
     if (!isSameProject(ws, workspaceRef.current)) return;
     stickToBottomRef.current = true;
     setActiveId(found.id);
+    const loaded = (full.messages as ChatMessage[]) ?? [];
+    const withNotice =
+      full.compaction?.summary && full.compaction.through > 0
+        ? insertCompactionEvent(loaded, full.compaction.through)
+        : loaded;
     const live = liveTurnMessages({
       workspace: ws,
       conversationId: found.id,
@@ -211,7 +236,16 @@ export function MainView() {
       live: turnMessagesRef.current,
       liveByChat: liveByChatRef.current,
     });
-    setMessages(live ?? ((full.messages as ChatMessage[]) ?? []));
+    setMessages(live ?? withNotice);
+    if (!live && withNotice !== loaded) {
+      void libraryRef.current?.persist(
+        withNotice,
+        found.id,
+        ws,
+        parseChatUsage(full.context_usage) ?? undefined,
+        full.compaction,
+      );
+    }
     if (live) {
       const cached = liveByChatRef.current.get(found.id);
       setStreamText(cached?.streamText ?? turnLiveRef.current.streamText);
@@ -640,6 +674,7 @@ export function MainView() {
     setCollapsedProjects,
     setRecents,
     setDrafts,
+    setPastesByChat,
     setDraftImages,
     setUsageByChat,
     setStreamText,
@@ -654,11 +689,13 @@ export function MainView() {
     setFlash,
     bumpFiles,
   });
+  libraryRef.current = library;
   const turn = bindTurn({
     workspace,
     activeId,
     messages,
     draft,
+    draftPastes,
     promptImages,
     mentionFiles,
     busy,
@@ -678,6 +715,7 @@ export function MainView() {
     setContextWindow,
     setPermission,
     setDrafts,
+    setPastesByChat,
     setDraftImages,
     setPendingByChat,
     setEditingPending,
@@ -985,6 +1023,7 @@ export function MainView() {
     deleteProjectFromSidebar,
     dirtyFiles,
     draft,
+    draftPastes,
     mentionFiles,
     editingPending,
     editMcpServer,
@@ -1048,6 +1087,7 @@ export function MainView() {
     setAllProjectsMode,
     setDirtyFiles,
     setDraft,
+    setDraftPastes,
     setDraftImages,
     setDrafts,
     setEditor,

@@ -9,6 +9,7 @@ import { parsePermissionMode, toolDeniedByPermission, type PermissionMode } from
 import { formatTodoWriteResult, parseTodoWriteArgs } from "./todo.ts";
 import {
   compactionPrompt,
+  insertCompactionEvent,
   isContextLengthError,
   messagesForContext,
   readCompactionState,
@@ -323,6 +324,11 @@ async function compactContext(
   const through = stored.length - recent.length;
   if (through <= 0 || through >= stored.length) return null;
   if (current && current.through === through && current.summary === summary) return null;
+  const marked = insertCompactionEvent(stored, through);
+  if (marked !== stored) {
+    stored.splice(0, stored.length, ...marked);
+    opts.onUpdate?.(stored);
+  }
   return { summary, through };
 }
 

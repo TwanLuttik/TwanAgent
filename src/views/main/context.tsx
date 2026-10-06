@@ -29,6 +29,7 @@ export type MainModel = {
   deleteProjectFromSidebar: MainFn;
   dirtyFiles: any;
   draft: any;
+  draftPastes: any;
   mentionFiles: any;
   editingPending: any;
   editMcpServer: MainFn;
@@ -92,6 +93,7 @@ export type MainModel = {
   setAllProjectsMode: MainFn;
   setDirtyFiles: MainFn;
   setDraft: MainFn;
+  setDraftPastes: MainFn;
   setDraftImages: MainFn;
   setDrafts: MainFn;
   setEditor: MainFn;

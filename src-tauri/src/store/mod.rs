@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage, SidebarItem};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -91,7 +91,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             tool_calls TEXT,
             tool_call_id TEXT,
             images TEXT,
-            reasoning TEXT
+            reasoning TEXT,
+            duration_ms INTEGER
         );
         ",
     )?;
@@ -115,6 +116,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     }
     if version.unwrap_or(0) < 5 {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT", []);
+    }
+    if version.unwrap_or(0) < 6 {
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN duration_ms INTEGER", []);
     }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
@@ -212,9 +216,10 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
             .and_then(Value::as_str)
             .map(str::to_string)
             .filter(|text| !text.trim().is_empty());
+        let duration_ms = msg.get("durationMs").and_then(Value::as_i64).filter(|ms| *ms >= 0);
         conn.execute(
-            "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 conversation_id,
                 i as i64,
@@ -224,6 +229,7 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
                 tool_call_id,
                 images,
                 reasoning,
+                duration_ms,
             ],
         )?;
     }
@@ -232,7 +238,7 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
 
 fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, tool_calls, tool_call_id, images, reasoning FROM messages
+        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms FROM messages
          WHERE conversation_id = ?1 ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([conversation_id], |row| {
@@ -243,11 +249,12 @@ fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>>
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (role, content, tool_calls, tool_call_id, images, reasoning) = row?;
+        let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms) = row?;
         let mut obj = serde_json::Map::new();
         obj.insert("role".into(), Value::String(role));
         if let Some(text) = content {
@@ -266,6 +273,9 @@ fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>>
         }
         if let Some(text) = reasoning.filter(|value| !value.trim().is_empty()) {
             obj.insert("reasoning".into(), Value::String(text));
+        }
+        if let Some(ms) = duration_ms.filter(|value| *value >= 0) {
+            obj.insert("durationMs".into(), Value::from(ms));
         }
         out.push(Value::Object(obj));
     }
