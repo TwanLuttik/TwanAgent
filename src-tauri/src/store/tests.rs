@@ -18,6 +18,7 @@ fn conv(id: &str, title: &str, messages: Vec<Value>) -> Conversation {
         compaction: None,
         journey_id: None,
         sort_order: 0,
+        effort: None,
     }
 }
 
@@ -111,6 +112,23 @@ fn save_keeps_compaction_until_a_new_one_is_written() {
     save_conversation(&conn, &row).unwrap();
     let updated = get_conversation(&conn, "c1").unwrap();
     assert_eq!(updated.compaction.as_ref().unwrap().through, 8);
+}
+
+#[test]
+fn save_keeps_effort_until_a_new_one_is_written() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let mut row = conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]);
+    row.effort = Some("low".into());
+    save_conversation(&conn, &row).unwrap();
+    row.effort = None;
+    row.title = "Hello again".into();
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.effort.as_deref(), Some("low"));
+    row.effort = Some("high".into());
+    save_conversation(&conn, &row).unwrap();
+    assert_eq!(get_conversation(&conn, "c1").unwrap().effort.as_deref(), Some("high"));
 }
 
 #[test]

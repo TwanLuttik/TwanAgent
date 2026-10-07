@@ -58,6 +58,9 @@ pub struct Conversation {
     pub journey_id: Option<String>,
     #[serde(default)]
     pub sort_order: i64,
+    /// Thinking level chosen for this chat. Empty means the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 pub(crate) fn default_conversation_kind() -> String {
@@ -76,6 +79,8 @@ pub struct ConversationSummary {
     pub journey_id: Option<String>,
     #[serde(default)]
     pub sort_order: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

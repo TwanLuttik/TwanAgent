@@ -11,7 +11,9 @@ export function conversationDraft(
   id: string,
   now: string,
   journeyId?: string | null,
+  effort?: string | null,
 ) {
+  const thinking = (effort ?? "").trim();
   return {
     id,
     title: kind === "terminal" ? "Terminal" : "New chat",
@@ -20,6 +22,7 @@ export function conversationDraft(
     messages: [] as unknown[],
     kind,
     ...(journeyId ? { journey_id: journeyId } : {}),
+    ...(thinking ? { effort: thinking } : {}),
   };
 }
 

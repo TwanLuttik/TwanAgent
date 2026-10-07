@@ -17,6 +17,8 @@ import {
   setDraftForChat,
   skipToolIfAborted,
   chatHasRunningTurn,
+  effortForModel,
+  foregroundRunningId,
   runningTurnStartedAt,
   shouldQueueForChat,
   takeNextPending,
@@ -276,6 +278,24 @@ describe("per-conversation pending queue", () => {
     assert.equal(chatHasRunningTurn({}, "chat-a"), false);
     assert.equal(runningTurnStartedAt(running, "chat-a"), 10);
     assert.equal(runningTurnStartedAt(running, "chat-c"), 0);
+  });
+
+  it("clears the composer thinking state when the open chat is idle", () => {
+    const running = {
+      "chat-a": { activity: null, startedAt: 10 },
+    };
+    assert.equal(foregroundRunningId(running, "chat-a"), "chat-a");
+    assert.equal(foregroundRunningId(running, "chat-b"), "");
+    assert.equal(foregroundRunningId(running, ""), "");
+    assert.equal(foregroundRunningId(null, "chat-a"), "");
+  });
+
+  it("keeps a chat's thinking level only when the model offers it", () => {
+    const efforts = [{ id: "high" }, { id: "medium" }, { id: "low" }];
+    assert.equal(effortForModel("low", efforts, "high"), "low");
+    assert.equal(effortForModel("  ", efforts, "medium"), "medium");
+    assert.equal(effortForModel("max", efforts, "nope"), "high");
+    assert.equal(effortForModel("", [], "high"), "");
   });
 
   it("updates one queued message and keeps its place", () => {

@@ -12,15 +12,21 @@ import {
 } from "../lib/core";
 import { ALL_DIFF_PATH } from "../lib/editor";
 import {
+  closedTerminalTabs,
+  paneForWorkspace,
+  savePaneForWorkspace,
+} from "../lib/pane-sessions";
+import {
   addableKinds,
   closePane,
-  defaultPaneState,
   openPane,
   paneMeta,
   selectPane,
   type PaneKind,
   type PaneState,
 } from "../lib/pane";
+import { shellSessionId } from "../lib/shell-sessions";
+import { shellSessions } from "../lib/shell-terminal";
 import {
   PANE_DEFAULT,
   PANE_MAX,
@@ -52,7 +58,7 @@ export function Workspace({
   onOpenFile?: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
   onRefresh?: () => void;
 }) {
-  const [pane, setPane] = useState<PaneState>(defaultPaneState);
+  const [pane, setPaneState] = useState<PaneState>(() => paneForWorkspace(workspace));
   const [width, setWidth] = useState(loadPaneWidth);
   const [dragging, setDragging] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
@@ -101,7 +107,22 @@ export function Workspace({
 
   useEffect(() => {
     setExpanded(openTreeState(loadOpenFileTree(workspace)));
+    setPaneState(paneForWorkspace(workspace));
   }, [workspace]);
+
+  const setPane = useCallback(
+    (next: PaneState | ((prev: PaneState) => PaneState)) => {
+      setPaneState((prev) => {
+        const resolved = typeof next === "function" ? next(prev) : next;
+        for (const tab of closedTerminalTabs(prev, resolved)) {
+          void shellSessions.dispose(shellSessionId(workspace, tab.id));
+        }
+        savePaneForWorkspace(workspace, resolved);
+        return resolved;
+      });
+    },
+    [workspace],
+  );
 
   useEffect(() => {
     void refreshTree();

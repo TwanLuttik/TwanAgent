@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction
+        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort
          FROM conversations ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -20,14 +20,15 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
             row.get::<_, i64>(6)?,
             row.get::<_, Option<String>>(7)?,
             row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction) = row?;
+        let (id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction, effort) = row?;
         let messages = load_messages(conn, &id)?;
         out.push(row_to_conversation(
-            id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction, messages,
+            id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction, effort, messages,
         )?);
     }
     Ok(out)
@@ -63,13 +64,19 @@ pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
     } else {
         conv.kind.clone()
     };
+    let effort = conv
+        .effort
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     if existing.is_some() {
         conn.execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2, kind = ?3,
              context_usage = COALESCE(?4, context_usage),
-             compaction = COALESCE(?5, compaction)
-             WHERE id = ?6",
-            params![conv.title, conv.updated_at, kind, usage, compaction, conv.id],
+             compaction = COALESCE(?5, compaction),
+             effort = COALESCE(?6, effort)
+             WHERE id = ?7",
+            params![conv.title, conv.updated_at, kind, usage, compaction, effort, conv.id],
         )?;
     } else {
         let sort = next_sort(conn, conv.journey_id.as_deref())?;

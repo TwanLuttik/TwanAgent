@@ -39,11 +39,11 @@ import {
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
-import { draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { draftForChat, effortForModel, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
-import type { SubagentRecord } from "../lib/subagent";
+import { emptySubagentDock, type SubagentDockState, type SubagentRecord } from "../lib/subagent";
 import { bindTurn } from "./main/useTurn";
 import { useLibrary, type RunTurn } from "./main/useLibrary";
 import type { MainModel } from "./main/context";
@@ -155,6 +155,7 @@ export function MainView() {
       }
     >(),
   );
+  const subagentsByChatRef = useRef(new Map<string, SubagentDockState>());
   const scroller = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const [composerPad, setComposerPad] = useState(CHAT_BOTTOM_PAD_FALLBACK);
@@ -256,12 +257,18 @@ export function MainView() {
       setStreamReasoning("");
       setLiveTools([]);
     }
+    const dock = subagentsByChatRef.current.get(found.id) ?? emptySubagentDock();
+    setSubagents(dock.agents);
+    setExpandedAgents(dock.expanded);
     setUsageByChat((prev) => putChatUsage(prev, found.id, full.context_usage));
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [found.id]: full.compaction! }));
     }
     saveConversation(ws, found.id);
-  }, []);
+    const chosen = models.find((row) => row.id === model) ?? models[0];
+    const nextEffort = effortForModel(full.effort || found.effort, chosen?.efforts, loadEffort());
+    if (nextEffort) setEffort(nextEffort);
+  }, [model, models]);
 
   const applyRuntime = useCallback((next: Runtime) => {
     setRuntime(next);
@@ -640,6 +647,10 @@ export function MainView() {
     usageByChat,
     compactionByChat,
     setCompactionByChat,
+    model,
+    models,
+    defaultEffort: loadEffort(),
+    setEffort,
     openSettings,
     reloadConversations,
     runTurn: (ws, id, next, after, journeyIdOverride) => runTurnRef.current(ws, id, next, after, journeyIdOverride),
@@ -654,6 +665,7 @@ export function MainView() {
     turnMessagesRef,
     turnLiveRef,
     liveByChatRef,
+    subagentsByChatRef,
     stickToBottomRef,
     openGeneration,
     setWorkspace,
@@ -725,6 +737,7 @@ export function MainView() {
     setRunningId,
     setRunningTurns,
     setMessages,
+    setConversations,
     setTurnStartedAt,
     setStreamText,
     setStreamReasoning,
@@ -751,6 +764,7 @@ export function MainView() {
     turnMessagesRef,
     turnLiveRef,
     liveByChatRef,
+    subagentsByChatRef,
     stickToBottomRef,
   });
   runTurnRef.current = turn.runTurn;
@@ -765,6 +779,7 @@ export function MainView() {
     openSidebarChat,
     openProjectFromSidebar,
     openChat,
+    toggleSubagent,
     removeChat,
     reorderChats,
     reorderSidebar,
@@ -814,6 +829,13 @@ export function MainView() {
       setStreamText("");
       setStreamReasoning("");
       setLiveTools([]);
+      setRunningActivity(null);
+      setTurnStartedAt(0);
+      setSubagents([]);
+      setExpandedAgents({});
+      runningIdRef.current = "";
+      setRunningId("");
+      abortRef.current = null;
     },
     [workspace, chatTabsByProject, activeId, openChat],
   );
@@ -1091,7 +1113,7 @@ export function MainView() {
     setDraftImages,
     setDrafts,
     setEditor,
-    setExpandedAgents,
+    toggleSubagent,
     setFolderOpen,
     setJourneyColor,
     setPendingDeleteProject,

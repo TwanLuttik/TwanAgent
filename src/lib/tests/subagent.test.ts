@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   applySubagentEvent,
+  applySubagentToChat,
   childCanUseTool,
   emptySubagent,
   parseSpawnArgs,
   parseSubagentType,
+  subagentsForChat,
   subagentSystemPrompt,
   subagentTranscript,
   summarizeSubagent,
+  toggleSubagentExpanded,
 } from "../subagent.ts";
 
 describe("parseSpawnArgs", () => {
@@ -196,5 +199,34 @@ describe("subagentTranscript", () => {
   it("falls back to the summary when nothing else is present", () => {
     assert.deepEqual(subagentTranscript({ ...start, summary: "All clear." }), ["All clear."]);
     assert.deepEqual(subagentTranscript(start), []);
+  });
+});
+
+describe("subagents per conversation", () => {
+  const start = emptySubagent({
+    id: "s1",
+    description: "Explore theme surfaces",
+    type: "explore",
+    prompt: "Look at the theme",
+  });
+
+  it("keeps agents and open state on the conversation that owns them", () => {
+    const byChat = new Map();
+    const shown = applySubagentToChat(byChat, "chat-a", { type: "start", record: start });
+    assert.equal(shown.agents.length, 1);
+    assert.equal(shown.expanded.s1, true);
+    assert.deepEqual(subagentsForChat(byChat, "chat-b"), { agents: [], expanded: {} });
+
+    const collapsed = toggleSubagentExpanded(byChat, "chat-a", "s1");
+    assert.equal(collapsed.expanded.s1, false);
+    assert.equal(subagentsForChat(byChat, "chat-a").expanded.s1, false);
+    assert.equal(subagentsForChat(byChat, "chat-b").agents.length, 0);
+
+    const other = emptySubagent({ id: "s2", description: "Other", type: "plan", prompt: "Plan" });
+    applySubagentToChat(byChat, "chat-b", { type: "start", record: other });
+    assert.equal(subagentsForChat(byChat, "chat-a").agents[0].id, "s1");
+    assert.equal(subagentsForChat(byChat, "chat-a").expanded.s1, false);
+    assert.equal(subagentsForChat(byChat, "chat-b").agents[0].id, "s2");
+    assert.equal(subagentsForChat(byChat, "chat-b").expanded.s2, true);
   });
 });

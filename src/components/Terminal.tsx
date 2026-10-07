@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { shellSessionId } from "../lib/shell-sessions";
+import { shellSessions } from "../lib/shell-terminal";
 import { attachXtermInput } from "../lib/term-io";
-import * as api from "../lib/tauri";
 
 export function Terminal({
   workspace,
@@ -18,6 +19,7 @@ export function Terminal({
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const id = shellSessionId(workspace, sessionKey);
 
   useEffect(() => {
     const el = host.current;
@@ -39,40 +41,36 @@ export function Terminal({
     fitRef.current = fit;
 
     let cancelled = false;
-    let ptyId: string | null = null;
-    let unlisten: (() => void) | undefined;
+    let written = 0;
+    const unsub = shellSessions.subscribe((ev) => {
+      if (ev.type === "data") {
+        if (ev.id !== id) return;
+        term.write(ev.chunk);
+        written += ev.chunk.length;
+        return;
+      }
+      if (ev.session.id !== id) return;
+      setError(ev.session.phase === "error" ? ev.session.error : null);
+    });
+
+    attachXtermInput(
+      term,
+      (data) => shellSessions.write(id, data),
+      (data) => shellSessions.writeBytes(id, data),
+    );
+    term.onResize(({ cols, rows }) => {
+      shellSessions.resize(id, cols, rows);
+    });
 
     void (async () => {
-      try {
-        const id = await api.ptyOpen(workspace, term.cols, term.rows);
-        if (cancelled) {
-          await api.ptyKill(id);
-          return;
-        }
-        ptyId = id;
-        unlisten = await api.onPty((ev) => {
-          if (ev.id !== id) return;
-          if (ev.kind === "data" && ev.data) term.write(ev.data);
-          if (ev.kind === "exit") term.write("\r\n[process exited]\r\n");
-        });
-        if (cancelled) {
-          unlisten();
-          return;
-        }
-        attachXtermInput(
-          term,
-          (data) => {
-            void api.ptyWrite(id, data);
-          },
-          (data) => {
-            void api.ptyWriteBytes(id, data);
-          },
-        );
-        term.onResize(({ cols, rows }) => {
-          void api.ptyResize(id, cols, rows);
-        });
-      } catch (e) {
-        if (!cancelled) setError(String(e));
+      const session = await shellSessions.open(id, workspace, term.cols, term.rows);
+      if (cancelled) return;
+      setError(session.phase === "error" ? session.error : null);
+      shellSessions.resize(id, term.cols, term.rows);
+      if (session.buffer.length > written) {
+        const pending = session.buffer.slice(written);
+        term.write(pending);
+        written += pending.length;
       }
     })();
 
@@ -84,13 +82,12 @@ export function Terminal({
     return () => {
       cancelled = true;
       ro.disconnect();
-      unlisten?.();
-      if (ptyId) void api.ptyKill(ptyId);
+      unsub();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [workspace, sessionKey]);
+  }, [workspace, sessionKey, id]);
 
   useEffect(() => {
     if (!active) return;

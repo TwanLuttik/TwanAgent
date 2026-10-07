@@ -59,6 +59,15 @@ describe("conversationDraft", () => {
       messages: [],
       kind: "terminal",
     });
+    assert.deepEqual(conversationDraft("chat", "id-4", "t3", null, "low"), {
+      id: "id-4",
+      title: "New chat",
+      created_at: "t3",
+      updated_at: "t3",
+      messages: [],
+      kind: "chat",
+      effort: "low",
+    });
   });
 });
 

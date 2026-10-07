@@ -32,12 +32,18 @@ import { fileBaseName } from "../../lib/file-icon";
 import type { DetectedMcpServer } from "../../lib/mcp";
 import { parsePermissionMode, shouldPromptShell, type PermissionMode } from "../../lib/permission";
 import type { DetectedSkill } from "../../lib/skill";
-import { applySubagentEvent, type SubagentRecord } from "../../lib/subagent";
+import {
+  applySubagentToChat,
+  emptySubagentDock,
+  type SubagentDockState,
+  type SubagentRecord,
+} from "../../lib/subagent";
 import { parseConversationKind } from "../../lib/terminal-chat";
 import { isTodoTool } from "../../lib/todo";
 import {
   clearPendingForChat,
   closeDanglingToolCalls,
+  effortForModel,
   enqueuePending,
   pendingIndexAfterRemove,
   removePending,
@@ -60,7 +66,7 @@ import {
   savePermission,
 } from "../../lib/prefs";
 import * as api from "../../lib/tauri";
-import type { Model, Runtime } from "../../lib/tauri";
+import type { ConversationSummary, Model, Runtime } from "../../lib/tauri";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 type ShellRequest = { command: string; resolve: (ok: boolean) => void };
@@ -80,7 +86,7 @@ export type TurnDeps = {
   effort: string;
   contextWindow: number;
   models: Model[];
-  conversations: { id: string; journey_id?: string | null; kind?: string }[];
+  conversations: ConversationSummary[];
   usageByChat: Record<string, ChatUsage>;
   compactionByChat: Record<string, { summary: string; through: number }>;
   persist: (
@@ -106,6 +112,7 @@ export type TurnDeps = {
   setRunningId: Update<string>;
   setRunningTurns: Update<Record<string, RunningTurn>>;
   setMessages: Update<ChatMessage[]>;
+  setConversations: Update<ConversationSummary[]>;
   setTurnStartedAt: Update<number>;
   setStreamText: Update<string>;
   setStreamReasoning: Update<string>;
@@ -148,6 +155,7 @@ export type TurnDeps = {
       }
     >
   >;
+  subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
 };
 
@@ -155,10 +163,10 @@ export function bindTurn(deps: TurnDeps) {
   const {
     workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
-    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setDrafts, setPastesByChat, setTurnStartedAt,
+    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
     setShellQueue, permissionRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
-    deletedIdsRef, mcpServersRef, skillsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef,
+    deletedIdsRef, mcpServersRef, skillsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef,
   } = deps;
 
 function confirmShell(command: string): Promise<boolean> {
@@ -183,7 +191,14 @@ function pickModel(id: string) {
   if (next && !next.efforts.some((e) => e.id === effort)) {
     const fallback = next.efforts[0]?.id ?? "";
     setEffort(fallback);
-    if (fallback) saveEffort(fallback);
+    if (fallback) {
+      saveEffort(fallback);
+      const chatId = activeIdRef.current;
+      if (chatId && workspace) {
+        setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: fallback } : row)));
+        rememberChatEffort(chatId, fallback);
+      }
+    }
   }
   const choices = contextWindowChoices(next?.context_windows, next?.context_window);
   if (!contextWindow || !choices.includes(contextWindow)) {
@@ -191,9 +206,28 @@ function pickModel(id: string) {
   }
 }
 
+function rememberChatEffort(chatId: string, next: string) {
+  if (!chatId || !next) return;
+  void api.getConversation(workspace, chatId).then((full) => {
+    if (activeIdRef.current !== chatId) return;
+    return api.saveConversation(workspace, { ...full, effort: next });
+  }).then((saved) => {
+    if (!saved || activeIdRef.current !== chatId) return;
+    setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: next } : row)));
+  }).catch((e) => {
+    setFlash({ kind: "err", text: String(e) });
+  });
+}
+
 function pickEffort(id: string) {
-  setEffort(id);
-  saveEffort(id);
+  const next = id.trim();
+  if (!next) return;
+  setEffort(next);
+  saveEffort(next);
+  const chatId = activeIdRef.current;
+  if (!chatId || !workspace) return;
+  setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: next } : row)));
+  rememberChatEffort(chatId, next);
 }
 
 function pickContextWindow(tokens: number) {
@@ -295,6 +329,12 @@ function rememberLive(
   return next;
 }
 
+function showSubagents(id: string) {
+  const dock = subagentsByChatRef.current.get(id) ?? emptySubagentDock();
+  setSubagents(dock.agents);
+  setExpandedAgents(dock.expanded);
+}
+
 function showLive(id: string) {
   if (!turnAppliesToChat(id, activeIdRef.current)) return;
   const live = liveByChatRef.current.get(id);
@@ -305,6 +345,7 @@ function showLive(id: string) {
   setLiveTools(live.liveTools);
   setRunningActivity(live.activity);
   setRunningId(id);
+  showSubagents(id);
 }
 
 function markRunning(id: string, patch: Partial<RunningTurn> = {}) {
@@ -462,6 +503,7 @@ async function send() {
       created_at: now,
       updated_at: now,
       kind: "chat",
+      effort: effort || null,
       messages: [],
     });
     setActiveId(id);
@@ -545,7 +587,11 @@ async function runTurn(
       workspace: ws,
       messages: next,
       model,
-      effort,
+      effort: effortForModel(
+        conversations.find((row) => row.id === id)?.effort || effort,
+        models.find((row) => row.id === model)?.efforts,
+        effort,
+      ),
       contextWindow: contextWindow || undefined,
       allowSpawn: true,
       journeyId: kind === "chat" ? journeyId : undefined,
@@ -588,9 +634,10 @@ async function runTurn(
         }
       },
       onSubagent: (event) => {
-        setSubagents((rows) => applySubagentEvent(rows, event));
-        if (event.type === "start") {
-          setExpandedAgents((prev) => ({ ...prev, [event.record.id]: true }));
+        const dock = applySubagentToChat(subagentsByChatRef.current, id, event);
+        if (visible()) {
+          setSubagents(dock.agents);
+          setExpandedAgents(dock.expanded);
         }
       },
       onUpdate: (nextMessages) => {
@@ -647,6 +694,7 @@ async function runTurn(
     if (turnsRef.current.get(id) === ac) turnsRef.current.delete(id);
     if (abortRef.current === ac) abortRef.current = null;
     liveByChatRef.current.delete(id);
+    subagentsByChatRef.current.delete(id);
     clearRunning(id);
     if (visible()) {
       setRunningActivity(null);
@@ -668,6 +716,10 @@ async function runTurn(
       return [];
     });
     syncRunningFromTurns();
+    if (visible()) {
+      setSubagents([]);
+      setExpandedAgents({});
+    }
   }
 
   await continueWithPending(id, ws, latestMessages);

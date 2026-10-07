@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { UsageChart } from "../components/UsageChart";
+import { UsageLineChart } from "../components/UsageLineChart";
 import { formatTokenCount } from "../lib/context";
 import {
   buildUsageSnapshot,
+  buildUsageTrend,
   rangeStartMs,
+  usageTrendRangeMs,
   type UsageEvent,
   type UsageRange,
+  type UsageTrendRange,
 } from "../lib/usage";
 import * as api from "../lib/tauri";
 
@@ -15,8 +19,15 @@ const RANGES: { id: UsageRange; label: string }[] = [
   { id: 90, label: "90 days" },
 ];
 
+const TREND_RANGES: { id: UsageTrendRange; label: string }[] = [
+  { id: "24h", label: "24 hours" },
+  { id: "7d", label: "7 days" },
+  { id: "30d", label: "30 days" },
+];
+
 export function UsageView({ onClose }: { onClose?: () => void } = {}) {
   const [range, setRange] = useState<UsageRange>(30);
+  const [trendRange, setTrendRange] = useState<UsageTrendRange>("24h");
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [error, setError] = useState("");
@@ -35,7 +46,8 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 
   useEffect(() => {
     let gone = false;
-    const since = new Date(rangeStartMs(range)).toISOString();
+    const sinceMs = Math.min(rangeStartMs(range), Date.now() - usageTrendRangeMs(trendRange));
+    const since = new Date(sinceMs).toISOString();
     void api
       .usageList(since)
       .then((rows) => {
@@ -50,12 +62,16 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     return () => {
       gone = true;
     };
-  }, [range]);
+  }, [range, trendRange]);
 
   const all = useMemo(() => buildUsageSnapshot(events, { range }), [events, range]);
   const snap = useMemo(
     () => buildUsageSnapshot(events, { range, workspacePath }),
     [events, range, workspacePath],
+  );
+  const trend = useMemo(
+    () => buildUsageTrend(events, { range: trendRange, workspacePath }),
+    [events, trendRange, workspacePath],
   );
 
   return (
@@ -87,6 +103,27 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
           <Stat label="Completion" value={formatTokenCount(snap.totals.completion)} />
           <Stat label="Total" value={formatTokenCount(snap.totals.total)} />
         </div>
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="text-[12px] font-medium text-ink">Tokens over time</div>
+            <div className="flex gap-0.5 rounded-[7px] bg-wash p-0.5" role="group" aria-label="Usage graph range">
+              {TREND_RANGES.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  aria-pressed={trendRange === opt.id}
+                  onClick={() => setTrendRange(opt.id)}
+                  className={`rounded-[5px] px-2 py-0.5 text-[11px] ${
+                    trendRange === opt.id ? "bg-canvas text-ink shadow-card" : "text-muted hover:text-ink"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <UsageLineChart trend={trend} />
+        </section>
         <section>
           {snap.totals.total === 0 ? (
             <p className="m-0 py-6 text-[12px] text-muted">

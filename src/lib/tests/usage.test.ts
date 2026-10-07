@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildUsageGrid,
   buildUsageSnapshot,
+  buildUsageTrend,
   dayKey,
   formatBytes,
   linePath,
@@ -242,6 +243,105 @@ describe("usageSeries", () => {
   it("returns zero buckets when empty or inverted", () => {
     assert.deepEqual(usageSeries([], since, now, 4), [0, 0, 0, 0]);
     assert.deepEqual(usageSeries([], now, since, 3), [0, 0, 0]);
+  });
+});
+
+describe("buildUsageTrend", () => {
+  const now = Date.parse("2026-09-17T18:30:00.000Z");
+
+  it("puts the last 24 hours into hourly buckets", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 24 * 3600_000 + 60_000).toISOString(),
+        workspace_path: "/a",
+        total_tokens: 100,
+        prompt_tokens: 80,
+        completion_tokens: 20,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "c2",
+        recorded_at: new Date(now - 30 * 60_000).toISOString(),
+        workspace_path: "/a",
+        total_tokens: 40,
+        prompt_tokens: 30,
+        completion_tokens: 10,
+      }),
+      ev({
+        id: 3,
+        recorded_at: new Date(now - 25 * 3600_000).toISOString(),
+        workspace_path: "/a",
+        total_tokens: 999,
+      }),
+    ];
+    const trend = buildUsageTrend(events, { range: "24h", nowMs: now });
+    assert.equal(trend.points.length, 24);
+    assert.equal(trend.totals.total, 140);
+    assert.equal(trend.points[0].total, 100);
+    assert.equal(trend.points[23].total, 40);
+    assert.ok(trend.points[0].label.length > 0);
+  });
+
+  it("uses one point per day for 30 days and can filter a project", () => {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 29);
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(start.getTime() + 3600_000).toISOString(),
+        workspace_path: "/proj/alpha",
+        total_tokens: 50,
+        prompt_tokens: 40,
+        completion_tokens: 10,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "c2",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/proj/beta",
+        total_tokens: 70,
+        prompt_tokens: 60,
+        completion_tokens: 10,
+      }),
+    ];
+    const all = buildUsageTrend(events, { range: "30d", nowMs: now });
+    assert.equal(all.points.length, 30);
+    assert.equal(all.points[0].total, 50);
+    assert.equal(all.points[29].total, 70);
+    assert.equal(all.totals.total, 120);
+    const alpha = buildUsageTrend(events, { range: "30d", nowMs: now, workspacePath: "/proj/alpha/" });
+    assert.equal(alpha.totals.total, 50);
+    assert.equal(alpha.points[29].total, 0);
+  });
+
+  it("counts a tool loop once inside a 7 day hourly series", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 2 * 3600_000).toISOString(),
+        workspace_path: "/a",
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+      }),
+      ev({
+        id: 2,
+        recorded_at: new Date(now - 3600_000).toISOString(),
+        workspace_path: "/a",
+        prompt_tokens: 1500,
+        completion_tokens: 50,
+        total_tokens: 1550,
+      }),
+    ];
+    const trend = buildUsageTrend(events, { range: "7d", nowMs: now });
+    assert.equal(trend.points.length, 7 * 24);
+    assert.equal(trend.totals.total, 1550);
+    assert.equal(
+      trend.points.reduce((sum, point) => sum + point.total, 0),
+      1550,
+    );
   });
 });
 

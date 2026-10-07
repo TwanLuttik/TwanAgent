@@ -160,3 +160,62 @@ export function subagentTypeLabel(type: SubagentType): string {
   if (type === "plan") return "Plan";
   return "General";
 }
+
+export type SubagentDockState = {
+  agents: SubagentRecord[];
+  expanded: Record<string, boolean>;
+};
+
+export function emptySubagentDock(): SubagentDockState {
+  return { agents: [], expanded: {} };
+}
+
+/** Open flags follow the conversation that owns the agents. Switching chats must not share one list. */
+export function subagentsForChat(
+  byChat: ReadonlyMap<string, SubagentDockState> | null | undefined,
+  chatId: string,
+): SubagentDockState {
+  if (!chatId) return emptySubagentDock();
+  return byChat?.get(chatId) ?? emptySubagentDock();
+}
+
+export function rememberSubagentDock(
+  byChat: Map<string, SubagentDockState>,
+  chatId: string,
+  dock: SubagentDockState,
+): void {
+  if (!chatId) return;
+  if (dock.agents.length === 0) {
+    byChat.delete(chatId);
+    return;
+  }
+  byChat.set(chatId, dock);
+}
+
+export function applySubagentToChat(
+  byChat: Map<string, SubagentDockState>,
+  chatId: string,
+  event: SubagentEvent,
+): SubagentDockState {
+  const prev = subagentsForChat(byChat, chatId);
+  const agents = applySubagentEvent(prev.agents, event);
+  const expanded =
+    event.type === "start" ? { ...prev.expanded, [event.record.id]: true } : prev.expanded;
+  const next = { agents, expanded };
+  rememberSubagentDock(byChat, chatId, next);
+  return next;
+}
+
+export function toggleSubagentExpanded(
+  byChat: Map<string, SubagentDockState>,
+  chatId: string,
+  agentId: string,
+): SubagentDockState {
+  const prev = subagentsForChat(byChat, chatId);
+  const next = {
+    agents: prev.agents,
+    expanded: { ...prev.expanded, [agentId]: !prev.expanded[agentId] },
+  };
+  rememberSubagentDock(byChat, chatId, next);
+  return next;
+}

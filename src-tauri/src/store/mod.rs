@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage, SidebarItem};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -80,7 +80,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             journey_id TEXT REFERENCES journeys(id) ON DELETE SET NULL,
             sort_order INTEGER NOT NULL,
             context_usage TEXT,
-            compaction TEXT
+            compaction TEXT,
+            effort TEXT
         );
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +121,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     if version.unwrap_or(0) < 6 {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN duration_ms INTEGER", []);
     }
+    if version.unwrap_or(0) < 7 {
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN effort TEXT", []);
+    }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
@@ -158,9 +162,10 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
+    let effort = conv.effort.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     conn.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             conv.id,
             conv.title,
@@ -175,6 +180,7 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
             sort_order,
             usage,
             compaction,
+            effort,
         ],
     )?;
     replace_messages(conn, &conv.id, &conv.messages)?;
@@ -306,6 +312,7 @@ fn row_to_conversation(
     sort_order: i64,
     usage: Option<String>,
     compaction: Option<String>,
+    effort: Option<String>,
     messages: Vec<Value>,
 ) -> Result<Conversation> {
     Ok(Conversation {
@@ -319,6 +326,7 @@ fn row_to_conversation(
         compaction: parse_compaction(compaction)?,
         journey_id,
         sort_order,
+        effort: effort.filter(|value| !value.trim().is_empty()),
     })
 }
 

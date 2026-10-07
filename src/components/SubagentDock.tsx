@@ -97,7 +97,7 @@ function SubagentPill({
         animate={{ scale: 1 }}
         whileHover={open ? undefined : { scale: 1.03 }}
         transition={{ duration: DURATION, ease: EASE }}
-        className={`origin-top overflow-hidden border border-line/35 bg-canvas/92 shadow-card backdrop-blur-md ${
+        className={`origin-top overflow-hidden border border-line/55 bg-panel shadow-card ${
           open ? "rounded-2xl" : "rounded-full"
         }`}
       >
@@ -135,7 +135,7 @@ function SubagentPill({
               transition={{ duration: DURATION, ease: EASE }}
               className="overflow-hidden"
             >
-              <div ref={body} className="max-h-56 min-w-[22rem] overflow-auto border-t border-line/35 px-4 py-2.5">
+              <div ref={body} className="max-h-56 min-w-[22rem] overflow-auto border-t border-line/55 bg-canvas px-4 py-2.5">
                 {items.length ? (
                   <div className="space-y-2">
                     {items.map((item, i) => {

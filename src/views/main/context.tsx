@@ -97,7 +97,7 @@ export type MainModel = {
   setDraftImages: MainFn;
   setDrafts: MainFn;
   setEditor: MainFn;
-  setExpandedAgents: MainFn;
+  toggleSubagent: MainFn;
   setFolderOpen: MainFn;
   setJourneyColor: MainFn;
   setPendingDeleteProject: MainFn;

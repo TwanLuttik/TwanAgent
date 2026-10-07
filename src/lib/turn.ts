@@ -214,6 +214,27 @@ export function chatHasRunningTurn(
   return Boolean(chatId) && Boolean(running && chatId in running);
 }
 
+/** Keep a thinking level only when this model offers it. Otherwise use the model default. */
+export function effortForModel(
+  effort: string | null | undefined,
+  efforts: readonly { id: string }[] | null | undefined,
+  fallback = "",
+): string {
+  const id = (effort ?? "").trim();
+  if (id && efforts?.some((row) => row.id === id)) return id;
+  const next = fallback.trim();
+  if (next && efforts?.some((row) => row.id === next)) return next;
+  return efforts?.[0]?.id ?? "";
+}
+
+/** The composer follows the open chat. Another chat's turn must not keep this input in the thinking state. */
+export function foregroundRunningId(
+  running: Readonly<Record<string, RunningTurn>> | null | undefined,
+  chatId: string,
+): string {
+  return chatHasRunningTurn(running, chatId) ? chatId : "";
+}
+
 export function runningTurnStartedAt(
   running: Readonly<Record<string, RunningTurn>> | null | undefined,
   chatId: string,

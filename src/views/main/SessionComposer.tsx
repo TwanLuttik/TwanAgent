@@ -10,7 +10,6 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
   const {
     activeId,
     addPromptImages,
-    busy,
     contextWindow,
     draft,
     draftPastes,
@@ -27,7 +26,6 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     pickPermission,
     promptImages,
     ready,
-    runningId,
     runningTurns,
     send,
     setDraft,
@@ -44,7 +42,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
       onDraft={setDraft}
       onSend={() => void send()}
       onStop={stop}
-      busy={landing ? busy && runningId === activeId : chatHasRunningTurn(runningTurns, activeId)}
+      busy={chatHasRunningTurn(runningTurns, activeId)}
       ready={ready}
       placeholder={
         ready ? (landing ? "Ask Grok…" : "Message Grok…") : landing ? "Sign in to Grok to start" : "Sign in to Grok to continue"

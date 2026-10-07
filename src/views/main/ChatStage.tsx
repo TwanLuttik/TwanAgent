@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
 import { GrokTerminal } from "../../components/GrokTerminal";
@@ -64,6 +65,10 @@ export function ChatStage() {
   } = useMain();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
+  const [paneWorkspace, setPaneWorkspace] = useState(workspace);
+  useEffect(() => {
+    if (workspace && opened) setPaneWorkspace(workspace);
+  }, [workspace, opened]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -146,9 +151,9 @@ export function ChatStage() {
             <ChatColumn />
           )}
         </div>
-        {workspace && opened && !fullPage ? (
+        {paneWorkspace && !fullPage ? (
           <Workspace
-            workspace={workspace}
+            workspace={paneWorkspace}
             tick={tick}
             selectedPath={editor.activePath}
             onOpenFile={openWorkspaceFile}
@@ -193,7 +198,7 @@ function ChatColumn() {
     runningTurns,
     savePendingEdit,
     scroller,
-    setExpandedAgents,
+    toggleSubagent,
     skillBusy,
     skills,
     streamReasoning,
@@ -228,7 +233,7 @@ function ChatColumn() {
             <SubagentDock
               agents={subagents}
               expanded={expandedAgents}
-              onToggle={(id) => setExpandedAgents((prev: Record<string, boolean>) => ({ ...prev, [id]: !prev[id] }))}
+              onToggle={(id) => toggleSubagent(id)}
             />
           </ConversationDocks>
         ) : null}

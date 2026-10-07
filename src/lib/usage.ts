@@ -297,6 +297,99 @@ export function teaserIndex(nowMs: number, startedMs = 0, intervalMs = 5000): nu
   return ((step % len) + len) % len;
 }
 
+export type UsageTrendRange = "24h" | "7d" | "30d";
+
+export type UsageTrendPoint = UsageTotals & {
+  atMs: number;
+  label: string;
+};
+
+export type UsageTrend = {
+  points: UsageTrendPoint[];
+  totals: UsageTotals;
+};
+
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+
+export function usageTrendRangeMs(range: UsageTrendRange): number {
+  if (range === "24h") return DAY;
+  if (range === "7d") return 7 * DAY;
+  return 30 * DAY;
+}
+
+function trendBucketCount(range: UsageTrendRange): number {
+  if (range === "24h") return 24;
+  if (range === "7d") return 7 * 24;
+  return 30;
+}
+
+function trendBucketStart(range: UsageTrendRange, nowMs: number): number {
+  if (range === "30d") {
+    const end = new Date(nowMs);
+    return new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29).setHours(0, 0, 0, 0);
+  }
+  return nowMs - usageTrendRangeMs(range);
+}
+
+function trendBucketAt(range: UsageTrendRange, startMs: number, index: number, size: number): number {
+  if (range !== "30d") return startMs + index * size;
+  const start = new Date(startMs);
+  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + index).setHours(0, 0, 0, 0);
+}
+
+function dayIndex(startMs: number, atMs: number): number {
+  const start = new Date(startMs);
+  const at = new Date(atMs);
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+  const atDay = new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
+  return Math.round((atDay - startDay) / DAY);
+}
+
+function trendLabel(range: UsageTrendRange, atMs: number): string {
+  const d = new Date(atMs);
+  if (range === "30d") {
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  if (range === "7d") {
+    return d.toLocaleString(undefined, { weekday: "short", hour: "numeric" });
+  }
+  return d.toLocaleTimeString(undefined, { hour: "numeric" });
+}
+
+/**
+ * Tokens added inside a rolling window.
+ * 24h and 7d are hourly. 30d is one local calendar day per point.
+ */
+export function buildUsageTrend(
+  events: UsageEvent[],
+  opts: { range: UsageTrendRange; nowMs?: number; workspacePath?: string | null },
+): UsageTrend {
+  const nowMs = opts.nowMs ?? Date.now();
+  const count = trendBucketCount(opts.range);
+  const startMs = trendBucketStart(opts.range, nowMs);
+  const span = Math.max(1, nowMs - startMs);
+  const size = span / count;
+  const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
+  const points: UsageTrendPoint[] = Array.from({ length: count }, (_, i) => {
+    const atMs = trendBucketAt(opts.range, startMs, i, size);
+    return { atMs, label: trendLabel(opts.range, atMs), ...emptyTotals() };
+  });
+  const totals = emptyTotals();
+  for (const { ev, atMs, delta } of eachUsageDelta(
+    events,
+    (row, t) => t >= startMs && t <= nowMs && (!want || projectKey(row.workspace_path) === want),
+  )) {
+    void ev;
+    addTotals(totals, delta);
+    let i = opts.range === "30d" ? dayIndex(startMs, atMs) : Math.floor((atMs - startMs) / size);
+    if (i >= count) i = count - 1;
+    if (i < 0) continue;
+    addTotals(points[i], delta);
+  }
+  return { points, totals };
+}
+
 export function linePath(values: number[], width: number, height: number, pad = 0): string {
   if (values.length < 2) return "";
   const max = Math.max(0, ...values);

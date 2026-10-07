@@ -31,12 +31,15 @@ import {
   type JourneyColor,
   type JourneySummary,
 } from "../../lib/journey";
+import { forgetPaneWorkspace } from "../../lib/pane-sessions";
+import { shellSessions } from "../../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../../lib/terminal-chat";
 import { terminalSessions } from "../../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, effortForModel, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
 import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
 import {
   loadConversation,
+  loadEffort,
   pushRecentWorkspace,
   removeRecentWorkspace,
   saveCollapsedProjects,
@@ -47,6 +50,7 @@ import {
 import * as api from "../../lib/tauri";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { ConversationActivity, LiveToolRow } from "../../lib/core";
+import { emptySubagentDock, toggleSubagentExpanded, type SubagentDockState } from "../../lib/subagent";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 
@@ -74,6 +78,10 @@ export type LibraryDeps = {
   usageByChat: Record<string, ChatUsage>;
   compactionByChat: Record<string, { summary: string; through: number }>;
   setCompactionByChat: Update<Record<string, { summary: string; through: number }>>;
+  model: string;
+  models: { id: string; efforts?: { id: string }[]; default_effort?: string }[];
+  defaultEffort: string;
+  setEffort: Update<string>;
   openSettings: () => void;
   reloadConversations: (ws: string, preferId?: string) => Promise<void>;
   runTurn: RunTurn;
@@ -105,6 +113,7 @@ export type LibraryDeps = {
       }
     >
   >;
+  subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
   /** Bumped when the visible chat or project changes, so a late load cannot overwrite it. */
   openGeneration: RefObject<number>;
@@ -146,8 +155,8 @@ export function useLibrary(deps: LibraryDeps) {
   const {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
-    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, stickToBottomRef, openGeneration, workspaceRef,
+    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, models, defaultEffort, setEffort, openSettings, reloadConversations, runTurn, scroller,
+    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowAllProjects, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -225,11 +234,28 @@ function applyProjectData(
   );
 }
 
+function showSubagents(id: string) {
+  const dock = subagentsByChatRef.current.get(id) ?? emptySubagentDock();
+  setSubagents(dock.agents);
+  setExpandedAgents(dock.expanded);
+}
+
+function hideSubagents() {
+  setSubagents([]);
+  setExpandedAgents({});
+}
+
+function toggleSubagent(agentId: string) {
+  if (!activeId) return;
+  const dock = toggleSubagentExpanded(subagentsByChatRef.current, activeId, agentId);
+  setSubagents(dock.agents);
+  setExpandedAgents(dock.expanded);
+}
+
 function releaseProject(path: string) {
   if (!isSameProject(runningWsRef.current, path)) return;
   abortRef.current?.abort();
-  setSubagents([]);
-  setExpandedAgents({});
+  hideSubagents();
 }
 
 function clearWorkspace() {
@@ -239,10 +265,7 @@ function clearWorkspace() {
   setEditor(emptyEditor());
   setDirtyFiles({});
   setPendingClosePath(null);
-  if (!runningWsRef.current) {
-    setSubagents([]);
-    setExpandedAgents({});
-  }
+  if (!runningWsRef.current) hideSubagents();
   setDrafts({});
   setPastesByChat({});
   setDraftImages({});
@@ -266,6 +289,8 @@ async function deleteProjectFromSidebar(path: string) {
   }
   saveConversation(path, "");
   void terminalSessions.disposeWorkspace(path);
+  void shellSessions.disposeWorkspace(path);
+  forgetPaneWorkspace(path);
   const leftover = removeRecentWorkspace(path);
   setRecents(leftover);
   setAllProjectGroups((prev) => removeProjectGroup(prev, path));
@@ -288,10 +313,7 @@ function applyWorkspace(path: string) {
     setStreamText("");
     setStreamReasoning("");
     setLiveTools([]);
-    if (!isSameProject(runningWsRef.current, workspace)) {
-      setSubagents([]);
-      setExpandedAgents({});
-    }
+    if (!isSameProject(runningWsRef.current, workspace)) hideSubagents();
     const savedId = loadConversation(path);
     const foregroundHere =
       isSameProject(runningWsRef.current, path) &&
@@ -323,11 +345,13 @@ function applyWorkspace(path: string) {
       setLiveTools(cached?.liveTools ?? []);
       setRunningActivity(cached?.activity ?? null);
       setTurnStartedAt(runningTurns[prefer]?.startedAt ?? 0);
+      showSubagents(prefer);
     } else {
       setActiveId("");
       setMessages([]);
       setRunningActivity(null);
       setTurnStartedAt(0);
+      hideSubagents();
     }
   }
   saveWorkspace(path);
@@ -352,16 +376,13 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   setShowSettings(false);
   setShowUsage(false);
   setProjectSettings(null);
-  if (!runningWsRef.current) {
-    setSubagents([]);
-    setExpandedAgents({});
-  }
+  if (!runningWsRef.current) hideSubagents();
   if (!path) {
     setFolderOpen(true);
     return;
   }
   stickToBottomRef.current = true;
-  const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId);
+  const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId, loadEffort());
   await api.saveConversation(path, conv);
   saveConversation(path, conv.id);
   if (!isSameProject(path, workspace)) {
@@ -375,11 +396,8 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   setLiveTools([]);
   setRunningActivity(null);
   setTurnStartedAt(0);
-  if (!chatHasRunningTurn(runningTurns, conv.id)) {
-    runningIdRef.current = "";
-    setRunningId("");
-    abortRef.current = null;
-  }
+  hideSubagents();
+  retargetForegroundTurn(conv.id);
   setEditor((prev) => selectChatTab(prev));
   setConversations((rows) => [
     {
@@ -390,6 +408,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
       kind: conv.kind,
       journey_id: journeyId ?? null,
       sort_order: 0,
+      effort: conv.effort ?? null,
     },
     ...rows,
   ]);
@@ -434,6 +453,21 @@ useEffect(() => {
   return () => window.removeEventListener("keydown", onKey, true);
 }, []);
 
+function showChatEffort(id: string) {
+  const stored = conversations.find((row) => row.id === id)?.effort;
+  const chosen = models.find((row) => row.id === model) ?? models[0];
+  const next = effortForModel(stored, chosen?.efforts, defaultEffort || loadEffort());
+  if (next) setEffort(next);
+}
+
+/** Point the composer at this chat's turn, or clear it when the chat is idle. Other turns keep running. */
+function retargetForegroundTurn(id: string) {
+  const shown = foregroundRunningId(runningTurns, id);
+  runningIdRef.current = shown;
+  setRunningId(shown);
+  abortRef.current = shown ? (turnsRef.current.get(shown) ?? null) : null;
+}
+
 async function openChat(id: string) {
   const generation = ++openGeneration.current;
   setShowSettings(false);
@@ -450,6 +484,7 @@ async function openChat(id: string) {
   const openLive = liveByChatRef.current.get(id);
   if (openLive) {
     const turn = runningTurns[id];
+    showChatEffort(id);
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -459,6 +494,7 @@ async function openChat(id: string) {
     setLiveTools(openLive.liveTools);
     setRunningActivity(openLive.activity);
     setTurnStartedAt(turn?.startedAt ?? 0);
+    showSubagents(id);
     abortRef.current = turnsRef.current.get(id) ?? null;
     void api.getConversation(workspace, id).then((full) => {
       if (full.compaction?.summary && full.compaction.through > 0) {
@@ -469,6 +505,7 @@ async function openChat(id: string) {
     return;
   }
   if (runningId === id && turnMessagesRef.current) {
+    showChatEffort(id);
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -478,28 +515,36 @@ async function openChat(id: string) {
     setLiveTools(turnLiveRef.current.liveTools);
     setRunningActivity(turnLiveRef.current.activity);
     setTurnStartedAt(runningTurns[id]?.startedAt ?? 0);
+    showSubagents(id);
     saveConversation(workspace, id);
     return;
   }
-  if (!chatHasRunningTurn(runningTurns, id) && !runningId) {
-    setSubagents([]);
-    setExpandedAgents({});
-  }
+  retargetForegroundTurn(id);
+  if (chatHasRunningTurn(runningTurns, id)) showSubagents(id);
+  else hideSubagents();
   setStreamText("");
   setStreamReasoning("");
   setLiveTools([]);
   setRunningActivity(null);
   setTurnStartedAt(0);
+  showChatEffort(id);
+  setActiveId(id);
   setOpeningId(id);
   try {
     const full = await api.getConversation(workspace, id);
     if (generation !== openGeneration.current) return;
+    const known = conversations.find((row) => row.id === id)?.effort;
+    if (full.effort && full.effort !== known) {
+      setConversations((rows) => rows.map((row) => (row.id === id ? { ...row, effort: full.effort } : row)));
+    }
+    const chosen = models.find((row) => row.id === model) ?? models[0];
+    const nextEffort = effortForModel(full.effort || known, chosen?.efforts, defaultEffort || loadEffort());
+    if (nextEffort) setEffort(nextEffort);
     const loaded = (full.messages as ChatMessage[]) ?? [];
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
         ? insertCompactionEvent(loaded, full.compaction.through)
         : loaded;
-    setActiveId(id);
     setMessages(withNotice);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
     if (full.compaction?.summary && full.compaction.through > 0) {
@@ -579,6 +624,7 @@ async function persist(
     kind,
     journey_id: existing?.journey_id ?? null,
     sort_order: existing?.sort_order ?? 0,
+    effort: existing?.effort ?? null,
     messages: persistableMessages(next),
     context_usage: usageToPersist(usage, usageByChat[id]),
     compaction: persistableCompaction(compaction ?? compactionByChat[id]),
@@ -590,6 +636,7 @@ async function persist(
     kind,
     journey_id: existing?.journey_id ?? null,
     sort_order: existing?.sort_order ?? 0,
+    effort: existing?.effort ?? null,
   };
   if (isSameProject(ws, workspaceRef.current)) {
     setConversations((rows) => {
@@ -829,6 +876,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     openSidebarChat,
     openProjectFromSidebar,
     openChat,
+    toggleSubagent,
     removeChat,
     persist,
     reorderChats,

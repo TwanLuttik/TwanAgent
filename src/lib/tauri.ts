@@ -96,6 +96,7 @@ export type ConversationSummary = {
   kind?: string;
   journey_id?: string | null;
   sort_order?: number;
+  effort?: string | null;
 };
 export type Compaction = {
   summary: string;

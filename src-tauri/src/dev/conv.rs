@@ -121,6 +121,7 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
         },
         journey_id: c.journey_id,
         sort_order: c.sort_order,
+        effort: c.effort.filter(|value| !value.trim().is_empty()),
     }
 }
 
@@ -395,6 +396,7 @@ mod tests {
                 compaction: None,
                 journey_id: None,
                 sort_order: 0,
+                effort: None,
             }
         }
         let rows = vec![conv("a"), conv("b"), conv("c")];
@@ -424,6 +426,7 @@ mod tests {
             compaction: None,
             journey_id: None,
             sort_order: 0,
+            effort: None,
         };
         save_conversations(dir.path(), &ws, &[conv.clone()]).unwrap();
         let loaded = load_conversations(dir.path(), &ws).unwrap();
