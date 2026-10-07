@@ -2,8 +2,6 @@
 
 Desktop Grok workspace: open a folder, chat, edit, run commands, and use a terminal.
 
-This used to be Dev mode inside BackupAnything. It is now its own Tauri app.
-
 ## Requirements
 
 - macOS, Linux, or Windows
@@ -19,4 +17,4 @@ npm test
 npm run tauri dev
 ```
 
-The Vite server is on port 1430 so it can run next to BackupAnything.
+The Vite dev server runs on port 1430.

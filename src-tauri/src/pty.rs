@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn resolve_workspace_rejects_missing() {
-        let err = resolve_workspace("/no/such/backupanything-workspace").unwrap_err();
+        let err = resolve_workspace("/no/such/twanagent-workspace").unwrap_err();
         assert!(err.to_string().contains("missing"));
     }
 

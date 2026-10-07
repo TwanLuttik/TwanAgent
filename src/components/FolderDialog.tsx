@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { sidebarProjects } from "../lib/all-projects";
 import {
   FOLDER_ACTIONS,
   filterProjectRows,
@@ -8,7 +9,6 @@ import {
   isExistingProjectName,
   looksLikeGitUrl,
   looksLikePath,
-  mergeProjectRows,
   pathWithSlash,
   preferredFolderAction,
   sanitizeProjectName,
@@ -28,7 +28,6 @@ export function FolderDialog({
   onClose,
   onPick,
   showProjects = true,
-  recents = [],
 }: {
   onClose: () => void;
   onPick: (path: string) => void;
@@ -57,18 +56,17 @@ export function FolderDialog({
   useEffect(() => {
     if (!showProjects) return;
     let gone = false;
-    void api
-      .listProjects()
-      .then((rows) => {
-        if (!gone) setProjects(mergeProjectRows(rows, recents));
+    void Promise.all([api.listProjects(), api.projectsLocation().catch(() => null)])
+      .then(([rows, location]) => {
+        if (!gone) setProjects(sidebarProjects(rows, location?.root ?? ""));
       })
       .catch(() => {
-        if (!gone) setProjects(mergeProjectRows([], recents));
+        if (!gone) setProjects([]);
       });
     return () => {
       gone = true;
     };
-  }, [showProjects, recents]);
+  }, [showProjects]);
 
   useEffect(() => {
     function onDocKey(ev: globalThis.KeyboardEvent) {

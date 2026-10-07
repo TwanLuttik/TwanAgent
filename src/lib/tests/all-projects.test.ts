@@ -9,6 +9,7 @@ import {
   projectHasArchived,
   removeProjectGroup,
   renameConversationInGroups,
+  sidebarProjects,
   toggleCollapsedProject,
   applyLiveProjectChats,
   placeProjectChats,
@@ -204,6 +205,26 @@ describe("removeProjectGroup", () => {
       next.map((row) => row.path),
       ["/app/projects/idle"],
     );
+  });
+});
+
+describe("sidebarProjects", () => {
+  it("keeps only direct children of this app's projects folder", () => {
+    const rows = sidebarProjects(
+      [
+        { name: "demo", path: "/Users/me/twanagent-dev/projects/demo" },
+        { name: "release", path: "/Users/me/twanagent/projects/release" },
+        { name: "outside", path: "/Users/me/code/outside" },
+        { name: "nested", path: "/Users/me/twanagent-dev/projects/demo/src" },
+        { name: "again", path: "/Users/me/twanagent-dev/projects/Demo" },
+      ],
+      "/Users/me/twanagent-dev/projects",
+    );
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      ["demo"],
+    );
+    assert.deepEqual(sidebarProjects(rows, ""), []);
   });
 });
 

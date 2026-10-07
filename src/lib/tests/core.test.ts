@@ -75,7 +75,7 @@ describe("project rows", () => {
 
   it("filters by name or path", () => {
     const rows = [
-      { name: "backupanything", path: "/src/backupanything" },
+      { name: "workspace", path: "/src/workspace" },
       { name: "notes", path: "/Users/me/notes" },
     ];
     assert.equal(filterProjectRows(rows, "BACK").length, 1);

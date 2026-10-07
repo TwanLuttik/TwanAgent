@@ -314,8 +314,8 @@ pub fn cli_proxy_headers(version: &str) -> CliProxyHeaders {
     CliProxyHeaders {
         client_version: version.to_string(),
         token_auth: "xai-grok-cli",
-        client_identifier: "backupanything",
-        user_agent: format!("backupanything-dev/{version}"),
+        client_identifier: "twanagent",
+        user_agent: format!("twanagent/{version}"),
     }
 }
 
@@ -794,8 +794,8 @@ mod tests {
         let headers = cli_proxy_headers("1.0.31");
         assert_eq!(headers.client_version, "1.0.31");
         assert_eq!(headers.token_auth, "xai-grok-cli");
-        assert_eq!(headers.client_identifier, "backupanything");
-        assert_eq!(headers.user_agent, "backupanything-dev/1.0.31");
+        assert_eq!(headers.client_identifier, "twanagent");
+        assert_eq!(headers.user_agent, "twanagent/1.0.31");
     }
 
     #[test]

@@ -8,7 +8,7 @@ Standalone Tauri app for the Grok coding workspace.
 - Projects: `~/twanagent/projects`. Existing app-support projects are migrated there and keep their conversations.
 - Keychain service: `app.twanagent.desktop`
 
-Do not depend on the BackupAnything repo.
+This repo stands on its own. Do not depend on another app's source tree.
 
 ## File names
 

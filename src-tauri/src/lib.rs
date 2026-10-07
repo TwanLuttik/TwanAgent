@@ -11,16 +11,50 @@ mod store;
 mod usage;
 mod workspace;
 
+use std::path::PathBuf;
+
 use tauri::Manager;
 
 use state::AppState;
+
+/// Debug runs keep their own app data so `tauri dev` cannot read or rewrite a release install.
+pub(crate) fn isolate_data_dir(dir: PathBuf) -> PathBuf {
+    if !cfg!(debug_assertions) {
+        return dir;
+    }
+    let name = dir
+        .file_name()
+        .map(|name| format!("{}-dev", name.to_string_lossy()))
+        .unwrap_or_else(|| "app.twanagent.desktop-dev".into());
+    dir.with_file_name(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_data_dir_is_a_sibling_of_the_release_dir() {
+        let release = PathBuf::from("/Users/me/Library/Application Support/app.twanagent.desktop");
+        let got = isolate_data_dir(release.clone());
+        if cfg!(debug_assertions) {
+            assert_eq!(
+                got,
+                PathBuf::from("/Users/me/Library/Application Support/app.twanagent.desktop-dev")
+            );
+            assert_ne!(got, release);
+        } else {
+            assert_eq!(got, release);
+        }
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
+            let data_dir = isolate_data_dir(app.path().app_data_dir()?);
             std::fs::create_dir_all(&data_dir)?;
             let state = AppState::load(data_dir);
             state.allow_persisted_assets(app);

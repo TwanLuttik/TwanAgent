@@ -5,8 +5,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
-const SERVICE: &str = "app.twanagent.desktop";
+const RELEASE_SERVICE: &str = "app.twanagent.desktop";
+const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
+
+fn keychain_service() -> &'static str {
+    if cfg!(debug_assertions) {
+        DEV_SERVICE
+    } else {
+        RELEASE_SERVICE
+    }
+}
 
 #[derive(Default, Serialize, Deserialize)]
 struct SecretFile {
@@ -68,24 +77,48 @@ pub struct SystemKeychain;
 
 impl SecretStore for SystemKeychain {
     fn set(&self, value: &str) -> std::result::Result<(), String> {
-        Entry::new(SERVICE, XAI_ACCOUNT)
+        Entry::new(keychain_service(), XAI_ACCOUNT)
             .and_then(|entry| entry.set_password(value))
             .map_err(|e| e.to_string())
     }
 
     fn get(&self) -> std::result::Result<Option<String>, String> {
-        match Entry::new(SERVICE, XAI_ACCOUNT).and_then(|entry| entry.get_password()) {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
+        match read_service(keychain_service())? {
+            Some(value) => Ok(Some(value)),
+            None if cfg!(debug_assertions) => copy_release_key_into_dev(),
+            None => Ok(None),
         }
     }
 
     fn delete(&self) {
-        if let Ok(entry) = Entry::new(SERVICE, XAI_ACCOUNT) {
+        if let Ok(entry) = Entry::new(keychain_service(), XAI_ACCOUNT) {
             let _ = entry.delete_credential();
         }
     }
+}
+
+fn read_service(service: &str) -> std::result::Result<Option<String>, String> {
+    match Entry::new(service, XAI_ACCOUNT).and_then(|entry| entry.get_password()) {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Dev has its own keychain item. The first lookup copies the release key so clearing it later
+/// cannot delete or keep resurrecting the release credential.
+fn copy_release_key_into_dev() -> std::result::Result<Option<String>, String> {
+    let Some(value) = read_service(RELEASE_SERVICE)? else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Entry::new(DEV_SERVICE, XAI_ACCOUNT)
+        .and_then(|entry| entry.set_password(trimmed))
+        .map_err(|e| e.to_string())?;
+    Ok(Some(trimmed.to_string()))
 }
 
 fn clear_file_key(data_dir: &Path) -> Result<()> {

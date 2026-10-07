@@ -46,8 +46,14 @@ struct TrackedProject {
 }
 
 pub fn user_projects_root(data_dir: &Path) -> PathBuf {
+    // Debug builds use a sibling folder so project files stay out of the release tree.
+    let folder = if cfg!(debug_assertions) {
+        "twanagent-dev"
+    } else {
+        "twanagent"
+    };
     match home_dir() {
-        Some(home) => home.join("twanagent").join("projects"),
+        Some(home) => home.join(folder).join("projects"),
         None => data_dir.join("projects"),
     }
 }
@@ -439,6 +445,27 @@ mod tests {
         let file = conv_dir(data, &path).join("conversations.json");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(file, body).unwrap();
+    }
+
+    #[test]
+    fn dev_projects_root_does_not_use_the_release_folder() {
+        let prev = std::env::var_os("HOME");
+        let home = temp_dir();
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let root = user_projects_root(Path::new("/unused"));
+        let expected = if cfg!(debug_assertions) {
+            home.path().join("twanagent-dev/projects")
+        } else {
+            home.path().join("twanagent/projects")
+        };
+        assert_eq!(root, expected);
+        if cfg!(debug_assertions) {
+            assert_ne!(root, home.path().join("twanagent/projects"));
+        }
+        match prev {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
     }
 
     #[test]
