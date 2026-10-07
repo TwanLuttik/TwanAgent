@@ -4,7 +4,9 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{get_conversation, knowledge_path, list_conversations, max_sort, now_iso};
+use super::{
+    get_conversation, knowledge_path, list_conversation_summaries, max_sort, now_iso,
+};
 use crate::dev::{Conversation, Journey, SidebarItem};
 use crate::error::{Error, Result};
 
@@ -159,7 +161,7 @@ pub fn move_conversation(
 
 pub fn reorder_sidebar(conn: &Connection, items: &[SidebarItem]) -> Result<()> {
     let journeys = list_journeys(conn)?;
-    let convs = list_conversations(conn)?;
+    let convs = list_conversation_summaries(conn)?;
     let top: Vec<_> = convs
         .iter()
         .filter(|c| c.journey_id.is_none())

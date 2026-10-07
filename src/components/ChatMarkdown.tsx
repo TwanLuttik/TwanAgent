@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -57,23 +58,56 @@ export function WorkspaceFileLinks({
   return <FileLinkContext.Provider value={value}>{children}</FileLinkContext.Provider>;
 }
 
-export const ChatMarkdown = memo(function ChatMarkdown({ text }: { text: string }) {
+const STREAM_PARSE_MS = 80;
+
+/**
+ * While `live` is set, tokens arrive faster than markdown can be parsed.
+ * Show the raw text immediately and parse once the stream pauses.
+ */
+export const ChatMarkdown = memo(function ChatMarkdown({ text, live = false }: { text: string; live?: boolean }) {
+  const shown = useSettledStream(text, live);
+  const parsing = !live || shown === text;
   const { workspace, onOpenFile } = useContext(FileLinkContext);
-  const candidates = useMemo(() => fileCandidates(text), [text]);
+  const candidates = useMemo(() => (parsing ? fileCandidates(shown) : []), [shown, parsing]);
   const existing = useExistingFiles(workspace, candidates);
   const components = useMemo(
     () => markdownComponents(existing, workspace, onOpenFile),
     [existing, workspace, onOpenFile],
   );
-  if (!text) return null;
+  if (!shown) return null;
+  if (live && shown !== text) return <StreamingPlain text={text} />;
   return (
     <div className="text-[13px] leading-[1.65] text-ink [overflow-wrap:anywhere]">
       <Markdown remarkPlugins={[remarkGfm]} components={components}>
-        {closeOpenFence(text)}
+        {closeOpenFence(shown)}
       </Markdown>
     </div>
   );
 });
+
+function StreamingPlain({ text }: { text: string }) {
+  return (
+    <div className="text-[13px] leading-[1.65] whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">
+      {closeOpenFence(text)}
+    </div>
+  );
+}
+
+function useSettledStream(text: string, live: boolean): string {
+  const [shown, setShown] = useState(text);
+  const timer = useRef(0);
+  useEffect(() => {
+    if (!live) {
+      window.clearTimeout(timer.current);
+      setShown(text);
+      return;
+    }
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setShown(text), STREAM_PARSE_MS);
+    return () => window.clearTimeout(timer.current);
+  }, [text, live]);
+  return live ? shown : text;
+}
 
 function fileCandidates(text: string): string[] {
   const seen = new Set<string>();

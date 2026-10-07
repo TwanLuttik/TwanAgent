@@ -77,6 +77,7 @@ export type MainModel = {
   reauthMcpServer: MainFn;
   recents: any;
   reloadRuntime: MainFn;
+  archiveChat: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;
   renameJourney: MainFn;
@@ -90,7 +91,6 @@ export type MainModel = {
   scroller: any;
   send: MainFn;
   stop: MainFn;
-  setAllProjectsMode: MainFn;
   setDirtyFiles: MainFn;
   setDraft: MainFn;
   setDraftPastes: MainFn;
@@ -106,7 +106,6 @@ export type MainModel = {
   setShowUsage: MainFn;
   setSidebarWidth: MainFn;
   bumpFiles: () => void;
-  showAllProjects: any;
   showLanding: any;
   showSettings: any;
   showUsage: any;

@@ -146,6 +146,21 @@ describe("withImageDataUrls", () => {
     );
     assert.equal(loaded[0]?.images?.[0]?.dataUrl, "data:image/jpeg;base64,zz");
   });
+
+  it("reuses a cached data URL instead of reading the file again", async () => {
+    const cache = new Map<string, string>([[shot.path, "data:image/jpeg;base64,cached"]]);
+    let reads = 0;
+    const loaded = await withImageDataUrls(
+      [{ role: "user", content: "see", images: [{ ...shot, dataUrl: undefined }] }],
+      async () => {
+        reads += 1;
+        return "data:image/jpeg;base64,fresh";
+      },
+      cache,
+    );
+    assert.equal(reads, 0);
+    assert.equal(loaded[0]?.images?.[0]?.dataUrl, "data:image/jpeg;base64,cached");
+  });
 });
 
 describe("fileToBase64", () => {

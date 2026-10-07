@@ -16,7 +16,6 @@ export function LandingScreen() {
     openUsage,
     recents,
     runtime,
-    setAllProjectsMode,
     setFolderOpen,
     startNewChat,
     workspace,
@@ -29,15 +28,6 @@ export function LandingScreen() {
       <div className={`relative z-10 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         <WindowButtons />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
-        <button
-          type="button"
-          aria-label="All projects"
-          title="All projects"
-          onClick={() => setAllProjectsMode(true)}
-          className="mr-1 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
-        >
-          <Symbol name="rectangle.stack" className="size-3.5" />
-        </button>
         <button
           type="button"
           aria-label="Usage"

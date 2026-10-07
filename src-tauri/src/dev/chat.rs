@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, State};
@@ -9,6 +10,19 @@ use super::types::{DevChatEvent, DevChatUsage, DevToolCall};
 use crate::error::{Error, Result};
 use crate::grok_cli;
 use crate::state::AppState;
+
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
 
 fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static STREAMS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
@@ -289,13 +303,7 @@ async fn stream_chat(
     }
     // SSE breaks when the body is gzip-decoded mid-stream: reqwest then reports
     // "error decoding response body" and the turn stops after the last tool.
-    let client = reqwest::Client::builder()
-        .no_gzip()
-        .no_brotli()
-        .no_deflate()
-        .build()
-        .map_err(|e| Error::Other(format!("xAI request failed: {e}")))?;
-    let mut req = client
+    let mut req = http_client()
         .post(grok_cli::endpoint(auth.via_cli))
         .bearer_auth(&auth.token)
         .header("content-type", "application/json")
@@ -305,13 +313,7 @@ async fn stream_chat(
         if let Some(tokens) = grok_cli::context_window_header_value(context_window) {
             req = req.header("x-grok-context-window", tokens);
         }
-        let version = grok_cli::cli_proxy_version(
-            grok_cli::grok_bin()
-                .as_ref()
-                .and_then(|p| grok_cli::grok_version(p))
-                .as_deref(),
-        );
-        let headers = grok_cli::cli_proxy_headers(&version);
+        let headers = grok_cli::cli_proxy_headers(&grok_cli::cached_cli_version());
         req = req
             .header("x-grok-client-version", headers.client_version)
             .header("X-XAI-Token-Auth", headers.token_auth)
@@ -343,6 +345,7 @@ async fn stream_chat(
     }
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
+    let mut pending_delta = String::new();
     let mut tool_acc: HashMap<u32, (String, String, String)> = HashMap::new();
     let mut last_usage: Option<DevChatUsage> = None;
     let mut emitted_text = false;
@@ -367,7 +370,8 @@ async fn stream_chat(
             Ok(chunk) => chunk,
             Err(err) => {
                 // A dropped body after we already have text or tool calls is still a usable reply.
-                if emitted_text || emitted_reasoning || !tool_acc.is_empty() {
+                if emitted_text || emitted_reasoning || !pending_delta.is_empty() || !tool_acc.is_empty() {
+                    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
                     emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
                     emit_done(
                         app,
@@ -384,7 +388,7 @@ async fn stream_chat(
         buf.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(idx) = buf.find('\n') {
             let line = buf[..idx].trim().to_string();
-            buf = buf[idx + 1..].to_string();
+            buf.drain(..=idx);
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -393,6 +397,7 @@ async fn stream_chat(
                 continue;
             }
             if data == "[DONE]" {
+                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
                 emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
                 emit_done(
                     app,
@@ -434,17 +439,7 @@ async fn stream_chat(
                 .map(text_from_content)
                 .unwrap_or_default();
             if !piece.is_empty() {
-                emitted_text = true;
-                let _ = app.emit(
-                    "dev-chat",
-                    DevChatEvent {
-                        stream_id: stream_id.into(),
-                        kind: "delta".into(),
-                        text: Some(piece),
-                        tool_calls: None,
-                        usage: None,
-                    },
-                );
+                pending_delta.push_str(&piece);
             }
             let thought = reasoning_from_delta(&delta);
             if !thought.is_empty() {
@@ -509,6 +504,7 @@ async fn stream_chat(
             }
         }
     }
+    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
     emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
     emit_done(
         app,
@@ -518,6 +514,24 @@ async fn stream_chat(
         fallback_done_text(emitted_text, &fallback_text),
     );
     Ok(())
+}
+
+fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
+    if pending.is_empty() {
+        return;
+    }
+    *emitted = true;
+    let text = std::mem::take(pending);
+    let _ = app.emit(
+        "dev-chat",
+        DevChatEvent {
+            stream_id: stream_id.into(),
+            kind: "delta".into(),
+            text: Some(text),
+            tool_calls: None,
+            usage: None,
+        },
+    );
 }
 
 fn is_reasoning_part(kind: &str) -> bool {

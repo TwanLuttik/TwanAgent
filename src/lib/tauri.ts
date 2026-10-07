@@ -97,6 +97,7 @@ export type ConversationSummary = {
   journey_id?: string | null;
   sort_order?: number;
   effort?: string | null;
+  archived?: boolean;
 };
 export type Compaction = {
   summary: string;
@@ -235,6 +236,10 @@ export function mcpClearAuth(name: string): Promise<void> {
   return invoke("dev_mcp_clear_auth", { name });
 }
 
+export function mcpSignIn(name: string): Promise<void> {
+  return invoke("dev_mcp_sign_in", { name });
+}
+
 export type SkillFile = {
   path: string;
   read_path: string;
@@ -337,6 +342,10 @@ export function reorderConversations(
 
 export function deleteConversation(workspace: string, id: string): Promise<void> {
   return invoke("dev_delete_conversation", { workspace, id });
+}
+
+export function archiveConversation(workspace: string, id: string, archived: boolean): Promise<void> {
+  return invoke("dev_archive_conversation", { workspace, id, archived });
 }
 
 export function listJourneys(workspace: string): Promise<Journey[]> {

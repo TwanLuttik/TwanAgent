@@ -6,6 +6,7 @@ import {
   moveById,
   newConversationId,
   nowIso,
+  projectKey,
   type ChatMessage,
 } from "../../lib/core";
 import {
@@ -45,7 +46,6 @@ import {
   saveCollapsedProjects,
   saveConversation,
   saveWorkspace,
-  setAllProjects,
 } from "../../lib/prefs";
 import * as api from "../../lib/tauri";
 import type { ConversationSummary } from "../../lib/tauri";
@@ -128,7 +128,6 @@ export type LibraryDeps = {
   setDirtyFiles: Update<Record<string, boolean>>;
   setPendingClosePath: Update<string | null>;
   setFolderOpen: Update<boolean>;
-  setShowAllProjects: Update<boolean>;
   setShowSettings: Update<boolean>;
   setShowUsage: Update<boolean>;
   setProjectSettings: Update<{ path: string; name: string } | null>;
@@ -147,6 +146,7 @@ export type LibraryDeps = {
   setExpandedAgents: Update<Record<string, boolean>>;
   setOpeningId: Update<string>;
   setPendingByChat: Update<Record<string, PendingMessage[]>>;
+  setChatTabsByProject: Update<Record<string, string[]>>;
   setFlash: (flash: { kind: "ok" | "err"; text: string } | null) => void;
   bumpFiles: () => void;
 };
@@ -158,10 +158,10 @@ export function useLibrary(deps: LibraryDeps) {
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, models, defaultEffort, setEffort, openSettings, reloadConversations, runTurn, scroller,
     runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
-    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowAllProjects, setShowSettings, setShowUsage, setProjectSettings,
+    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
-    setSubagents, setExpandedAgents, setOpeningId, setPendingByChat, setFlash, bumpFiles,
+    setSubagents, setExpandedAgents, setOpeningId, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
   } = deps;
 
   function setPending(next: Record<string, PendingMessage[]>) {
@@ -183,11 +183,6 @@ function closeFileTab(path: string) {
 
 function openFolder() {
   setFolderOpen(true);
-}
-
-function setAllProjectsMode(on: boolean) {
-  setShowAllProjects(on);
-  setAllProjects(on);
 }
 
 function toggleProjectCollapsed(path: string) {
@@ -559,6 +554,49 @@ async function openChat(id: string) {
   }
 }
 
+async function archiveChat(id: string, archived = true, path = workspace) {
+  if (!path) return;
+  if (archived) {
+    setPendingByChat((prev) => {
+      const next = clearPendingForChat(prev, id);
+      pendingRef.current = next;
+      return next;
+    });
+    const turn = turnsRef.current.get(id);
+    if (turn) turn.abort();
+    else if (runningId === id) abortRef.current?.abort();
+    await terminalSessions.dispose(id);
+  }
+  try {
+    await api.archiveConversation(path, id, archived);
+  } catch (e) {
+    setFlash({ kind: "err", text: String(e) });
+    return;
+  }
+  const patch = (rows: ConversationSummary[]) =>
+    rows.map((row) => (row.id === id ? { ...row, archived } : row));
+  if (isSameProject(path, workspace)) {
+    setConversations(patch);
+  } else {
+    setAllProjectGroups((prev) =>
+      upsertProjectGroup(prev, path, {
+        conversations: patch(prev.find((group) => isSameProject(group.path, path))?.conversations ?? []),
+      }),
+    );
+  }
+  if (!archived) return;
+  setChatTabsByProject((prev) => {
+    const key = projectKey(path);
+    const tabs = prev[key];
+    if (!tabs?.includes(id)) return prev;
+    return { ...prev, [key]: tabs.filter((tab) => tab !== id) };
+  });
+  if (loadConversation(path) === id) saveConversation(path, "");
+  if (isSameProject(path, workspace) && activeId === id) {
+    await reloadConversations(workspace);
+  }
+}
+
 async function removeChat(id: string, path = workspace) {
   if (!path) return;
   deletedIdsRef.current.add(id);
@@ -625,6 +663,7 @@ async function persist(
     journey_id: existing?.journey_id ?? null,
     sort_order: existing?.sort_order ?? 0,
     effort: existing?.effort ?? null,
+    archived: existing?.archived ?? false,
     messages: persistableMessages(next),
     context_usage: usageToPersist(usage, usageByChat[id]),
     compaction: persistableCompaction(compaction ?? compactionByChat[id]),
@@ -637,6 +676,7 @@ async function persist(
     journey_id: existing?.journey_id ?? null,
     sort_order: existing?.sort_order ?? 0,
     effort: existing?.effort ?? null,
+    archived: existing?.archived ?? false,
   };
   if (isSameProject(ws, workspaceRef.current)) {
     setConversations((rows) => {
@@ -647,6 +687,7 @@ async function persist(
         created_at: prev?.created_at ?? summary.created_at,
         journey_id: prev?.journey_id ?? summary.journey_id,
         sort_order: prev?.sort_order ?? summary.sort_order,
+        archived: prev?.archived ?? summary.archived,
       };
       const idx = rows.findIndex((r) => r.id === id);
       if (idx < 0) return [next, ...rows];
@@ -867,7 +908,6 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
   return {
     closeFileTab,
     openFolder,
-    setAllProjectsMode,
     toggleProjectCollapsed,
     clearWorkspace,
     deleteProjectFromSidebar,
@@ -877,6 +917,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     openProjectFromSidebar,
     openChat,
     toggleSubagent,
+    archiveChat,
     removeChat,
     persist,
     reorderChats,

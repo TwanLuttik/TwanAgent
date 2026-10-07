@@ -3,6 +3,7 @@ import {
   isAppProject,
   isProjectCollapsed,
   isSameProject,
+  projectHasArchived,
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
@@ -20,6 +21,8 @@ export function AllProjectsList({
   onOpenSettings,
   onDeleteProject,
   renderList,
+  archiveOpen,
+  onToggleArchive,
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -31,7 +34,9 @@ export function AllProjectsList({
   onNewChat: (path: string) => void;
   onOpenSettings: (path: string, name: string) => void;
   onDeleteProject: (path: string) => void;
-  renderList: (group: ProjectChatGroup) => ReactNode;
+  renderList: (group: ProjectChatGroup, options: { showArchived: boolean }) => ReactNode;
+  archiveOpen: Record<string, boolean>;
+  onToggleArchive: (path: string) => void;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
@@ -63,7 +68,11 @@ export function AllProjectsList({
       {groups.map((group) => {
         const current = isSameProject(group.path, activeWorkspace);
         const closed = isProjectCollapsed(collapsed, group.path);
-        const empty = group.conversations.length === 0 && group.journeys.length === 0;
+        const showArchived = Boolean(archiveOpen[projectKey(group.path)]);
+        const hasArchived = projectHasArchived(group.conversations);
+        const visibleEmpty = showArchived
+          ? !hasArchived
+          : !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
         return (
           <section key={projectKey(group.path)}>
             <div
@@ -96,11 +105,32 @@ export function AllProjectsList({
                 />
                 <span className="min-w-0 truncate">{group.name}</span>
               </button>
+              {hasArchived ? (
+                <button
+                  type="button"
+                  aria-label={showArchived ? `Hide archived chats in ${group.name}` : `Show archived chats in ${group.name}`}
+                  aria-pressed={showArchived}
+                  title={showArchived ? "Hide archive" : "Archived chats"}
+                  onClick={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    if (closed) onToggleCollapsed(group.path);
+                    onToggleArchive(group.path);
+                  }}
+                  className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded ${
+                    showArchived ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash-strong hover:text-ink"
+                  }`}
+                >
+                  <Symbol name="archivebox" className="size-3.5" />
+                </button>
+              ) : null}
             </div>
-            {closed ? null : empty ? (
-              <p className="px-7 py-0.5 text-[12px] text-muted">No chats yet</p>
+            {closed ? null : visibleEmpty ? (
+              <p className="px-7 py-0.5 text-[12px] text-muted">
+                {showArchived ? "No archived chats" : "No chats yet"}
+              </p>
             ) : (
-              renderList(group)
+              renderList(group, { showArchived })
             )}
           </section>
         );

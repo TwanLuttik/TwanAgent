@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage, SidebarItem};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -81,7 +81,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             sort_order INTEGER NOT NULL,
             context_usage TEXT,
             compaction TEXT,
-            effort TEXT
+            effort TEXT,
+            archived INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +125,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
     if version.unwrap_or(0) < 7 {
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN effort TEXT", []);
     }
+    if version.unwrap_or(0) < 8 {
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
@@ -164,8 +171,8 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
         .transpose()?;
     let effort = conv.effort.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
     conn.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, archived)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             conv.id,
             conv.title,
@@ -181,6 +188,7 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
             usage,
             compaction,
             effort,
+            if conv.archived { 1 } else { 0 },
         ],
     )?;
     replace_messages(conn, &conv.id, &conv.messages)?;
@@ -191,6 +199,10 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
     conn.execute(
         "DELETE FROM messages WHERE conversation_id = ?1",
         [conversation_id],
+    )?;
+    let mut stmt = conn.prepare(
+        "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     for (i, msg) in messages.iter().enumerate() {
         let role = msg
@@ -223,21 +235,17 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
             .map(str::to_string)
             .filter(|text| !text.trim().is_empty());
         let duration_ms = msg.get("durationMs").and_then(Value::as_i64).filter(|ms| *ms >= 0);
-        conn.execute(
-            "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                conversation_id,
-                i as i64,
-                role,
-                content_text,
-                tool_calls,
-                tool_call_id,
-                images,
-                reasoning,
-                duration_ms,
-            ],
-        )?;
+        stmt.execute(params![
+            conversation_id,
+            i as i64,
+            role,
+            content_text,
+            tool_calls,
+            tool_call_id,
+            images,
+            reasoning,
+            duration_ms,
+        ])?;
     }
     Ok(())
 }
@@ -313,6 +321,7 @@ fn row_to_conversation(
     usage: Option<String>,
     compaction: Option<String>,
     effort: Option<String>,
+    archived: bool,
     messages: Vec<Value>,
 ) -> Result<Conversation> {
     Ok(Conversation {
@@ -327,6 +336,7 @@ fn row_to_conversation(
         journey_id,
         sort_order,
         effort: effort.filter(|value| !value.trim().is_empty()),
+        archived,
     })
 }
 
@@ -384,8 +394,8 @@ mod conversations;
 mod journeys;
 
 pub use conversations::{
-    delete_conversation, get_conversation, list_conversations, reorder_conversations,
-    save_conversation,
+    delete_conversation, get_conversation, list_conversation_summaries, list_conversations,
+    reorder_conversations, save_conversation, set_conversation_archived,
 };
 pub use journeys::{
     create_journey, delete_journey, get_knowledge, list_journeys, move_conversation,

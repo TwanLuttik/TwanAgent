@@ -173,6 +173,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     }
   }
   let compactedAfterOverflow = false;
+  const imageCache = new Map<string, string>();
   for (;;) {
     const repaired = closeDanglingToolCalls(transcript);
     if (repaired !== transcript) {
@@ -185,12 +186,14 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     let result = await streamCompletion(
       withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
       opts,
+      imageCache,
     );
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
         withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
         opts,
+        imageCache,
       );
     }
     if (opts.signal.aborted) return transcript;
@@ -219,6 +222,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       result = await streamCompletion(
         withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
         opts,
+        imageCache,
       );
       if (opts.signal.aborted) return transcript;
       if (result.error) {
@@ -312,11 +316,15 @@ async function compactContext(
   const { older, cut } = splitForCompaction(source);
   if (!older.length || cut >= source.length) return null;
   const previous = readCompactionState(source)?.summary ?? current?.summary ?? "";
-  const result = await streamCompletion(compactionPrompt(older, previous), {
-    ...opts,
-    onDelta: () => undefined,
-    onReasoning: () => undefined,
-  });
+  const result = await streamCompletion(
+    compactionPrompt(older, previous),
+    {
+      ...opts,
+      onDelta: () => undefined,
+      onReasoning: () => undefined,
+    },
+    new Map(),
+  );
   if (opts.signal.aborted || result.error) return null;
   const summary = result.text.trim();
   if (!summary) return null;
@@ -416,6 +424,7 @@ async function streamCompletion(
     signal: AbortSignal;
     journeyId?: string;
   },
+  imageCache: Map<string, string> = new Map(),
 ): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
@@ -469,7 +478,7 @@ async function streamCompletion(
           return;
         }
         opts.signal.addEventListener("abort", onAbort);
-        const hydrated = await withImageDataUrls(messages, (path) => api.imageDataUrl(path));
+        const hydrated = await withImageDataUrls(messages, (path) => api.imageDataUrl(path), imageCache);
         await api.chatStart(
           streamId,
           toApiMessages(hydrated),

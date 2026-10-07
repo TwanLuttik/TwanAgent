@@ -151,6 +151,12 @@ pub fn dev_mcp_clear_auth(name: String) -> Result<()> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_mcp_sign_in(name: String) -> Result<()> {
+    let server = name.trim().to_string();
+    off_main(move || super::mcp_oauth::mcp_sign_in(&server)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_list_skill_files(
     state: State<'_, AppState>,
     workspace: Option<String>,

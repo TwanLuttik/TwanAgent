@@ -5,7 +5,8 @@ import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
-import { conversationActivityLabel, folderName } from "../../lib/core";
+import { projectHasArchived, visibleConversations, visibleJourneys } from "../../lib/all-projects";
+import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
 import type { JourneySummary } from "../../lib/journey";
 import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
@@ -18,7 +19,6 @@ export function AppSidebar() {
     collapsedProjects,
     conversations,
     deleteProjectFromSidebar,
-    journeys,
     legacyProjectsRoot,
     onSidebarResizeStart,
     openFolder,
@@ -27,10 +27,8 @@ export function AppSidebar() {
     openSettings,
     openUsage,
     projectsRoot,
-    setAllProjectsMode,
     setProjectMenu,
     setSidebarWidth,
-    showAllProjects,
     showSettings,
     showUsage,
     sidebarDragging,
@@ -42,7 +40,15 @@ export function AppSidebar() {
     workspace,
   } = useMain();
   const [usageHover, setUsageHover] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState<Record<string, boolean>>({});
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
+  const currentArchiveOpen = Boolean(workspace && archiveOpen[projectKey(workspace)]);
+  const currentHasArchived = projectHasArchived(conversations);
+
+  function toggleArchive(path: string) {
+    const key = projectKey(path);
+    setArchiveOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
 
   return (
     <aside className="relative flex shrink-0 flex-col bg-sidebar" style={{ width: sidebarWidth }}>
@@ -80,58 +86,35 @@ export function AppSidebar() {
         </button>
       </div>
       <div className="relative z-20 flex items-center justify-between gap-2 px-4 pt-1.5 pb-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            disabled={!showAllProjects}
-            onClick={() => setAllProjectsMode(false)}
-            className={`text-[11px] font-semibold tracking-[0.04em] uppercase ${
-              showAllProjects ? "text-muted/70 hover:text-muted" : "text-muted"
-            } disabled:hover:text-muted`}
-          >
-            Conversations
-          </button>
-          <button
-            type="button"
-            aria-pressed={showAllProjects}
-            title="All projects"
-            onClick={() => setAllProjectsMode(true)}
-            className={`shrink-0 text-[11px] ${
-              showAllProjects ? "font-semibold text-ink" : "text-muted hover:text-ink"
-            }`}
-          >
-            All
-          </button>
-        </div>
+        <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">
+          All
+        </span>
         <NewChatMenu disabled={!workspace} onPick={(kind) => void startNewChat(kind)} />
       </div>
-      <div className="relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
-        {showAllProjects ? (
-          <AllProjectsList
-            groups={allProjectGroups}
-            activeWorkspace={workspace}
-            projectsRoot={projectsRoot}
-            legacyProjectsRoot={legacyProjectsRoot}
-            collapsed={collapsedProjects}
-            onToggleCollapsed={toggleProjectCollapsed}
-            onOpenProject={openProjectFromSidebar}
-            onNewChat={(path) => void startNewChat("chat", undefined, path)}
-            onOpenSettings={openProjectSettings}
-            onDeleteProject={(path) => void deleteProjectFromSidebar(path)}
-            renderList={(group) => (
-              <ProjectConversations
-                conversations={group.conversations}
-                journeys={group.journeys}
-                path={group.path}
-                dimmed={fullPage}
-              />
-            )}
-          />
-        ) : conversations.length === 0 && journeys.length === 0 ? (
-          <p className="px-2 py-1 text-[12px] text-muted">{workspace ? "No chats yet" : "Open a folder"}</p>
-        ) : (
-          <ProjectConversations conversations={conversations} journeys={journeys} dimmed={fullPage} />
-        )}
+      <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
+        <AllProjectsList
+          groups={allProjectGroups}
+          activeWorkspace={workspace}
+          projectsRoot={projectsRoot}
+          legacyProjectsRoot={legacyProjectsRoot}
+          collapsed={collapsedProjects}
+          onToggleCollapsed={toggleProjectCollapsed}
+          onOpenProject={openProjectFromSidebar}
+          onNewChat={(path) => void startNewChat("chat", undefined, path)}
+          onOpenSettings={openProjectSettings}
+          onDeleteProject={(path) => void deleteProjectFromSidebar(path)}
+          archiveOpen={archiveOpen}
+          onToggleArchive={toggleArchive}
+          renderList={(group, { showArchived }) => (
+            <ProjectConversations
+              conversations={visibleConversations(group.conversations, showArchived)}
+              journeys={visibleJourneys(group.journeys, group.conversations, showArchived)}
+              path={group.path}
+              dimmed={fullPage}
+              archivedView={showArchived}
+            />
+          )}
+        />
       </div>
       <div className="relative z-10 flex flex-col gap-1 px-2.5 pb-3">
         <p className="px-2 pb-0.5 text-[11px] tabular-nums text-muted/55" title={`TwanAgent ${__APP_VERSION_LABEL__}`}>
@@ -155,7 +138,32 @@ export function AppSidebar() {
           title={workspace || "Open folder"}
         >
           <Symbol name="folder.fill" className="size-4 text-accent" />
-          <span className="min-w-0 truncate">{workspace ? folderName(workspace) : "Open folder"}</span>
+          <span className="min-w-0 flex-1 truncate">{workspace ? folderName(workspace) : "Open folder"}</span>
+          {currentHasArchived ? (
+            <span
+              role="button"
+              tabIndex={0}
+              aria-label={currentArchiveOpen ? "Hide archived chats" : "Show archived chats"}
+              aria-pressed={currentArchiveOpen}
+              title={currentArchiveOpen ? "Hide archive" : "Archived chats"}
+              onClick={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (workspace) toggleArchive(workspace);
+              }}
+              onKeyDown={(ev) => {
+                if (ev.key !== "Enter" && ev.key !== " ") return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (workspace) toggleArchive(workspace);
+              }}
+              className={`flex size-6 shrink-0 items-center justify-center rounded ${
+                currentArchiveOpen ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash-strong hover:text-ink"
+              }`}
+            >
+              <Symbol name="archivebox" className="size-3.5" />
+            </span>
+          ) : null}
         </button>
         <button
           type="button"
@@ -191,11 +199,13 @@ function ProjectConversations({
   journeys,
   path,
   dimmed,
+  archivedView,
 }: {
   conversations: ConversationSummary[];
   journeys: JourneySummary[];
   path?: string;
   dimmed: boolean;
+  archivedView?: boolean;
 }) {
   const {
     activeId,
@@ -206,6 +216,7 @@ function ProjectConversations({
     openJourneyKnowledge,
     openSidebarChat,
     openingId,
+    archiveChat,
     removeChat,
     renameJourney,
     reorderChats,
@@ -227,6 +238,8 @@ function ProjectConversations({
       showSettings={dimmed}
       onOpen={(id) => (path ? void openSidebarChat(path, id) : void openChat(id))}
       onDelete={(id) => void removeChat(id, path)}
+      onArchive={(id, archived) => void archiveChat(id, archived, path)}
+      archivedView={archivedView}
       onReorder={(fromId, toId) => void reorderChats(fromId, toId, path)}
       onReorderSidebar={(fromId, fromKind, toId, toKind) =>
         void reorderSidebar(fromId, fromKind, toId, toKind, path)

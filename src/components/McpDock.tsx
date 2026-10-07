@@ -22,7 +22,7 @@ export function McpDock({
       icon="cable.connector"
       summary={mcpPillSummary(servers)}
       meta={`${onCount}/${servers.length} on`}
-      hint="Toggle what Grok can use. Edit opens the config. Re-auth clears a saved OAuth login."
+      hint="Toggle what Grok can use. Edit opens the config. Sign in opens the browser."
     >
       <div className="space-y-1">
         {servers.map((server) => {

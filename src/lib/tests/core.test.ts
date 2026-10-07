@@ -41,6 +41,7 @@ import {
   toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
+  splitLiveTranscript,
   groupTranscriptTurns,
   stampTurnDuration,
   systemPrompt,
@@ -602,6 +603,27 @@ describe("stampTurnDuration", () => {
     const reply = items.find((item) => item.kind === "assistant");
     assert.equal(reply?.kind === "assistant" && reply.durationMs, 12_400);
     assert.equal(stampTurnDuration(stamped, 12_400), stamped);
+  });
+});
+
+describe("splitLiveTranscript", () => {
+  it("keeps finished turns out of the streaming tail", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "second" },
+    ];
+    const split = splitLiveTranscript(messages, "still typing", []);
+    assert.equal(split.settled.length, 1);
+    assert.equal(split.settled[0]?.user?.content, "first");
+    assert.equal(split.tail[0]?.kind === "user" && split.tail[0].content, "second");
+    const streamed = split.tail.at(-1);
+    assert.equal(streamed?.kind, "assistant");
+    assert.equal(streamed?.kind === "assistant" && streamed.content, "still typing");
+    const again = splitLiveTranscript(messages, "still typing more", []);
+    assert.equal(again.settled.length, 1);
+    assert.equal(again.settled[0]?.user?.content, "first");
+    assert.equal(again.settled[0]?.rest[0]?.kind === "assistant" && again.settled[0].rest[0].content, "done");
   });
 });
 

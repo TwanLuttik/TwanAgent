@@ -9,14 +9,13 @@ import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, ty
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { mergeProjectRows, projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isSameProject, placeProjectChats, type ProjectChatGroup } from "../lib/all-projects";
+import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
-  loadAllProjects,
   loadCollapsedProjects,
   loadContextWindow,
   loadComposerDrafts,
@@ -103,7 +102,6 @@ export function MainView() {
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
-  const [showAllProjects, setShowAllProjects] = useState(loadAllProjects);
   const [allProjectGroups, setAllProjectGroups] = useState<ProjectChatGroup[]>([]);
   const [collapsedProjects, setCollapsedProjects] = useState(loadCollapsedProjects);
   const [projectsRoot, setProjectsRoot] = useState("");
@@ -208,7 +206,14 @@ export function MainView() {
     sidebarLoadedForRef.current = ws;
     setConversations(rows);
     setJourneys(nextJourneys);
-    const want = preferId || loadConversation(ws) || rows[0]?.id || "";
+    const visible = rows.filter((row) => !isArchivedConversation(row));
+    const saved = loadConversation(ws);
+    const savedRow = rows.find((row) => row.id === saved);
+    const want =
+      preferId ||
+      (savedRow && !isArchivedConversation(savedRow) ? saved : "") ||
+      visible[0]?.id ||
+      "";
     if (!want) {
       setActiveId("");
       setMessages([]);
@@ -394,7 +399,7 @@ export function MainView() {
   }, [workspace, opened, tick]);
 
   useEffect(() => {
-    if (!pathsReady || !showAllProjects) return;
+    if (!pathsReady) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -421,13 +426,13 @@ export function MainView() {
     return () => {
       cancelled = true;
     };
-  }, [pathsReady, showAllProjects, setFlash]);
+  }, [pathsReady, setFlash]);
 
   useEffect(() => {
-    if (!showAllProjects || !workspace) return;
+    if (!workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
     setAllProjectGroups((prev) => placeProjectChats(prev, workspace, conversations, journeys));
-  }, [showAllProjects, workspace, conversations, journeys]);
+  }, [workspace, conversations, journeys]);
 
   useEffect(() => {
     if (!pathsReady) return;
@@ -552,26 +557,12 @@ export function MainView() {
     if (prepend && el) {
       prependRef.current = null;
       el.scrollTop = scrollTopAfterPrepend(prepend, el.scrollHeight);
+      return;
     }
-    const pin = () => scrollChatToEnd(el, stickToBottomRef.current);
+    const pin = () => scrollChatToEnd(scroller.current, stickToBottomRef.current);
     pin();
-    if (!el) return;
-    const inner = el.firstElementChild;
-    let ro: ResizeObserver | null = null;
-    if (inner && typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(pin);
-      ro.observe(inner);
-    }
-    const frames = [0, 0];
-    frames[0] = requestAnimationFrame(() => {
-      pin();
-      frames[1] = requestAnimationFrame(pin);
-    });
-    return () => {
-      cancelAnimationFrame(frames[0]);
-      cancelAnimationFrame(frames[1]);
-      ro?.disconnect();
-    };
+    const frame = requestAnimationFrame(pin);
+    return () => cancelAnimationFrame(frame);
   }, [messages, streamText, streamReasoning, pendingShell, runningActivity, liveTools, openingId, pendingByChat, activeId, editor.focus, composerPad]);
 
   const closeSettings = useCallback(() => setShowSettings(false), []);
@@ -679,7 +670,6 @@ export function MainView() {
     setDirtyFiles,
     setPendingClosePath,
     setFolderOpen,
-    setShowAllProjects,
     setShowSettings,
     setShowUsage,
     setProjectSettings,
@@ -698,6 +688,7 @@ export function MainView() {
     setExpandedAgents,
     setOpeningId,
     setPendingByChat,
+    setChatTabsByProject,
     setFlash,
     bumpFiles,
   });
@@ -771,7 +762,6 @@ export function MainView() {
   const {
     closeFileTab,
     openFolder,
-    setAllProjectsMode,
     toggleProjectCollapsed,
     deleteProjectFromSidebar,
     applyWorkspace,
@@ -781,6 +771,7 @@ export function MainView() {
     openChat,
     toggleSubagent,
     removeChat,
+    archiveChat,
     reorderChats,
     reorderSidebar,
     createJourneyFromChat,
@@ -903,16 +894,13 @@ export function MainView() {
     async (server: DetectedMcpServer) => {
       setMcpBusy(server.name);
       try {
-        await api.mcpClearAuth(server.name);
+        if (server.authed) await api.mcpClearAuth(server.name);
+        await api.mcpSignIn(server.name);
         bumpFiles();
-        setFlash({
-          kind: "ok",
-          text: server.authed
-            ? `Cleared the saved ${server.name} login. In Grok, open /mcps and press i to sign in again.`
-            : `Sign in from Grok: /mcps, select ${server.name}, then press i.`,
-        });
+        setFlash({ kind: "ok", text: `Signed in to ${server.name}.` });
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });
+        bumpFiles();
       } finally {
         setMcpBusy(null);
       }
@@ -949,16 +937,7 @@ export function MainView() {
     [openWorkspaceFile, setFlash],
   );
 
-  const showLanding =
-    pathsReady &&
-    !showAllProjects &&
-    !showSettings &&
-    !showUsage &&
-    !activeId &&
-    messages.length === 0 &&
-    conversations.length === 0 &&
-    !busy &&
-    !streamText;
+  const showLanding = false;
   const chatKind = parseConversationKind(conversations.find((c) => c.id === activeId)?.kind);
   const chatAcceptsDrop =
     !showSettings && !showUsage && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
@@ -1093,6 +1072,7 @@ export function MainView() {
     reauthMcpServer,
     recents,
     reloadRuntime,
+    archiveChat,
     removeChat,
     removePendingAt,
     renameJourney,
@@ -1106,7 +1086,6 @@ export function MainView() {
     scroller,
     send,
     stop,
-    setAllProjectsMode,
     setDirtyFiles,
     setDraft,
     setDraftPastes,
@@ -1122,7 +1101,6 @@ export function MainView() {
     setShowUsage,
     setSidebarWidth,
     bumpFiles,
-    showAllProjects,
     showLanding,
     showSettings,
     showUsage,

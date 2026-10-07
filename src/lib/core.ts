@@ -719,6 +719,30 @@ function thinkingAlreadyShown(items: TranscriptItem[], text: string): boolean {
   return false;
 }
 
+/**
+ * Split a transcript so finished turns stay referentially stable while a reply streams.
+ * `settled` is every turn before the one that is still growing. `tail` is that open turn,
+ * including the live stream, so a token does not rebuild the earlier bubbles.
+ */
+export function splitLiveTranscript(
+  messages: ChatMessage[],
+  streamText: string,
+  liveTools: LiveToolInput[] = [],
+  streamReasoning = "",
+): { settled: TranscriptTurn[]; tail: TranscriptItem[] } {
+  const committed = transcriptItems(messages);
+  const turns = groupTranscriptTurns(committed);
+  const live = liveTranscriptItems(messages, streamText, liveTools, streamReasoning);
+  if (turns.length === 0) return { settled: [], tail: live };
+  const open = turns[turns.length - 1];
+  const openCount = (open?.user ? 1 : 0) + (open?.rest.length ?? 0);
+  const settledCount = committed.length - openCount;
+  return {
+    settled: turns.slice(0, -1),
+    tail: live.slice(settledCount),
+  };
+}
+
 export function liveTranscriptItems(
   messages: ChatMessage[],
   streamText: string,

@@ -1,13 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { ToolTrail } from "./ToolTrail";
 import { chatTurnSlice, hasOlderTurns, revealOlderTurns } from "../lib/chat-window";
 import {
-  groupTranscriptTurns,
-  isLiveToolTrail,
-  liveTranscriptItems,
+  splitLiveTranscript,
   type ChatImage,
   type ChatMessage,
   type LiveToolInput,
@@ -167,18 +165,22 @@ export function ChatTranscript({
   /** Called before older turns mount so the scroller can keep its place. */
   onLoadOlder?: () => void;
 }) {
-  const items = liveTranscriptItems(messages, streamText, liveTools, streamReasoning);
-  const turns = groupTranscriptTurns(items);
+  const split = useMemo(
+    () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning),
+    [messages, streamText, liveTools, streamReasoning],
+  );
+  const turnCount = split.settled.length + (split.tail.length ? 1 : 0);
   const [revealed, setRevealed] = useState(0);
   const chatRef = useRef(conversationId);
   if (chatRef.current !== conversationId) {
     chatRef.current = conversationId;
     if (revealed !== 0) setRevealed(0);
   }
-  const slice = chatTurnSlice(turns.length, revealed);
-  const older = hasOlderTurns(turns.length, revealed);
-  const visible = turns.slice(slice.start);
-  const starts = turnItemStarts(turns, slice.start);
+  const slice = chatTurnSlice(turnCount, revealed);
+  const older = hasOlderTurns(turnCount, revealed);
+  const settledFrom = Math.min(slice.start, split.settled.length);
+  const visibleSettled = split.settled.slice(settledFrom);
+  const showTail = split.tail.length > 0 && slice.start < turnCount;
   return (
     <>
       {older ? (
@@ -187,7 +189,7 @@ export function ChatTranscript({
             type="button"
             onClick={() => {
               onLoadOlder?.();
-              setRevealed((current) => revealOlderTurns(turns.length, current));
+              setRevealed((current) => revealOlderTurns(turnCount, current));
             }}
             className="rounded-full border border-line/70 px-3 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink"
           >
@@ -195,29 +197,42 @@ export function ChatTranscript({
           </button>
         </div>
       ) : null}
-      {visible.map((turn, i) => (
-        <TranscriptTurn
-          key={slice.start + i}
-          turn={turn}
-          items={items}
-          start={starts[i] ?? 0}
-          busy={busy}
-          mentionFiles={mentionFiles}
-        />
+      {visibleSettled.map((turn, i) => (
+        <SettledTurn key={settledFrom + i} turn={turn} mentionFiles={mentionFiles} />
       ))}
+      {showTail ? <LiveTail items={split.tail} busy={busy} mentionFiles={mentionFiles} /> : null}
     </>
   );
 }
 
-function turnItemStarts(turns: TranscriptTurn[], from: number): number[] {
-  const starts: number[] = [];
-  let cursor = 0;
-  for (let i = 0; i < turns.length; i++) {
-    if (i >= from) starts.push(cursor);
-    const turn = turns[i];
-    cursor += (turn?.user ? 1 : 0) + (turn?.rest.length ?? 0);
-  }
-  return starts;
+const SettledTurn = memo(function SettledTurn({
+  turn,
+  mentionFiles,
+}: {
+  turn: TranscriptTurn;
+  mentionFiles?: MentionFile[];
+}) {
+  return <TranscriptTurn turn={turn} mentionFiles={mentionFiles} />;
+});
+
+function LiveTail({
+  items,
+  busy,
+  mentionFiles,
+}: {
+  items: TranscriptItem[];
+  busy: boolean;
+  mentionFiles?: MentionFile[];
+}) {
+  const head = items[0];
+  const hasUser = head?.kind === "user";
+  const turn: TranscriptTurn = {
+    user: hasUser ? head : undefined,
+    rest: (hasUser ? items.slice(1) : items) as TranscriptTurn["rest"],
+  };
+  const last = items[items.length - 1];
+  const liveIndex = busy && last?.kind === "tools" ? items.length - 1 : -1;
+  return <TranscriptTurn turn={turn} liveIndex={liveIndex} mentionFiles={mentionFiles} />;
 }
 
 export function PendingUserMessage({
@@ -327,15 +342,12 @@ export function PendingUserMessage({
 
 function TranscriptTurn({
   turn,
-  items,
-  start,
-  busy,
+  liveIndex = -1,
   mentionFiles,
 }: {
   turn: TranscriptTurn;
-  items: TranscriptItem[];
-  start: number;
-  busy: boolean;
+  /** Index of the streaming tool row, or -1 when nothing in this turn is live. */
+  liveIndex?: number;
   mentionFiles?: MentionFile[];
 }) {
   const userOffset = turn.user ? 1 : 0;
@@ -350,7 +362,7 @@ function TranscriptTurn({
         </StickyTurnHeader>
       ) : null}
       {turn.rest.map((item, i) => {
-        const index = start + userOffset + i;
+        const index = userOffset + i;
         const last = i === turn.rest.length - 1;
         if (item.kind === "thinking") {
           return (
@@ -370,7 +382,7 @@ function TranscriptTurn({
               files={item.files}
               details={item.details}
               commands={item.commands}
-              live={isLiveToolTrail(items, index, busy)}
+              live={liveIndex === index}
             />
           );
         }
@@ -398,10 +410,11 @@ function TranscriptTurn({
             <RoleBadge role="assistant" />
           </div>
         );
+        const streaming = liveIndex >= 0 && last && item.kind === "assistant" && typeof item.durationMs !== "number";
         return (
           <div key={index} className={last ? undefined : "mb-4"}>
             {!turn.user && i === 0 ? <StickyTurnHeader>{badge}</StickyTurnHeader> : badge}
-            <ChatMarkdown text={item.content} />
+            <ChatMarkdown text={item.content} live={streaming} />
             {typeof item.durationMs === "number" ? <FinishedLine durationMs={item.durationMs} /> : null}
           </div>
         );

@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -251,6 +252,17 @@ pub fn grok_version(bin: &Path) -> Option<String> {
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().next()?.trim();
     parse_cli_version(line)
+}
+
+/// `grok --version` is a process spawn. Chat rounds reuse the first answer.
+pub fn cached_cli_version() -> String {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let detected = grok_bin().as_ref().and_then(|path| grok_version(path));
+            cli_proxy_version(detected.as_deref())
+        })
+        .clone()
 }
 
 pub fn parse_cli_version(text: &str) -> Option<String> {

@@ -48,6 +48,8 @@ export function ConversationList({
   showSettings,
   onOpen,
   onDelete,
+  onArchive,
+  archivedView,
   onReorder,
   onReorderSidebar,
   onCreateJourney,
@@ -69,6 +71,8 @@ export function ConversationList({
   showSettings: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onArchive?: (id: string, archived: boolean) => void;
+  archivedView?: boolean;
   onReorder: (fromId: string, toId: string) => void;
   onReorderSidebar: (fromId: string, fromKind: "journey" | "conversation", toId: string, toKind: "journey" | "conversation") => void;
   onCreateJourney: (id: string) => void;
@@ -289,6 +293,13 @@ export function ConversationList({
           }}
           onDeleteChat={() => {
             if (menu.target.type === "chat") onDelete(menu.target.id);
+            setMenu(null);
+          }}
+          archivedView={archivedView}
+          onArchiveChat={() => {
+            if (menu.target.type === "chat" && onArchive) {
+              onArchive(menu.target.id, !archivedView);
+            }
             setMenu(null);
           }}
           onRemove={() => {
@@ -640,16 +651,17 @@ function ConversationCard({
   onOpen?: () => void;
   onDelete?: () => void;
 }) {
+  const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group flex items-center rounded-[6px] ${indent ? "pl-3" : ""} ${running ? "py-0.5" : ""} ${
+      className={`group flex items-center rounded-[6px] ${indent ? "pl-3" : ""} ${
         overlay
-          ? "cursor-grabbing border border-line bg-canvas shadow-card"
+          ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
-            ? "opacity-0"
+            ? "border border-transparent opacity-0"
             : selected
-              ? "bg-wash-strong"
-              : "hover:bg-wash"
+              ? "border border-transparent bg-wash-strong"
+              : "border border-transparent hover:bg-wash"
       }`}
     >
       {handle ? <div className="pl-0.5">{handle}</div> : <div className="w-1.5 shrink-0" />}
@@ -668,41 +680,41 @@ function ConversationCard({
             ) : null}
             <span className="block min-w-0 truncate">{row.title}</span>
           </span>
-          {running && preview ? (
-            <span className="mt-0.5 block truncate text-[11px] text-muted">{preview}</span>
+          {showPreview ? (
+            <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted">{preview}</span>
           ) : null}
         </span>
-        {running ? (
-          <span
-            className="size-2.5 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-            aria-label={preview || "Loading"}
-          />
-        ) : null}
+        <span className="flex size-2.5 shrink-0 items-center justify-center" aria-hidden={!running}>
+          {running ? (
+            <span
+              className="size-2.5 animate-spin rounded-full border border-ink/35 border-t-transparent"
+              aria-label={preview || "Loading"}
+            />
+          ) : null}
+        </span>
       </button>
       {onDelete && !overlay ? (
         <button
           type="button"
           aria-label="Delete conversation"
           onClick={onDelete}
-          className={`size-6 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink ${
-            placeholder ? "hidden" : "hidden group-hover:flex"
+          className={`size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink ${
+            placeholder ? "invisible" : "invisible group-hover:visible flex"
           }`}
         >
           <Symbol name="xmark" className="size-3" />
         </button>
-      ) : overlay ? (
-        <div className="size-6 shrink-0" />
-      ) : null}
-      {age ? (
-        <span
-          className="mr-1.5 shrink-0 text-[11px] tabular-nums text-muted"
-          title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
-        >
-          {age}
-        </span>
       ) : (
-        <div className="mr-1 size-1.5 shrink-0" />
+        <div className="size-6 shrink-0" />
       )}
+      <span
+        className="mr-1.5 w-7 shrink-0 text-right text-[11px] tabular-nums text-muted"
+        title={
+          age && Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined
+        }
+      >
+        {age || ""}
+      </span>
     </div>
   );
 }
@@ -715,6 +727,8 @@ function ContextMenu({
   onClose,
   onCreateJourney,
   onDeleteChat,
+  onArchiveChat,
+  archivedView,
   onRemove,
   onRename,
   onDeleteJourney,
@@ -728,6 +742,8 @@ function ContextMenu({
   onClose: () => void;
   onCreateJourney: () => void;
   onDeleteChat: () => void;
+  onArchiveChat: () => void;
+  archivedView?: boolean;
   onRemove: () => void;
   onRename: () => void;
   onDeleteJourney: () => void;
@@ -741,10 +757,11 @@ function ContextMenu({
           { label: "Delete", onClick: onDeleteJourney },
         ]
       : [
-          ...(!target.journeyId && !(target.id in runningIds)
+          ...(!archivedView && !target.journeyId && !(target.id in runningIds)
             ? [{ label: "Create Journey", onClick: onCreateJourney }]
             : []),
-          ...(target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),
+          ...(!archivedView && target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),
+          { label: archivedView ? "Unarchive" : "Archive", onClick: onArchiveChat },
           { label: "Delete", onClick: onDeleteChat },
         ];
 

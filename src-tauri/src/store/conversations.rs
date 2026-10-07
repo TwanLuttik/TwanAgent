@@ -1,47 +1,133 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert_conversation, load_messages, next_sort, replace_messages, row_to_conversation};
-use crate::dev::Conversation;
+use crate::dev::{Conversation, ConversationSummary};
 use crate::error::{Error, Result};
 
-pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort
-         FROM conversations ORDER BY sort_order ASC, id ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, Option<String>>(5)?,
-            row.get::<_, i64>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, Option<String>>(9)?,
-        ))
-    })?;
+struct ConvHead {
+    id: String,
+    title: String,
+    created_at: String,
+    updated_at: String,
+    kind: String,
+    journey_id: Option<String>,
+    sort_order: i64,
+    usage: Option<String>,
+    compaction: Option<String>,
+    effort: Option<String>,
+    archived: bool,
+}
+
+fn map_head(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConvHead> {
+    Ok(ConvHead {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+        kind: row.get(4)?,
+        journey_id: row.get(5)?,
+        sort_order: row.get(6)?,
+        usage: row.get(7)?,
+        compaction: row.get(8)?,
+        effort: row.get(9)?,
+        archived: row.get::<_, i64>(10)? != 0,
+    })
+}
+
+const HEAD_SQL: &str = "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, archived
+         FROM conversations";
+
+fn summary_from_head(head: ConvHead) -> ConversationSummary {
+    ConversationSummary {
+        id: head.id,
+        title: head.title,
+        created_at: head.created_at,
+        updated_at: head.updated_at,
+        kind: if head.kind.is_empty() {
+            "chat".into()
+        } else {
+            head.kind
+        },
+        journey_id: head.journey_id,
+        sort_order: head.sort_order,
+        effort: head.effort.filter(|value| !value.trim().is_empty()),
+        archived: head.archived,
+    }
+}
+
+/// Sidebar rows. Messages stay in the database until a chat is opened.
+pub fn list_conversation_summaries(conn: &Connection) -> Result<Vec<ConversationSummary>> {
+    let mut stmt = conn.prepare(&format!("{HEAD_SQL} ORDER BY sort_order ASC, id ASC"))?;
+    let rows = stmt.query_map([], map_head)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction, effort) = row?;
-        let messages = load_messages(conn, &id)?;
+        out.push(summary_from_head(row?));
+    }
+    Ok(out)
+}
+
+pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
+    let mut stmt = conn.prepare(&format!("{HEAD_SQL} ORDER BY sort_order ASC, id ASC"))?;
+    let heads = stmt.query_map([], map_head)?;
+    let mut out = Vec::new();
+    for head in heads {
+        let head = head?;
+        let messages = load_messages(conn, &head.id)?;
         out.push(row_to_conversation(
-            id, title, created_at, updated_at, kind, journey_id, sort_order, usage, compaction, effort, messages,
+            head.id,
+            head.title,
+            head.created_at,
+            head.updated_at,
+            head.kind,
+            head.journey_id,
+            head.sort_order,
+            head.usage,
+            head.compaction,
+            head.effort,
+            head.archived,
+            messages,
         )?);
     }
     Ok(out)
 }
 
 pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
-    list_conversations(conn)?
-        .into_iter()
-        .find(|c| c.id == id)
-        .ok_or_else(|| Error::NotFound("conversation not found".into()))
+    let head = conn
+        .query_row(&format!("{HEAD_SQL} WHERE id = ?1"), [id], map_head)
+        .optional()?;
+    let Some(head) = head else {
+        return Err(Error::NotFound("conversation not found".into()));
+    };
+    let messages = load_messages(conn, &head.id)?;
+    row_to_conversation(
+        head.id,
+        head.title,
+        head.created_at,
+        head.updated_at,
+        head.kind,
+        head.journey_id,
+        head.sort_order,
+        head.usage,
+        head.compaction,
+        head.effort,
+        head.archived,
+        messages,
+    )
 }
 
 pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = save_conversation_in_tx(conn, conv);
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(_) => {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+    }
+    result
+}
+
+fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()> {
     let existing: Option<String> = conn
         .query_row(
             "SELECT id FROM conversations WHERE id = ?1",
@@ -70,6 +156,8 @@ pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     if existing.is_some() {
+        // Archived is not part of a normal save. Keep the stored flag so a
+        // later turn cannot put an archived chat back in the sidebar.
         conn.execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2, kind = ?3,
              context_usage = COALESCE(?4, context_usage),
@@ -87,16 +175,27 @@ pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
     Ok(())
 }
 
+pub fn set_conversation_archived(conn: &Connection, id: &str, archived: bool) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE conversations SET archived = ?1 WHERE id = ?2",
+        params![if archived { 1 } else { 0 }, id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound("conversation not found".into()));
+    }
+    Ok(())
+}
+
 pub fn delete_conversation(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
     Ok(())
 }
 
-pub fn reorder_conversations(conn: &Connection, ids: &[String]) -> Result<Vec<Conversation>> {
+pub fn reorder_conversations(conn: &Connection, ids: &[String]) -> Result<Vec<ConversationSummary>> {
     if ids.is_empty() {
-        return list_conversations(conn);
+        return list_conversation_summaries(conn);
     }
-    let all = list_conversations(conn)?;
+    let all = list_conversation_summaries(conn)?;
     let mut listed = Vec::new();
     for id in ids {
         if let Some(row) = all.iter().find(|c| c.id == *id) {
@@ -116,5 +215,5 @@ pub fn reorder_conversations(conn: &Connection, ids: &[String]) -> Result<Vec<Co
             params![i as i64, row.id],
         )?;
     }
-    list_conversations(conn)
+    list_conversation_summaries(conn)
 }

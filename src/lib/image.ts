@@ -142,19 +142,27 @@ export function persistableMessages(messages: ChatMessage[]): ChatMessage[] {
 export async function withImageDataUrls(
   messages: ChatMessage[],
   load: (path: string) => Promise<string>,
+  cache?: Map<string, string>,
 ): Promise<ChatMessage[]> {
   return Promise.all(
     messages.map(async (msg) => {
       if (!msg.images?.length) return msg;
-      return {
-        ...msg,
-        images: await Promise.all(
-          msg.images.map(async (img) => ({
-            ...img,
-            dataUrl: img.dataUrl || (await load(img.path).catch(() => "")),
-          })),
-        ),
-      };
+      let changed = false;
+      const images = await Promise.all(
+        msg.images.map(async (img) => {
+          if (img.dataUrl) return img;
+          const cached = cache?.get(img.path);
+          if (cached) {
+            changed = true;
+            return { ...img, dataUrl: cached };
+          }
+          const dataUrl = await load(img.path).catch(() => "");
+          if (dataUrl && cache) cache.set(img.path, dataUrl);
+          if (dataUrl) changed = true;
+          return dataUrl ? { ...img, dataUrl } : img;
+        }),
+      );
+      return changed ? { ...msg, images } : msg;
     }),
   );
 }

@@ -61,6 +61,9 @@ pub struct Conversation {
     /// Thinking level chosen for this chat. Empty means the app default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Hidden from the normal sidebar until the project archive is opened.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 pub(crate) fn default_conversation_kind() -> String {
@@ -81,6 +84,8 @@ pub struct ConversationSummary {
     pub sort_order: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

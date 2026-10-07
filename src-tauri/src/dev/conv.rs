@@ -76,6 +76,23 @@ pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec
     }
 }
 
+fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
+    let dir = conv_store_dir(data_dir, workspace);
+    match store::open(&dir) {
+        Ok(conn) => store::list_conversation_summaries(&conn),
+        Err(e) => {
+            if store::db_path(&dir).exists() {
+                Err(e)
+            } else {
+                Ok(load_conversations_json(data_dir, workspace)?
+                    .into_iter()
+                    .map(summary_from)
+                    .collect())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn save_conversations(
     data_dir: &Path,
@@ -122,6 +139,7 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
         journey_id: c.journey_id,
         sort_order: c.sort_order,
         effort: c.effort.filter(|value| !value.trim().is_empty()),
+        archived: c.archived,
     }
 }
 
@@ -130,8 +148,7 @@ pub fn dev_list_conversations(
     state: State<'_, AppState>,
     workspace: String,
 ) -> Result<Vec<ConversationSummary>> {
-    let rows = load_conversations(&state.data_dir, &workspace)?;
-    Ok(rows.into_iter().map(summary_from).collect())
+    load_summaries(&state.data_dir, &workspace)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -140,10 +157,20 @@ pub fn dev_get_conversation(
     workspace: String,
     id: String,
 ) -> Result<Conversation> {
-    load_conversations(&state.data_dir, &workspace)?
-        .into_iter()
-        .find(|c| c.id == id)
-        .ok_or_else(|| Error::NotFound("conversation not found".into()))
+    let dir = conv_store_dir(&state.data_dir, &workspace);
+    match store::open(&dir) {
+        Ok(conn) => store::get_conversation(&conn, &id),
+        Err(e) => {
+            if store::db_path(&dir).exists() {
+                Err(e)
+            } else {
+                load_conversations_json(&state.data_dir, &workspace)?
+                    .into_iter()
+                    .find(|c| c.id == id)
+                    .ok_or_else(|| Error::NotFound("conversation not found".into()))
+            }
+        }
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -156,7 +183,7 @@ pub fn dev_save_conversation(
     match store::open(&dir) {
         Ok(conn) => {
             store::save_conversation(&conn, &conversation)?;
-            store::get_conversation(&conn, &conversation.id)
+            Ok(conversation)
         }
         Err(e) => {
             if store::db_path(&dir).exists() {
@@ -202,10 +229,7 @@ pub fn dev_reorder_conversations(
 ) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
     match store::open(&dir) {
-        Ok(conn) => {
-            let rows = store::reorder_conversations(&conn, &ids)?;
-            Ok(rows.into_iter().map(summary_from).collect())
-        }
+        Ok(conn) => store::reorder_conversations(&conn, &ids),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -216,6 +240,30 @@ pub fn dev_reorder_conversations(
             );
             save_conversations_json(&state.data_dir, &workspace, &rows)?;
             Ok(rows.into_iter().map(summary_from).collect())
+        }
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_archive_conversation(
+    state: State<'_, AppState>,
+    workspace: String,
+    id: String,
+    archived: bool,
+) -> Result<()> {
+    let dir = conv_store_dir(&state.data_dir, &workspace);
+    match store::open(&dir) {
+        Ok(conn) => store::set_conversation_archived(&conn, &id, archived),
+        Err(e) => {
+            if store::db_path(&dir).exists() {
+                return Err(e);
+            }
+            let mut rows = load_conversations_json(&state.data_dir, &workspace)?;
+            let Some(row) = rows.iter_mut().find(|c| c.id == id) else {
+                return Err(Error::NotFound("conversation not found".into()));
+            };
+            row.archived = archived;
+            save_conversations_json(&state.data_dir, &workspace, &rows)
         }
     }
 }
@@ -321,10 +369,7 @@ pub fn dev_reorder_sidebar(
 ) -> Result<Vec<ConversationSummary>> {
     let conn = open_store(&state.data_dir, &workspace)?;
     store::reorder_sidebar(&conn, &items)?;
-    Ok(store::list_conversations(&conn)?
-        .into_iter()
-        .map(summary_from)
-        .collect())
+    store::list_conversation_summaries(&conn)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -397,6 +442,7 @@ mod tests {
                 journey_id: None,
                 sort_order: 0,
                 effort: None,
+                archived: false,
             }
         }
         let rows = vec![conv("a"), conv("b"), conv("c")];
@@ -427,6 +473,7 @@ mod tests {
             journey_id: None,
             sort_order: 0,
             effort: None,
+            archived: false,
         };
         save_conversations(dir.path(), &ws, &[conv.clone()]).unwrap();
         let loaded = load_conversations(dir.path(), &ws).unwrap();

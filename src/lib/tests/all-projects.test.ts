@@ -6,12 +6,15 @@ import {
   isAppProject,
   isProjectCollapsed,
   isSameProject,
+  projectHasArchived,
   removeProjectGroup,
   renameConversationInGroups,
   toggleCollapsedProject,
   applyLiveProjectChats,
   placeProjectChats,
   upsertProjectGroup,
+  visibleConversations,
+  visibleJourneys,
 } from "../all-projects.ts";
 import type { JourneySummary } from "../journey.ts";
 import type { ConversationSummary } from "../tauri.ts";
@@ -212,6 +215,29 @@ describe("isAppProject", () => {
     assert.equal(isAppProject("/app/projects/demo/src", "/app/projects"), false);
     assert.equal(isAppProject("/Users/me/code", "/app/projects"), false);
     assert.equal(isAppProject("/app/projects/demo", ""), false);
+  });
+});
+
+describe("archived conversations", () => {
+  it("hides archived chats until the archive is open, and only then keeps journeys that still have one", () => {
+    const rows = [
+      chat("live"),
+      { ...chat("old"), archived: true, journey_id: "j1" },
+      { ...chat("gone"), archived: true },
+    ];
+    const journeys = [journey("j1"), journey("empty")];
+    assert.deepEqual(
+      visibleConversations(rows, false).map((row) => row.id),
+      ["live"],
+    );
+    assert.deepEqual(visibleJourneys(journeys, rows, false).map((row) => row.id), ["j1", "empty"]);
+    assert.deepEqual(
+      visibleConversations(rows, true).map((row) => row.id),
+      ["old", "gone"],
+    );
+    assert.deepEqual(visibleJourneys(journeys, rows, true).map((row) => row.id), ["j1"]);
+    assert.equal(projectHasArchived(rows), true);
+    assert.equal(projectHasArchived([chat("live")]), false);
   });
 });
 

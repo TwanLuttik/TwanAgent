@@ -9,6 +9,37 @@ export type ProjectSidebarData = {
 
 export type ProjectChatGroup = ProjectRow & ProjectSidebarData;
 
+export function isArchivedConversation(row: { archived?: boolean }): boolean {
+  return row.archived === true;
+}
+
+/** Chats shown in the normal sidebar, or only the archived ones when the archive is open. */
+export function visibleConversations<T extends { archived?: boolean; journey_id?: string | null }>(
+  conversations: T[],
+  showArchived: boolean,
+): T[] {
+  return conversations.filter((row) => isArchivedConversation(row) === showArchived);
+}
+
+/** Journeys that still have a visible child. Empty journeys stay in the normal list. */
+export function visibleJourneys<T extends { id: string }>(
+  journeys: T[],
+  conversations: { journey_id?: string | null; archived?: boolean }[],
+  showArchived: boolean,
+): T[] {
+  if (!showArchived) return journeys;
+  const ids = new Set(
+    visibleConversations(conversations, true)
+      .map((row) => row.journey_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  return journeys.filter((journey) => ids.has(journey.id));
+}
+
+export function projectHasArchived(conversations: { archived?: boolean }[]): boolean {
+  return conversations.some(isArchivedConversation);
+}
+
 export function isSameProject(a: string, b: string): boolean {
   return Boolean(a) && Boolean(b) && projectKey(a) === projectKey(b);
 }

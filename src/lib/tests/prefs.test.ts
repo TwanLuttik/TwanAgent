@@ -8,7 +8,6 @@ import {
   loadPermission,
   loadSidebarWidth,
   loadFileHoverCard,
-  loadAllProjects,
   loadCollapsedProjects,
   loadComposerDrafts,
   loadConversation,
@@ -30,7 +29,6 @@ import {
   saveWorkspace,
   saveMarkdownOpenMode,
   saveOpenFileTree,
-  setAllProjects,
   setFileHoverCard,
   setPerfOverlay,
 } from "../prefs.ts";
@@ -188,17 +186,6 @@ describe("recent workspaces", () => {
 describe("all projects sidebar", () => {
   beforeEach(() => {
     mockStorage();
-  });
-
-  it("defaults to off when nothing is stored", () => {
-    assert.equal(loadAllProjects(), false);
-  });
-
-  it("saves and reloads the preference", () => {
-    setAllProjects(true);
-    assert.equal(loadAllProjects(), true);
-    setAllProjects(false);
-    assert.equal(loadAllProjects(), false);
   });
 
   it("saves collapsed project keys", () => {

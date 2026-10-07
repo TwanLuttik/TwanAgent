@@ -53,6 +53,14 @@ pub fn mcp_auth_names() -> Result<Vec<String>> {
     Ok(names)
 }
 
+pub(crate) fn read_credentials_map() -> Result<Map<String, Value>> {
+    Ok(read_credentials()?.unwrap_or_default())
+}
+
+pub(crate) fn write_credentials_map(map: &Map<String, Value>) -> Result<()> {
+    write_credentials(map)
+}
+
 pub fn mcp_clear_auth(name: &str) -> Result<()> {
     if !mcp_name_ok(name) {
         return Err(Error::Other("invalid MCP server name".into()));

@@ -1,5 +1,6 @@
 use std::fs;
 
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -19,6 +20,7 @@ fn conv(id: &str, title: &str, messages: Vec<Value>) -> Conversation {
         journey_id: None,
         sort_order: 0,
         effort: None,
+        archived: false,
     }
 }
 
@@ -112,6 +114,60 @@ fn save_keeps_compaction_until_a_new_one_is_written() {
     save_conversation(&conn, &row).unwrap();
     let updated = get_conversation(&conn, "c1").unwrap();
     assert_eq!(updated.compaction.as_ref().unwrap().through, 8);
+}
+
+#[test]
+fn archive_survives_a_later_save() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(&conn, &conv("c1", "Hello", vec![])).unwrap();
+    set_conversation_archived(&conn, "c1", true).unwrap();
+    let mut row = conv("c1", "Hello again", vec![json!({"role":"user","content":"hi"})]);
+    row.archived = false;
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert!(loaded.archived);
+    assert_eq!(loaded.title, "Hello again");
+    let summaries = list_conversation_summaries(&conn).unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert!(summaries[0].archived);
+    set_conversation_archived(&conn, "c1", false).unwrap();
+    assert!(!get_conversation(&conn, "c1").unwrap().archived);
+    assert!(set_conversation_archived(&conn, "missing", true).is_err());
+}
+
+#[test]
+fn older_store_gains_archived_column() {
+    let dir = tempdir().unwrap();
+    let conn = Connection::open(dir.path().join("store.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_migrations (version) VALUES (7);
+         CREATE TABLE conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
+            journey_id TEXT,
+            sort_order INTEGER NOT NULL,
+            context_usage TEXT,
+            compaction TEXT,
+            effort TEXT
+         );
+         INSERT INTO conversations (id, title, created_at, updated_at, kind, sort_order)
+         VALUES ('old', 'Legacy', 't', 't', 'chat', 0);",
+    )
+    .unwrap();
+    drop(conn);
+    let conn = open(dir.path()).unwrap();
+    let rows = list_conversation_summaries(&conn).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].archived);
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
 }
 
 #[test]
@@ -265,7 +321,7 @@ fn move_and_reorder() {
         .collect::<Vec<_>>();
     assert_eq!(kids, ["a", "b"]);
     reorder_conversations(&conn, &["b".into(), "a".into()]).unwrap();
-    let kids = list_conversations(&conn)
+    let kids = list_conversation_summaries(&conn)
         .unwrap()
         .into_iter()
         .filter(|c| c.journey_id.as_deref() == Some(journey.id.as_str()))

@@ -297,17 +297,6 @@ export function setFileHoverCard(on: boolean): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 
-const ALL_PROJECTS_KEY = "twanagent.allProjects";
-
-export function loadAllProjects(): boolean {
-  const raw = localStorage.getItem(ALL_PROJECTS_KEY);
-  return raw === "on" || raw === "1" || raw === "true";
-}
-
-export function setAllProjects(on: boolean): void {
-  localStorage.setItem(ALL_PROJECTS_KEY, on ? "on" : "off");
-}
-
 const ALL_PROJECTS_COLLAPSED_KEY = "twanagent.allProjects.collapsed";
 
 export function loadCollapsedProjects(): string[] {
