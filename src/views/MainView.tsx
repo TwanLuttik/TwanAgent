@@ -9,7 +9,7 @@ import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, ty
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isArchivedConversation, isAppProject, isSameProject, placeProjectChats, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
+import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
@@ -337,7 +337,6 @@ export function MainView() {
 
   useEffect(() => {
     if (!pathsReady || !workspace) return;
-    if (!isAppProject(workspace, projectsRootRef.current)) return;
     setRecents(pushRecentWorkspace(workspace));
   }, [pathsReady, workspace]);
 
@@ -352,8 +351,7 @@ export function MainView() {
         setProjectsRoot(loc.root);
         setLegacyProjectsRoot(loc.legacy_root);
         const saved = loadWorkspace();
-        if (saved && !isAppProject(saved, loc.root)) saveWorkspace("");
-        setRecents(loadRecentWorkspaces().filter((path) => isAppProject(path, loc.root)));
+        if (saved) setRecents(pushRecentWorkspace(saved));
         setCollapsedProjects(loadCollapsedProjects());
         const next = loadWorkspace();
         setWorkspace((current) => (current === next ? current : next));
@@ -410,7 +408,7 @@ export function MainView() {
     void (async () => {
       try {
         const fromDisk = await api.listProjects();
-        const rows = sidebarProjects(fromDisk, projectsRootRef.current);
+        const rows = sidebarProjects(fromDisk);
         const loaded = await Promise.all(
           rows.map(async (row) => {
             const [convs, nextJourneys] = await Promise.all([

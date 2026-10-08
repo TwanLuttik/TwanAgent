@@ -158,7 +158,9 @@ export function AppSidebar() {
                 if (workspace) toggleArchive(workspace);
               }}
               className={`flex size-6 shrink-0 items-center justify-center rounded ${
-                currentArchiveOpen ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash-strong hover:text-ink"
+                currentArchiveOpen
+                  ? "bg-accent/15 text-accent"
+                  : "text-muted hover:bg-wash-strong hover:text-ink"
               }`}
             >
               <Symbol name="archivebox" className="size-3.5" />

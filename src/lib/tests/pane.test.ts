@@ -5,6 +5,7 @@ import {
   closePane,
   defaultPaneState,
   nextTerminalTitle,
+  movePane,
   openPane,
   selectPane,
   type PaneTab,
@@ -110,6 +111,25 @@ describe("closePane", () => {
     const closed = closePane(start, term.id);
     assert.equal(closed.activeId, start.activeId);
     assert.equal(closed.tabs.some((t) => t.kind === "terminal"), false);
+  });
+});
+
+describe("movePane", () => {
+  it("reorders a tab in front of another and leaves the selection", () => {
+    const start = defaultPaneState();
+    const [term, files, git] = start.tabs;
+    const next = movePane(start, git.id, term.id);
+    assert.deepEqual(
+      next.tabs.map((t) => t.id),
+      [git.id, term.id, files.id],
+    );
+    assert.equal(next.activeId, start.activeId);
+  });
+
+  it("ignores unknown ids and a drop on itself", () => {
+    const start = defaultPaneState();
+    assert.equal(movePane(start, "missing", start.tabs[0].id), start);
+    assert.equal(movePane(start, start.tabs[0].id, start.tabs[0].id), start);
   });
 });
 

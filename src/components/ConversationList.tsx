@@ -679,42 +679,40 @@ function ConversationCard({
               <Symbol name="terminal" className="size-3 shrink-0 text-muted" />
             ) : null}
             <span className="block min-w-0 truncate">{row.title}</span>
+            {running ? (
+              <span
+                className="size-2.5 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+                aria-label={preview || "Loading"}
+              />
+            ) : null}
           </span>
           {showPreview ? (
             <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted">{preview}</span>
           ) : null}
         </span>
-        <span className="flex size-2.5 shrink-0 items-center justify-center" aria-hidden={!running}>
-          {running ? (
-            <span
-              className="size-2.5 animate-spin rounded-full border border-ink/35 border-t-transparent"
-              aria-label={preview || "Loading"}
-            />
-          ) : null}
-        </span>
       </button>
-      {onDelete && !overlay ? (
-        <button
-          type="button"
-          aria-label="Delete conversation"
-          onClick={onDelete}
-          className={`size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink ${
-            placeholder ? "invisible" : "invisible group-hover:visible flex"
-          }`}
-        >
-          <Symbol name="xmark" className="size-3" />
-        </button>
-      ) : (
-        <div className="size-6 shrink-0" />
-      )}
       <span
-        className="mr-1.5 w-7 shrink-0 text-right text-[11px] tabular-nums text-muted"
+        className={`mr-1.5 w-7 shrink-0 text-right text-[11px] tabular-nums text-muted ${
+          onDelete && !overlay && !placeholder ? "group-hover:hidden" : ""
+        }`}
         title={
           age && Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined
         }
       >
         {age || ""}
       </span>
+      {onDelete && !overlay ? (
+        <button
+          type="button"
+          aria-label="Delete conversation"
+          onClick={onDelete}
+          className={`mr-1 hidden size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink ${
+            placeholder ? "" : "group-hover:flex"
+          }`}
+        >
+          <Symbol name="xmark" className="size-3" />
+        </button>
+      ) : null}
     </div>
   );
 }

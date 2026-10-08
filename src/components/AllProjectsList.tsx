@@ -118,13 +118,30 @@ export function AllProjectsList({
                     onToggleArchive(group.path);
                   }}
                   className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded ${
-                    showArchived ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash-strong hover:text-ink"
+                    showArchived
+                      ? "bg-accent/15 text-accent"
+                      : "text-muted hover:bg-wash-strong hover:text-ink"
                   }`}
                 >
                   <Symbol name="archivebox" className="size-3.5" />
                 </button>
               ) : null}
             </div>
+            {closed || !showArchived ? null : (
+              <div className="mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/10 px-2 py-1 text-accent">
+                <Symbol name="archivebox" className="size-3 shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold tracking-[0.04em] uppercase">
+                  Archived
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onToggleArchive(group.path)}
+                  className="shrink-0 rounded px-1 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15"
+                >
+                  Back
+                </button>
+              </div>
+            )}
             {closed ? null : visibleEmpty ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}

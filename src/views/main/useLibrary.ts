@@ -275,8 +275,12 @@ function clearWorkspace() {
 async function deleteProjectFromSidebar(path: string) {
   setProjectSettings((current) => (current && isSameProject(current.path, path) ? null : current));
   try {
+    // App-owned folders are deleted. A folder added from elsewhere is only forgotten.
     if (isAppProject(path, projectsRoot) || isAppProject(path, legacyProjectsRoot)) {
       await api.deleteProject(path);
+    } else {
+      await api.removeProject(path);
+      await api.forgetWorkspace(path).catch(() => false);
     }
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });

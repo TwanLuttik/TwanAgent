@@ -72,6 +72,10 @@ export function usageDbReset(): Promise<UsageDbInfo> {
   return invoke("dev_usage_db_reset");
 }
 
+export function usageDbOpen(): Promise<void> {
+  return invoke("dev_usage_db_open");
+}
+
 export function openedWorkspaces(): Promise<string[]> {
   return invoke("dev_opened_workspaces");
 }
@@ -172,6 +176,22 @@ export function projectsLocation(): Promise<ProjectsLocation> {
 
 export function listProjects(): Promise<FolderSuggestion[]> {
   return invoke("dev_list_projects");
+}
+
+export function addProject(path: string): Promise<FolderSuggestion> {
+  return invoke("dev_app_add_project", { path });
+}
+
+export function removeProject(path: string): Promise<boolean> {
+  return invoke("dev_app_remove_project", { path });
+}
+
+export function getAppSetting(key: string): Promise<string | null> {
+  return invoke("dev_app_get_setting", { key });
+}
+
+export function setAppSetting(key: string, value: string): Promise<void> {
+  return invoke("dev_app_set_setting", { key, value });
 }
 
 export function openFolder(path: string): Promise<string> {
@@ -279,6 +299,22 @@ export type FilePreview = {
 
 export function filePreview(workspace: string, path: string): Promise<FilePreview> {
   return invoke("dev_file_preview", { workspace, path });
+}
+
+export function renamePath(workspace: string, path: string, name: string): Promise<string> {
+  return invoke("dev_rename_path", { workspace, path, name });
+}
+
+export function movePaths(workspace: string, paths: string[], dest: string): Promise<string[]> {
+  return invoke("dev_move_paths", { workspace, paths, dest });
+}
+
+export function deletePaths(workspace: string, paths: string[]): Promise<void> {
+  return invoke("dev_delete_paths", { workspace, paths });
+}
+
+export function createDir(workspace: string, parent: string, name: string): Promise<string> {
+  return invoke("dev_create_dir", { workspace, parent, name });
 }
 
 export function writeFile(workspace: string, path: string, contents: string): Promise<void> {

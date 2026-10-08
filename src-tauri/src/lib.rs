@@ -1,3 +1,4 @@
+mod appdb;
 mod dev;
 mod error;
 mod grok_cli;
@@ -98,6 +99,10 @@ pub fn run() {
             dev::commands::dev_resolve_file,
             dev::commands::dev_existing_files,
             dev::commands::dev_file_preview,
+            dev::commands::dev_rename_path,
+            dev::commands::dev_move_paths,
+            dev::commands::dev_delete_paths,
+            dev::commands::dev_create_dir,
             dev::commands::dev_write_file,
             dev::commands::dev_edit_file,
             dev::commands::dev_git_status,
@@ -131,10 +136,16 @@ pub fn run() {
             pty::dev_pty_write_bytes,
             pty::dev_pty_resize,
             pty::dev_pty_kill,
+            appdb::dev_app_list_projects,
+            appdb::dev_app_add_project,
+            appdb::dev_app_remove_project,
+            appdb::dev_app_get_setting,
+            appdb::dev_app_set_setting,
             usage::dev_usage_record,
             usage::dev_usage_list,
             usage::dev_usage_db_info,
             usage::dev_usage_db_reset,
+            usage::dev_usage_db_open,
             image::dev_prepare_image,
             image::dev_prepare_image_path,
             image::dev_image_data_url,

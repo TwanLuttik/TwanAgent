@@ -10,16 +10,21 @@ import {
   type PermissionMode,
 } from "../lib/permission";
 import {
+  loadExpandEdits,
   loadFileHoverCard,
   loadMarkdownOpenMode,
   loadPerfOverlay,
   loadSpaceCorner,
+  loadSpaceCornerScene,
   saveMarkdownOpenMode,
+  setExpandEdits,
   setFileHoverCard,
   setPerfOverlay,
   setSpaceCorner,
+  setSpaceCornerScene,
   type MarkdownOpenMode,
 } from "../lib/prefs";
+import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
 import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
 import type { GrokCliInfo, UsageDbInfo } from "../lib/tauri";
@@ -52,8 +57,14 @@ export function SettingsView({
   const { setFlash } = useApp();
   const [theme, setThemeSel] = useState<ThemeSelection>(() => loadTheme());
   const [spaceArt, setSpaceArt] = useState(() => loadSpaceCorner());
+  const [spaceScene, setSpaceScene] = useState<SceneId>(() => {
+    const stored = loadSpaceCornerScene();
+    return isSceneId(stored) ? stored : DEFAULT_SCENE;
+  });
+  const [spaceVideo, setSpaceVideo] = useState(() => isSceneId(loadSpaceCornerScene()));
   const [fileHoverCard, setFileHoverCardOn] = useState(() => loadFileHoverCard());
   const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
+  const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const version = __APP_VERSION_LABEL__;
   const [xaiKey, setXaiKey] = useState("");
@@ -62,6 +73,7 @@ export function SettingsView({
   const [cli, setCli] = useState<GrokCliInfo | null>(null);
   const [db, setDb] = useState<UsageDbInfo | null>(null);
   const [resettingDb, setResettingDb] = useState(false);
+  const [openingDb, setOpeningDb] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
   const [addingFolder, setAddingFolder] = useState(false);
@@ -144,13 +156,47 @@ export function SettingsView({
               <ThemePicker value={theme} onChange={setThemeSel} />
               <Toggle
                 title="Space corner"
-                text="Show a faded starfield in the top-left of the sidebar."
+                text="Show a faded picture in the top-left of the sidebar."
                 checked={spaceArt}
                 onChange={(next) => {
                   setSpaceArt(next);
                   setSpaceCorner(next);
                 }}
               />
+              <Toggle
+                title="Video"
+                text="Play an animated ascii scene from ascii.rest instead of the picture."
+                checked={spaceVideo}
+                onChange={(next) => {
+                  setSpaceVideo(next);
+                  setSpaceCornerScene(next ? spaceScene : "");
+                  if (next && !spaceArt) {
+                    setSpaceArt(true);
+                    setSpaceCorner(true);
+                  }
+                }}
+              />
+              {spaceVideo ? (
+                <label className="grid gap-1.5">
+                  <span className="block text-[13px] font-medium text-ink">Scene</span>
+                  <select
+                    value={spaceScene}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      if (!isSceneId(next)) return;
+                      setSpaceScene(next);
+                      setSpaceCornerScene(next);
+                    }}
+                    className="h-8 rounded-md border border-line bg-canvas px-2 text-[13px] text-ink outline-none focus:border-accent"
+                  >
+                    {SCENES.map((scene) => (
+                      <option key={scene.id} value={scene.id}>
+                        {scene.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <Toggle
                 title="File hover cards"
                 text="Show a small preview when you hover a file name in chat."
@@ -167,6 +213,15 @@ export function SettingsView({
                 onChange={(next) => {
                   setPerfOverlayOn(next);
                   setPerfOverlay(next);
+                }}
+              />
+              <Toggle
+                title="Expand edits"
+                text="Open file edit diffs in chat. Reads, lists, and commands stay collapsed."
+                checked={expandEdits}
+                onChange={(next) => {
+                  setExpandEditsOn(next);
+                  setExpandEdits(next);
                 }}
               />
               <div className="grid gap-1.5">
@@ -289,7 +344,7 @@ export function SettingsView({
               text="Usage history is kept in a local SQLite file. Resetting it clears the usage chart and does not delete chats."
             >
               <Card>
-                <Row label="File" value={db?.path || "Checking…"} mono />
+                <Row label="File" value={db?.path || "Checking…"} title={db?.path} mono />
                 <Row label="Size" value={db ? formatBytes(db.bytes) : "—"} />
                 <Row label="Status" value={db ? (db.exists ? "On disk" : "Not created yet") : "—"} ok={db?.exists} />
               </Card>
@@ -321,7 +376,19 @@ export function SettingsView({
                   </div>
                 </div>
               ) : (
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
+                  <Button
+                    disabled={!db || openingDb}
+                    onClick={() => {
+                      setOpeningDb(true);
+                      void api
+                        .usageDbOpen()
+                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                        .finally(() => setOpeningDb(false));
+                    }}
+                  >
+                    {openingDb ? "Opening…" : "Open folder"}
+                  </Button>
                   <Button variant="danger" disabled={!db?.exists || resettingDb} onClick={() => setConfirmReset(true)}>
                     Reset database
                   </Button>
@@ -441,11 +508,26 @@ function Card({ children }: { children: ReactNode }) {
   return <div className="grid gap-1.5 rounded-md border border-line bg-panel px-3 py-2.5">{children}</div>;
 }
 
-function Row({ label, value, mono, ok }: { label: string; value: string; mono?: boolean; ok?: boolean }) {
+function Row({
+  label,
+  value,
+  mono,
+  ok,
+  title,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  ok?: boolean;
+  title?: string;
+}) {
   return (
     <div className="grid grid-cols-[72px_minmax(0,1fr)] items-baseline gap-2">
       <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
-      <span className={`min-w-0 truncate text-[12px] ${mono ? "font-mono" : ""} ${ok ? "text-ok" : "text-ink"}`}>
+      <span
+        title={title}
+        className={`min-w-0 truncate text-[12px] ${mono ? "font-mono" : ""} ${ok ? "text-ok" : "text-ink"}`}
+      >
         {value}
       </span>
     </div>

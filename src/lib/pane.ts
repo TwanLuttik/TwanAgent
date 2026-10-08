@@ -75,6 +75,17 @@ export function selectPane(state: PaneState, id: string): PaneState {
   return { ...state, activeId: id };
 }
 
+export function movePane(state: PaneState, fromId: string, toId: string): PaneState {
+  if (fromId === toId) return state;
+  const from = state.tabs.findIndex((t) => t.id === fromId);
+  const to = state.tabs.findIndex((t) => t.id === toId);
+  if (from < 0 || to < 0) return state;
+  const tabs = state.tabs.slice();
+  const [tab] = tabs.splice(from, 1);
+  tabs.splice(to, 0, tab);
+  return { ...state, tabs };
+}
+
 function terminalNumber(title: string): number {
   if (title === "Terminal") return 1;
   const match = /^Terminal (\d+)$/.exec(title);

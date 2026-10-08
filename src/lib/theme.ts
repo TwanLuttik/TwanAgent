@@ -35,6 +35,7 @@ export type ThemeSelection =
 export type Rgb = { r: number; g: number; b: number };
 
 const KEY = "twanagent.theme";
+export const THEME_SETTING_KEY = "appearance.theme";
 const DEFAULT_ACCENT = "#007aff";
 
 export const STATUS = {
@@ -336,9 +337,9 @@ function readCustom(raw: unknown): StoredCustom | undefined {
   };
 }
 
-function readStored(): StoredTheme {
+export function parseStoredTheme(rawText: string | null | undefined): StoredTheme {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "");
+    const raw = JSON.parse(rawText ?? "");
     if (!raw || typeof raw !== "object") return { id: "finder" };
     const custom = readCustom(raw.custom) ?? (raw.id === "custom" ? readCustom(raw) : undefined);
     if (raw.id === "custom" && custom) return { id: "custom", custom };
@@ -349,19 +350,18 @@ function readStored(): StoredTheme {
   return { id: "finder" };
 }
 
-export function loadTheme(): ThemeSelection {
-  const stored = readStored();
+function readStored(): StoredTheme {
+  return parseStoredTheme(localStorage.getItem(KEY));
+}
+
+export function selectionFromStored(stored: StoredTheme): ThemeSelection {
   if (stored.id === "custom" && stored.custom) {
     return { id: "custom", ...stored.custom };
   }
   return { id: stored.id === "custom" ? "finder" : stored.id };
 }
 
-export function loadStoredCustom(): StoredCustom | null {
-  return readStored().custom ?? null;
-}
-
-export function saveTheme(sel: ThemeSelection): void {
+export function serializeTheme(sel: ThemeSelection): string {
   const prev = readStored();
   const custom: StoredCustom | undefined =
     sel.id === "custom"
@@ -373,10 +373,33 @@ export function saveTheme(sel: ThemeSelection): void {
         }
       : prev.custom;
   const stored: StoredTheme = custom ? { id: sel.id, custom } : { id: sel.id };
-  localStorage.setItem(KEY, JSON.stringify(stored));
+  return JSON.stringify(stored);
+}
+
+export function loadTheme(): ThemeSelection {
+  return selectionFromStored(readStored());
+}
+
+export function applyStoredTheme(raw: string | null | undefined): ThemeSelection {
+  const stored = parseStoredTheme(raw);
+  const sel = selectionFromStored(stored);
+  localStorage.setItem(KEY, JSON.stringify(stored.custom ? { id: stored.id, custom: stored.custom } : { id: stored.id }));
+  applyTheme(sel);
+  return sel;
+}
+
+export function loadStoredCustom(): StoredCustom | null {
+  return readStored().custom ?? null;
+}
+
+export function saveTheme(sel: ThemeSelection): void {
+  localStorage.setItem(KEY, serializeTheme(sel));
 }
 
 export function setTheme(sel: ThemeSelection): void {
   saveTheme(sel);
   applyTheme(sel);
+  void import("./tauri.ts")
+    .then((api) => api.setAppSetting(THEME_SETTING_KEY, serializeTheme(sel)))
+    .catch(() => undefined);
 }

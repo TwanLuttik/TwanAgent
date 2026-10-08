@@ -7,6 +7,7 @@ import {
   SIDEBAR_MIN,
   loadPermission,
   loadSidebarWidth,
+  loadExpandEdits,
   loadFileHoverCard,
   loadCollapsedProjects,
   loadComposerDrafts,
@@ -14,6 +15,8 @@ import {
   loadRecentWorkspaces,
   loadWorkspace,
   loadPerfOverlay,
+  loadSpaceCorner,
+  loadSpaceCornerScene,
   loadGitChangesView,
   loadMarkdownOpenMode,
   loadOpenFileTree,
@@ -29,8 +32,11 @@ import {
   saveWorkspace,
   saveMarkdownOpenMode,
   saveOpenFileTree,
+  setExpandEdits,
   setFileHoverCard,
   setPerfOverlay,
+  setSpaceCorner,
+  setSpaceCornerScene,
 } from "../prefs.ts";
 
 function mockStorage() {
@@ -47,6 +53,34 @@ function mockStorage() {
   };
   Object.defineProperty(globalThis, "localStorage", { value: localStorage, configurable: true });
 }
+
+describe("space corner", () => {
+  beforeEach(() => {
+    mockStorage();
+    Object.defineProperty(globalThis, "document", {
+      value: { documentElement: { dataset: {} as Record<string, string> } },
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, "window", {
+      value: { dispatchEvent: () => true },
+      configurable: true,
+    });
+  });
+
+  it("defaults the picture on and the scene off", () => {
+    assert.equal(loadSpaceCorner(), true);
+    assert.equal(loadSpaceCornerScene(), "");
+  });
+
+  it("saves the picture toggle and the selected scene", () => {
+    setSpaceCorner(false);
+    assert.equal(loadSpaceCorner(), false);
+    setSpaceCornerScene("aurora-fjord");
+    assert.equal(loadSpaceCornerScene(), "aurora-fjord");
+    setSpaceCornerScene("");
+    assert.equal(loadSpaceCornerScene(), "");
+  });
+});
 
 describe("sidebar width", () => {
   beforeEach(() => {
@@ -245,6 +279,34 @@ describe("performance overlay", () => {
     assert.equal(loadPerfOverlay(), true);
     setPerfOverlay(false);
     assert.equal(loadPerfOverlay(), false);
+  });
+});
+
+describe("expand edits", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to off when nothing is stored", () => {
+    assert.equal(loadExpandEdits(), false);
+  });
+
+  it("saves and reloads the preference", () => {
+    setExpandEdits(true);
+    assert.equal(loadExpandEdits(), true);
+    setExpandEdits(false);
+    assert.equal(loadExpandEdits(), false);
+  });
+
+  it("treats on/true/1 as enabled", () => {
+    localStorage.setItem("twanagent.expandEdits", "on");
+    assert.equal(loadExpandEdits(), true);
+    localStorage.setItem("twanagent.expandEdits", "true");
+    assert.equal(loadExpandEdits(), true);
+    localStorage.setItem("twanagent.expandEdits", "1");
+    assert.equal(loadExpandEdits(), true);
+    localStorage.setItem("twanagent.expandEdits", "off");
+    assert.equal(loadExpandEdits(), false);
   });
 });
 

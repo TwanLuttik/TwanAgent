@@ -181,6 +181,16 @@ html[data-space-corner="off"] .sidebar-space {
   opacity: 0.48;
 }
 
+.sidebar-space-scene {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 168%;
+  max-width: none;
+  height: auto;
+  opacity: 0.72;
+}
+
 .sidebar-space-dots {
   background-image:
     radial-gradient(circle, rgb(255 255 255 / 0.5) 0.55px, transparent 0.7px),
@@ -198,6 +208,10 @@ html[data-theme-mode="dark"] .sidebar-space-art {
 html[data-theme-mode="light"] .sidebar-space-art {
   mix-blend-mode: multiply;
   opacity: 0.2;
+}
+
+html[data-theme-mode="light"] .sidebar-space-scene {
+  opacity: 0.42;
 }
 
 html[data-theme-mode="light"] .sidebar-space-dots {

@@ -5,6 +5,7 @@ import {
   foldToolTrailRows,
   type ToolFileChange,
 } from "../lib/core";
+import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
 import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
@@ -167,11 +168,18 @@ function ToolCallBlock({
   detail: string;
   spinning?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const hasDiff = change != null && (change.added.length > 0 || change.removed.length > 0);
+  const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
+  const [open, setOpen] = useState(() => hasDiff && expandEdits);
   const command = detail.trim();
   const canOpen = hasDiff || command.length > 0;
   const show = open && canOpen;
+
+  useEffect(() => subscribePrefs(() => setExpandEditsOn(loadExpandEdits())), []);
+  useEffect(() => {
+    if (!hasDiff) return;
+    setOpen(expandEdits);
+  }, [expandEdits, hasDiff]);
   return (
     <div className={show ? "py-0.5" : undefined}>
       <button

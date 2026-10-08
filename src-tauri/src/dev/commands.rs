@@ -4,7 +4,8 @@ use tauri::{AppHandle, Manager, State};
 
 use super::cmd::run_command;
 use super::files::{
-    edit_file, existing_files, file_preview, list_dir, read_file, resolve_file, write_file,
+    create_dir, delete_paths, edit_file, existing_files, file_preview, list_dir, move_path,
+    read_file, rename_path, resolve_file, write_file,
 };
 use super::git::{git_branches, git_diff, git_status, git_switch};
 use super::paths::{expand_folder_path, path_string};
@@ -46,7 +47,13 @@ pub fn dev_projects_location(state: State<'_, AppState>) -> ProjectsLocation {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_list_projects(state: State<'_, AppState>) -> Vec<FolderSuggestion> {
-    list_projects(&project_roots(&state))
+    match crate::appdb::open(&state.data_dir).and_then(|conn| crate::appdb::list_projects(&conn)) {
+        Ok(rows) => rows,
+        Err(err) => {
+            eprintln!("app database project list failed: {err}");
+            list_projects(&project_roots(&state))
+        }
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -64,11 +71,22 @@ pub fn dev_forget_workspace(state: State<'_, AppState>, path: String) -> Result<
     state.forget_workspace(&root)
 }
 
+fn remember_project(state: &AppState, root: &Path) {
+    let Ok(conn) = crate::appdb::open(&state.data_dir) else {
+        return;
+    };
+    if let Err(err) = crate::appdb::add_project(&conn, root) {
+        eprintln!("could not save project: {err}");
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_open_folder(app: AppHandle, path: String) -> Result<String> {
     let root = expand_folder_path(&path)?;
     let state = app.state::<AppState>();
-    Ok(path_string(&state.register_workspace(&app, &root)?))
+    let canon = state.register_workspace(&app, &root)?;
+    remember_project(&state, &canon);
+    Ok(path_string(&canon))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -80,7 +98,9 @@ pub fn dev_suggest_folders(path: String) -> Vec<FolderSuggestion> {
 pub fn dev_create_project(app: AppHandle, name: String) -> Result<String> {
     let state = app.state::<AppState>();
     let root = create_project(&state.projects_root, &name)?;
-    Ok(path_string(&state.register_workspace(&app, &root)?))
+    let canon = state.register_workspace(&app, &root)?;
+    remember_project(&state, &canon);
+    Ok(path_string(&canon))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -88,14 +108,27 @@ pub async fn dev_clone_repo(app: AppHandle, url: String, name: Option<String>) -
     crate::state::run_blocking(move || {
         let state = app.state::<AppState>();
         let root = clone_repo(&state.projects_root, &url, name.as_deref())?;
-        Ok(path_string(&state.register_workspace(&app, &root)?))
+        let canon = state.register_workspace(&app, &root)?;
+        remember_project(&state, &canon);
+        Ok(path_string(&canon))
     })
     .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()> {
-    let dest = delete_project(&project_roots(&state), &path)?;
+    if let Ok(conn) = crate::appdb::open(&state.data_dir) {
+        let _ = crate::appdb::remove_project(&conn, &path);
+    }
+    if let Ok(root) = expand_folder_path(&path) {
+        let _ = state.forget_workspace(&root);
+    }
+    // Only folders inside the app projects directory are deleted from disk.
+    // A project added from somewhere else is only removed from the app database.
+    let dest = match delete_project(&project_roots(&state), &path) {
+        Ok(dest) => dest,
+        Err(_) => return Ok(()),
+    };
     let mut wipe = super::project_location::forget_project(&state.data_dir, &path);
     wipe.push(path_string(&dest));
     for item in wipe {
@@ -210,6 +243,65 @@ pub async fn dev_file_preview(
 ) -> Result<FilePreview> {
     let root = state.require_workspace(&workspace)?;
     off_main(move || file_preview(&root, &path)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_rename_path(
+    state: State<'_, AppState>,
+    workspace: String,
+    path: String,
+    name: String,
+) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    off_main(move || rename_path(&root, &path, &name)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_move_paths(
+    state: State<'_, AppState>,
+    workspace: String,
+    paths: Vec<String>,
+    dest: String,
+) -> Result<Vec<String>> {
+    let root = state.require_workspace(&workspace)?;
+    off_main(move || {
+        let mut moved = Vec::new();
+        for path in &paths {
+            let name = std::path::Path::new(path.trim_matches('/'))
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or_else(|| Error::Other("invalid path".into()))?;
+            let to = if dest.trim_matches('/').is_empty() {
+                name
+            } else {
+                format!("{}/{}", dest.trim_matches('/'), name)
+            };
+            moved.push(move_path(&root, path, &to)?);
+        }
+        Ok(moved)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_delete_paths(
+    state: State<'_, AppState>,
+    workspace: String,
+    paths: Vec<String>,
+) -> Result<()> {
+    let root = state.require_workspace(&workspace)?;
+    off_main(move || delete_paths(&root, &paths)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_create_dir(
+    state: State<'_, AppState>,
+    workspace: String,
+    parent: String,
+    name: String,
+) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    off_main(move || create_dir(&root, &parent, &name)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]

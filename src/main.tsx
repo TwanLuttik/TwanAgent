@@ -5,10 +5,22 @@ import "./index.css";
 import { installDocumentScrollLock } from "./lib/document-scroll";
 import { installOverlayScroll } from "./lib/overlay-scroll";
 import { applyFileHoverCard, applySpaceCorner, loadFileHoverCard, loadSpaceCorner } from "./lib/prefs";
-import { applyTheme, loadTheme } from "./lib/theme";
+import { applyStoredTheme, applyTheme, loadTheme, serializeTheme, THEME_SETTING_KEY } from "./lib/theme";
+import { getAppSetting, setAppSetting } from "./lib/tauri";
 import { AppProvider } from "./state/app-state";
 
 applyTheme(loadTheme());
+void getAppSetting(THEME_SETTING_KEY)
+  .then((stored) => {
+    if (stored) {
+      applyStoredTheme(stored);
+      return;
+    }
+    const local = localStorage.getItem("twanagent.theme");
+    if (local) void setAppSetting(THEME_SETTING_KEY, local);
+    else void setAppSetting(THEME_SETTING_KEY, serializeTheme(loadTheme()));
+  })
+  .catch(() => undefined);
 applySpaceCorner(loadSpaceCorner());
 applyFileHoverCard(loadFileHoverCard());
 installOverlayScroll();

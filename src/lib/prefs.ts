@@ -3,7 +3,10 @@ import type { MarkdownOpenMode } from "./editor";
 
 export type { MarkdownOpenMode };
 
+export const PREFS_EVENT = "twanagent-prefs";
+
 const SPACE_CORNER_KEY = "twanagent.spaceCorner";
+const SPACE_CORNER_SCENE_KEY = "twanagent.spaceCornerScene";
 
 export function loadSpaceCorner(): boolean {
   const raw = localStorage.getItem(SPACE_CORNER_KEY);
@@ -17,6 +20,17 @@ export function applySpaceCorner(on: boolean): void {
 export function setSpaceCorner(on: boolean): void {
   localStorage.setItem(SPACE_CORNER_KEY, on ? "on" : "off");
   applySpaceCorner(on);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
+export function loadSpaceCornerScene(): string {
+  return localStorage.getItem(SPACE_CORNER_SCENE_KEY) ?? "";
+}
+
+export function setSpaceCornerScene(id: string): void {
+  if (id) localStorage.setItem(SPACE_CORNER_SCENE_KEY, id);
+  else localStorage.removeItem(SPACE_CORNER_SCENE_KEY);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 
 const WORKSPACE_KEY = "twanagent.workspace";
@@ -280,7 +294,6 @@ export function saveGitChangesView(view: GitChangesView): void {
 }
 
 const FILE_HOVER_CARD_KEY = "twanagent.fileHoverCard";
-const PREFS_EVENT = "twanagent-prefs";
 
 export function loadFileHoverCard(): boolean {
   const raw = localStorage.getItem(FILE_HOVER_CARD_KEY);
@@ -354,6 +367,18 @@ export function loadPerfOverlay(): boolean {
 
 export function setPerfOverlay(on: boolean): void {
   localStorage.setItem(PERF_OVERLAY_KEY, on ? "on" : "off");
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
+const EXPAND_EDITS_KEY = "twanagent.expandEdits";
+
+export function loadExpandEdits(): boolean {
+  const raw = localStorage.getItem(EXPAND_EDITS_KEY);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function setExpandEdits(on: boolean): void {
+  localStorage.setItem(EXPAND_EDITS_KEY, on ? "on" : "off");
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 

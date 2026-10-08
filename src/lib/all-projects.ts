@@ -176,13 +176,12 @@ export function isAppProject(path: string, projectsRoot: string): boolean {
   return Boolean(rest) && !rest.includes("/");
 }
 
-/** Sidebar projects are only the app's own project folders. External recents stay out of the list. */
-export function sidebarProjects(fromDisk: ProjectRow[], projectsRoot: string): ProjectRow[] {
-  if (!projectsRoot) return [];
+/** Saved projects, including folders outside the default projects directory. Duplicate paths collapse. */
+export function sidebarProjects(fromDisk: ProjectRow[], _projectsRoot = ""): ProjectRow[] {
   const seen = new Set<string>();
   const out: ProjectRow[] = [];
   for (const row of fromDisk) {
-    if (!isAppProject(row.path, projectsRoot)) continue;
+    if (!row.path.trim()) continue;
     const key = projectKey(row.path);
     if (seen.has(key)) continue;
     seen.add(key);

@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 use tauri::{Manager, Runtime};
 
+use crate::appdb;
 use crate::error::{Error, Result};
 use crate::workspace::OpenedRoots;
 
@@ -17,6 +18,20 @@ impl AppState {
     pub fn load(data_dir: PathBuf) -> Self {
         let location = crate::dev::project_location::prepare(&data_dir);
         let opened = OpenedRoots::load(&data_dir, location.root.clone());
+        if let Ok(conn) = appdb::open(&data_dir) {
+            let opened_paths: Vec<String> = opened
+                .list()
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            if let Err(err) = appdb::import_legacy_projects(
+                &conn,
+                &[location.root.as_path(), location.legacy.as_path()],
+                &opened_paths,
+            ) {
+                eprintln!("app database project import failed: {err}");
+            }
+        }
         Self {
             data_dir,
             projects_root: location.root,

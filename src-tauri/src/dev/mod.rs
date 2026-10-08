@@ -16,3 +16,7 @@ mod types;
 pub use types::{
     Conversation, ConversationSummary, DevChatUsage, DevCompaction, Journey, SidebarItem,
 };
+
+pub(crate) use mcp::open_path;
+pub(crate) use paths::{expand_folder_path, path_string};
+pub(crate) use projects::FolderSuggestion;

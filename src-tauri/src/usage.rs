@@ -40,6 +40,19 @@ fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("usage.db")
 }
 
+pub fn db_folder(data_dir: &Path) -> PathBuf {
+    db_path(data_dir)
+        .parent()
+        .unwrap_or(data_dir)
+        .to_path_buf()
+}
+
+pub fn open_db_folder(data_dir: &Path) -> Result<()> {
+    let folder = db_folder(data_dir);
+    std::fs::create_dir_all(&folder)?;
+    crate::dev::open_path(&folder)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UsageDbInfo {
     pub path: String,
@@ -233,6 +246,11 @@ pub fn dev_usage_db_reset(state: State<'_, AppState>) -> Result<UsageDbInfo> {
     reset_db(&state.data_dir)
 }
 
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_usage_db_open(state: State<'_, AppState>) -> Result<()> {
+    open_db_folder(&state.data_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +298,7 @@ mod tests {
         assert!(!before.exists);
         assert_eq!(before.bytes, 0);
         assert!(before.path.ends_with("usage.db"));
+        assert_eq!(db_folder(dir.path()), dir.path());
         record(dir.path(), rec("/proj/alpha", 10, 1)).unwrap();
         let saved = db_info(dir.path());
         assert!(saved.exists);

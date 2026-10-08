@@ -56,9 +56,10 @@ export function FolderDialog({
   useEffect(() => {
     if (!showProjects) return;
     let gone = false;
-    void Promise.all([api.listProjects(), api.projectsLocation().catch(() => null)])
-      .then(([rows, location]) => {
-        if (!gone) setProjects(sidebarProjects(rows, location?.root ?? ""));
+    void api
+      .listProjects()
+      .then((rows) => {
+        if (!gone) setProjects(sidebarProjects(rows));
       })
       .catch(() => {
         if (!gone) setProjects([]);
