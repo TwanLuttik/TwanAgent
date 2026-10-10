@@ -141,6 +141,12 @@ export type Journey = {
 };
 export type SidebarItem = { kind: "journey" | "conversation" | string; id: string };
 export type ToolCall = { id: string; name: string; arguments: string };
+export type ApiThinkingBlock = {
+  type: "thinking" | "redacted_thinking" | string;
+  thinking?: string;
+  signature?: string;
+  data?: string;
+};
 export type ApiChatUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -176,6 +182,7 @@ export type ChatEvent = {
   text?: string | null;
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
+  thinking?: ApiThinkingBlock[] | null;
 };
 
 export type WebSearchEvent = {

@@ -166,6 +166,9 @@ pub struct DevChatEvent {
     pub tool_calls: Option<Vec<DevToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<DevChatUsage>,
+    /// Signed Claude thinking blocks for the next request. Not used by Grok.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Vec<crate::anthropic::ThinkingBlock>>,
 }
 
 /// One website found while a web search is still running.

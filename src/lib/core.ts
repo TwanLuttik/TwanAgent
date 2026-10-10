@@ -22,11 +22,21 @@ export type ChatImage = {
   dataUrl?: string;
 };
 
+/** One Anthropic thinking block, replayed unmodified on the next request. */
+export type ThinkingBlock = {
+  type: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  data?: string;
+};
+
 export type ChatMessage = {
   role: ChatRole;
   content?: string | null;
-  /** Model reasoning for this assistant step. Kept in the transcript, not sent back to the API. */
+  /** Display text for this assistant step. Grok does not send it back. */
   reasoning?: string;
+  /** Signed Claude thinking blocks. Required, unchanged, on the next Claude request. */
+  thinking?: ThinkingBlock[];
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   error?: boolean;
@@ -961,6 +971,8 @@ export type ApiChatMessage = {
   content?: string | null | ApiContentPart[];
   tool_calls?: ApiToolCall[];
   tool_call_id?: string;
+  /** Signed Claude thinking blocks. Absent for Grok. */
+  thinking?: ThinkingBlock[];
 };
 
 export function toApiToolCall(call: ChatToolCall): ApiToolCall {
@@ -985,11 +997,12 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
         content: msg.content ?? "",
       };
     }
-    if (msg.role === "assistant" && msg.tool_calls?.length) {
+    if (msg.role === "assistant" && (msg.tool_calls?.length || msg.thinking?.length)) {
       return {
         role: "assistant",
         content: msg.content?.trim() ? msg.content : null,
-        tool_calls: msg.tool_calls.map(toApiToolCall),
+        ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.map(toApiToolCall) } : {}),
+        ...(msg.thinking?.length ? { thinking: msg.thinking } : {}),
       };
     }
     if (isCompactionSummary(msg)) {

@@ -236,7 +236,8 @@ fn older_store_gains_archived_column() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    // Opening any older store runs every later migration, including composer settings.
+    assert_eq!(version, 9);
 }
 
 #[test]

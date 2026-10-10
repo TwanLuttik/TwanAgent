@@ -546,6 +546,25 @@ describe("tool helpers", () => {
     assert.equal(out[0]?.content, "Done.");
   });
 
+  it("sends signed Claude thinking blocks back unchanged", () => {
+    const thinking = [
+      { type: "thinking" as const, thinking: "Look first.", signature: "sig-1" },
+      { type: "redacted_thinking" as const, data: "opaque" },
+    ];
+    const out = toApiMessages([
+      {
+        role: "assistant",
+        content: "Done.",
+        reasoning: "Look first.",
+        thinking,
+        tool_calls: [{ id: "toolu_1", name: "read_file", arguments: '{"path":"a.ts"}' }],
+      },
+    ]);
+    assert.equal("reasoning" in (out[0] ?? {}), false);
+    assert.deepEqual(out[0]?.thinking, thinking);
+    assert.equal(out[0]?.tool_calls?.[0]?.id, "toolu_1");
+  });
+
   it("keeps committed tool calls above newly streaming text", () => {
     const items = liveTranscriptItems(
       [

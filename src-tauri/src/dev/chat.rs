@@ -330,6 +330,7 @@ pub async fn dev_chat_start(
                     text: Some(e.to_string()),
                     tool_calls: None,
                     usage: None,
+                    thinking: None,
                 },
             );
         }
@@ -383,6 +384,7 @@ async fn stream_anthropic(
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut tools: Vec<crate::anthropic::SseTool> = Vec::new();
+    let mut thinking = crate::anthropic::ThinkingAccum::default();
     let mut last_usage: Option<DevChatUsage> = None;
     let mut emitted_text = false;
     let mut emitted_reasoning = false;
@@ -396,6 +398,7 @@ async fn stream_anthropic(
                     text: Some("Stopped.".into()),
                     tool_calls: None,
                     usage: None,
+                    thinking: None,
                 },
             );
             return Ok(());
@@ -404,7 +407,7 @@ async fn stream_anthropic(
             Ok(chunk) => chunk,
             Err(err) => {
                 if emitted_text || emitted_reasoning || !tools.is_empty() {
-                    emit_anthropic_done(app, stream_id, &tools, last_usage.clone(), None);
+                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
                     return Ok(());
                 }
                 return Err(Error::Other(format!("error decoding response body: {err}")));
@@ -421,6 +424,7 @@ async fn stream_anthropic(
                 continue;
             };
             crate::anthropic::apply_tool_piece(&mut tools, &piece);
+            crate::anthropic::apply_thinking_piece(&mut thinking, &piece);
             match piece {
                 crate::anthropic::SsePiece::Delta(text) => {
                     emitted_text = true;
@@ -432,6 +436,7 @@ async fn stream_anthropic(
                             text: Some(text),
                             tool_calls: None,
                             usage: None,
+                            thinking: None,
                         },
                     );
                 }
@@ -445,6 +450,7 @@ async fn stream_anthropic(
                             text: Some(text),
                             tool_calls: None,
                             usage: None,
+                            thinking: None,
                         },
                     );
                 }
@@ -473,12 +479,13 @@ async fn stream_anthropic(
                                 text: None,
                                 tool_calls: None,
                                 usage: Some(usage),
+                                thinking: None,
                             },
                         );
                     }
                 }
                 crate::anthropic::SsePiece::Stop => {
-                    emit_anthropic_done(app, stream_id, &tools, last_usage.clone(), None);
+                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
                     return Ok(());
                 }
                 _ => {}
@@ -486,7 +493,7 @@ async fn stream_anthropic(
         }
     }
     if emitted_text || emitted_reasoning || !tools.is_empty() {
-        emit_anthropic_done(app, stream_id, &tools, last_usage, None);
+        emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage, None);
     }
     Ok(())
 }
@@ -495,6 +502,7 @@ fn emit_anthropic_done(
     app: &AppHandle,
     stream_id: &str,
     tools: &[crate::anthropic::SseTool],
+    thinking: &crate::anthropic::ThinkingAccum,
     usage: Option<DevChatUsage>,
     text: Option<String>,
 ) {
@@ -502,6 +510,7 @@ fn emit_anthropic_done(
         .into_iter()
         .map(|(id, name, arguments)| DevToolCall { id, name, arguments })
         .collect();
+    let thinking = crate::anthropic::finished_thinking(thinking);
     let _ = app.emit(
         "dev-chat",
         DevChatEvent {
@@ -514,6 +523,11 @@ fn emit_anthropic_done(
                 Some(tool_calls)
             },
             usage,
+            thinking: if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking)
+            },
         },
     );
 }
@@ -601,6 +615,7 @@ async fn stream_chat(
                     text: Some("Stopped.".into()),
                     tool_calls: None,
                     usage: None,
+                    thinking: None,
                 },
             );
             return Ok(());
@@ -662,6 +677,7 @@ async fn stream_chat(
                             text: None,
                             tool_calls: None,
                             usage: Some(usage),
+                            thinking: None,
                         },
                     );
                 }
@@ -693,6 +709,7 @@ async fn stream_chat(
                         text: Some(thought),
                         tool_calls: None,
                         usage: None,
+                        thinking: None,
                     },
                 );
             }
@@ -782,6 +799,7 @@ fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: 
             text: Some(text),
             tool_calls: None,
             usage: None,
+            thinking: None,
         },
     );
 }
@@ -893,6 +911,7 @@ fn emit_pending_reasoning(app: &AppHandle, stream_id: &str, emitted: bool, fallb
             text: Some(fallback.to_string()),
             tool_calls: None,
             usage: None,
+            thinking: None,
         },
     );
 }
@@ -933,6 +952,7 @@ fn emit_done(
                 Some(tool_calls)
             },
             usage,
+            thinking: None,
         },
     );
 }

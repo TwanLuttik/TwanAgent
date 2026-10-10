@@ -397,6 +397,7 @@ pub fn to_messages_body(
         }
         if role == "assistant" {
             let mut blocks = Vec::new();
+            blocks.extend(replay_thinking(msg.get("thinking")));
             let text = content_string(msg.get("content"));
             if !text.trim().is_empty() {
                 blocks.push(serde_json::json!({ "type": "text", "text": text }));
@@ -458,6 +459,42 @@ pub fn to_messages_body(
         }
     }
     body
+}
+
+/// Signed thinking must lead the assistant content, unchanged, before text and tools.
+fn replay_thinking(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    let Some(rows) = value.and_then(|item| item.as_array()) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|block| {
+            let kind = block.get("type").and_then(|item| item.as_str()).unwrap_or("");
+            match kind {
+                "thinking" => {
+                    let signature = block.get("signature").and_then(|item| item.as_str()).unwrap_or("");
+                    if signature.is_empty() {
+                        return None;
+                    }
+                    Some(serde_json::json!({
+                        "type": "thinking",
+                        "thinking": block.get("thinking").and_then(|item| item.as_str()).unwrap_or(""),
+                        "signature": signature,
+                    }))
+                }
+                "redacted_thinking" => {
+                    let data = block.get("data").and_then(|item| item.as_str()).unwrap_or("");
+                    if data.is_empty() {
+                        return None;
+                    }
+                    Some(serde_json::json!({
+                        "type": "redacted_thinking",
+                        "data": data,
+                    }))
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn reshape_tools(tools: &serde_json::Value) -> Vec<serde_json::Value> {
@@ -620,7 +657,40 @@ pub enum SsePiece {
         index: u32,
         partial: String,
     },
+    /// A thinking block opened. The signature arrives later and must be kept.
+    ThinkingStart { index: u32 },
+    /// Encrypted thinking. There is no readable text, only `data` to replay.
+    RedactedThinking { index: u32, data: String },
+    /// Signature for the thinking block at this index. Replay it unmodified.
+    ThinkingSignature { index: u32, signature: String },
     Stop,
+}
+
+/// One thinking block exactly as Anthropic requires it on the next request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ThinkingBlock {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub signature: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ThinkingAccum {
+    rows: Vec<OpenThinking>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpenThinking {
+    index: u32,
+    redacted: bool,
+    thinking: String,
+    signature: String,
+    data: String,
 }
 
 /// One Anthropic SSE `data:` payload. Event names are ignored; the JSON `type` is enough.
@@ -634,22 +704,31 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
         "content_block_start" => {
             let index = json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let block = json.get("content_block")?;
-            if block.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
-                return None;
+            match block.get("type").and_then(|v| v.as_str())? {
+                "tool_use" => Some(SsePiece::ToolStart {
+                    index,
+                    id: block
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    name: block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                }),
+                "thinking" => Some(SsePiece::ThinkingStart { index }),
+                "redacted_thinking" => Some(SsePiece::RedactedThinking {
+                    index,
+                    data: block
+                        .get("data")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                }),
+                _ => None,
             }
-            Some(SsePiece::ToolStart {
-                index,
-                id: block
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                name: block
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            })
         }
         "content_block_delta" => {
             let index = json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -669,6 +748,17 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
                         None
                     } else {
                         Some(SsePiece::Reasoning(text.to_string()))
+                    }
+                }
+                "signature_delta" => {
+                    let signature = delta.get("signature").and_then(|v| v.as_str()).unwrap_or("");
+                    if signature.is_empty() {
+                        None
+                    } else {
+                        Some(SsePiece::ThinkingSignature {
+                            index,
+                            signature: signature.to_string(),
+                        })
                     }
                 }
                 "input_json_delta" => Some(SsePiece::ToolDelta {
@@ -709,6 +799,89 @@ pub fn merge_usage(prev: Option<(u64, u64)>, prompt_tokens: u64, completion_toke
         if prompt_tokens == u64::MAX { prev_prompt } else { prompt_tokens },
         if completion_tokens == u64::MAX { prev_completion } else { completion_tokens },
     )
+}
+
+pub fn apply_thinking_piece(blocks: &mut ThinkingAccum, piece: &SsePiece) {
+    apply_open_thinking(&mut blocks.rows, piece);
+}
+
+fn apply_open_thinking(blocks: &mut Vec<OpenThinking>, piece: &SsePiece) {
+    match piece {
+        SsePiece::ThinkingStart { index } => {
+            if blocks.iter().any(|row| row.index == *index) {
+                return;
+            }
+            blocks.push(OpenThinking {
+                index: *index,
+                redacted: false,
+                thinking: String::new(),
+                signature: String::new(),
+                data: String::new(),
+            });
+        }
+        SsePiece::Reasoning(text) => {
+            if let Some(row) = blocks.iter_mut().rev().find(|row| !row.redacted) {
+                row.thinking.push_str(text);
+            }
+        }
+        SsePiece::ThinkingSignature { index, signature } => {
+            if let Some(row) = blocks.iter_mut().find(|row| row.index == *index && !row.redacted) {
+                row.signature.push_str(signature);
+                return;
+            }
+            if let Some(row) = blocks.iter_mut().rev().find(|row| !row.redacted && row.signature.is_empty()) {
+                row.signature.push_str(signature);
+            }
+        }
+        SsePiece::RedactedThinking { index, data } => {
+            if data.is_empty() {
+                return;
+            }
+            if let Some(row) = blocks.iter_mut().find(|row| row.index == *index) {
+                row.redacted = true;
+                row.data = data.clone();
+                return;
+            }
+            blocks.push(OpenThinking {
+                index: *index,
+                redacted: true,
+                thinking: String::new(),
+                signature: String::new(),
+                data: data.clone(),
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Blocks worth sending back. A thinking block without its signature is dropped.
+pub fn finished_thinking(blocks: &ThinkingAccum) -> Vec<ThinkingBlock> {
+    let mut rows = blocks.rows.clone();
+    rows.sort_by_key(|row| row.index);
+    rows.into_iter()
+        .filter_map(|row| {
+            if row.redacted {
+                if row.data.is_empty() {
+                    return None;
+                }
+                return Some(ThinkingBlock {
+                    kind: "redacted_thinking".into(),
+                    thinking: String::new(),
+                    signature: String::new(),
+                    data: row.data,
+                });
+            }
+            if row.signature.is_empty() {
+                return None;
+            }
+            Some(ThinkingBlock {
+                kind: "thinking".into(),
+                thinking: row.thinking,
+                signature: row.signature,
+                data: String::new(),
+            })
+        })
+        .collect()
 }
 
 pub fn apply_tool_piece(tools: &mut Vec<SseTool>, piece: &SsePiece) {
@@ -1104,8 +1277,10 @@ mod tests {
     fn sse_fixture_emits_text_thinking_usage_and_a_tool_call() {
         let lines = [
             r#"{"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Look "}}"#,
             r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"first."}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}"#,
             r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}"#,
             r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_9","name":"read_file"}}"#,
             r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}"#,
@@ -1114,6 +1289,7 @@ mod tests {
             r#"{"type":"message_stop"}"#,
         ];
         let mut tools = Vec::new();
+        let mut thinking = ThinkingAccum::default();
         let mut deltas = Vec::new();
         let mut thoughts = Vec::new();
         let mut usages = Vec::new();
@@ -1123,6 +1299,7 @@ mod tests {
                 continue;
             };
             apply_tool_piece(&mut tools, &piece);
+            apply_thinking_piece(&mut thinking, &piece);
             match piece {
                 SsePiece::Delta(text) => deltas.push(text),
                 SsePiece::Reasoning(text) => thoughts.push(text),
@@ -1143,8 +1320,50 @@ mod tests {
         assert_eq!(calls[0].0, "toolu_9");
         assert_eq!(calls[0].1, "read_file");
         assert_eq!(calls[0].2, "{\"path\":\"a.rs\"}");
+        let kept = finished_thinking(&thinking);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, "thinking");
+        assert_eq!(kept[0].thinking, "Look first.");
+        assert_eq!(kept[0].signature, "sig-1");
         assert!(parse_sse_data("").is_none());
         assert!(parse_sse_data("[DONE]").is_none());
+    }
+
+    #[test]
+    fn signed_thinking_is_replayed_before_text_and_unsigned_text_is_dropped() {
+        let body = to_messages_body(
+            &serde_json::json!([
+                {
+                    "role": "assistant",
+                    "content": "Done.",
+                    "thinking": [
+                        { "type": "thinking", "thinking": "Look first.", "signature": "sig-1" },
+                        { "type": "redacted_thinking", "data": "opaque" },
+                        { "type": "thinking", "thinking": "no signature" }
+                    ],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_1",
+                            "type": "function",
+                            "function": { "name": "read_file", "arguments": "{\"path\":\"a.rs\"}" }
+                        }
+                    ]
+                },
+                { "role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}" }
+            ]),
+            "claude-sonnet-4-6",
+            Some("high"),
+            &sample_tools(false),
+        );
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "Look first.");
+        assert_eq!(blocks[0]["signature"], "sig-1");
+        assert_eq!(blocks[1]["type"], "redacted_thinking");
+        assert_eq!(blocks[1]["data"], "opaque");
+        assert_eq!(blocks[2]["type"], "text");
+        assert_eq!(blocks[3]["type"], "tool_use");
+        assert_eq!(blocks.len(), 4);
     }
 
     #[test]

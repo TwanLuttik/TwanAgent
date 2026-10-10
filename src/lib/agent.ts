@@ -1,7 +1,7 @@
 import type { ToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./context.ts";
-import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage } from "./core.ts";
+import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage, type ThinkingBlock } from "./core.ts";
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
@@ -186,14 +186,34 @@ export type TurnOpts = {
   remote?: RemoteWorkspace | null;
 };
 
-function assistantMessage(text: string, reasoning: string, toolCalls: ToolCall[]): ChatMessage {
+function assistantMessage(
+  text: string,
+  reasoning: string,
+  toolCalls: ToolCall[],
+  thinking: ThinkingBlock[] = [],
+): ChatMessage {
   const thought = reasoning.trim();
   return {
     role: "assistant",
     content: text,
     ...(thought ? { reasoning: thought } : {}),
+    ...(thinking.length ? { thinking } : {}),
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
+}
+
+function signedThinking(blocks: api.ApiThinkingBlock[] | null | undefined): ThinkingBlock[] {
+  const out: ThinkingBlock[] = [];
+  for (const block of blocks ?? []) {
+    if (block.type === "redacted_thinking" && block.data) {
+      out.push({ type: "redacted_thinking", data: block.data });
+      continue;
+    }
+    if (block.type === "thinking" && block.signature) {
+      out.push({ type: "thinking", thinking: block.thinking ?? "", signature: block.signature });
+    }
+  }
+  return out;
 }
 
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
@@ -247,7 +267,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onError(result.error);
       if (result.error !== "Stopped.") {
         const thought = result.reasoning.trim();
-        if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+        if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
         transcript = [...transcript, turnFailureMessage(result.error)];
         opts.onUpdate?.(transcript);
         return transcript;
@@ -266,7 +286,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.onError(result.error);
         if (result.error !== "Stopped.") {
           const thought = result.reasoning.trim();
-          if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+          if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
           transcript = [...transcript, turnFailureMessage(result.error)];
           opts.onUpdate?.(transcript);
           return transcript;
@@ -280,7 +300,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       return transcript;
     }
     if (result.usage) opts.onUsage?.(result.usage);
-    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls)];
+    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls, result.thinking)];
     opts.onUpdate?.(transcript);
     if (!result.toolCalls.length) return transcript;
     const contents: string[] = new Array(result.toolCalls.length);
@@ -464,11 +484,12 @@ async function streamCompletion(
     journeyId?: string;
   },
   imageCache: Map<string, string> = new Map(),
-): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; error?: string; usage?: ChatUsage }> {
+): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; thinking: ThinkingBlock[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
   let reasoning = "";
   let toolCalls: ToolCall[] = [];
+  let thinking: ThinkingBlock[] = [];
   let usage: ChatUsage | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -477,6 +498,7 @@ async function streamCompletion(
       text: string;
       reasoning: string;
       toolCalls: ToolCall[];
+      thinking: ThinkingBlock[];
       error?: string;
       usage?: ChatUsage;
     }) => {
@@ -488,7 +510,7 @@ async function streamCompletion(
     };
     const onAbort = () => {
       void api.chatCancel(streamId);
-      finish({ text, reasoning, toolCalls, error: "Stopped." });
+      finish({ text, reasoning, toolCalls, thinking, error: "Stopped." });
     };
     void (async () => {
       try {
@@ -505,10 +527,12 @@ async function streamCompletion(
             if (next) usage = next;
           } else if (ev.kind === "done") {
             if (ev.tool_calls?.length) toolCalls = ev.tool_calls;
+            const signed = signedThinking(ev.thinking);
+            if (signed.length) thinking = signed;
             usage = parseChatUsage(ev.usage) ?? usage;
-            finish({ text: text || ev.text || "", reasoning, toolCalls, usage });
+            finish({ text: text || ev.text || "", reasoning, toolCalls, thinking, usage });
           } else if (ev.kind === "error") {
-            finish({ text, reasoning, toolCalls, error: ev.text || "xAI request failed.", usage });
+            finish({ text, reasoning, toolCalls, thinking, error: ev.text || "xAI request failed.", usage });
           }
         });
         opts.onReasoning?.("");
