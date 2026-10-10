@@ -38,3 +38,26 @@ pub fn dev_clear_key(state: State<'_, AppState>) -> Result<KeyStatus> {
     secrets::delete_xai_key(&state.data_dir)?;
     Ok(dev_key_status(state))
 }
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_anthropic_key_status() -> KeyStatus {
+    KeyStatus {
+        saved: secrets::get_anthropic_key().is_some(),
+        env: std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_set_anthropic_key(key: String) -> Result<KeyStatus> {
+    secrets::set_anthropic_key(&key)?;
+    Ok(dev_anthropic_key_status())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_clear_anthropic_key() -> Result<KeyStatus> {
+    secrets::delete_anthropic_key()?;
+    Ok(dev_anthropic_key_status())
+}

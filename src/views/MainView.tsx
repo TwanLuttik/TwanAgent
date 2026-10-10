@@ -339,6 +339,7 @@ export function MainView() {
               ],
               context_window: 256000,
               context_windows: [256000, 500000],
+              provider: "xai",
             },
           ],
           has_key: false,

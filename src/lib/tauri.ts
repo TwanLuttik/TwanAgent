@@ -22,12 +22,15 @@ export async function pickDir(): Promise<string | null> {
 
 export type KeyStatus = { saved: boolean; env: boolean };
 export type Effort = { id: string; label: string };
+export type ModelProvider = "xai" | "anthropic" | string;
+
 export type Model = {
   id: string;
   name: string;
   efforts: Effort[];
   context_window?: number | null;
   context_windows?: number[] | null;
+  provider?: ModelProvider;
 };
 export type Runtime = {
   installed: boolean;
@@ -228,6 +231,18 @@ export function setKey(key: string): Promise<KeyStatus> {
 
 export function clearKey(): Promise<KeyStatus> {
   return invoke("dev_clear_key");
+}
+
+export function anthropicKeyStatus(): Promise<KeyStatus> {
+  return invoke("dev_anthropic_key_status");
+}
+
+export function setAnthropicKey(key: string): Promise<KeyStatus> {
+  return invoke("dev_set_anthropic_key", { key });
+}
+
+export function clearAnthropicKey(): Promise<KeyStatus> {
+  return invoke("dev_clear_anthropic_key");
 }
 
 export function listDir(workspace: string, path = ""): Promise<Entry[]> {

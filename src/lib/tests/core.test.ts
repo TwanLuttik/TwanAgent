@@ -1042,6 +1042,10 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "approve-all").content), /without asking/);
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
+    assert.match(String(systemPrompt("/tmp/app", "ask").content), /You are a coding agent in TwanAgent/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /Only Grok is available/);
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6").content), /You are Grok, a coding agent/);
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-sonnet-4-6").content), /You are Claude, a coding agent/);
   });
 
   it("tells the model a remote workspace runs commands on the server", () => {

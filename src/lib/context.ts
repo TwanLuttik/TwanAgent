@@ -1,3 +1,5 @@
+import { contextWindowForProvider } from "./provider.ts";
+
 export type ChatUsage = {
   promptTokens: number;
   completionTokens: number;
@@ -46,6 +48,8 @@ export function parseChatUsage(raw: unknown): ChatUsage | null {
 
 export function contextWindowForModel(modelId: string, windowFromCatalog?: number | null): number {
   if (windowFromCatalog && windowFromCatalog > 0) return windowFromCatalog;
+  const claude = contextWindowForProvider(modelId, null);
+  if (claude) return claude;
   const id = modelId.trim().toLowerCase();
   if (id.startsWith("grok-3")) return 131_072;
   return 500_000;

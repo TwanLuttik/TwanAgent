@@ -508,6 +508,14 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="2.4" {...stroke} />
     </>
   ),
+  "eye.slash": (
+    <>
+      <path d="M3.4 12s3.2-6.2 8.6-6.2c1.6 0 3 .4 4.2 1" {...stroke} />
+      <path d="M20.6 12s-1.2 2.3-3.2 4" {...stroke} />
+      <path d="M9.6 9.8A2.4 2.4 0 0 0 12 14.4" {...stroke} />
+      <path d="M4.2 4.2 19.8 19.8" {...stroke} />
+    </>
+  ),
   gearshape: (
     <>
       <circle cx="12" cy="12" r="3.1" {...stroke} />

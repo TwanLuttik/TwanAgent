@@ -9,6 +9,7 @@ import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } fr
 import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
+import { providerFor } from "../../lib/provider";
 import {
   editorFileView,
   focusEditor,
@@ -100,7 +101,7 @@ export function ChatStage() {
           {showSettings ? (
             <SettingsView
               embedded
-              initialTab="grok"
+              initialTab="providers"
               permission={permission}
               onPermission={pickPermission}
               speechModel={speechModel}
@@ -273,7 +274,7 @@ function ChatColumn() {
             </div>
             {messages.length === 0 && !streamText && !streamReasoning && !activeRunning && queued.length === 0 && (
               <p className="m-0 text-center text-[13px] text-muted">
-                Ask Grok to inspect, edit, or run something in this folder.
+                Ask {providerFor(model) === "anthropic" ? "Claude" : "Grok"} to inspect, edit, or run something in this folder.
               </p>
             )}
             <ChatTranscript

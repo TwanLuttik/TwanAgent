@@ -1,4 +1,5 @@
 import { parseToolArgs, type ChatMessage } from "./core.ts";
+import { agentNameFor } from "./provider.ts";
 import { permissionSystemLine, type PermissionMode } from "./permission.ts";
 
 export const SUBAGENT_TYPES = ["general-purpose", "explore", "plan"] as const;
@@ -89,6 +90,7 @@ export function subagentSystemPrompt(
   description: string,
   permission: PermissionMode = "ask",
   knowledge?: string,
+  modelId?: string,
 ): ChatMessage {
   const limits =
     type === "explore"
@@ -97,9 +99,13 @@ export function subagentSystemPrompt(
         ? "You are a plan agent. Explore the codebase and produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
   const knowledgeBlock = (knowledge ?? "").trim() ? `\nJourney knowledge:\n${knowledge!.trim()}` : "";
+  const name = agentNameFor(modelId ?? "");
+  const who = name
+    ? `You are ${name}, a ${type} subagent in TwanAgent.`
+    : `You are a ${type} subagent in TwanAgent.`;
   return {
     role: "system",
-    content: `You are Grok, a ${type} subagent in TwanAgent.
+    content: `${who}
 Workspace: ${workspace}
 Task: ${description}
 ${limits}

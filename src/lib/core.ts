@@ -2,6 +2,7 @@ import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
+import { agentNameFor } from "./provider.ts";
 import { skillSystemLine, type DetectedSkill } from "./skill.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
@@ -803,6 +804,7 @@ export function systemPrompt(
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
+  modelId?: string,
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
@@ -810,9 +812,11 @@ export function systemPrompt(
   const extra = extraSystemLines(mcpServers, skills);
   const remoteLine = remoteWorkspaceLine(remote);
   const place = remoteLine ? `\n${remoteLine}` : "";
+  const name = agentNameFor(modelId ?? "");
+  const who = name ? `You are ${name}, a coding agent in TwanAgent.` : "You are a coding agent in TwanAgent.";
   return {
     role: "system",
-    content: `You are Grok, a coding agent in TwanAgent. Only Grok is available — do not suggest other models.
+    content: `${who}
 Workspace: ${workspace}${place}
 ${permissionSystemLine(permission)}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
@@ -830,8 +834,9 @@ export function withSystem(
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
+  modelId?: string,
 ): ChatMessage[] {
-  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote);
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId);
   const extra = system ? extraSystemLines(mcpServers, skills) : "";
   const content =
     extra && !String(base.content ?? "").includes(extra.trim())

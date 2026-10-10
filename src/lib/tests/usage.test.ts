@@ -189,6 +189,39 @@ describe("estimated cost", () => {
     assert.equal(modelRate("grok-4.20-0309-reasoning-latest")?.input, 1.25);
     assert.equal(modelRate("grok-4"), null);
     assert.equal(modelRate("not-a-model"), null);
+    assert.equal(modelRate("claude-sonnet-4-6")?.input, 3);
+    assert.equal(modelRate("claude-sonnet-4-6")?.output, 15);
+    assert.equal(modelRate("claude-opus-4-8")?.output, 25);
+    assert.equal(modelRate("claude-haiku-4-5")?.input, 1);
+    assert.equal(modelRate("claude-sonnet-4-6")?.longContextFrom, undefined);
+  });
+
+  it("prices a Claude request separately from Grok", () => {
+    const events = [
+      ev({
+        id: 1,
+        conversation_id: "grok",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.6",
+        prompt_tokens: 1_000_000,
+        completion_tokens: 0,
+        total_tokens: 1_000_000,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "claude",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "claude-sonnet-4-6",
+        prompt_tokens: 1_000_000,
+        completion_tokens: 0,
+        total_tokens: 1_000_000,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    assert.equal(cost.usd, 4 + 3);
+    assert.equal(cost.unpricedTokens, 0);
   });
 
   it("prices only the new tokens in a tool loop and skips unknown models", () => {

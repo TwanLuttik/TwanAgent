@@ -185,14 +185,14 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
     let result = await streamCompletion(
-      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
+      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
       opts,
       imageCache,
     );
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
         opts,
         imageCache,
       );
@@ -221,7 +221,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
         opts,
         imageCache,
       );
@@ -371,6 +371,7 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
         parsed.description,
         parsePermissionMode(opts.getPermission?.()),
         opts.journeyKnowledge,
+        opts.model,
       ),
       journeyKnowledge: opts.journeyKnowledge,
       allowSpawn: false,

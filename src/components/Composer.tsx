@@ -100,7 +100,11 @@ export function Composer({
   onDictate?: (blob: Blob, mime: string) => Promise<((draft: string, start: number, end: number) => { text: string; cursor: number }) | null>;
   onDictateError?: (message: string) => void;
 }) {
-  const selected = models.find((m) => m.id === model) ?? models[0];
+  const ordered = [
+    ...models.filter((row) => row.provider !== "anthropic"),
+    ...models.filter((row) => row.provider === "anthropic"),
+  ];
+  const selected = ordered.find((m) => m.id === model) ?? ordered[0];
   const efforts = selected?.efforts ?? [];
   const effortLabel = efforts.find((e) => e.id === effort)?.label ?? "Thinking";
   const windows = contextWindowChoices(selected?.context_windows, selected?.context_window);
@@ -522,7 +526,7 @@ export function Composer({
           <ChipSelect
             label={selected?.name ?? "Model"}
             title="Model"
-            items={models.map((m) => ({ id: m.id, label: m.name }))}
+            items={ordered.map((m) => ({ id: m.id, label: m.name }))}
             value={model}
             onChange={onModel}
           />

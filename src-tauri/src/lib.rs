@@ -1,3 +1,4 @@
+mod anthropic;
 mod appdb;
 mod remote;
 mod dev;
@@ -77,6 +78,9 @@ pub fn run() {
             dev::keys::dev_cli_info,
             dev::keys::dev_set_key,
             dev::keys::dev_clear_key,
+            dev::keys::dev_anthropic_key_status,
+            dev::keys::dev_set_anthropic_key,
+            dev::keys::dev_clear_anthropic_key,
             dev::commands::dev_projects_root,
             dev::commands::dev_projects_location,
             dev::commands::dev_list_projects,
