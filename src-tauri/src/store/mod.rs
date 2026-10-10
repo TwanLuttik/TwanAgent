@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage, SidebarItem};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -198,6 +198,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
             context_usage TEXT,
             compaction TEXT,
             effort TEXT,
+            model TEXT,
+            context_window INTEGER,
+            permission TEXT,
             archived INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS messages (
@@ -247,6 +250,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [],
         );
     }
+    if version.unwrap_or(0) < 9 {
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN context_window INTEGER", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN permission TEXT", []);
+    }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
@@ -286,9 +294,12 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
         .map(serde_json::to_string)
         .transpose()?;
     let effort = conv.effort.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let model = conv.model.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let permission = conv.permission.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let context_window = conv.context_window.filter(|value| *value > 0);
     conn.execute(
-        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, archived)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, model, context_window, permission, archived)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             conv.id,
             conv.title,
@@ -304,6 +315,9 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
             usage,
             compaction,
             effort,
+            model,
+            context_window.map(|value| value as i64),
+            permission,
             if conv.archived { 1 } else { 0 },
         ],
     )?;
@@ -500,6 +514,9 @@ fn row_to_conversation(
     usage: Option<String>,
     compaction: Option<String>,
     effort: Option<String>,
+    model: Option<String>,
+    context_window: Option<i64>,
+    permission: Option<String>,
     archived: bool,
     messages: Vec<Value>,
 ) -> Result<Conversation> {
@@ -515,6 +532,9 @@ fn row_to_conversation(
         journey_id,
         sort_order,
         effort: effort.filter(|value| !value.trim().is_empty()),
+        model: model.filter(|value| !value.trim().is_empty()),
+        context_window: context_window.and_then(|value| u64::try_from(value).ok()).filter(|value| *value > 0),
+        permission: permission.filter(|value| !value.trim().is_empty()),
         archived,
     })
 }

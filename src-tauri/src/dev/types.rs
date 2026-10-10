@@ -46,6 +46,13 @@ pub struct GitChange {
 pub struct GitBranches {
     pub current: Option<String>,
     pub branches: Vec<String>,
+    /// False when the folder is not a git repository. An empty repo still has a branch.
+    #[serde(default = "git_repo_present")]
+    pub repo: bool,
+}
+
+fn git_repo_present() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +77,15 @@ pub struct Conversation {
     /// Thinking level chosen for this chat. Empty means the app default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Model chosen for this chat. Empty means the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Context size chosen for this chat. Empty means the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    /// Permission mode chosen for this chat. Empty means the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
     /// Hidden from the normal sidebar until the project archive is opened.
     #[serde(default)]
     pub archived: bool,
@@ -93,6 +109,12 @@ pub struct ConversationSummary {
     pub sort_order: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
     #[serde(default)]
     pub archived: bool,
 }
@@ -144,6 +166,17 @@ pub struct DevChatEvent {
     pub tool_calls: Option<Vec<DevToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<DevChatUsage>,
+}
+
+/// One website found while a web search is still running.
+#[derive(Debug, Clone, Serialize)]
+pub struct DevWebSearchEvent {
+    pub stream_id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

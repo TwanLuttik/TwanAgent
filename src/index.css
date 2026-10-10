@@ -160,7 +160,7 @@ textarea {
   position: absolute;
   inset: 0 0 auto 0;
   z-index: 0;
-  height: 18.5rem;
+  height: 26rem;
   overflow: hidden;
 }
 
@@ -171,13 +171,16 @@ html[data-space-corner="off"] .sidebar-space {
 .sidebar-space-art,
 .sidebar-space-dots {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
 }
 
 .sidebar-space-art {
+  width: 360px;
+  height: 26rem;
   background-position: top left;
   background-repeat: no-repeat;
-  background-size: cover;
+  background-size: 360px 26rem;
   opacity: 0.48;
 }
 
@@ -185,10 +188,15 @@ html[data-space-corner="off"] .sidebar-space {
   position: absolute;
   top: 0;
   left: 0;
-  width: 168%;
+  width: 600px;
   max-width: none;
   height: auto;
+  aspect-ratio: auto;
   opacity: 0.72;
+}
+
+.sidebar-space-dots {
+  inset: 0;
 }
 
 .sidebar-space-dots {
@@ -251,6 +259,76 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   background: var(--color-ok);
 }
 
+.usage-swatch-0 { --usage-swatch: #7aa2c4; }
+.usage-swatch-1 { --usage-swatch: #6f8fbf; }
+.usage-swatch-2 { --usage-swatch: #7e9a8a; }
+.usage-swatch-3 { --usage-swatch: #6f9a78; }
+.usage-swatch-4 { --usage-swatch: #9a86ad; }
+.usage-swatch-5 { --usage-swatch: #b08a62; }
+.usage-swatch-6 { --usage-swatch: #8a86ad; }
+.usage-swatch-7 { --usage-swatch: #8d8d92; }
+
+.usage-swatch-0,
+.usage-swatch-1,
+.usage-swatch-2,
+.usage-swatch-3,
+.usage-swatch-4,
+.usage-swatch-5,
+.usage-swatch-6,
+.usage-swatch-7 {
+  stop-color: color-mix(in srgb, var(--usage-swatch) 58%, var(--color-ink));
+  background-color: color-mix(in srgb, var(--usage-swatch) 58%, var(--color-ink));
+  stroke: color-mix(in srgb, var(--usage-swatch) 58%, var(--color-ink));
+}
+
+html[data-theme-mode="dark"] .usage-swatch-0,
+html[data-theme-mode="dark"] .usage-swatch-1,
+html[data-theme-mode="dark"] .usage-swatch-2,
+html[data-theme-mode="dark"] .usage-swatch-3,
+html[data-theme-mode="dark"] .usage-swatch-4,
+html[data-theme-mode="dark"] .usage-swatch-5,
+html[data-theme-mode="dark"] .usage-swatch-6,
+html[data-theme-mode="dark"] .usage-swatch-7 {
+  stop-color: color-mix(in srgb, var(--usage-swatch) 42%, var(--color-muted));
+  background-color: color-mix(in srgb, var(--usage-swatch) 42%, var(--color-muted));
+  stroke: color-mix(in srgb, var(--usage-swatch) 42%, var(--color-muted));
+}
+
+.usage-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.model-mark {
+  transition: color 150ms ease;
+}
+
+.model-mark-xai:hover {
+  color: #fff;
+}
+
+html[data-theme-mode="light"] .model-mark-xai:hover {
+  color: #1c1c1e;
+}
+
+.model-mark-claude:hover {
+  color: #d97757;
+}
+
+.model-tip {
+  background: #c8c8ce;
+  color: #1c1c1e;
+  border-color: rgb(0 0 0 / 0.08);
+}
+
+html[data-theme-mode="light"] .model-tip {
+  background: #5c5c62;
+  color: #f5f5f7;
+  border-color: rgb(0 0 0 / 0.16);
+}
+
 .media-check {
   background-color: color-mix(in srgb, var(--color-ink) 5%, var(--color-canvas));
   background-image:
@@ -274,7 +352,8 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   padding: 0;
 }
 
-/* Viewport is a full-size overlay; let clicks/wheel reach the screen so TUIs get mouse reports. */
+/* Viewport is a full-size overlay; let clicks and the wheel reach the screen.
+   The screen scrolls the buffer itself, since the viewport ignores pointers. */
 .term .xterm-viewport {
   pointer-events: none;
 }

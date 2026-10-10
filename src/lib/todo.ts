@@ -112,6 +112,35 @@ export function todosAreOpen(todos: AgentTodo[]): boolean {
   return todos.some((row) => row.status === "pending" || row.status === "in_progress");
 }
 
+export type TodoBadge = {
+  done: number;
+  total: number;
+  finished: boolean;
+};
+
+/** Sidebar chip. `2/5` while work remains, a check once every item is done or cancelled. */
+export function todoBadge(todos: AgentTodo[]): TodoBadge | null {
+  if (!todos.length) return null;
+  const done = todos.filter((row) => row.status === "completed" || row.status === "cancelled").length;
+  return { done, total: todos.length, finished: done === todos.length };
+}
+
+/**
+ * Todos from the latest turn that wrote any.
+ * A newer user message with no todo list of its own clears the previous one.
+ */
+export function todosInLatestTurn(messages: ChatMessage[]): AgentTodo[] {
+  let start = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== "user") continue;
+    const slice = todosFromMessages(messages.slice(i + 1));
+    if (slice.length) return slice;
+    start = i + 1;
+    break;
+  }
+  return todosFromMessages(messages.slice(start));
+}
+
 export function formatTodoWriteResult(todos: AgentTodo[]): string {
   const n = todos.length;
   return n === 1 ? "Updated 1 todo." : `Updated ${n} todos.`;

@@ -38,6 +38,8 @@ import {
 
 export type ConfirmShell = (command: string) => Promise<boolean>;
 
+export type ToolProgress = (detail: string) => void;
+
 export async function executeTool(
   workspace: string,
   call: ToolCall,
@@ -46,6 +48,7 @@ export async function executeTool(
   permission: PermissionMode = "ask",
   signal?: AbortSignal,
   journeyId?: string,
+  onProgress?: ToolProgress,
 ): Promise<string> {
   const skipped = signal ? skipToolIfAborted(signal) : null;
   if (skipped) return skipped;
@@ -81,6 +84,8 @@ export async function executeTool(
         return await api.gitDiff(workspace, String(args.path ?? ""));
       case "run_command":
         return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
+      case "web_search":
+        return runWebSearch(call.arguments || "{}", signal, onProgress);
       case "todo_write": {
         const parsed = parseTodoWriteArgs(call.arguments);
         if (parsed.error) return `Error: ${parsed.error}`;
@@ -103,6 +108,35 @@ export async function executeTool(
     }
   } catch (e) {
     return `Error: ${String(e)}`;
+  }
+}
+
+async function runWebSearch(
+  argumentsJson: string,
+  signal?: AbortSignal,
+  onProgress?: ToolProgress,
+): Promise<string> {
+  const streamId = crypto.randomUUID();
+  const seen = new Set<string>();
+  const sites: string[] = [];
+  let unlisten: (() => void) | undefined;
+  const note = (host: string) => {
+    const clean = host.trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    sites.push(clean);
+    onProgress?.(sites.join("\n"));
+  };
+  try {
+    unlisten = await api.onWebSearch((ev) => {
+      if (ev.stream_id !== streamId) return;
+      if (ev.kind === "site" && ev.host) note(ev.host);
+      if (ev.kind === "scope" && ev.text) onProgress?.(ev.text);
+    });
+    if (signal?.aborted) return "Skipped: stopped.";
+    return await api.webSearch(streamId, argumentsJson);
+  } finally {
+    unlisten?.();
   }
 }
 
@@ -132,6 +166,8 @@ export type TurnOpts = {
   confirmShell: ConfirmShell;
   getPermission?: () => PermissionMode;
   onTool?: (call: ToolCall) => void;
+  /** Live detail for the tool call that is running now, such as websites found mid-search. */
+  onToolProgress?: (callId: string, detail: string) => void;
   onUpdate?: (messages: ChatMessage[]) => void;
   onRefresh?: () => void;
   onSubagent?: (event: SubagentEvent) => void;
@@ -283,6 +319,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
             parsePermissionMode(opts.getPermission?.()),
             opts.signal,
             opts.journeyId,
+            (detail) => opts.onToolProgress?.(call.id, detail),
           )) || UNFINISHED_TOOL;
       } catch (err) {
         contents[i] = `Error: ${String(err)}`;

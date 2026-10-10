@@ -19,7 +19,9 @@ import {
   setDraftForChat,
   skipToolIfAborted,
   chatHasRunningTurn,
+  composerSettingsForChat,
   effortForModel,
+  modelForTurn,
   foregroundRunningId,
   runningTurnStartedAt,
   shouldQueueForChat,
@@ -364,6 +366,70 @@ describe("per-conversation pending queue", () => {
     assert.equal(foregroundRunningId(running, "chat-b"), "");
     assert.equal(foregroundRunningId(running, ""), "");
     assert.equal(foregroundRunningId(null, "chat-a"), "");
+  });
+
+  it("restores each chat's model, thinking, context, and permission", () => {
+    const models = [
+      {
+        id: "grok-4.6",
+        efforts: [{ id: "high" }, { id: "low" }],
+        context_windows: [256000, 500000],
+        context_window: 256000,
+      },
+      {
+        id: "grok-4.7",
+        efforts: [{ id: "high" }, { id: "medium" }],
+        context_windows: [256000, 1000000],
+        context_window: 256000,
+      },
+    ];
+    const fallback = { model: "grok-4.7", effort: "high", contextWindow: 256000, permission: "ask" };
+    assert.deepEqual(
+      composerSettingsForChat(
+        { model: "grok-4.6", effort: "low", contextWindow: 500000, permission: "read-only" },
+        models,
+        fallback,
+      ),
+      { model: "grok-4.6", effort: "low", contextWindow: 500000, permission: "read-only" },
+    );
+    assert.deepEqual(composerSettingsForChat({}, models, fallback), fallback);
+    assert.deepEqual(
+      composerSettingsForChat({ model: "missing", effort: "max", contextWindow: 128000, permission: "nope" }, models, fallback),
+      { model: "grok-4.7", effort: "high", contextWindow: 256000, permission: "ask" },
+    );
+  });
+
+  it("uses the composer chip on a new chat and the saved model after a reply", () => {
+    const user = [{ role: "user" }];
+    const replied = [...user, { role: "assistant" }];
+    assert.equal(modelForTurn(user, "grok-4.6", "claude-haiku-4-5"), "claude-haiku-4-5");
+    assert.equal(modelForTurn([], "grok-4.6", "claude-haiku-4-5"), "claude-haiku-4-5");
+    assert.equal(modelForTurn(replied, "grok-4.6", "claude-haiku-4-5"), "grok-4.6");
+    assert.equal(modelForTurn(replied, "", "claude-haiku-4-5"), "claude-haiku-4-5");
+    assert.equal(modelForTurn(user, null, "  "), "");
+  });
+
+  it("sends the chip on an unanswered chat even when the row still has the previous model", () => {
+    const models = [
+      { id: "grok-4.6", efforts: [{ id: "high" }], context_windows: [256000], context_window: 256000 },
+      { id: "claude-haiku-4-5", efforts: [{ id: "high" }], context_windows: [200000], context_window: 200000 },
+    ];
+    const chip = { model: "claude-haiku-4-5", effort: "high", contextWindow: 200000, permission: "ask" };
+    const stored = { model: "grok-4.6", effort: "high", contextWindow: 256000, permission: "ask" };
+    const unanswered = [{ role: "user" }];
+    const chosen = modelForTurn(unanswered, stored.model, chip.model);
+    assert.equal(
+      composerSettingsForChat({ ...stored, model: null }, models, { ...chip, model: chosen }).model,
+      "claude-haiku-4-5",
+    );
+    assert.equal(
+      composerSettingsForChat(
+        { ...stored, model: modelForTurn([...unanswered, { role: "assistant" }], stored.model, chip.model) },
+        models,
+        chip,
+      ).model,
+      "grok-4.6",
+    );
   });
 
   it("keeps a chat's thinking level only when the model offers it", () => {

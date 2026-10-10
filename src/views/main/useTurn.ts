@@ -15,7 +15,7 @@ import {
   type ConversationActivity,
   type LiveToolRow,
 } from "../../lib/core";
-import { contextWindowChoices, resolveContextWindow, sameChatUsage, type ChatUsage } from "../../lib/context";
+import { sameChatUsage, type ChatUsage } from "../../lib/context";
 import {
   MAX_PROMPT_IMAGES,
   appendPromptImages,
@@ -39,13 +39,14 @@ import {
   type SubagentRecord,
 } from "../../lib/subagent";
 import { parseConversationKind } from "../../lib/terminal-chat";
-import { isTodoTool } from "../../lib/todo";
+import { isTodoTool, todoBadge, todosInLatestTurn } from "../../lib/todo";
 import {
   clearPendingForChat,
   closeDanglingToolCalls,
   clearUnseenFinished,
-  effortForModel,
+  composerSettingsForChat,
   isTurnFailureMessage,
+  modelForTurn,
   markUnseenFinished,
   enqueuePending,
   pendingIndexAfterRemove,
@@ -131,6 +132,10 @@ export type TurnDeps = {
   bumpFiles: () => void;
   setShellQueue: Update<ShellRequest[]>;
   permissionRef: RefObject<PermissionMode>;
+  modelRef: RefObject<string>;
+  effortRef: RefObject<string>;
+  contextWindowRef: RefObject<number>;
+  conversationsRef: RefObject<ConversationSummary[]>;
   activeIdRef: RefObject<string>;
   runningIdRef: RefObject<string>;
   runningWsRef: RefObject<string>;
@@ -168,17 +173,25 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
+    workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
-    setShellQueue, permissionRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
+    setShellQueue, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
     deletedIdsRef, mcpServersRef, skillsRef, remoteRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
+function permissionForChat(chatId: string): PermissionMode {
+  const stored = conversations.find((row) => row.id === chatId)?.permission;
+  if (stored) return parsePermissionMode(stored);
+  if (chatId === activeIdRef.current) return permissionRef.current;
+  return parsePermissionMode(permissionRef.current);
+}
+
 function confirmShell(command: string, chatId = activeIdRef.current): Promise<boolean> {
-  if (!shouldPromptShell(permissionRef.current)) {
-    return Promise.resolve(permissionRef.current === "approve-all");
+  const mode = permissionForChat(chatId);
+  if (!shouldPromptShell(mode)) {
+    return Promise.resolve(mode === "approve-all");
   }
   return new Promise((resolve) => setShellQueue((q) => [...q, { chatId, command, resolve }]));
 }
@@ -208,61 +221,106 @@ function rejectShells(chatId: string) {
   });
 }
 
-function pickModel(id: string) {
-  setModel(id);
-  saveModel(id);
-  const next = models.find((m) => m.id === id);
-  if (next && !next.efforts.some((e) => e.id === effort)) {
-    const fallback = next.efforts[0]?.id ?? "";
-    setEffort(fallback);
-    if (fallback) {
-      saveEffort(fallback);
-      const chatId = activeIdRef.current;
-      if (chatId && workspace) {
-        setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: fallback } : row)));
-        rememberChatEffort(chatId, fallback);
-      }
-    }
-  }
-  const choices = contextWindowChoices(next?.context_windows, next?.context_window);
-  if (!contextWindow || !choices.includes(contextWindow)) {
-    setContextWindow(resolveContextWindow(choices, 0, next?.context_window, id));
-  }
-}
-
-function rememberChatEffort(chatId: string, next: string) {
-  if (!chatId || !next) return;
+function rememberChatSettings(
+  chatId: string,
+  patch: { model?: string; effort?: string; contextWindow?: number; permission?: string },
+) {
+  if (!chatId || !workspace) return;
+  const modelId = patch.model?.trim() ?? "";
+  const effortId = patch.effort?.trim() ?? "";
+  const permissionId = patch.permission?.trim() ?? "";
+  const contextWindow = patch.contextWindow && patch.contextWindow > 0 ? Math.floor(patch.contextWindow) : 0;
+  const rows = conversationsRef.current.map((row) =>
+    row.id === chatId
+      ? {
+          ...row,
+          ...(modelId ? { model: modelId } : {}),
+          ...(effortId ? { effort: effortId } : {}),
+          ...(contextWindow ? { context_window: contextWindow } : {}),
+          ...(permissionId ? { permission: permissionId } : {}),
+        }
+      : row,
+  );
+  conversationsRef.current = rows;
+  setConversations(rows);
+  // Save even if the user has already moved to another chat. Dropping the write
+  // leaves the model copied at creation, and the next open restores it.
   void api.getConversation(workspace, chatId).then((full) => {
-    if (activeIdRef.current !== chatId) return;
-    return api.saveConversation(workspace, { ...full, effort: next });
-  }).then((saved) => {
-    if (!saved || activeIdRef.current !== chatId) return;
-    setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: next } : row)));
+    const current = conversationsRef.current.find((row) => row.id === chatId);
+    return api.saveConversation(workspace, {
+      ...full,
+      ...(modelId ? { model: current?.model || modelId } : {}),
+      ...(effortId ? { effort: current?.effort || effortId } : {}),
+      ...(contextWindow ? { context_window: current?.context_window || contextWindow } : {}),
+      ...(permissionId ? { permission: current?.permission || permissionId } : {}),
+    });
   }).catch((e) => {
     setFlash({ kind: "err", text: String(e) });
   });
 }
 
+function pickModel(id: string) {
+  modelRef.current = id;
+  setModel(id);
+  saveModel(id);
+  const chatId = activeIdRef.current;
+  const row = conversationsRef.current.find((item) => item.id === chatId);
+  const resolved = composerSettingsForChat(
+    {
+      model: id,
+      effort: row?.effort || effortRef.current,
+      contextWindow: row?.context_window || contextWindowRef.current,
+      permission: permissionRef.current,
+    },
+    models,
+    { model: id, effort: effortRef.current, contextWindow: contextWindowRef.current, permission: permissionRef.current },
+  );
+  if (resolved.effort !== effortRef.current) {
+    effortRef.current = resolved.effort;
+    setEffort(resolved.effort);
+    if (resolved.effort) saveEffort(resolved.effort);
+  }
+  if (resolved.contextWindow !== contextWindowRef.current) {
+    contextWindowRef.current = resolved.contextWindow;
+    setContextWindow(resolved.contextWindow);
+    if (resolved.contextWindow) saveContextWindow(resolved.contextWindow);
+  }
+  if (chatId) {
+    rememberChatSettings(chatId, {
+      model: id,
+      ...(resolved.effort !== (row?.effort || "") ? { effort: resolved.effort } : {}),
+      ...(resolved.contextWindow !== (row?.context_window || 0) ? { contextWindow: resolved.contextWindow } : {}),
+    });
+  }
+}
+
 function pickEffort(id: string) {
   const next = id.trim();
   if (!next) return;
+  effortRef.current = next;
   setEffort(next);
   saveEffort(next);
   const chatId = activeIdRef.current;
   if (!chatId || !workspace) return;
-  setConversations((rows) => rows.map((row) => (row.id === chatId ? { ...row, effort: next } : row)));
-  rememberChatEffort(chatId, next);
+  rememberChatSettings(chatId, { effort: next });
 }
 
 function pickContextWindow(tokens: number) {
+  contextWindowRef.current = tokens;
   setContextWindow(tokens);
   saveContextWindow(tokens);
+  const chatId = activeIdRef.current;
+  if (!chatId || !workspace) return;
+  rememberChatSettings(chatId, { contextWindow: tokens });
 }
 
 function pickPermission(id: string) {
   const next = parsePermissionMode(id);
   setPermission(next);
   savePermission(next);
+  const chatId = activeIdRef.current;
+  if (!chatId || !workspace) return;
+  rememberChatSettings(chatId, { permission: next });
   if (shouldPromptShell(next)) return;
   const ok = next === "approve-all";
   setShellQueue((q) => {
@@ -542,15 +600,34 @@ async function send() {
   if (!id) {
     const now = nowIso();
     id = newConversationId();
+    const chosenModel = modelRef.current;
+    const chosenEffort = effortRef.current;
+    const chosenWindow = contextWindowRef.current;
     await api.saveConversation(ws, {
       id,
       title: conversationTitleFrom([userMessage(text, images)]),
       created_at: now,
       updated_at: now,
       kind: "chat",
-      effort: effort || null,
+      model: chosenModel || null,
+      effort: chosenEffort || null,
+      context_window: chosenWindow || null,
+      permission: permissionRef.current || null,
       messages: [],
     });
+    const created: ConversationSummary = {
+      id,
+      title: conversationTitleFrom([userMessage(text, images)]),
+      created_at: now,
+      updated_at: now,
+      kind: "chat",
+      model: chosenModel || null,
+      effort: chosenEffort || null,
+      context_window: chosenWindow || null,
+      permission: permissionRef.current || null,
+    };
+    conversationsRef.current = [created, ...conversationsRef.current.filter((row) => row.id !== id)];
+    setConversations(conversationsRef.current);
     setActiveId(id);
     activeIdRef.current = id;
     saveConversation(ws, id);
@@ -621,9 +698,29 @@ async function runTurn(
       .then(() => persist(snapshot, id, ws, latestUsage, latestCompaction))
       .catch(() => undefined);
   };
-  const journeyId =
-    journeyIdOverride || conversations.find((row) => row.id === id)?.journey_id || undefined;
-  const kind = parseConversationKind(conversations.find((row) => row.id === id)?.kind);
+  const chat = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
+  const chip = {
+    model: modelRef.current,
+    effort: effortRef.current,
+    contextWindow: contextWindowRef.current,
+    permission: permissionRef.current,
+  };
+  // Before the first reply the composer chip is the choice, even when the empty
+  // chat was created with the previous conversation's model.
+  const unanswered = !next.some((message) => message.role === "assistant");
+  const chosenModel = modelForTurn(next, chat?.model, chip.model);
+  const turnSettings = composerSettingsForChat(
+    {
+      model: unanswered ? null : chosenModel,
+      effort: chat?.effort,
+      contextWindow: chat?.context_window,
+      permission: chat?.permission,
+    },
+    models,
+    { ...chip, model: chosenModel || chip.model },
+  );
+  const journeyId = journeyIdOverride || chat?.journey_id || undefined;
+  const kind = parseConversationKind(chat?.kind);
   let knowledge = "";
   if (journeyId && kind === "chat") {
     try {
@@ -636,13 +733,9 @@ async function runTurn(
     const done = await completeTurn({
       workspace: ws,
       messages: next,
-      model,
-      effort: effortForModel(
-        conversations.find((row) => row.id === id)?.effort || effort,
-        models.find((row) => row.id === model)?.efforts,
-        effort,
-      ),
-      contextWindow: contextWindow || undefined,
+      model: turnSettings.model,
+      effort: turnSettings.effort,
+      contextWindow: turnSettings.contextWindow || undefined,
       allowSpawn: true,
       journeyId: kind === "chat" ? journeyId : undefined,
       journeyKnowledge: kind === "chat" ? knowledge : undefined,
@@ -663,7 +756,7 @@ async function runTurn(
         if (visible()) setFlash({ kind: "err", text: err });
       },
       confirmShell: (command) => confirmShell(command, id),
-      getPermission: () => permissionRef.current,
+      getPermission: () => permissionForChat(id),
       priorPromptTokens: usageByChat[id]?.promptTokens,
       compaction: latestCompaction,
       onCompact: (state) => {
@@ -671,11 +764,22 @@ async function runTurn(
         saveMessages(latestMessages);
       },
       onTool: (call) => {
-        if (call.name === "spawn_subagent" || isTodoTool(call.name)) return;
+        if (isTodoTool(call.name)) {
+          const live = liveByChatRef.current.get(id);
+          const badge = todoBadge(todosInLatestTurn(live?.messages ?? next));
+          markRunning(id, { todo: badge && !badge.finished ? { done: badge.done, total: badge.total } : null });
+          return;
+        }
+        if (call.name === "spawn_subagent") return;
         const activity = activityFromToolCall(call);
         const rows = [
           ...(liveByChatRef.current.get(id)?.liveTools ?? []),
-          { label: toolActivityLabel(call), change: toolFileChange(call), detail: toolDetail(call) },
+          {
+            label: toolActivityLabel(call),
+            change: toolFileChange(call),
+            detail: toolDetail(call),
+            callId: call.id,
+          },
         ];
         rememberLive(id, { activity, liveTools: rows });
         markRunning(id, { activity });
@@ -683,6 +787,18 @@ async function runTurn(
           setRunningActivity(activity);
           setLiveTools(rows);
         }
+      },
+      onToolProgress: (callId, detail) => {
+        const rows = liveByChatRef.current.get(id)?.liveTools ?? [];
+        let changed = false;
+        const next = rows.map((row) => {
+          if (row.callId !== callId || row.detail === detail) return row;
+          changed = true;
+          return { ...row, detail };
+        });
+        if (!changed) return;
+        rememberLive(id, { liveTools: next });
+        if (visible()) setLiveTools(next);
       },
       onSubagent: (event) => {
         const dock = applySubagentToChat(subagentsByChatRef.current, id, event);
@@ -694,7 +810,11 @@ async function runTurn(
       onUpdate: (nextMessages) => {
         saveMessages(nextMessages);
         rememberLive(id, { messages: nextMessages, streamText: "", streamReasoning: "", activity: null });
-        markRunning(id, { activity: null });
+        const badge = todoBadge(todosInLatestTurn(nextMessages));
+        markRunning(id, {
+          activity: null,
+          ...(badge ? { todo: badge.finished ? null : { done: badge.done, total: badge.total } } : {}),
+        });
         if (!visible()) return;
         setMessages(nextMessages);
         setStreamText("");
@@ -711,7 +831,7 @@ async function runTurn(
             workspace_name: folderName(ws),
             conversation_id: id,
             conversation_title: conversationTitleFrom(liveByChatRef.current.get(id)?.messages ?? next),
-            model,
+            model: turnSettings.model,
             prompt_tokens: usage.promptTokens,
             completion_tokens: usage.completionTokens,
             total_tokens: usage.totalTokens,

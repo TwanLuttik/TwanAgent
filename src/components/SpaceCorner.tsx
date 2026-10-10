@@ -7,6 +7,9 @@ import { loadSpaceCornerScene, subscribePrefs } from "../lib/prefs";
 const SPACE_FADE =
   "radial-gradient(ellipse 120% 115% at 0% 0%, #000 0%, #000 16%, transparent 70%)";
 
+/** Pixel width. The scene player sets the canvas to 100% of its box, so a percent here would follow the sidebar. */
+const SCENE_WIDTH = 500;
+
 export function SpaceCorner() {
   const [scene, setScene] = useState(() => loadSpaceCornerScene());
   useEffect(() => subscribePrefs(() => setScene(loadSpaceCornerScene())), []);
@@ -56,7 +59,7 @@ function SceneCanvas({ id }: { id: SceneId }) {
     <canvas
       ref={ref}
       className="sidebar-space-scene"
-      style={{ WebkitMaskImage: SPACE_FADE, maskImage: SPACE_FADE }}
+      style={{ width: SCENE_WIDTH, WebkitMaskImage: SPACE_FADE, maskImage: SPACE_FADE }}
     />
   );
 }

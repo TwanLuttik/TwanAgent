@@ -25,12 +25,32 @@ export function pointerMovedPast(
   return Math.hypot(x - start.x, y - start.y) >= DRAG_START;
 }
 
+const WHEEL_LINE_PX = 40;
+
+/**
+ * Lines to move the terminal viewport. A trackpad tick is a fraction of a
+ * line; a mouse notch is about one line. Alt (xterm fast scroll) multiplies.
+ */
+export function terminalWheelLines(event: {
+  deltaY: number;
+  deltaMode?: number;
+  altKey?: boolean;
+}): number {
+  if (!event.deltaY) return 0;
+  const px = event.deltaMode === 1 ? event.deltaY * WHEEL_LINE_PX : event.deltaY;
+  const lines = Math.max(1, Math.round(Math.abs(px) / WHEEL_LINE_PX));
+  const speed = event.altKey ? 5 : 1;
+  return Math.sign(px) * lines * speed;
+}
+
 type XtermInput = {
   onData: (fn: (data: string) => void) => unknown;
   onBinary: (fn: (data: string) => void) => unknown;
   hasSelection?: () => boolean;
   attachCustomKeyEventHandler?: (fn: (event: KeyboardEvent) => boolean) => void;
   element?: HTMLElement | null;
+  modes?: { mouseTrackingMode?: string };
+  scrollLines?: (amount: number) => void;
 };
 
 /**
@@ -84,6 +104,21 @@ export function attachXtermInput(
     element.addEventListener("mouseup", () => {
       drag = null;
     });
+    // The viewport overlay ignores pointer events so TUI clicks hit the screen.
+    // That also drops the wheel, and the document scroll lock cancels it before
+    // xterm's own handler. Scroll the buffer unless the app asked for wheel reports.
+    element.addEventListener(
+      "wheel",
+      (event) => {
+        if (term.modes?.mouseTrackingMode && term.modes.mouseTrackingMode !== "none") return;
+        const lines = terminalWheelLines(event);
+        if (!lines) return;
+        event.preventDefault();
+        event.stopPropagation();
+        term.scrollLines?.(lines);
+      },
+      { capture: true, passive: false },
+    );
   }
   term.attachCustomKeyEventHandler?.((event) =>
     terminalKeyReachesPty(event, Boolean(term.hasSelection?.())),

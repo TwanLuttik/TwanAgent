@@ -115,6 +115,8 @@ export type MainModel = {
   setProjectMenu: MainFn;
   setShowSettings: MainFn;
   setShowUsage: MainFn;
+  settingsTab: any;
+  setSettingsTab: MainFn;
   setSidebarWidth: MainFn;
   bumpFiles: () => void;
   showLanding: any;

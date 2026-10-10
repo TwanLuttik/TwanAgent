@@ -68,7 +68,7 @@ pub fn try_remote(workspace: &Path, args: &[&str]) -> Result<Option<String>> {
             result.stderr
         };
         if err.contains("not a git repository") {
-            return Ok(Some(String::new()));
+            return Err(Error::Other("not a git repository".into()));
         }
         return Err(Error::Other(err.trim().chars().take(400).collect()));
     }

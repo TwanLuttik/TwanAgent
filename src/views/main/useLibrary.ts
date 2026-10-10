@@ -37,11 +37,16 @@ import { forgetPaneWorkspace } from "../../lib/pane-sessions";
 import { shellSessions } from "../../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../../lib/terminal-chat";
 import { terminalSessions } from "../../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, effortForModel, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
+import { parsePermissionMode, type PermissionMode } from "../../lib/permission";
 import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
 import {
+  loadContextWindow,
   loadConversation,
   loadEffort,
+  loadModel,
+  loadPermission,
+  saveModel,
   pushRecentWorkspace,
   removeRecentWorkspace,
   saveCollapsedProjects,
@@ -80,14 +85,22 @@ export type LibraryDeps = {
   compactionByChat: Record<string, { summary: string; through: number }>;
   setCompactionByChat: Update<Record<string, { summary: string; through: number }>>;
   model: string;
-  models: { id: string; efforts?: { id: string }[]; default_effort?: string }[];
+  effort: string;
+  contextWindow: number;
+  permission: string;
+  models: { id: string; efforts?: { id: string }[]; context_windows?: number[] | null; context_window?: number | null }[];
   defaultEffort: string;
+  setModel: Update<string>;
   setEffort: Update<string>;
+  setContextWindow: Update<number>;
+  setPermission: Update<PermissionMode>;
   openSettings: () => void;
   reloadConversations: (ws: string, preferId?: string) => Promise<void>;
   runTurn: RunTurn;
   scroller: RefObject<HTMLDivElement | null>;
   runningWsRef: RefObject<string>;
+  /** Live composer model. A turn save must not use the model from the render that started it. */
+  modelRef: RefObject<string>;
   /** Workspace currently on screen. Turn saves must follow this, not the workspace from when the turn started. */
   workspaceRef: RefObject<string>;
   runningIdRef: RefObject<string>;
@@ -159,8 +172,8 @@ export function useLibrary(deps: LibraryDeps) {
   const {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
-    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, models, defaultEffort, setEffort, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
+    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
+    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -341,6 +354,8 @@ function applyWorkspace(path: string) {
       : null;
     if (live && prefer) {
       const cached = liveByChatRef.current.get(prefer);
+      const group = allProjectGroups.find((row) => isSameProject(row.path, path));
+      showChatSettings(group?.conversations.find((row) => row.id === prefer));
       setActiveId(prefer);
       runningIdRef.current = prefer;
       setRunningId(prefer);
@@ -388,7 +403,22 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     return;
   }
   stickToBottomRef.current = true;
-  const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId, loadEffort());
+  const chosen = composerSettingsForChat(
+    null,
+    models,
+    {
+      model: model || loadModel(),
+      effort: effort || defaultEffort || loadEffort(),
+      contextWindow: contextWindow || loadContextWindow(),
+      permission: permission || loadPermission(),
+    },
+  );
+  if (chosen.model) saveModel(chosen.model);
+  const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId, chosen.effort, {
+    model: chosen.model,
+    contextWindow: chosen.contextWindow,
+    permission: chosen.permission,
+  });
   const rows = projectConversations(path);
   const journeysHere = projectJourneys(path);
   const sortOrder = journeyId
@@ -406,6 +436,9 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     journey_id: journeyId ?? null,
     sort_order: sortOrder,
     effort: conv.effort ?? null,
+    model: conv.model ?? null,
+    context_window: conv.context_window ?? null,
+    permission: conv.permission ?? null,
   };
   await api.saveConversation(path, { ...conv, sort_order: sortOrder });
   saveConversation(path, conv.id);
@@ -467,11 +500,40 @@ useEffect(() => {
   return () => window.removeEventListener("keydown", onKey, true);
 }, []);
 
-function showChatEffort(id: string) {
-  const stored = conversations.find((row) => row.id === id)?.effort;
-  const chosen = models.find((row) => row.id === model) ?? models[0];
-  const next = effortForModel(stored, chosen?.efforts, defaultEffort || loadEffort());
-  if (next) setEffort(next);
+function composerFallback() {
+  return {
+    model: model || loadModel(),
+    effort: effort || defaultEffort || loadEffort(),
+    contextWindow: contextWindow || loadContextWindow(),
+    permission: permission || loadPermission(),
+  };
+}
+
+function applyComposerSettings(next: { model: string; effort: string; contextWindow: number; permission: string }) {
+  if (next.model) setModel(next.model);
+  if (next.effort) setEffort(next.effort);
+  if (next.contextWindow) setContextWindow(next.contextWindow);
+  setPermission(parsePermissionMode(next.permission));
+}
+
+function showChatSettings(row: {
+  model?: string | null;
+  effort?: string | null;
+  context_window?: number | null;
+  permission?: string | null;
+} | null | undefined) {
+  applyComposerSettings(
+    composerSettingsForChat(
+      {
+        model: row?.model,
+        effort: row?.effort,
+        contextWindow: row?.context_window,
+        permission: row?.permission,
+      },
+      models,
+      composerFallback(),
+    ),
+  );
 }
 
 /** Point the composer at this chat's turn, or clear it when the chat is idle. Other turns keep running. */
@@ -499,7 +561,7 @@ async function openChat(id: string) {
   const openLive = liveByChatRef.current.get(id);
   if (openLive) {
     const turn = runningTurns[id];
-    showChatEffort(id);
+    showChatSettings(conversations.find((row) => row.id === id));
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -520,7 +582,7 @@ async function openChat(id: string) {
     return;
   }
   if (runningId === id && turnMessagesRef.current) {
-    showChatEffort(id);
+    showChatSettings(conversations.find((row) => row.id === id));
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -542,19 +604,33 @@ async function openChat(id: string) {
   setLiveTools([]);
   setRunningActivity(null);
   setTurnStartedAt(0);
-  showChatEffort(id);
+  showChatSettings(conversations.find((row) => row.id === id));
   setActiveId(id);
   setOpeningId(id);
   try {
     const full = await api.getConversation(workspace, id);
     if (generation !== openGeneration.current) return;
-    const known = conversations.find((row) => row.id === id)?.effort;
-    if (full.effort && full.effort !== known) {
-      setConversations((rows) => rows.map((row) => (row.id === id ? { ...row, effort: full.effort } : row)));
-    }
-    const chosen = models.find((row) => row.id === model) ?? models[0];
-    const nextEffort = effortForModel(full.effort || known, chosen?.efforts, defaultEffort || loadEffort());
-    if (nextEffort) setEffort(nextEffort);
+    const known = conversations.find((row) => row.id === id);
+    setConversations((rows) =>
+      rows.map((row) =>
+        row.id === id
+          ? {
+              ...row,
+              effort: full.effort ?? row.effort,
+              model: full.model ?? row.model,
+              context_window: full.context_window ?? row.context_window,
+              permission: full.permission ?? row.permission,
+            }
+          : row,
+      ),
+    );
+    if (generation !== openGeneration.current) return;
+    showChatSettings({
+      model: full.model ?? known?.model,
+      effort: full.effort ?? known?.effort,
+      context_window: full.context_window ?? known?.context_window,
+      permission: full.permission ?? known?.permission,
+    });
     const loaded = (full.messages as ChatMessage[]) ?? [];
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
@@ -684,6 +760,12 @@ async function persist(
       const existing =
         conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
       const kind = parseConversationKind(existing?.kind);
+      // Until an assistant reply exists, the composer chip is the model for this
+      // chat. The row may still hold the model copied when the empty chat was created.
+      const unanswered = !next.some((message) => message.role === "assistant");
+      const chipModel = (modelRef.current || model || loadModel()).trim();
+      const storedModel = (existing?.model ?? "").trim();
+      const modelId = (unanswered ? chipModel || storedModel : storedModel || chipModel) || null;
       await api.saveConversation(ws, {
         id,
         title,
@@ -693,6 +775,9 @@ async function persist(
         journey_id: existing?.journey_id ?? null,
         sort_order: existing?.sort_order ?? 0,
         effort: existing?.effort ?? null,
+        model: modelId,
+        context_window: existing?.context_window ?? null,
+        permission: existing?.permission ?? null,
         archived: existing?.archived ?? false,
         messages: persistableMessages(next),
         context_usage: usageToPersist(usage, usageByChat[id]),
@@ -705,6 +790,9 @@ async function persist(
         updated_at: now,
         kind,
         effort: existing?.effort ?? null,
+        model: modelId,
+        context_window: existing?.context_window ?? null,
+        permission: existing?.permission ?? null,
       };
       if (isSameProject(ws, workspaceRef.current)) {
         setConversations((rows) => {

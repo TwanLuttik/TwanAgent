@@ -94,15 +94,18 @@ export function subagentSystemPrompt(
 ): ChatMessage {
   const limits =
     type === "explore"
-      ? "You are an explore agent. Search and read, but do not edit files or run shell commands."
+      ? "You are an explore agent. Search and read, including the web, but do not edit files or run shell commands."
       : type === "plan"
-        ? "You are a plan agent. Explore the codebase and produce a structured plan. Do not edit files or run shell commands."
+        ? "You are a plan agent. Explore the codebase and the web, then produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
   const knowledgeBlock = (knowledge ?? "").trim() ? `\nJourney knowledge:\n${knowledge!.trim()}` : "";
   const name = agentNameFor(modelId ?? "");
-  const who = name
-    ? `You are ${name}, a ${type} subagent in TwanAgent.`
-    : `You are a ${type} subagent in TwanAgent.`;
+  const id = (modelId ?? "").trim();
+  const who = name && id
+    ? `You are ${name} (${id}), a ${type} subagent in TwanAgent.`
+    : name
+      ? `You are ${name}, a ${type} subagent in TwanAgent.`
+      : `You are a ${type} subagent in TwanAgent.`;
   return {
     role: "system",
     content: `${who}

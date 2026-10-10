@@ -12,8 +12,12 @@ export function conversationDraft(
   now: string,
   journeyId?: string | null,
   effort?: string | null,
+  settings?: { model?: string | null; contextWindow?: number | null; permission?: string | null },
 ) {
   const thinking = (effort ?? "").trim();
+  const model = (settings?.model ?? "").trim();
+  const permission = (settings?.permission ?? "").trim();
+  const contextWindow = settings?.contextWindow && settings.contextWindow > 0 ? Math.floor(settings.contextWindow) : 0;
   return {
     id,
     title: kind === "terminal" ? "Terminal" : "New chat",
@@ -23,6 +27,9 @@ export function conversationDraft(
     kind,
     ...(journeyId ? { journey_id: journeyId } : {}),
     ...(thinking ? { effort: thinking } : {}),
+    ...(model ? { model } : {}),
+    ...(contextWindow ? { context_window: contextWindow } : {}),
+    ...(permission ? { permission } : {}),
   };
 }
 

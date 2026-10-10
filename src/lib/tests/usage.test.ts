@@ -4,10 +4,14 @@ import {
   buildUsageGrid,
   buildUsageSnapshot,
   buildUsageTrend,
+  sumTrendRange,
   dayKey,
+  trendBucketSpan,
   estimateUsageCost,
   formatBytes,
+  formatModelName,
   formatUsd,
+  modelColorIndex,
   linePath,
   modelRate,
   rangeStartMs,
@@ -108,6 +112,10 @@ describe("buildUsageSnapshot", () => {
     assert.deepEqual(
       snap.projects.map((p) => p.name),
       ["alpha", "beta"],
+    );
+    assert.deepEqual(
+      snap.models.map((row) => [row.model, row.total]),
+      [["grok-4.6", 1760]],
     );
     assert.equal(snap.projects[0].total, 1650);
     assert.equal(snap.projects[1].total, 110);
@@ -221,6 +229,8 @@ describe("estimated cost", () => {
     ];
     const cost = estimateUsageCost(events, { range: 7, nowMs: now });
     assert.equal(cost.usd, 4 + 3);
+    assert.equal(cost.xai, 4);
+    assert.equal(cost.anthropic, 3);
     assert.equal(cost.unpricedTokens, 0);
   });
 
@@ -338,6 +348,43 @@ describe("tool-loop usage", () => {
       ev({ id: 2, recorded_at, workspace_path: "/a", prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
     ];
     assert.equal(usageTotalSince(events, now - 60_000, now), 120);
+  });
+
+  it("starts a new series when the same conversation switches models", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 120_000).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.6",
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+      }),
+      ev({
+        id: 2,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "claude-sonnet-4-6",
+        prompt_tokens: 800,
+        completion_tokens: 50,
+        total_tokens: 850,
+      }),
+    ];
+    const snap = buildUsageSnapshot(events, { range: 7, nowMs: now });
+    assert.equal(snap.totals.prompt, 1800);
+    assert.equal(snap.totals.completion, 150);
+    assert.equal(snap.totals.total, 1950);
+    assert.deepEqual(
+      snap.models.map((row) => [row.model, row.total]),
+      [
+        ["grok-4.6", 1100],
+        ["claude-sonnet-4-6", 850],
+      ],
+    );
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    assert.equal(cost.usd, (1000 * 2 + 100 * 6) / 1_000_000 + (800 * 3 + 50 * 15) / 1_000_000);
+    assert.equal(cost.unpricedTokens, 0);
   });
 
   it("does not recount a prompt that stays the same while completion changes", () => {
@@ -502,6 +549,107 @@ describe("buildUsageTrend", () => {
     const alpha = buildUsageTrend(events, { range: "30d", nowMs: now, workspacePath: "/proj/alpha/" });
     assert.equal(alpha.totals.total, 50);
     assert.equal(alpha.points[29].total, 0);
+  });
+
+  it("keeps each model on the point that recorded it", () => {
+    const hour = new Date(now);
+    hour.setMinutes(0, 0, 0);
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(hour.getTime() + 5 * 60_000).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.6",
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "c2",
+        recorded_at: new Date(hour.getTime() + 15 * 60_000).toISOString(),
+        workspace_path: "/a",
+        model: "claude-sonnet-4-6",
+        prompt_tokens: 40,
+        completion_tokens: 10,
+        total_tokens: 50,
+      }),
+      ev({
+        id: 3,
+        conversation_id: "c3",
+        recorded_at: new Date(hour.getTime() + 25 * 60_000).toISOString(),
+        workspace_path: "/a",
+        model: "claude-sonnet-4-6",
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
+      }),
+    ];
+    const trend = buildUsageTrend(events, { range: "24h", nowMs: now });
+    const used = trend.points.filter((point) => point.total > 0);
+    assert.equal(used.length, 1);
+    assert.equal(used[0].total, 185);
+    assert.deepEqual(
+      used[0].models.map((row) => [row.model, row.total]),
+      [
+        ["grok-4.6", 120],
+        ["claude-sonnet-4-6", 65],
+      ],
+    );
+    assert.equal(formatModelName("claude-sonnet-4-6"), "Claude Sonnet 4.6");
+    assert.equal(formatModelName("grok-4.6"), "grok-4.6");
+    assert.equal(formatModelName("  "), "Unknown model");
+    assert.equal(modelColorIndex("grok-4.6"), modelColorIndex("grok-4.6"));
+    assert.notEqual(modelColorIndex("grok-4.6"), modelColorIndex("claude-sonnet-4-6"));
+    assert.notEqual(modelColorIndex("claude-opus-4-8"), modelColorIndex("claude-haiku-4-5"));
+    assert.equal(modelColorIndex(""), 7);
+  });
+
+  it("names an hour for 24h and 7d, and a day for 30d", () => {
+    const at = new Date(now);
+    at.setHours(10, 0, 0, 0);
+    const hour = at.toLocaleTimeString(undefined, { hour: "numeric" });
+    const next = new Date(at.getTime() + 60 * 60 * 1000).toLocaleTimeString(undefined, { hour: "numeric" });
+    assert.equal(trendBucketSpan("24h", at.getTime()), `${hour} – ${next}`);
+    assert.equal(
+      trendBucketSpan("7d", at.getTime()),
+      `${at.toLocaleDateString(undefined, { weekday: "short" })}, ${hour} – ${next}`,
+    );
+    assert.equal(
+      trendBucketSpan("30d", at.getTime()),
+      at.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }),
+    );
+  });
+
+  it("sums an inclusive dragged span and ignores the order of the ends", () => {
+    const trend = buildUsageTrend(
+      [
+        ev({
+          id: 1,
+          recorded_at: new Date(now - 3 * 3600_000).toISOString(),
+          workspace_path: "/a",
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+        }),
+        ev({
+          id: 2,
+          conversation_id: "c2",
+          recorded_at: new Date(now - 2 * 3600_000).toISOString(),
+          workspace_path: "/a",
+          prompt_tokens: 40,
+          completion_tokens: 10,
+          total_tokens: 50,
+        }),
+      ],
+      { range: "24h", nowMs: now },
+    );
+    const used = trend.points.map((point, index) => (point.total > 0 ? index : -1)).filter((index) => index >= 0);
+    assert.equal(used.length, 2);
+    assert.deepEqual(sumTrendRange(trend.points, used[0], used[1]), { prompt: 140, completion: 30, total: 170 });
+    assert.deepEqual(sumTrendRange(trend.points, used[1], used[0]).total, 170);
+    assert.equal(sumTrendRange(trend.points, used[0], used[0]).total, 120);
+    assert.equal(sumTrendRange([], 0, 4).total, 0);
   });
 
   it("counts a tool loop once inside a 7 day hourly series", () => {

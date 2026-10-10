@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { agentNameFor, contextWindowForProvider, isClaudeModel, providerFor } from "../provider.ts";
+import { agentIdentityLine, agentNameFor, contextWindowForProvider, isClaudeModel, providerFor } from "../provider.ts";
 
 describe("providerFor", () => {
   it("classifies only the Claude catalog as anthropic", () => {
@@ -22,9 +22,24 @@ describe("providerFor", () => {
 describe("agentNameFor", () => {
   it("names Claude and Grok and stays quiet otherwise", () => {
     assert.equal(agentNameFor("claude-opus-4-8"), "Claude");
+    assert.equal(agentNameFor("claude-haiku-4-5"), "Claude");
+    assert.equal(agentNameFor("claude-haiku-4-5-latest"), "Claude");
     assert.equal(agentNameFor("grok-4.6"), "Grok");
     assert.equal(agentNameFor(""), "");
-    assert.equal(agentNameFor("sxs-claude-opus-4-6"), "");
+    assert.equal(agentNameFor("mystery-model"), "");
+  });
+
+  it("puts the selected model id in the identity line", () => {
+    assert.equal(
+      agentIdentityLine("claude-haiku-4-5"),
+      "You are Claude (claude-haiku-4-5), a coding agent in TwanAgent.",
+    );
+    assert.equal(
+      agentIdentityLine("grok-4.6"),
+      "You are Grok (grok-4.6), a coding agent in TwanAgent.",
+    );
+    assert.equal(agentIdentityLine(""), "You are a coding agent in TwanAgent.");
+    assert.equal(agentIdentityLine("mystery-model"), "You are a coding agent in TwanAgent.");
   });
 });
 

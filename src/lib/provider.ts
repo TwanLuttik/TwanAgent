@@ -24,7 +24,16 @@ export function contextWindowForProvider(modelId: string, windowFromCatalog?: nu
 export function agentNameFor(modelId: string): string {
   const id = modelId.trim().toLowerCase();
   if (!id) return "";
-  if (isClaudeModel(id)) return "Claude";
-  if (id.startsWith("grok-") || id.startsWith("grok ")) return "Grok";
+  if (id.startsWith("claude")) return "Claude";
+  if (id.startsWith("grok-") || id.startsWith("grok ") || id.startsWith("grok")) return "Grok";
   return "";
+}
+
+/** One sentence that tells the model who it is for this chat. */
+export function agentIdentityLine(modelId?: string | null): string {
+  const id = (modelId ?? "").trim();
+  const name = agentNameFor(id);
+  if (name && id) return `You are ${name} (${id}), a coding agent in TwanAgent.`;
+  if (name) return `You are ${name}, a coding agent in TwanAgent.`;
+  return "You are a coding agent in TwanAgent.";
 }

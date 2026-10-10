@@ -28,6 +28,11 @@ pub fn dev_cli_info(state: State<'_, AppState>) -> grok_cli::GrokCliInfo {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn dev_claude_cli_info() -> crate::anthropic::ClaudeCliInfo {
+    crate::anthropic::claude_cli_info()
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_set_key(state: State<'_, AppState>, key: String) -> Result<KeyStatus> {
     secrets::set_xai_key(&state.data_dir, &key)?;
     Ok(dev_key_status(state))

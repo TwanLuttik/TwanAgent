@@ -8,6 +8,9 @@ import {
   isAllDiffPath,
   formatPlayerTime,
   isMarkdownPath,
+  isMcpEditorPath,
+  mcpEditorPath,
+  mcpSourceFromPath,
   languageForPath,
   markdownViewForTab,
   mediaKindForPath,
@@ -252,6 +255,19 @@ describe("isMarkdownPath", () => {
     assert.equal(isMarkdownPath("src/App.tsx"), false);
     assert.equal(isMarkdownPath("readme"), false);
     assert.equal(isMarkdownPath("notes.md.bak"), false);
+  });
+
+  it("keeps an MCP config path intact and titles it from the file", () => {
+    const path = mcpEditorPath("~/.grok/config.toml");
+    assert.equal(path, "mcp:~/.grok/config.toml");
+    assert.equal(isMcpEditorPath(path), true);
+    assert.equal(mcpSourceFromPath(path), "~/.grok/config.toml");
+    assert.equal(mcpSourceFromPath("src/a.ts"), null);
+    assert.equal(editorTabTitle(path), "config.toml");
+    assert.equal(languageForPath(path), "text");
+    const opened = openEditorTab(emptyEditor(), path);
+    assert.deepEqual(opened.tabs.map((tab) => tab.path), [path]);
+    assert.equal(opened.activePath, path);
   });
 
   it("treats journey knowledge tabs as Markdown", () => {

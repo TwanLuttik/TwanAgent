@@ -6,6 +6,7 @@ import {
   dragSelectsTerminalText,
   pointerMovedPast,
   terminalKeyReachesPty,
+  terminalWheelLines,
 } from "../term-io.ts";
 
 describe("binaryStringToBytes", () => {
@@ -51,6 +52,20 @@ describe("terminalKeyReachesPty", () => {
     assert.equal(terminalKeyReachesPty(key("a", { ctrlKey: true }), false), false);
     assert.equal(terminalKeyReachesPty(key("k", { metaKey: true }), false), true);
     assert.equal(terminalKeyReachesPty(key("c"), false), true);
+  });
+});
+
+describe("terminalWheelLines", () => {
+  it("turns a mouse notch into one line and a trackpad flick into several", () => {
+    assert.equal(terminalWheelLines({ deltaY: 4 }), 1);
+    assert.equal(terminalWheelLines({ deltaY: -4 }), -1);
+    assert.equal(terminalWheelLines({ deltaY: 120 }), 3);
+    assert.equal(terminalWheelLines({ deltaY: 0 }), 0);
+  });
+
+  it("speeds up while alt is held and treats line-mode deltas as lines", () => {
+    assert.equal(terminalWheelLines({ deltaY: 40, altKey: true }), 5);
+    assert.equal(terminalWheelLines({ deltaY: 3, deltaMode: 1 }), 3);
   });
 });
 
@@ -146,7 +161,50 @@ describe("attachXtermInput", () => {
     move?.({ button: 0, buttons: 1, shiftKey: true, altKey: false, clientX: 30, clientY: 10, stopPropagation: stop });
     assert.equal(stopped.value, false);
 
-    assert.deepEqual(calls, ["mousedown:capture", "mousemove:capture", "mouseup:bubble"]);
+    assert.deepEqual(calls, ["mousedown:capture", "mousemove:capture", "mouseup:bubble", "wheel:capture"]);
     assert.deepEqual(keys, [true, false, true, true]);
+  });
+
+  it("scrolls the buffer on wheel unless the app is tracking the mouse", () => {
+    const handlers = new Map<string, (event: WheelEvent) => void>();
+    const scrolled: number[] = [];
+    const element = {
+      addEventListener(type: string, fn: (event: WheelEvent) => void, _capture?: unknown) {
+        handlers.set(type, fn);
+      },
+    };
+    const term = {
+      element: element as unknown as HTMLElement,
+      onData() {},
+      onBinary() {},
+      modes: { mouseTrackingMode: "none" as string },
+      scrollLines(amount: number) {
+        scrolled.push(amount);
+      },
+    };
+    attachXtermInput(term, () => undefined, () => undefined);
+    const wheel = handlers.get("wheel");
+    const event = {
+      deltaY: 80,
+      altKey: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      stopPropagation() {
+        this.stopped = true;
+      },
+      defaultPrevented: false,
+      stopped: false,
+    };
+    wheel?.(event as unknown as WheelEvent);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(event.stopped, true);
+    assert.deepEqual(scrolled, [2]);
+
+    term.modes.mouseTrackingMode = "vt200";
+    event.defaultPrevented = false;
+    wheel?.(event as unknown as WheelEvent);
+    assert.equal(event.defaultPrevented, false);
+    assert.deepEqual(scrolled, [2]);
   });
 });

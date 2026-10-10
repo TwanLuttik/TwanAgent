@@ -49,7 +49,7 @@ export function permissionSystemLine(mode: PermissionMode): string {
     case "approve-all":
       return "Use tools to inspect and edit this folder. File edits and shell commands run without asking.";
     case "read-only":
-      return "Use tools to inspect this folder. Read-only: do not edit files or run shell commands.";
+      return "Use tools to inspect this folder. Read-only: do not edit files or run shell commands. Web search is allowed.";
     default:
       return "Use tools to inspect and edit this folder. File edits apply immediately. Shell commands require the user to approve.";
   }

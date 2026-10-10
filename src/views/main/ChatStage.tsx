@@ -62,6 +62,8 @@ export function ChatStage() {
     setEditor,
     setShowSettings,
     setShowUsage,
+    settingsTab,
+    setSettingsTab,
     bumpFiles,
     chatTabs,
     closeChatTab,
@@ -101,7 +103,8 @@ export function ChatStage() {
           {showSettings ? (
             <SettingsView
               embedded
-              initialTab="providers"
+              tab={settingsTab}
+              onTab={setSettingsTab}
               permission={permission}
               onPermission={pickPermission}
               speechModel={speechModel}

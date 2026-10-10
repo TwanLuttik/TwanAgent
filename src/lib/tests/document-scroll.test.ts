@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   installDocumentScrollLock,
   shouldPreventDocumentWheel,
+  wheelTargetOwnsScroll,
   type WheelBox,
 } from "../document-scroll.ts";
 
@@ -70,6 +71,23 @@ describe("shouldPreventDocumentWheel", () => {
     });
     assert.equal(shouldPreventDocumentWheel(region, 0, 40), false);
     assert.equal(shouldPreventDocumentWheel(region, 0, -20), false);
+  });
+});
+
+function el(className: string, parent?: { parentElement: unknown; classList: { contains: (name: string) => boolean } }) {
+  return {
+    classList: { contains: (name: string) => className.split(/\s+/).includes(name) },
+    parentElement: parent ?? null,
+  };
+}
+
+describe("wheelTargetOwnsScroll", () => {
+  it("leaves wheel events inside a terminal alone", () => {
+    const host = el("term");
+    const screen = el("xterm-screen", host);
+    assert.equal(wheelTargetOwnsScroll(screen), true);
+    assert.equal(wheelTargetOwnsScroll(el("chat")), false);
+    assert.equal(wheelTargetOwnsScroll(null), false);
   });
 });
 

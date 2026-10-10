@@ -34,6 +34,8 @@ import {
   toolSummary,
   foldToolTrailRows,
   toolDetail,
+  webSearchResultSites,
+  siteHost,
   toolTrailFileChanges,
   toolTrailSummary,
   toolTrailTypeCountText,
@@ -207,6 +209,17 @@ describe("tool helpers", () => {
     assert.equal(toolSummary("read_file", { path: "src/lib.rs" }), "Read src/lib.rs");
     assert.equal(toolSummary("edit_file", { path: "src/lib.rs" }), "Edit lib.rs");
     assert.equal(toolSummary("spawn_subagent", { description: "Find parser" }), "Subagent: Find parser");
+    assert.equal(toolSummary("web_search", { query: "  rust 2024 edition  " }), "Web search: rust 2024 edition");
+    assert.equal(toolSummary("web_search", { search_term: "cargo features" }), "Web search: cargo features");
+    assert.equal(toolSummary("web_search", {}), "Web search");
+    assert.equal(
+      toolDetail({
+        id: "s",
+        name: "web_search",
+        arguments: JSON.stringify({ query: "donuts", allowed_domains: ["https://www.seriouseats.com/x"] }),
+      }),
+      "seriouseats.com",
+    );
     assert.equal(toolSummary("todo_write", { todos: [{ id: "a", content: "Read", status: "pending" }] }), "Updated todos");
   });
 
@@ -230,7 +243,7 @@ describe("tool helpers", () => {
     ]);
     assert.deepEqual(items, [
       { kind: "user", content: "fix it" },
-      { kind: "tools", labels: ["Read src/lib.rs"], files: [], details: [null], commands: ["src/lib.rs"] },
+      { kind: "tools", labels: ["Read src/lib.rs"], files: [], details: [null], commands: ["src/lib.rs"], callIds: ["2"] },
     ]);
   });
 
@@ -262,6 +275,7 @@ describe("tool helpers", () => {
           { path: "src/lib.rs", name: "lib.rs", additions: 0, deletions: 0, added: [], removed: [] },
         ],
         commands: ["src/lib.rs", ""],
+        callIds: ["1", "2"],
       },
       { kind: "assistant", content: "Updated the file." },
     ]);
@@ -404,6 +418,35 @@ describe("tool helpers", () => {
     );
     assert.deepEqual(foldToolTrailRows(["List .", "List src"]), [
       { label: "List 2 directories", change: null, detail: "" },
+    ]);
+  });
+
+  it("shows the websites a finished search actually cited", () => {
+    assert.equal(siteHost("https://www.seriouseats.com/donuts"), "seriouseats.com");
+    assert.deepEqual(
+      webSearchResultSites("Sources:\n[1] Guide — https://www.seriouseats.com/donuts\n[2] https://kingarthur.com/recipes"),
+      ["seriouseats.com", "kingarthur.com"],
+    );
+    const items = transcriptItems([
+      { role: "user", content: "donuts" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "s1", name: "web_search", arguments: '{"query":"donuts"}' }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "s1",
+        content: 'Web search results for: "donuts"\n\nGlazed.\n\nSources:\n[1] Guide — https://www.seriouseats.com/donuts\n[2] https://www.kingarthur.com/recipes',
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Web search: donuts"]);
+    assert.deepEqual(tools.commands, ["seriouseats.com\nkingarthur.com"]);
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
+      { label: "Web search: donuts", change: null, detail: "seriouseats.com\nkingarthur.com" },
     ]);
   });
 
@@ -772,6 +815,7 @@ describe("tool trail collapse", () => {
     assert.equal(toolTrailTypeIcon("Edit"), "pencil");
     assert.equal(toolTrailTypeIcon("List"), "folder");
     assert.equal(toolTrailTypeIcon("Subagent"), "person.2");
+    assert.equal(toolTrailTypeIcon("Web"), "globe");
   });
 
   it("keeps special tool types intact when grouping", () => {
@@ -1042,10 +1086,12 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "approve-all").content), /without asking/);
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
+    assert.match(String(systemPrompt("/tmp/app", "ask").content), /web_search/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /You are a coding agent in TwanAgent/);
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /Only Grok is available/);
-    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6").content), /You are Grok, a coding agent/);
-    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-sonnet-4-6").content), /You are Claude, a coding agent/);
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6").content), /You are Grok \(grok-4\.6\), a coding agent/);
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-haiku-4-5").content), /You are Claude \(claude-haiku-4-5\), a coding agent/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-haiku-4-5").content), /You are Grok/);
   });
 
   it("tells the model a remote workspace runs commands on the server", () => {

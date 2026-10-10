@@ -1,6 +1,10 @@
-use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use crate::grok_cli::{effort_label, DevEffort, DevModel};
+use serde::{Deserialize, Serialize};
+
+use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
 
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 
@@ -80,10 +84,275 @@ pub fn max_tokens_for(id: &str) -> u32 {
     claude_model(id).map(|row| row.3).unwrap_or(16_000)
 }
 
+/// Opus 4.8 and Sonnet 4.6 accept adaptive thinking. Haiku 4.5 rejects it.
+pub fn supports_adaptive_thinking(id: &str) -> bool {
+    matches!(
+        claude_model(id).map(|row| row.0),
+        Some("claude-opus-4-8" | "claude-sonnet-4-6")
+    )
+}
+
+/// Manual thinking budget for a model that cannot use adaptive thinking.
+/// Must stay below the output cap. `None` means send no thinking field.
+pub fn manual_thinking_budget(id: &str, effort: Option<&str>) -> Option<u32> {
+    if supports_adaptive_thinking(id) {
+        return None;
+    }
+    let effort = effort.map(str::trim).filter(|value| !value.is_empty())?;
+    let cap = max_tokens_for(id);
+    let budget = match effort {
+        "low" => 1_024,
+        "medium" => 4_096,
+        "high" | "xhigh" | "max" => 8_192,
+        _ => return None,
+    };
+    Some(budget.min(cap.saturating_sub(1)).max(1_024).min(cap.saturating_sub(1)))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeCliInfo {
+    pub installed: bool,
+    pub path: String,
+    pub version: Option<String>,
+    pub logged_in: bool,
+    pub email: Option<String>,
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+fn which(name: &str) -> Option<PathBuf> {
+    let cmd = if cfg!(windows) { "where" } else { "which" };
+    let out = Command::new(cmd).arg(name).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let path = text.lines().next()?.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let found = PathBuf::from(path);
+    found.is_file().then_some(found)
+}
+
+/// Claude Code CLI. Local installs live under `~/.claude/local`, then the PATH.
+pub fn claude_bin() -> Option<PathBuf> {
+    if let Some(home) = home_dir() {
+        let names = if cfg!(windows) {
+            ["claude.exe", "claude.cmd", "claude"]
+        } else {
+            ["claude", "claude", "claude"]
+        };
+        for name in names {
+            let candidate = home.join(".claude").join("local").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    which("claude")
+}
+
+pub fn claude_version(bin: &Path) -> Option<String> {
+    let out = Command::new(bin).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().next()?.trim();
+    parse_cli_version(line)
+}
+
+fn account_email(value: &serde_json::Value) -> Option<String> {
+    for key in ["email", "emailAddress", "primaryEmail"] {
+        if let Some(email) = value.get(key).and_then(|v| v.as_str()) {
+            let email = email.trim();
+            if email.contains('@') {
+                return Some(email.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// A Claude login leaves credentials in `~/.claude` or the macOS keychain. The email is optional.
+pub fn read_claude_account(home: &Path) -> Option<(bool, Option<String>)> {
+    read_claude_account_with(home, keychain_credentials)
+}
+
+pub fn read_claude_account_with(
+    home: &Path,
+    keychain: impl Fn() -> Option<String>,
+) -> Option<(bool, Option<String>)> {
+    let claude = home.join(".claude");
+    let creds = claude.join(".credentials.json");
+    if creds.is_file() {
+        let raw = fs::read_to_string(&creds).unwrap_or_default();
+        if let Some(found) = oauth_login(&raw) {
+            return Some(found);
+        }
+    }
+    for path in [home.join(".claude.json"), claude.join(".claude.json")] {
+        let Ok(config) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&config) else {
+            continue;
+        };
+        if let Some(oauth) = value.get("oauthAccount").filter(|item| !item.is_null()) {
+            return Some((true, account_email(oauth)));
+        }
+    }
+    keychain().and_then(|raw| oauth_login(&raw))
+}
+
+fn oauth_access_token(raw: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let oauth = value.get("claudeAiOauth").filter(|item| !item.is_null())?;
+    let token = oauth
+        .get("accessToken")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())?;
+    if token_expired(oauth.get("expiresAt").and_then(|item| item.as_i64())) {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn oauth_login(raw: &str) -> Option<(bool, Option<String>)> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let token = oauth_access_token(raw)?;
+    let oauth = value.get("claudeAiOauth")?;
+    let _ = token;
+    Some((true, account_email(oauth).or_else(|| account_email(&value))))
+}
+
+/// Current Claude Code builds keep the OAuth token in the login keychain, not on disk.
+fn keychain_credentials() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = Command::new("security")
+            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if raw.is_empty() {
+            return None;
+        }
+        return Some(raw);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeAuth {
+    pub token: String,
+    pub via_cli: bool,
+}
+
+/// Saved API key first, then the same Claude CLI login the settings screen shows as signed in.
+/// The token is not returned to the UI.
+pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
+    if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk() {
+        return Some(ClaudeAuth {
+            token: key,
+            via_cli: false,
+        });
+    }
+    let home = home_dir()?;
+    let token = read_claude_access_token(&home)?;
+    Some(ClaudeAuth {
+        token,
+        via_cli: true,
+    })
+}
+
+/// The login the settings screen counts as signed in. Keychain first, then the credentials file.
+pub fn read_claude_access_token(home: &Path) -> Option<String> {
+    read_claude_access_token_with(home, keychain_credentials)
+}
+
+pub fn read_claude_access_token_with(
+    home: &Path,
+    keychain: impl Fn() -> Option<String>,
+) -> Option<String> {
+    if let Some(raw) = keychain() {
+        if let Some(token) = oauth_access_token(&raw) {
+            return Some(token);
+        }
+    }
+    let creds = home.join(".claude").join(".credentials.json");
+    if let Ok(raw) = fs::read_to_string(creds) {
+        if let Some(token) = oauth_access_token(&raw) {
+            return Some(token);
+        }
+    }
+    read_cli_access_token(home)
+}
+
+pub fn read_cli_access_token(home: &Path) -> Option<String> {
+    let path = home
+        .join(".config")
+        .join("anthropic")
+        .join("credentials")
+        .join("default.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let token = value
+        .get("access_token")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|token| !token.is_empty())?;
+    if token_expired(value.get("expires_at").and_then(|item| item.as_i64())) {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// Claude writes `expires_at` as unix seconds. Older payloads used milliseconds.
+fn token_expired(expires_at: Option<i64>) -> bool {
+    let Some(expires_at) = expires_at.filter(|value| *value > 0) else {
+        return false;
+    };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let expires_ms = if expires_at < 10_000_000_000 {
+        expires_at.saturating_mul(1000)
+    } else {
+        expires_at
+    };
+    expires_ms <= now.as_millis() as i64
+}
+
+pub fn claude_cli_info() -> ClaudeCliInfo {
+    let bin = claude_bin();
+    let version = bin.as_ref().and_then(|path| claude_version(path));
+    let account = home_dir().and_then(|home| read_claude_account(&home));
+    ClaudeCliInfo {
+        installed: bin.is_some(),
+        path: bin.map(|path| path.display().to_string()).unwrap_or_default(),
+        version,
+        logged_in: account.as_ref().map(|row| row.0).unwrap_or(false),
+        email: account.and_then(|row| row.1),
+    }
+}
+
 pub const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const SIGN_IN_ERROR: &str =
-    "Claude isn’t signed in. Add an Anthropic API key in Settings.";
+    "Claude isn’t signed in. Run claude login, or add an Anthropic API key in Settings.";
 pub const KEY_REJECTED: &str = "Anthropic rejected the API key.";
 
 /// OpenAI-shaped chat messages become a Messages API body. No I/O.
@@ -174,13 +443,19 @@ pub fn to_messages_body(
         "messages": out,
         "tools": reshape_tools(tools),
         "tool_choice": { "type": "auto" },
-        "thinking": { "type": "adaptive" },
     });
+    if supports_adaptive_thinking(model) {
+        body["thinking"] = serde_json::json!({ "type": "adaptive" });
+    } else if let Some(budget) = manual_thinking_budget(model, effort) {
+        body["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": budget });
+    }
     if !system.is_empty() {
         body["system"] = serde_json::Value::String(system);
     }
-    if let Some(effort) = effort.map(str::trim).filter(|s| !s.is_empty()) {
-        body["output_config"] = serde_json::json!({ "effort": effort });
+    if supports_adaptive_thinking(model) {
+        if let Some(effort) = effort.map(str::trim).filter(|s| !s.is_empty()) {
+            body["output_config"] = serde_json::json!({ "effort": effort });
+        }
     }
     body
 }
@@ -495,6 +770,135 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claude_account_reads_credentials_and_oauth_email() {
+        let dir = tempfile::tempdir().unwrap();
+        let none = || None;
+        assert_eq!(read_claude_account_with(dir.path(), none), None);
+        let home = dir.path().join(".claude");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            dir.path().join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"ada@example.com"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_claude_account_with(dir.path(), none),
+            Some((true, Some("ada@example.com".into())))
+        );
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"secret","email":"ada@example.com"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_claude_account_with(dir.path(), none),
+            Some((true, Some("ada@example.com".into())))
+        );
+    }
+
+    #[test]
+    fn signed_in_keychain_login_is_the_token_used_to_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{"claudeAiOauth":{"accessToken":"keychain-token","expiresAt":4102444800000},"emailAddress":"ada@example.com"}"#;
+        assert_eq!(
+            read_claude_access_token_with(dir.path(), || Some(raw.into())).as_deref(),
+            Some("keychain-token")
+        );
+        let expired = r#"{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}"#;
+        assert_eq!(
+            read_claude_access_token_with(dir.path(), || Some(expired.into())),
+            None
+        );
+        let home = dir.path().join(".claude");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"file-token"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_claude_access_token_with(dir.path(), || None).as_deref(),
+            Some("file-token")
+        );
+    }
+
+    #[test]
+    fn cli_access_token_is_used_until_it_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir
+            .path()
+            .join(".config")
+            .join("anthropic")
+            .join("credentials");
+        fs::create_dir_all(&creds).unwrap();
+        fs::write(
+            creds.join("default.json"),
+            r#"{"access_token":"oauth-token","expires_at":4102444800000,"account_email":"ada@example.com"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_cli_access_token(dir.path()).as_deref(),
+            Some("oauth-token")
+        );
+        fs::write(
+            creds.join("default.json"),
+            r#"{"access_token":"old-token","expires_at":1}"#,
+        )
+        .unwrap();
+        assert_eq!(read_cli_access_token(dir.path()), None);
+        fs::write(
+            creds.join("default.json"),
+            r#"{"access_token":"oauth-seconds","expires_at":4102444800}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_cli_access_token(dir.path()).as_deref(),
+            Some("oauth-seconds")
+        );
+        assert!(!token_expired(None));
+        assert!(token_expired(Some(1)));
+        assert!(!token_expired(Some(4_102_444_800)));
+        assert!(!token_expired(Some(4_102_444_800_000)));
+    }
+
+    #[test]
+    fn claude_account_reads_oauth_from_the_keychain_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = r#"{"claudeAiOauth":{"accessToken":"secret-token"},"emailAddress":"ada@example.com"}"#;
+        assert_eq!(
+            read_claude_account_with(dir.path(), || Some(raw.into())),
+            Some((true, Some("ada@example.com".into())))
+        );
+        let mcp_only = r#"{"mcpOAuth":{"server":{"accessToken":""}}}"#;
+        assert_eq!(
+            read_claude_account_with(dir.path(), || Some(mcp_only.into())),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_bin_prefers_the_local_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+        let local = dir.path().join(".claude").join("local");
+        fs::create_dir_all(&local).unwrap();
+        let bin = local.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+        fs::write(&bin, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&bin, fs::Permissions::from_mode(0o755));
+        }
+        let found = claude_bin();
+        match prev {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        assert_eq!(found.as_deref(), Some(bin.as_path()));
+    }
+
+    #[test]
     fn catalog_is_the_three_claude_models() {
         let rows = claude_models();
         assert_eq!(
@@ -534,6 +938,19 @@ mod tests {
         assert_eq!(max_tokens_for("claude-opus-4-8-latest"), 16_000);
     }
 
+    #[test]
+    fn haiku_uses_a_fixed_thinking_budget_and_newer_models_stay_adaptive() {
+        assert!(supports_adaptive_thinking("claude-opus-4-8"));
+        assert!(supports_adaptive_thinking("claude-sonnet-4-6"));
+        assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
+        assert_eq!(manual_thinking_budget("claude-haiku-4-5", None), None);
+        assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("low")), Some(1_024));
+        assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("medium")), Some(4_096));
+        assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("high")), Some(8_192));
+        assert_eq!(manual_thinking_budget("claude-opus-4-8", Some("high")), None);
+        assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("nope")), None);
+    }
+
     fn sample_tools(include_journey: bool) -> serde_json::Value {
         crate::dev::chat::tools_json(include_journey)
     }
@@ -555,6 +972,14 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert!(body.get("output_config").is_none());
+        let haiku = to_messages_body(
+            &serde_json::json!([{ "role": "user", "content": "hi" }]),
+            "claude-haiku-4-5",
+            None,
+            &sample_tools(false),
+        );
+        assert!(haiku.get("thinking").is_none());
+        assert!(haiku.get("output_config").is_none());
         assert_eq!(body["messages"].as_array().map(|rows| rows.len()), Some(1));
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
@@ -566,6 +991,7 @@ mod tests {
             .filter_map(|row| row["name"].as_str())
             .collect();
         assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"web_search"));
         assert!(!names.contains(&"update_journey_knowledge"));
         assert!(body["tools"][0].get("input_schema").is_some());
         assert!(body["tools"][0].get("function").is_none());
@@ -579,8 +1005,19 @@ mod tests {
             Some("high"),
             &sample_tools(true),
         );
-        assert_eq!(body["output_config"]["effort"], "high");
+        assert!(body.get("output_config").is_none());
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 8_192);
         assert_eq!(body["max_tokens"], 16_000);
+        let opus = to_messages_body(
+            &serde_json::json!([{ "role": "user", "content": "go" }]),
+            "claude-opus-4-8",
+            Some("high"),
+            &sample_tools(false),
+        );
+        assert_eq!(opus["thinking"]["type"], "adaptive");
+        assert_eq!(opus["output_config"]["effort"], "high");
+        assert!(opus.get("thinking").and_then(|row| row.get("budget_tokens")).is_none());
         assert!(body.get("system").is_none());
         let names: Vec<_> = body["tools"]
             .as_array()

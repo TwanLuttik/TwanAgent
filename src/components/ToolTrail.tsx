@@ -171,16 +171,21 @@ function ToolCallBlock({
 }) {
   const hasDiff = change != null && (change.added.length > 0 || change.removed.length > 0);
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
-  const [open, setOpen] = useState(() => hasDiff && expandEdits);
   const command = detail.trim();
+  const searching = label.startsWith("Web search");
+  const [open, setOpen] = useState(() => searching || (hasDiff && expandEdits));
   const canOpen = hasDiff || command.length > 0;
   const show = open && canOpen;
 
   useEffect(() => subscribePrefs(() => setExpandEditsOn(loadExpandEdits())), []);
   useEffect(() => {
+    if (searching) {
+      if (command) setOpen(true);
+      return;
+    }
     if (!hasDiff) return;
     setOpen(expandEdits);
-  }, [expandEdits, hasDiff]);
+  }, [expandEdits, hasDiff, searching, command]);
   return (
     <div className={show ? "py-0.5" : undefined}>
       <button

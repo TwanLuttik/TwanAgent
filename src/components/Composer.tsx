@@ -18,6 +18,7 @@ import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../l
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
+import { providerFor, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
@@ -523,13 +524,7 @@ export function Composer({
           onMouseLeave={() => setUsageHover(false)}
         />
         <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
-          <ChipSelect
-            label={selected?.name ?? "Model"}
-            title="Model"
-            items={ordered.map((m) => ({ id: m.id, label: m.name }))}
-            value={model}
-            onChange={onModel}
-          />
+          <ModelSelect models={ordered} value={model} onChange={onModel} />
           {windows.length > 1 && onContextWindow ? (
             <ChipSelect
               label={windowLabel || "Context"}
@@ -1051,6 +1046,161 @@ function MicChoice({ label, selected, onPick }: { label: string; selected: boole
       <Symbol name={selected ? "checkmark" : "mic"} className={`size-3 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
       <span className="min-w-0 truncate">{label}</span>
     </button>
+  );
+}
+
+const MODEL_MENU_EASE = [0.22, 1, 0.36, 1] as const;
+const MODEL_ROW_H = 32;
+const MODEL_MENU_PAD = 8;
+const MODEL_MENU_MAX = 256;
+
+const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
+  { id: "xai", label: "Grok", icon: "logo.grok" },
+  { id: "anthropic", label: "Claude", icon: "logo.claude" },
+];
+
+function modelProvider(model: Model): ProviderId {
+  return model.provider === "anthropic" || model.provider === "xai" ? model.provider : providerFor(model.id);
+}
+
+function ModelSelect({
+  models,
+  value,
+  onChange,
+}: {
+  models: Model[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [focus, setFocus] = useState<ProviderId | null>(() => {
+    const current = models.find((row) => row.id === value);
+    return current ? modelProvider(current) : null;
+  });
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = models.find((row) => row.id === value);
+  const providers = MODEL_PROVIDERS.filter((row) => models.some((model) => modelProvider(model) === row.id));
+  const shown = focus ? models.filter((model) => modelProvider(model) === focus) : models;
+  const menuHeight = Math.min(MODEL_MENU_MAX, models.length * MODEL_ROW_H + MODEL_MENU_PAD);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(ev: MouseEvent) {
+      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
+    }
+    function onKey(ev: globalThis.KeyboardEvent) {
+      if (ev.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        title="Model"
+        aria-expanded={open}
+        onClick={() => {
+          setOpen((current) => {
+            if (!current && selected) setFocus(modelProvider(selected));
+            return !current;
+          });
+        }}
+        className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+          open ? "bg-wash text-ink" : "text-muted hover:text-ink"
+        }`}
+      >
+        {selected ? <ModelIcon model={selected} className="size-3" /> : null}
+        <span className="max-w-[132px] truncate">{selected?.name ?? "Model"}</span>
+        <Symbol name="chevron.down" className="size-2.5 opacity-70" />
+      </button>
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+            style={{ height: menuHeight }}
+            className="absolute bottom-full left-0 z-30 mb-1 flex w-[236px] origin-bottom overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card"
+          >
+            <div className="flex w-9 shrink-0 flex-col gap-0.5 border-r border-line/20 bg-panel/40 p-1" role="group" aria-label="Model providers">
+              {providers.map((row) => {
+                const on = focus === row.id;
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    aria-pressed={on}
+                    title={on ? `Showing ${row.label}` : `Show ${row.label}`}
+                    onClick={() => setFocus((current) => (current === row.id ? null : row.id))}
+                    className={`flex size-7 items-center justify-center rounded-md transition-colors duration-150 ${
+                      on
+                        ? row.id === "anthropic"
+                          ? "bg-wash-strong text-[#d97757]"
+                          : "bg-wash-strong text-ink"
+                        : "text-muted hover:bg-wash hover:text-ink"
+                    }`}
+                  >
+                    <Symbol name={row.icon} className="size-3.5" />
+                  </button>
+                );
+              })}
+            </div>
+            <div className="min-w-0 flex-1 overflow-auto py-1">
+              <AnimatePresence initial={false} mode="popLayout">
+                {shown.map((model) => {
+                  const on = model.id === value;
+                  return (
+                    <motion.button
+                      key={model.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={on}
+                      layout
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.14, ease: MODEL_MENU_EASE }}
+                      onClick={() => {
+                        onChange(model.id);
+                        setOpen(false);
+                      }}
+                      className={`flex h-8 w-full items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-inset ${
+                        on ? "font-medium text-ink" : "text-ink/80"
+                      }`}
+                    >
+                      <ModelIcon model={model} className="size-3.5" />
+                      <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                      <Symbol
+                        name="checkmark"
+                        className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${on ? "opacity-100" : "opacity-0"}`}
+                      />
+                    </motion.button>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function ModelIcon({ model, className }: { model: Model; className?: string }) {
+  const claude = modelProvider(model) === "anthropic";
+  return (
+    <Symbol
+      name={claude ? "logo.claude" : "logo.grok"}
+      className={`${className ?? "size-3.5"} shrink-0 ${claude ? "text-[#d97757]" : "text-current"}`}
+    />
   );
 }
 

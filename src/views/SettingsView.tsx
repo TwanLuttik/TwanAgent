@@ -29,7 +29,7 @@ import {
 import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
 import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
-import type { GrokCliInfo, UsageDbInfo } from "../lib/tauri";
+import type { ClaudeCliInfo, GrokCliInfo, UsageDbInfo } from "../lib/tauri";
 import { useApp } from "../state/app-state";
 import {
   SPEECH_MODELS,
@@ -48,17 +48,18 @@ import type { SpeechModelStatus } from "../lib/tauri";
 
 export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "permissions";
 
-const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string }[] = [
-  { id: "providers", label: "Model Providers", hint: "Grok and Claude" },
-  { id: "voice", label: "Voice", hint: "Dictation model" },
-  { id: "permissions", label: "Permissions", hint: "Folders and tools" },
-  { id: "storage", label: "Storage", hint: "Usage database" },
-  { id: "appearance", label: "Appearance", hint: "Theme and display" },
+export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
+  { id: "providers", label: "Model Providers", hint: "Grok and Claude", icon: "sparkles" },
+  { id: "voice", label: "Voice", hint: "Dictation model", icon: "mic" },
+  { id: "permissions", label: "Permissions", hint: "Folders and tools", icon: "lock" },
+  { id: "storage", label: "Storage", hint: "Usage database", icon: "externaldrive" },
+  { id: "appearance", label: "Appearance", hint: "Theme and display", icon: "paintbrush" },
 ];
 
 export function SettingsView({
-  initialTab = "appearance",
   embedded = false,
+  tab: tabProp,
+  onTab,
   permission: permissionProp,
   onPermission,
   speechModel,
@@ -70,8 +71,9 @@ export function SettingsView({
   onKeyChange,
   onClose,
 }: {
-  initialTab?: SettingsTab;
   embedded?: boolean;
+  tab?: SettingsTab;
+  onTab?: (tab: SettingsTab) => void;
   permission?: PermissionMode;
   onPermission?: (id: PermissionMode) => void;
   speechModel?: string;
@@ -95,7 +97,6 @@ export function SettingsView({
   const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
-  const version = __APP_VERSION_LABEL__;
   const [xaiKey, setXaiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
   const [savingKey, setSavingKey] = useState(false);
@@ -103,7 +104,9 @@ export function SettingsView({
   const [anthropicStatus, setAnthropicStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
   const [savingAnthropic, setSavingAnthropic] = useState(false);
   const [cli, setCli] = useState<GrokCliInfo | null>(null);
+  const [claudeCli, setClaudeCli] = useState<ClaudeCliInfo | null>(null);
   const [showEmail, setShowEmail] = useState(false);
+  const [showClaudeEmail, setShowClaudeEmail] = useState(false);
   const [db, setDb] = useState<UsageDbInfo | null>(null);
   const [resettingDb, setResettingDb] = useState(false);
   const [openingDb, setOpeningDb] = useState(false);
@@ -112,7 +115,8 @@ export function SettingsView({
   const [addingFolder, setAddingFolder] = useState(false);
   const [permissionLocal, setPermissionLocal] = useState<PermissionMode>(() => parsePermissionMode(permissionProp));
   const permission = permissionProp ?? permissionLocal;
-  const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const tab: SettingsTab = tabProp ?? "providers";
+  void onTab;
   const [voicePicker, setVoicePicker] = useState(false);
 
   useEffect(() => {
@@ -148,6 +152,12 @@ export function SettingsView({
       })
       .catch(() => undefined);
     void api
+      .claudeCliInfo()
+      .then((info) => {
+        if (!gone) setClaudeCli(info);
+      })
+      .catch(() => undefined);
+    void api
       .usageDbInfo()
       .then((info) => {
         if (!gone) setDb(info);
@@ -166,29 +176,6 @@ export function SettingsView({
 
   const body = (
     <div className="flex min-h-0 flex-1">
-      <nav className="flex w-[168px] shrink-0 flex-col gap-0.5 border-r border-line/70 px-2 py-3" aria-label="Settings">
-        {SETTINGS_TABS.map((opt) => {
-          const on = tab === opt.id;
-          return (
-            <button
-              key={opt.id}
-              type="button"
-              aria-current={on ? "page" : undefined}
-              onClick={() => setTab(opt.id)}
-              className={`rounded-md px-2.5 py-1.5 text-left ${
-                on ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash hover:text-ink"
-              }`}
-            >
-              <span className="block text-[13px] font-medium">{opt.label}</span>
-              <span className="block truncate text-[11px] text-muted">{opt.hint}</span>
-            </button>
-          );
-        })}
-        <div className="mt-auto px-2.5 pt-4">
-          <div className="text-[12px] font-medium text-ink">TwanAgent{version ? ` ${version}` : ""}</div>
-          <div className="text-[11px] text-muted">Desktop Grok workspace</div>
-        </div>
-      </nav>
       <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
         <div className="grid max-w-[520px] gap-4">
           {tab === "appearance" && (
@@ -298,161 +285,103 @@ export function SettingsView({
           {tab === "providers" && (
             <Section
               title="Model Providers"
-              text="Grok uses the CLI login, then a key saved here, then XAI_API_KEY. Claude uses a key saved here, then ANTHROPIC_API_KEY."
+              text="Chat uses a saved key when one is set, then the environment. A signed-in CLI is shown here and is not required to send."
             >
-              <ProviderBlock title="Grok" text="Composer models from xAI, plus the Grok CLI.">
-                <Card>
-                  <Row label="CLI" value={cli ? (cli.installed ? "Installed" : "Not found") : "Checking…"} ok={cli?.installed} />
-                  <Row label="Path" value={cli?.path || "—"} mono />
-                  <Row label="Version" value={cli?.version || "—"} />
-                  <Row
-                    label="Login"
-                    value={
-                      cli?.logged_in
-                        ? cli.email
-                          ? maskEmail(cli.email, showEmail)
-                          : "Signed in"
-                        : cli
-                          ? "Not signed in"
-                          : "—"
-                    }
-                    ok={cli?.logged_in}
-                    action={
-                      cli?.email ? (
-                        <button
-                          type="button"
-                          aria-label={showEmail ? "Hide email" : "Show email"}
-                          aria-pressed={showEmail}
-                          title={showEmail ? "Hide email" : "Show email"}
-                          onClick={() => setShowEmail((on) => !on)}
-                          className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
-                        >
-                          <Symbol name={showEmail ? "eye.slash" : "eye"} className="size-3.5" />
-                        </button>
-                      ) : null
-                    }
-                  />
-                </Card>
-                <label className="grid gap-1">
-                  <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">xAI API key</span>
-                  <input
-                    type="password"
-                    value={xaiKey}
-                    autoComplete="off"
-                    placeholder={keyStatus?.saved ? "Key saved — paste to replace" : "xai-…"}
-                    onChange={(e) => setXaiKey(e.target.value)}
-                    className="h-8 rounded-md border border-line bg-canvas px-2.5 text-[13px] outline-none focus:border-accent"
-                  />
-                </label>
-                <p className="m-0 text-[12px] text-muted">
-                  {keyStatus?.saved
-                    ? "Using the saved key."
-                    : keyStatus?.env
-                      ? "Using XAI_API_KEY from the environment."
-                      : "No key saved here."}
-                </p>
-                <div className="flex justify-end gap-2">
-                  {keyStatus?.saved && (
-                    <Button
-                      disabled={savingKey}
-                      onClick={() => {
-                        setSavingKey(true);
-                        void api
-                          .clearKey()
-                          .then((s) => {
-                            setKeyStatus(s);
-                            setXaiKey("");
-                            onKeyChange?.();
-                            setFlash({ kind: "ok", text: "Removed the saved xAI key." });
-                          })
-                          .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                          .finally(() => setSavingKey(false));
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  )}
-                  <Button
-                    variant="primary"
-                    disabled={savingKey || !xaiKey.trim()}
-                    onClick={() => {
-                      setSavingKey(true);
-                      void api
-                        .setKey(xaiKey.trim())
-                        .then((s) => {
-                          setKeyStatus(s);
-                          setXaiKey("");
-                          onKeyChange?.();
-                          setFlash({ kind: "ok", text: "Saved the xAI API key." });
-                        })
-                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                        .finally(() => setSavingKey(false));
-                    }}
-                  >
-                    {savingKey ? "Saving…" : "Save key"}
-                  </Button>
-                </div>
+              <ProviderBlock
+                logo="logo.grok"
+                markClass="bg-[#1a1a1a] text-white"
+                title="Grok"
+                text="xAI models. The CLI login is used when no API key is saved."
+                ready={Boolean(cli?.logged_in || keyStatus?.saved || keyStatus?.env)}
+              >
+                <CliStatus
+                  cli={cli}
+                  reveal={showEmail}
+                  onToggleReveal={() => setShowEmail((on) => !on)}
+                />
+                <KeyField
+                  label="xAI API key"
+                  value={xaiKey}
+                  onChange={setXaiKey}
+                  placeholder={keyStatus?.saved ? "Key saved — paste to replace" : "xai-…"}
+                  status={keyStatus}
+                  envName="XAI_API_KEY"
+                  saving={savingKey}
+                  onClear={() => {
+                    setSavingKey(true);
+                    void api
+                      .clearKey()
+                      .then((s) => {
+                        setKeyStatus(s);
+                        setXaiKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Removed the saved xAI key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingKey(false));
+                  }}
+                  onSave={() => {
+                    setSavingKey(true);
+                    void api
+                      .setKey(xaiKey.trim())
+                      .then((s) => {
+                        setKeyStatus(s);
+                        setXaiKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Saved the xAI API key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingKey(false));
+                  }}
+                />
               </ProviderBlock>
-              <ProviderBlock title="Claude" text="Composer models from Anthropic. The key stays in the keychain.">
-                <label className="grid gap-1">
-                  <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">Anthropic API key</span>
-                  <input
-                    type="password"
-                    value={anthropicKey}
-                    autoComplete="off"
-                    placeholder={anthropicStatus?.saved ? "Key saved — paste to replace" : "sk-ant-…"}
-                    onChange={(e) => setAnthropicKey(e.target.value)}
-                    className="h-8 rounded-md border border-line bg-canvas px-2.5 text-[13px] outline-none focus:border-accent"
-                  />
-                </label>
-                <p className="m-0 text-[12px] text-muted">
-                  {anthropicStatus?.saved
-                    ? "Saved"
-                    : anthropicStatus?.env
-                      ? "Using ANTHROPIC_API_KEY"
-                      : "Not set"}
-                </p>
-                <div className="flex justify-end gap-2">
-                  {anthropicStatus?.saved && (
-                    <Button
-                      disabled={savingAnthropic}
-                      onClick={() => {
-                        setSavingAnthropic(true);
-                        void api
-                          .clearAnthropicKey()
-                          .then((s) => {
-                            setAnthropicStatus(s);
-                            setAnthropicKey("");
-                            onKeyChange?.();
-                            setFlash({ kind: "ok", text: "Removed the saved Anthropic key." });
-                          })
-                          .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                          .finally(() => setSavingAnthropic(false));
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  )}
-                  <Button
-                    variant="primary"
-                    disabled={savingAnthropic || !anthropicKey.trim()}
-                    onClick={() => {
-                      setSavingAnthropic(true);
-                      void api
-                        .setAnthropicKey(anthropicKey.trim())
-                        .then((s) => {
-                          setAnthropicStatus(s);
-                          setAnthropicKey("");
-                          onKeyChange?.();
-                          setFlash({ kind: "ok", text: "Saved the Anthropic API key." });
-                        })
-                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                        .finally(() => setSavingAnthropic(false));
-                    }}
-                  >
-                    {savingAnthropic ? "Saving…" : "Save key"}
-                  </Button>
-                </div>
+              <ProviderBlock
+                logo="logo.claude"
+                markClass="bg-[#d97757] text-[#faf9f5]"
+                title="Claude"
+                text="Anthropic models. The CLI login is used when no API key is saved."
+                ready={Boolean(claudeCli?.logged_in || anthropicStatus?.saved || anthropicStatus?.env)}
+              >
+                <CliStatus
+                  cli={claudeCli}
+                  reveal={showClaudeEmail}
+                  onToggleReveal={() => setShowClaudeEmail((on) => !on)}
+                />
+                <KeyField
+                  label="Anthropic API key"
+                  value={anthropicKey}
+                  onChange={setAnthropicKey}
+                  placeholder={anthropicStatus?.saved ? "Key saved — paste to replace" : "sk-ant-…"}
+                  status={anthropicStatus}
+                  envName="ANTHROPIC_API_KEY"
+                  saving={savingAnthropic}
+                  onClear={() => {
+                    setSavingAnthropic(true);
+                    void api
+                      .clearAnthropicKey()
+                      .then((s) => {
+                        setAnthropicStatus(s);
+                        setAnthropicKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Removed the saved Anthropic key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingAnthropic(false));
+                  }}
+                  onSave={() => {
+                    setSavingAnthropic(true);
+                    void api
+                      .setAnthropicKey(anthropicKey.trim())
+                      .then((s) => {
+                        setAnthropicStatus(s);
+                        setAnthropicKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Saved the Anthropic API key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingAnthropic(false));
+                  }}
+                />
               </ProviderBlock>
             </Section>
           )}
@@ -931,14 +860,186 @@ function voiceStatusText(
   return "Not downloaded";
 }
 
-function ProviderBlock({ title, text, children }: { title: string; text: string; children: ReactNode }) {
+function ProviderBlock({
+  logo,
+  markClass,
+  title,
+  text,
+  ready,
+  children,
+}: {
+  logo: string;
+  markClass: string;
+  title: string;
+  text: string;
+  ready: boolean;
+  children: ReactNode;
+}) {
   return (
-    <div className="grid gap-3 rounded-lg border border-line/80 px-3 py-3">
-      <div>
-        <h3 className="m-0 text-[13px] font-semibold text-ink">{title}</h3>
-        <p className="mt-0.5 mb-0 text-[12px] leading-relaxed text-muted">{text}</p>
+    <div className="grid gap-3 rounded-xl bg-panel px-3 py-3">
+      <div className="flex items-start gap-2.5">
+        <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${markClass}`}>
+          <Symbol name={logo} className="size-[18px]" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="m-0 text-[13px] font-semibold text-ink">{title}</h3>
+            <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${ready ? "bg-ok/15 text-ok" : "bg-wash text-muted"}`}>
+              <Symbol name={ready ? "checkmark.circle.fill" : "xmark"} className="size-2.5" />
+              {ready ? "Ready" : "Not ready"}
+            </span>
+          </div>
+          <p className="mt-0.5 mb-0 text-[12px] leading-relaxed text-muted">{text}</p>
+        </div>
       </div>
       {children}
+    </div>
+  );
+}
+
+function CliStatus({
+  cli,
+  reveal,
+  onToggleReveal,
+}: {
+  cli: { installed: boolean; path: string; version: string | null; logged_in: boolean; email: string | null } | null;
+  reveal: boolean;
+  onToggleReveal: () => void;
+}) {
+  const installed = Boolean(cli?.installed);
+  const signedIn = Boolean(cli?.logged_in);
+  return (
+    <div className="grid gap-1.5 rounded-lg bg-inset/70 px-2.5 py-2">
+      <StatusLine
+        icon="terminal"
+        label="CLI"
+        value={cli ? (installed ? cli.version || "Installed" : "Not found") : "Checking…"}
+        tone={installed ? "ok" : cli ? "err" : "muted"}
+      />
+      {installed && cli?.path ? (
+        <StatusLine icon="folder" label="Path" value={cli.path} mono title={cli.path} />
+      ) : null}
+      <StatusLine
+        icon="person"
+        label="Login"
+        value={
+          !cli
+            ? "—"
+            : signedIn
+              ? cli.email
+                ? maskEmail(cli.email, reveal)
+                : "Signed in"
+              : "Not signed in"
+        }
+        tone={signedIn ? "ok" : cli ? "err" : "muted"}
+        action={
+          cli?.email ? (
+            <button
+              type="button"
+              aria-label={reveal ? "Hide email" : "Show email"}
+              aria-pressed={reveal}
+              title={reveal ? "Hide email" : "Show email"}
+              onClick={onToggleReveal}
+              className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
+            >
+              <Symbol name={reveal ? "eye.slash" : "eye"} className="size-3.5" />
+            </button>
+          ) : null
+        }
+      />
+    </div>
+  );
+}
+
+function StatusLine({
+  icon,
+  label,
+  value,
+  tone = "ink",
+  mono,
+  title,
+  action,
+}: {
+  icon: string;
+  label: string;
+  value: string;
+  tone?: "ok" | "err" | "muted" | "ink";
+  mono?: boolean;
+  title?: string;
+  action?: ReactNode;
+}) {
+  const color = tone === "ok" ? "text-ok" : tone === "err" ? "text-err" : tone === "muted" ? "text-muted" : "text-ink";
+  return (
+    <div className="flex items-center gap-2">
+      <Symbol name={icon} className={`size-3.5 shrink-0 ${tone === "ok" ? "text-ok" : "text-muted"}`} />
+      <span className="w-12 shrink-0 text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
+      <span title={title} className={`min-w-0 flex-1 truncate text-[12px] ${mono ? "font-mono" : ""} ${color}`}>
+        {value}
+      </span>
+      {action}
+    </div>
+  );
+}
+
+function KeyField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  status,
+  envName,
+  saving,
+  onSave,
+  onClear,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  status: { saved: boolean; env: boolean } | null;
+  envName: string;
+  saving: boolean;
+  onSave: () => void;
+  onClear: () => void;
+}) {
+  const note = status?.saved
+    ? "Using the saved key."
+    : status?.env
+      ? `Using ${envName} from the environment.`
+      : "No key saved here.";
+  const tone = status?.saved || status?.env ? "text-ok" : "text-muted";
+  return (
+    <div className="grid gap-2">
+      <label className="grid gap-1">
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
+          <Symbol name="key" className="size-3" />
+          {label}
+        </span>
+        <input
+          type="password"
+          value={value}
+          autoComplete="off"
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-8 rounded-md border border-line bg-canvas px-2.5 text-[13px] outline-none focus:border-accent"
+        />
+      </label>
+      <div className="flex items-center justify-between gap-2">
+        <p className={`m-0 flex items-center gap-1.5 text-[12px] ${tone}`}>
+          <Symbol name={status?.saved || status?.env ? "lock.fill" : "lock"} className="size-3" />
+          {note}
+        </p>
+        <div className="flex shrink-0 gap-2">
+          {status?.saved ? (
+            <Button disabled={saving} onClick={onClear}>
+              Clear
+            </Button>
+          ) : null}
+          <Button variant="primary" disabled={saving || !value.trim()} onClick={onSave}>
+            {saving ? "Saving…" : "Save key"}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -956,7 +1057,7 @@ function Section({ title, text, children }: { title: string; text: string; child
 }
 
 function Card({ children }: { children: ReactNode }) {
-  return <div className="grid gap-1.5 rounded-md border border-line bg-panel px-3 py-2.5">{children}</div>;
+  return <div className="grid gap-1.5 rounded-lg bg-inset/70 px-3 py-2.5">{children}</div>;
 }
 
 function Row({

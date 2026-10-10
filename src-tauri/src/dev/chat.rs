@@ -133,6 +133,28 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "web_search",
+                "description": "Search the web for current information. Use for facts, news, docs, and anything that may have changed since training. Returns a short answer with source URLs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query. Be specific and include versions or dates when they matter."
+                        },
+                        "allowed_domains": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional domains to limit the search to, at most 5. Omit to search the whole web. Ignored when the user configured a domain policy."
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_command",
                 "description": "Run a shell command in the workspace. The user must approve it first. Always set description to one short sentence of what the command does. That sentence is the chat line.",
                 "parameters": {
@@ -149,7 +171,7 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "spawn_subagent",
-                "description": "Start a child agent with its own context for a delegated task. Use for research, planning, or independent work. The child reports a summary when it finishes. Explore cannot edit files. Plan produces a plan without edits. General-purpose may edit.",
+                "description": "Start a child agent with its own context for a delegated task. Use for research, planning, or independent work. The child reports a summary when it finishes. Explore cannot edit files. Plan produces a plan without edits. General-purpose may edit. The child uses the same model as this chat.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -207,6 +229,17 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_web_search(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    stream_id: String,
+    arguments: String,
+) -> Result<String> {
+    let data_dir = state.data_dir.clone();
+    crate::web_search::search(&app, &data_dir, &stream_id, &arguments).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_chat_cancel(stream_id: String) {
     if let Ok(map) = streams().lock() {
         if let Some(flag) = map.get(&stream_id) {
@@ -240,11 +273,11 @@ pub async fn dev_chat_start(
     } else {
         None
     };
-    let anthropic_key = if provider == crate::anthropic::Provider::Anthropic {
-        let Some(key) = crate::secrets::resolve_anthropic_key_on_disk() else {
+    let anthropic_auth = if provider == crate::anthropic::Provider::Anthropic {
+        let Some(auth) = crate::anthropic::resolve_claude_auth() else {
             return Err(Error::Other(crate::anthropic::SIGN_IN_ERROR.into()));
         };
-        Some(key)
+        Some(auth)
     } else {
         None
     };
@@ -266,7 +299,7 @@ pub async fn dev_chat_start(
             stream_anthropic(
                 &app2,
                 &sid,
-                anthropic_key.as_deref().unwrap_or(""),
+                anthropic_auth.as_ref().expect("claude auth"),
                 messages,
                 model,
                 effort,
@@ -310,7 +343,7 @@ pub async fn dev_chat_start(
 async fn stream_anthropic(
     app: &AppHandle,
     stream_id: &str,
-    key: &str,
+    auth: &crate::anthropic::ClaudeAuth,
     messages: serde_json::Value,
     model: String,
     effort: Option<String>,
@@ -323,10 +356,15 @@ async fn stream_anthropic(
         effort.as_deref(),
         &tools_json(include_journey),
     );
-    let resp = http_client()
+    let mut req = http_client()
         .post(crate::anthropic::MESSAGES_URL)
-        .header("x-api-key", key)
-        .header("anthropic-version", crate::anthropic::ANTHROPIC_VERSION)
+        .header("anthropic-version", crate::anthropic::ANTHROPIC_VERSION);
+    req = if auth.via_cli {
+        req.bearer_auth(&auth.token)
+    } else {
+        req.header("x-api-key", &auth.token)
+    };
+    let resp = req
         .header("content-type", "application/json")
         .header(reqwest::header::ACCEPT, "text/event-stream")
         .header(reqwest::header::ACCEPT_ENCODING, "identity")

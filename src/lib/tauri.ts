@@ -61,6 +61,18 @@ export function cliInfo(): Promise<GrokCliInfo> {
   return invoke("dev_cli_info");
 }
 
+export type ClaudeCliInfo = {
+  installed: boolean;
+  path: string;
+  version: string | null;
+  logged_in: boolean;
+  email: string | null;
+};
+
+export function claudeCliInfo(): Promise<ClaudeCliInfo> {
+  return invoke("dev_claude_cli_info");
+}
+
 export type UsageDbInfo = {
   path: string;
   bytes: number;
@@ -94,7 +106,7 @@ export type GitChange = {
   additions: number;
   deletions: number;
 };
-export type GitBranches = { current: string | null; branches: string[] };
+export type GitBranches = { current: string | null; branches: string[]; repo?: boolean };
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -104,6 +116,9 @@ export type ConversationSummary = {
   journey_id?: string | null;
   sort_order?: number;
   effort?: string | null;
+  model?: string | null;
+  context_window?: number | null;
+  permission?: string | null;
   archived?: boolean;
 };
 export type Compaction = {
@@ -161,6 +176,13 @@ export type ChatEvent = {
   text?: string | null;
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
+};
+
+export type WebSearchEvent = {
+  stream_id: string;
+  kind: "site" | "scope" | string;
+  host?: string | null;
+  text?: string | null;
 };
 
 export function projectsRoot(): Promise<string> {
@@ -379,6 +401,14 @@ export function gitSwitch(workspace: string, name: string): Promise<GitBranches>
 
 export function runCommand(workspace: string, command: string): Promise<string> {
   return invoke("dev_run_command", { workspace, command });
+}
+
+export function openUrl(url: string): Promise<void> {
+  return invoke("dev_open_url", { url });
+}
+
+export function revealFolder(path: string): Promise<void> {
+  return invoke("dev_reveal_folder", { path });
 }
 
 export type MachineAuth = "agent" | "private_key" | "password";
@@ -738,6 +768,18 @@ export function chatStart(
 
 export function chatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
+}
+
+export function webSearch(streamId: string, argumentsJson: string): Promise<string> {
+  return invoke("dev_web_search", {
+    streamId,
+    stream_id: streamId,
+    arguments: argumentsJson,
+  });
+}
+
+export function onWebSearch(fn: (ev: WebSearchEvent) => void): Promise<UnlistenFn> {
+  return listen<WebSearchEvent>("dev-web-search", (ev) => fn(ev.payload));
 }
 
 export function usageRecord(event: ApiUsageRecord): Promise<ApiUsageEvent | null> {

@@ -143,6 +143,9 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
         journey_id: c.journey_id,
         sort_order: c.sort_order,
         effort: c.effort.filter(|value| !value.trim().is_empty()),
+        model: c.model.filter(|value| !value.trim().is_empty()),
+        context_window: c.context_window.filter(|value| *value > 0),
+        permission: c.permission.filter(|value| !value.trim().is_empty()),
         archived: c.archived,
     }
 }
@@ -450,6 +453,9 @@ mod tests {
                 journey_id: None,
                 sort_order: 0,
                 effort: None,
+                model: None,
+                context_window: None,
+                permission: None,
                 archived: false,
             }
         }
@@ -481,6 +487,9 @@ mod tests {
             journey_id: None,
             sort_order: 0,
             effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
             archived: false,
         };
         save_conversations(dir.path(), &ws, &[conv.clone()]).unwrap();
