@@ -5,11 +5,15 @@ import {
   buildUsageSnapshot,
   buildUsageTrend,
   dayKey,
+  estimateUsageCost,
   formatBytes,
+  formatUsd,
   linePath,
+  modelRate,
   rangeStartMs,
   teaserIndex,
   USAGE_TEASER_WINDOWS,
+  usageCostUsd,
   usageLevel,
   usageSeries,
   usageTotalSince,
@@ -140,6 +144,120 @@ describe("buildUsageSnapshot", () => {
     assert.deepEqual(snap.totals, { prompt: 80, completion: 8, total: 88 });
     assert.equal(snap.projects.length, 1);
     assert.equal(snap.projects[0].name, "beta");
+  });
+});
+
+describe("estimated cost", () => {
+  const now = Date.parse("2026-09-17T18:00:00.000Z");
+
+  it("prices grok-4.6 at the short rate under 200k and the long rate at or above it", () => {
+    const events = [
+      ev({
+        id: 1,
+        conversation_id: "short",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.6",
+        prompt_tokens: 100_000,
+        completion_tokens: 50_000,
+        total_tokens: 150_000,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "long",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.6",
+        prompt_tokens: 1_000_000,
+        completion_tokens: 500_000,
+        total_tokens: 1_500_000,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    assert.equal(cost.usd, (100_000 * 2 + 50_000 * 6) / 1_000_000 + (1_000_000 * 4 + 500_000 * 12) / 1_000_000);
+    assert.equal(cost.unpricedTokens, 0);
+    assert.equal(formatUsd(5), "$5.00");
+  });
+
+  it("uses the long-context rate once the request prompt reaches 200k", () => {
+    const short = usageCostUsd({ prompt: 1000, completion: 100, total: 1100 }, "grok-4.5", 199_999);
+    const long = usageCostUsd({ prompt: 1000, completion: 100, total: 1100 }, "grok-4.5", 200_000);
+    assert.equal(short, (1000 * 2 + 100 * 6) / 1_000_000);
+    assert.equal(long, (1000 * 4 + 100 * 12) / 1_000_000);
+    assert.equal(modelRate("grok-4.7-latest")?.input, 2);
+    assert.equal(modelRate("grok-build-0.1-20260309")?.output, 2);
+    assert.equal(modelRate("grok-4.20-0309-reasoning-latest")?.input, 1.25);
+    assert.equal(modelRate("grok-4"), null);
+    assert.equal(modelRate("not-a-model"), null);
+  });
+
+  it("prices only the new tokens in a tool loop and skips unknown models", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 60_000).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.7",
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        total_tokens: 1100,
+      }),
+      ev({
+        id: 2,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.7",
+        prompt_tokens: 1500,
+        completion_tokens: 50,
+        total_tokens: 1550,
+      }),
+      ev({
+        id: 3,
+        conversation_id: "other",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "mystery",
+        prompt_tokens: 10_000,
+        completion_tokens: 0,
+        total_tokens: 10_000,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    const prompt = 1000 + (1500 - 1000 - 100);
+    const completion = 100 + 50;
+    assert.equal(cost.usd, (prompt * 2 + completion * 6) / 1_000_000);
+    assert.equal(cost.unpricedTokens, 10_000);
+    assert.equal(formatUsd(0.0042), "$0.0042");
+    assert.equal(formatUsd(0), "$0.00");
+    assert.equal(formatUsd(120.4), "$120");
+  });
+
+  it("follows the selected project and ignores events outside the range", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 20 * 86_400_000).toISOString(),
+        workspace_path: "/proj/alpha",
+        model: "grok-4.6",
+        prompt_tokens: 100_000,
+        completion_tokens: 0,
+        total_tokens: 100_000,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "beta",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/proj/beta",
+        model: "grok-4.6",
+        prompt_tokens: 100_000,
+        completion_tokens: 0,
+        total_tokens: 100_000,
+      }),
+    ];
+    const alpha = estimateUsageCost(events, { range: 7, nowMs: now, workspacePath: "/proj/alpha/" });
+    const beta = estimateUsageCost(events, { range: 7, nowMs: now, workspacePath: "/proj/beta" });
+    assert.equal(alpha.usd, 0);
+    assert.equal(beta.usd, 0.2);
   });
 });
 

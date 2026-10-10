@@ -103,6 +103,103 @@ export function usageDelta(current: UsageEvent, previous?: UsageEvent): UsageTot
   };
 }
 
+/** USD per 1,000,000 tokens. Long context applies when the request prompt reaches the threshold. */
+export type ModelRate = {
+  input: number;
+  output: number;
+  cachedInput?: number;
+  longContextFrom?: number;
+  longInput?: number;
+  longOutput?: number;
+  longCachedInput?: number;
+};
+
+/**
+ * xAI list prices, per million tokens.
+ * A request whose prompt reaches 200k is billed at the long-context rate for every token in it.
+ * https://docs.x.ai/docs/models
+ */
+export const MODEL_RATES: Record<string, ModelRate> = {
+  "grok-4.7": { input: 2, cachedInput: 0.5, output: 6, longContextFrom: 200_000, longInput: 4, longCachedInput: 1, longOutput: 12 },
+  "grok-4.6": { input: 2, cachedInput: 0.5, output: 6, longContextFrom: 200_000, longInput: 4, longCachedInput: 1, longOutput: 12 },
+  "grok-4.5": { input: 2, cachedInput: 0.3, output: 6, longContextFrom: 200_000, longInput: 4, longCachedInput: 0.6, longOutput: 12 },
+  "grok-4.3": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
+  "grok-4.20-0309-reasoning": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
+  "grok-4.20-0309-non-reasoning": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
+  "grok-4.20-multi-agent-0309": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
+  "grok-build-0.1": { input: 1, cachedInput: 0.2, output: 2, longContextFrom: 200_000, longInput: 2, longCachedInput: 0.4, longOutput: 4 },
+};
+
+const PER_MILLION = 1_000_000;
+
+export function modelRate(model: string): ModelRate | null {
+  const id = model.trim().toLowerCase();
+  if (!id) return null;
+  if (MODEL_RATES[id]) return MODEL_RATES[id];
+  const family = id.replace(/-latest$/, "").replace(/-\d{4,8}$/, "");
+  if (family !== id && MODEL_RATES[family]) return MODEL_RATES[family];
+  const prefix = family !== id ? family : id;
+  const dated = Object.keys(MODEL_RATES)
+    .filter((key) => prefix === key || prefix.startsWith(`${key}-`))
+    .sort((a, b) => b.length - a.length)[0];
+  return dated ? MODEL_RATES[dated] : null;
+}
+
+function rateForPrompt(rate: ModelRate, promptTokens: number): { input: number; output: number } {
+  const long = rate.longContextFrom != null && promptTokens >= rate.longContextFrom;
+  return {
+    input: long ? (rate.longInput ?? rate.input) : rate.input,
+    output: long ? (rate.longOutput ?? rate.output) : rate.output,
+  };
+}
+
+/** USD for one billable delta. Uses the prompt size of the request that introduced the tokens. */
+export function usageCostUsd(delta: UsageTotals, model: string, promptTokens: number): number | null {
+  const rate = modelRate(model);
+  if (!rate) return null;
+  const priced = rateForPrompt(rate, Math.max(0, promptTokens));
+  return (delta.prompt * priced.input + delta.completion * priced.output) / PER_MILLION;
+}
+
+export function formatUsd(amount: number): string {
+  if (!Number.isFinite(amount) || amount <= 0) return "$0.00";
+  if (amount < 0.01) return `$${amount.toFixed(4)}`;
+  if (amount < 100) return `$${amount.toFixed(2)}`;
+  return `$${Math.round(amount).toLocaleString("en-US")}`;
+}
+
+export type UsageCost = {
+  usd: number;
+  /** Tokens whose model has no list price, so they are left out of the estimate. */
+  unpricedTokens: number;
+};
+
+/**
+ * Estimated API cost for the same window and project filter as a usage snapshot.
+ * Cached prompt tokens are not stored, so resent context is priced as fresh input.
+ */
+export function estimateUsageCost(
+  events: UsageEvent[],
+  opts: { range: UsageRange; nowMs?: number; workspacePath?: string | null },
+): UsageCost {
+  const nowMs = opts.nowMs ?? Date.now();
+  const startMs = rangeStartMs(opts.range, nowMs);
+  const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
+  let usd = 0;
+  let unpricedTokens = 0;
+  for (const { ev, atMs, delta } of eachUsageDelta(events, (row, t) => {
+    if (t < startMs || t > nowMs) return false;
+    if (want && projectKey(row.workspace_path) !== want) return false;
+    return true;
+  })) {
+    void atMs;
+    const cost = usageCostUsd(delta, ev.model, ev.prompt_tokens);
+    if (cost == null) unpricedTokens += delta.total;
+    else usd += cost;
+  }
+  return { usd, unpricedTokens };
+}
+
 function eachUsageDelta(
   events: UsageEvent[],
   inside: (ev: UsageEvent, atMs: number) => boolean,

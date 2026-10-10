@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, scrollChatToEnd } from "../lib/chat-scroll";
+import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, easeChatToEnd, isNearBottom, scrollChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
 import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
@@ -175,6 +175,7 @@ export function MainView() {
   const composerDockRef = useRef<HTMLDivElement>(null);
   const [composerPad, setComposerPad] = useState(CHAT_BOTTOM_PAD_FALLBACK);
   const stickToBottomRef = useRef(true);
+  const followingRef = useRef(false);
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
   const draftPastes = pastesByChat[activeId] ?? [];
@@ -768,10 +769,39 @@ export function MainView() {
       el.scrollTop = scrollTopAfterPrepend(prepend, el.scrollHeight);
       return;
     }
-    const pin = () => scrollChatToEnd(scroller.current, stickToBottomRef.current);
+    const scrollerEl = scroller.current;
+    if (!scrollerEl) return;
+    let frame = 0;
+    const follow = () => {
+      frame = 0;
+      followingRef.current = false;
+      if (!stickToBottomRef.current) return;
+      followingRef.current = true;
+      if (easeChatToEnd(scroller.current, true)) frame = requestAnimationFrame(follow);
+      else followingRef.current = false;
+    };
+    const pin = () => {
+      if (!stickToBottomRef.current) return;
+      followingRef.current = true;
+      scrollChatToEnd(scroller.current, true);
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(follow);
+    };
     pin();
-    const frame = requestAnimationFrame(pin);
-    return () => cancelAnimationFrame(frame);
+    const content = scrollerEl.firstElementChild;
+    const ro =
+      content && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            if (!stickToBottomRef.current || frame) return;
+            frame = requestAnimationFrame(follow);
+          })
+        : null;
+    if (content) ro?.observe(content);
+    return () => {
+      followingRef.current = false;
+      if (frame) cancelAnimationFrame(frame);
+      ro?.disconnect();
+    };
   }, [messages, streamText, streamReasoning, pendingShell, runningActivity, liveTools, openingId, pendingByChat, activeId, editor.focus, composerPad]);
 
   const closeSettings = useCallback(() => setShowSettings(false), []);
@@ -1199,6 +1229,7 @@ export function MainView() {
     const el = scroller.current;
     if (!el) return;
     const onScroll = () => {
+      if (followingRef.current) return;
       stickToBottomRef.current = isNearBottom(el);
     };
     const onWheel = (event: WheelEvent) => {

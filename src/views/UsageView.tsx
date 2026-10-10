@@ -4,7 +4,9 @@ import { UsageLineChart } from "../components/UsageLineChart";
 import { formatTokenCount } from "../lib/context";
 import {
   buildUsageSnapshot,
+  estimateUsageCost,
   formatDuration,
+  formatUsd,
   buildUsageTrend,
   rangeStartMs,
   usageTrendRangeMs,
@@ -74,6 +76,10 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     () => buildUsageTrend(events, { range: trendRange, workspacePath }),
     [events, trendRange, workspacePath],
   );
+  const cost = useMemo(
+    () => estimateUsageCost(events, { range, workspacePath }),
+    [events, range, workspacePath],
+  );
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
@@ -82,6 +88,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
           <h1 className="m-0 text-[15px] font-semibold">Usage</h1>
           <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
             Tokens added across every project. A tool round counts only the new context, not the prompt sent again.
+            Estimated cost uses xAI list prices. Cached tokens are priced as fresh input.
           </p>
         </div>
         <div className="flex gap-1">
@@ -99,10 +106,15 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
           ))}
         </div>
         {error ? <p className="m-0 text-[12px] text-err">{error}</p> : null}
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-5 gap-2">
           <Stat label="Prompt" value={formatTokenCount(snap.totals.prompt)} />
           <Stat label="Completion" value={formatTokenCount(snap.totals.completion)} />
           <Stat label="Total" value={formatTokenCount(snap.totals.total)} />
+          <Stat
+            label="Est. cost"
+            value={formatUsd(cost.usd)}
+            title="xAI list price for the tokens added in this range"
+          />
           <Stat
             label="Avg response"
             value={snap.avgDurationMs == null ? "—" : formatDuration(snap.avgDurationMs)}
@@ -180,9 +192,9 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div>
+    <div title={title}>
       <div className="text-[11px] text-muted">{label}</div>
       <div className="mt-0.5 text-[16px] font-semibold tabular-nums">{value}</div>
     </div>

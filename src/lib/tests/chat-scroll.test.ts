@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CHAT_BOTTOM_PAD_FALLBACK, CHAT_NEAR_BOTTOM_PX, chatBottomPadding, isNearBottom, scrollChatToEnd } from "../chat-scroll.ts";
+import {
+  CHAT_BOTTOM_PAD_FALLBACK,
+  CHAT_FOLLOW_EASE,
+  CHAT_NEAR_BOTTOM_PX,
+  chatBottomPadding,
+  easeChatToEnd,
+  isNearBottom,
+  scrollChatToEnd,
+} from "../chat-scroll.ts";
 
 describe("isNearBottom", () => {
   it("is true when the viewport is at or near the end", () => {
@@ -68,5 +76,31 @@ describe("scrollChatToEnd", () => {
 
   it("does nothing without a scroller", () => {
     scrollChatToEnd(null, true);
+  });
+});
+
+describe("easeChatToEnd", () => {
+  it("moves part of the way and reports that more following is needed", () => {
+    const el = { scrollTop: 0, scrollHeight: 900, clientHeight: 200 };
+    assert.equal(easeChatToEnd(el, true), true);
+    assert.equal(el.scrollTop, 700 * CHAT_FOLLOW_EASE);
+    assert.ok(el.scrollTop > 0 && el.scrollTop < 700);
+  });
+
+  it("keeps closing a gap that appears after the first move, the way a code block grows", () => {
+    const el = { scrollTop: 700, scrollHeight: 900, clientHeight: 200 };
+    assert.equal(easeChatToEnd(el, true), false);
+    el.scrollHeight = 1400;
+    let guard = 0;
+    while (easeChatToEnd(el, true) && guard < 40) guard += 1;
+    assert.equal(el.scrollTop, 1200);
+    assert.ok(guard > 1);
+  });
+
+  it("stops when the user has scrolled up or there is no scroller", () => {
+    const el = { scrollTop: 40, scrollHeight: 900, clientHeight: 200 };
+    assert.equal(easeChatToEnd(el, false), false);
+    assert.equal(el.scrollTop, 40);
+    assert.equal(easeChatToEnd(null, true), false);
   });
 });
