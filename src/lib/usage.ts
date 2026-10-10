@@ -13,6 +13,7 @@ export type UsageEvent = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  duration_ms?: number | null;
 };
 
 export type UsageTotals = { prompt: number; completion: number; total: number };
@@ -25,6 +26,9 @@ export type UsageSnapshot = {
   totals: UsageTotals;
   days: UsageDay[];
   projects: UsageProject[];
+  /** Mean response time for turns that recorded one. Null when none did. */
+  avgDurationMs: number | null;
+  durationCount: number;
 };
 
 export function formatBytes(bytes: number): string {
@@ -145,7 +149,14 @@ export function buildUsageSnapshot(
 
   const totals = emptyTotals();
   const byProject = new Map<string, UsageProject>();
+  let durationSum = 0;
+  let durationCount = 0;
   for (const { ev, delta } of eachUsageDelta(rows, () => true)) {
+    const ms = ev.duration_ms;
+    if (typeof ms === "number" && ms >= 0) {
+      durationSum += ms;
+      durationCount += 1;
+    }
     addTotals(totals, delta);
     const day = byDay.get(dayKey(ev.recorded_at));
     if (day) addTotals(day, delta);
@@ -165,7 +176,26 @@ export function buildUsageSnapshot(
   }
 
   const projects = [...byProject.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
-  return { totals, days, projects };
+  return {
+    totals,
+    days,
+    projects,
+    avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
+    durationCount,
+  };
+}
+
+export function formatDuration(ms: number): string {
+  const n = Math.max(0, Math.round(ms));
+  if (n < 1000) return `${n} ms`;
+  const seconds = n / 1000;
+  if (seconds < 60) {
+    const digits = seconds >= 10 ? 0 : 1;
+    return `${seconds.toFixed(digits)}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}m ${rest}s`;
 }
 
 export type UsageLevel = 0 | 1 | 2 | 3 | 4;

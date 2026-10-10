@@ -78,7 +78,7 @@ describe("project rows", () => {
       { name: "workspace", path: "/src/workspace" },
       { name: "notes", path: "/Users/me/notes" },
     ];
-    assert.equal(filterProjectRows(rows, "BACK").length, 1);
+    assert.equal(filterProjectRows(rows, "WORK").length, 1);
     assert.equal(filterProjectRows(rows, "users/me").length, 1);
     assert.equal(filterProjectRows(rows, "").length, 2);
   });
@@ -1042,6 +1042,17 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "approve-all").content), /without asking/);
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
+  });
+
+  it("tells the model a remote workspace runs commands on the server", () => {
+    const prompt = systemPrompt("/tmp/mounts/billing", "ask", undefined, undefined, undefined, {
+      machineName: "Build",
+      remotePath: "/srv/billing",
+    });
+    assert.match(String(prompt.content), /Build/);
+    assert.match(String(prompt.content), /\/srv\/billing/);
+    assert.doesNotMatch(String(prompt.content), /ssh /);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app").content), /on Build/);
   });
 
   it("appends journey knowledge and omits an empty file", () => {

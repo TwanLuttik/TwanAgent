@@ -5,6 +5,8 @@ import {
   permissionDetail,
   permissionLabel,
   permissionSystemLine,
+  remoteWorkspaceLine,
+  shellApprovalLabel,
   shouldPromptShell,
   toolDeniedByPermission,
 } from "../permission.ts";
@@ -50,5 +52,14 @@ describe("permission policy", () => {
     assert.match(permissionSystemLine("ask"), /require the user to approve/);
     assert.match(permissionSystemLine("approve-all"), /without asking/);
     assert.match(permissionSystemLine("read-only"), /Read-only/);
+  });
+
+  it("names the server for a remote workspace and stays quiet locally", () => {
+    assert.equal(remoteWorkspaceLine(null), "");
+    assert.match(remoteWorkspaceLine({ machineName: "Build", remotePath: "/srv/billing" }), /Build/);
+    assert.match(remoteWorkspaceLine({ machineName: "Build", remotePath: "/srv/billing" }), /\/srv\/billing/);
+    assert.doesNotMatch(remoteWorkspaceLine({ machineName: "Build", remotePath: "/srv/billing" }), /ssh /);
+    assert.equal(shellApprovalLabel("npm test"), "Run this command?");
+    assert.equal(shellApprovalLabel("npm test", "Build"), "Run this command on Build?");
   });
 });

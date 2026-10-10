@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 
 type MainFn = (...args: any[]) => any;
 
@@ -40,7 +40,8 @@ export type MainModel = {
   fileDrag: any;
   folderOpen: any;
   journeys: any;
-  liveTools: any;
+  /** @deprecated Read from useStream. Kept optional so a stale object still typechecks. */
+  liveTools?: any;
   mcpBusy: any;
   mcpServers: any;
   messages: any;
@@ -67,6 +68,14 @@ export type MainModel = {
   pickEffort: MainFn;
   pickModel: MainFn;
   pickPermission: MainFn;
+  pickSpeechModel: MainFn;
+  dictate: MainFn;
+  speechModel: any;
+  speechModels: any;
+  speechProgress: any;
+  speechDownloading: any;
+  refreshSpeech: MainFn;
+  downloadSpeech: MainFn;
   projectMenu: any;
   projectSettings: any;
   projectsRoot: any;
@@ -77,15 +86,17 @@ export type MainModel = {
   reauthMcpServer: MainFn;
   recents: any;
   reloadRuntime: MainFn;
+  remoteWorkspace: any;
   archiveChat: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;
   renameJourney: MainFn;
   reorderChats: MainFn;
   reorderSidebar: MainFn;
-  runningActivity: any;
+  runningActivity?: any;
   runningId: any;
   runningTurns: any;
+  unseenFinished: any;
   runtime: any;
   savePendingEdit: MainFn;
   scroller: any;
@@ -114,8 +125,8 @@ export type MainModel = {
   skillBusy: any;
   skills: any;
   startNewChat: MainFn;
-  streamText: any;
-  streamReasoning: any;
+  streamText?: any;
+  streamReasoning?: any;
   subagents: any;
   tick: any;
   toggleJourney: MainFn;
@@ -130,8 +141,43 @@ export type MainModel = {
 
 const MainContext = createContext<MainModel | null>(null);
 
-export function MainProvider({ value, children }: { value: MainModel; children: ReactNode }) {
-  return <MainContext.Provider value={value}>{children}</MainContext.Provider>;
+/**
+ * Fields that change on every streamed token. They stay off `MainModel` so a
+ * delta does not rebuild the sidebar, file tree, and composer.
+ */
+export type StreamSlice = {
+  streamText: string;
+  streamReasoning: string;
+  liveTools: MainModel["liveTools"];
+  runningActivity: MainModel["runningActivity"];
+};
+
+const StreamContext = createContext<StreamSlice | null>(null);
+
+export function MainProvider({
+  value,
+  stream,
+  children,
+}: {
+  value: MainModel;
+  stream: StreamSlice;
+  children: ReactNode;
+}) {
+  const streamValue = useMemo(
+    () => stream,
+    [stream.streamText, stream.streamReasoning, stream.liveTools, stream.runningActivity],
+  );
+  return (
+    <MainContext.Provider value={value}>
+      <StreamContext.Provider value={streamValue}>{children}</StreamContext.Provider>
+    </MainContext.Provider>
+  );
+}
+
+export function useStream(): StreamSlice {
+  const value = useContext(StreamContext);
+  if (!value) throw new Error("useStream must be used inside MainProvider");
+  return value;
 }
 
 export function useMain(): MainModel {

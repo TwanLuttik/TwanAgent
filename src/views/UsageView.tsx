@@ -4,6 +4,7 @@ import { UsageLineChart } from "../components/UsageLineChart";
 import { formatTokenCount } from "../lib/context";
 import {
   buildUsageSnapshot,
+  formatDuration,
   buildUsageTrend,
   rangeStartMs,
   usageTrendRangeMs,
@@ -98,10 +99,14 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
           ))}
         </div>
         {error ? <p className="m-0 text-[12px] text-err">{error}</p> : null}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           <Stat label="Prompt" value={formatTokenCount(snap.totals.prompt)} />
           <Stat label="Completion" value={formatTokenCount(snap.totals.completion)} />
           <Stat label="Total" value={formatTokenCount(snap.totals.total)} />
+          <Stat
+            label="Avg response"
+            value={snap.avgDurationMs == null ? "—" : formatDuration(snap.avgDurationMs)}
+          />
         </div>
         <section>
           <div className="mb-2 flex items-center justify-between gap-3">

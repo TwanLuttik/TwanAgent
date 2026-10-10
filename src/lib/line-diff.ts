@@ -9,6 +9,12 @@ export type LineDiffRow =
 /** Keep a filename such as dev.ts together, and split the rest on punctuation. */
 const WORD = /[\w.]+|\s+|./g;
 
+/** Compact peek: changed lines only, unchanged context dropped. */
+export function compactDiffRows(removed: string[], added: string[], limit = 8): LineDiffRow[] {
+  const changed = lineDiffRows(removed, added).filter((row) => row.kind !== "same");
+  return changed.slice(0, limit);
+}
+
 /** Pair removed and added lines so a one-line edit shows as one highlighted row. */
 export function lineDiffRows(removed: string[], added: string[]): LineDiffRow[] {
   const rows: LineDiffRow[] = [];

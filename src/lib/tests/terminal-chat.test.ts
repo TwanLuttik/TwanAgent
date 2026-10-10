@@ -17,6 +17,7 @@ function session(partial: Partial<TerminalSession> = {}): TerminalSession {
     phase: "running",
     error: null,
     buffer: "",
+    pending: "",
     viewing: false,
     ...partial,
   };
@@ -175,6 +176,14 @@ describe("terminal session store", () => {
     store.detach("c1");
     emit({ id: "pty-1", kind: "data", data: "hello from grok" });
     assert.equal(store.get("c1")?.buffer.includes("hello from grok"), true);
+    assert.equal(store.get("c1")?.pending, "hello from grok");
+    const painted: string[] = [];
+    store.subscribe((ev) => {
+      if (ev.type === "data") painted.push(ev.chunk);
+    });
+    await store.attach("c1", "/ws", 80, 24);
+    assert.deepEqual(painted, ["hello from grok"]);
+    assert.equal(store.get("c1")?.pending, "");
 
     let opens = 0;
     const failing = fakeStore({

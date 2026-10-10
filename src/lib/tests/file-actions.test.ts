@@ -45,6 +45,10 @@ describe("file selection rules", () => {
     assert.equal(canDropOnDir(["src/a.ts"], "src", tree), false);
     assert.equal(canDropOnDir(["src"], "src/lib", tree), false);
     assert.equal(canDropOnDir(["src", "readme.md"], "src/lib", tree), false);
+    assert.equal(canDropOnDir(["src/lib"], "", tree), true);
+    assert.equal(canDropOnDir(["src/a.ts"], "", tree), true);
+    assert.equal(canDropOnDir(["src"], "", tree), false);
+    assert.equal(canDropOnDir(["readme.md"], "", tree), false);
   });
 
   it("picks an unused folder name and rejects path characters", () => {

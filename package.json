@@ -8,6 +8,7 @@
     "build": "node scripts/stamp-build.mjs && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "dev:mac": "sh scripts/dev-macos-app.sh",
     "test": "node --experimental-strip-types --test src/lib/tests/*.test.ts"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@xterm/xterm": "^6.0.0",
     "motion": "^12.23.12",
     "react": "^19.1.1",
+    "react-colorful": "^5.8.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"

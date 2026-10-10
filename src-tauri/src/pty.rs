@@ -162,22 +162,27 @@ fn spawn_command_pty(
         .name(format!("dev-pty-{id}"))
         .spawn(move || {
             let mut buf = [0u8; 8192];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                        let _ = app_r.emit(
-                            EVENT,
-                            PtyEvent {
-                                id: id_r.clone(),
-                                kind: "data".into(),
-                                data: Some(data),
-                            },
-                        );
+            let read_loop = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                            let _ = app_r.emit(
+                                EVENT,
+                                PtyEvent {
+                                    id: id_r.clone(),
+                                    kind: "data".into(),
+                                    data: Some(data),
+                                },
+                            );
+                        }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
+            }));
+            if read_loop.is_err() {
+                eprintln!("terminal reader stopped");
             }
             let _ = child.wait();
             let _ = app_r.emit(
@@ -258,8 +263,47 @@ pub fn kill_pty(id: &str) -> Result<()> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_pty_open(app: AppHandle, workspace: String, cols: u16, rows: u16) -> Result<String> {
-    let root = app.state::<AppState>().require_workspace(&workspace)?;
+    let state = app.state::<AppState>();
+    let root = state.require_workspace(&workspace)?;
+    if let Some(project) = crate::remote::project_for_workspace(&state, &root)? {
+        let app = app.clone();
+        return spawn_remote_pty(app, &state, &project, cols, rows);
+    }
     spawn_pty(app, &root, cols, rows)
+}
+
+fn spawn_remote_pty(
+    app: AppHandle,
+    state: &AppState,
+    project: &crate::remote::config::RemoteProject,
+    cols: u16,
+    rows: u16,
+) -> Result<String> {
+    let conn = crate::appdb::open(&state.data_dir)?;
+    let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
+        .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+    let target = format!(
+        "{}@{}",
+        machine.user, machine.host
+    );
+    let remote = format!(
+        "mkdir -p {dir} && cd {dir} && exec ${{SHELL:-/bin/bash}} -l",
+        dir = crate::remote::ssh::shell_single_quote(&project.remote_path)
+    );
+    let mut cmd = CommandBuilder::new("ssh");
+    cmd.arg("-tt");
+    cmd.arg("-p");
+    cmd.arg(machine.port.to_string());
+    if let Some(key) = machine.key_path.as_deref().filter(|key| !key.is_empty()) {
+        cmd.arg("-i");
+        cmd.arg(key);
+    }
+    cmd.arg(target);
+    cmd.arg(remote);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env("TERM_PROGRAM", "vscode");
+    spawn_command_pty(app, cols, rows, cmd, "start remote shell")
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -297,6 +341,15 @@ pub fn dev_pty_kill(id: String) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn remote_shell_creates_the_project_before_cd() {
+        let quoted = crate::remote::ssh::shell_single_quote("/home/twanluttik/BOZO_BUCKOS");
+        let remote = format!("mkdir -p {quoted} && cd {quoted} && exec ${{SHELL:-/bin/bash}} -l");
+        assert!(remote.starts_with("mkdir -p '/home/twanluttik/BOZO_BUCKOS' && cd "));
+        assert!(!remote.contains("&& cd") || remote.contains("mkdir -p"));
+    }
 
     #[test]
     fn default_shell_is_nonempty() {

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::paths::{path_string, resolve_in_workspace};
-use super::types::{DevEntry, FilePreview};
+use super::types::{DevEntry, FilePreview, TreeSnapshot};
 use crate::error::{Error, Result};
 
 const READ_LIMIT: usize = 400_000;
@@ -12,6 +12,77 @@ const WRITE_LIMIT: usize = 2_000_000;
 const PREVIEW_BYTES: usize = 8_192;
 const PREVIEW_LINES: usize = 8;
 const PREVIEW_COLS: usize = 96;
+
+const TREE_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".git",
+    "__pycache__",
+    ".next",
+    ".turbo",
+];
+
+/// Stable fingerprint of file and folder paths. Content edits do not change it.
+pub fn tree_snapshot(workspace: &Path) -> Result<TreeSnapshot> {
+    let root = resolve_in_workspace(workspace, "")?;
+    let mut rows = Vec::new();
+    walk_tree(&root, &root, &mut rows)?;
+    rows.sort();
+    Ok(TreeSnapshot {
+        signature: hash_rows(&rows),
+        dirs: rows
+            .iter()
+            .filter_map(|row| row.strip_prefix("d\t").map(str::to_string))
+            .collect(),
+        files: rows
+            .iter()
+            .filter_map(|row| row.strip_prefix("f\t").map(str::to_string))
+            .collect(),
+    })
+}
+
+fn hash_rows(rows: &[String]) -> String {
+    let mut hasher = sha2::Sha256::new();
+    use sha2::Digest;
+    for row in rows {
+        hasher.update(row.as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn walk_tree(root: &Path, dir: &Path, rows: &mut Vec<String>) -> Result<()> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if TREE_SKIP.contains(&name.as_str()) {
+            continue;
+        }
+        let full = entry.path();
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        let rel = crate::paths::relative_to(root, &full).unwrap_or(name);
+        let rel = rel.replace('\\', "/");
+        if meta.is_dir() {
+            rows.push(format!("d\t{rel}"));
+            walk_tree(root, &full, rows)?;
+        } else if meta.is_file() {
+            rows.push(format!("f\t{rel}"));
+        }
+    }
+    Ok(())
+}
 
 pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<DevEntry>> {
     let root = resolve_in_workspace(workspace, "")?;
@@ -458,6 +529,25 @@ mod tests {
         let err = delete_paths(dir.path(), &["".into(), "/".into()]).unwrap_err();
         assert!(err.to_string().contains("nothing"));
         assert!(dir.path().is_dir());
+    }
+
+    #[test]
+    fn tree_signature_changes_when_files_are_created_renamed_or_deleted() {
+        let dir = temp_ws();
+        let first = tree_snapshot(dir.path()).unwrap();
+        write_file(dir.path(), "src/a.txt", "a").unwrap();
+        let created = tree_snapshot(dir.path()).unwrap();
+        assert_ne!(first.signature, created.signature);
+        write_file(dir.path(), "src/a.txt", "edited contents").unwrap();
+        assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
+        fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+        fs::write(dir.path().join("node_modules/pkg.js"), "x").unwrap();
+        assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
+        rename_path(dir.path(), "src/a.txt", "b.txt").unwrap();
+        let renamed = tree_snapshot(dir.path()).unwrap();
+        assert_ne!(renamed.signature, created.signature);
+        delete_paths(dir.path(), &["src/b.txt".into()]).unwrap();
+        assert_ne!(tree_snapshot(dir.path()).unwrap().signature, renamed.signature);
     }
 
     #[test]

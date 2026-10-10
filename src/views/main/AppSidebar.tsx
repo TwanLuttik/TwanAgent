@@ -131,14 +131,18 @@ export function AppSidebar() {
               x: ev.clientX,
               y: ev.clientY,
               path: workspace,
-              name: folderName(workspace),
+              name: allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace),
             });
           }}
           className="flex w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] text-ink/90 hover:bg-wash"
           title={workspace || "Open folder"}
         >
           <Symbol name="folder.fill" className="size-4 text-accent" />
-          <span className="min-w-0 flex-1 truncate">{workspace ? folderName(workspace) : "Open folder"}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {workspace
+              ? allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace)
+              : "Open folder"}
+          </span>
           {currentHasArchived ? (
             <span
               role="button"
@@ -224,6 +228,7 @@ function ProjectConversations({
     reorderChats,
     reorderSidebar,
     runningTurns,
+    unseenFinished,
     setJourneyColor,
     startNewChat,
     toggleJourney,
@@ -235,6 +240,7 @@ function ProjectConversations({
       journeys={journeys}
       activeId={activeId}
       runningIds={runningTurns}
+      unseenIds={unseenFinished}
       loadingId={openingId}
       runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
       showSettings={dimmed}

@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { HexColorPicker } from "react-colorful";
 import {
   generateTheme,
   loadStoredCustom,
@@ -84,21 +86,83 @@ function ColorField({
   onDraft: (next: string) => void;
   onCommit: (hex: string) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const swatchRef = useRef<HTMLButtonElement>(null);
+  const pickerId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    function place() {
+      const anchor = swatchRef.current;
+      if (!anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const width = popRef.current?.offsetWidth ?? 220;
+      const height = popRef.current?.offsetHeight ?? 196;
+      const margin = 8;
+      let left = rect.left;
+      let top = rect.bottom + 6;
+      if (left + width > window.innerWidth - margin) left = window.innerWidth - margin - width;
+      if (left < margin) left = margin;
+      if (top + height > window.innerHeight - margin && rect.top - 6 - height >= margin) {
+        top = rect.top - 6 - height;
+      }
+      setPos({ left, top });
+    }
+    place();
+    const frame = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(e: PointerEvent) {
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || popRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  function apply(hex: string) {
+    const parsed = parseAccent(hex);
+    if (!parsed) return;
+    onDraft(parsed);
+    onCommit(parsed);
+  }
+
   return (
-    <label className="flex items-center gap-2">
+    <div ref={rootRef} className="relative flex items-center gap-2">
       <span className="w-[5.5rem] shrink-0 text-[11px] font-semibold tracking-wide text-muted uppercase">
         {label}
       </span>
-      <input
-        type="color"
+      <button
+        ref={swatchRef}
+        type="button"
         aria-label={`${label} color`}
-        value={value}
-        onChange={(e) => {
-          onDraft(e.target.value);
-          onCommit(e.target.value);
-        }}
-        className="h-7 w-10 cursor-pointer rounded border border-line bg-canvas p-0.5"
-      />
+        aria-expanded={open}
+        aria-controls={pickerId}
+        onClick={() => setOpen((on) => !on)}
+        className="h-7 w-10 shrink-0 cursor-pointer rounded border border-line p-0.5"
+      >
+        <span className="block size-full rounded-[3px]" style={{ background: value }} />
+      </button>
       <input
         value={draft}
         spellCheck={false}
@@ -110,7 +174,21 @@ function ColorField({
         }}
         className="h-8 min-w-0 flex-1 rounded-md border border-line bg-canvas px-2.5 font-mono text-[12px] outline-none focus:border-accent"
       />
-    </label>
+      {open &&
+        createPortal(
+          <div
+            ref={popRef}
+            id={pickerId}
+            role="dialog"
+            aria-label={`${label} picker`}
+            className="color-picker fixed z-50 rounded-lg border border-line bg-canvas p-2.5 shadow-card"
+            style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
+          >
+            <HexColorPicker color={value} onChange={apply} />
+          </div>,
+          document.body,
+        )}
+    </div>
   );
 }
 

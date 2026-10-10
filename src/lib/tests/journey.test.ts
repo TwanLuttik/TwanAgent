@@ -7,6 +7,7 @@ import {
   journeyKnowledgePath,
   journeyWash,
   lastAssistantText,
+  nextTopSort,
   parseJourneyColor,
   parseJourneyId,
 } from "../journey.ts";
@@ -72,6 +73,15 @@ describe("buildSidebar", () => {
     if (rows[0].kind !== "journey") return;
     assert.equal(rows[0].journey.collapsed, true);
     assert.equal(rows[0].children.length, 1);
+  });
+});
+
+describe("nextTopSort", () => {
+  it("places a new row above the lowest existing order", () => {
+    assert.equal(nextTopSort([]), 0);
+    assert.equal(nextTopSort([0, 1, 2]), -1);
+    assert.equal(nextTopSort([-3, 0, 4]), -4);
+    assert.equal(nextTopSort([undefined, 2]), -1);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
 import {
@@ -43,6 +44,7 @@ export function ConversationList({
   journeys,
   activeId,
   runningIds,
+  unseenIds,
   loadingId,
   runningPreview,
   showSettings,
@@ -66,6 +68,7 @@ export function ConversationList({
   journeys: JourneySummary[];
   activeId: string;
   runningIds: Record<string, unknown>;
+  unseenIds?: ReadonlySet<string>;
   loadingId?: string;
   runningPreview: (id: string) => string;
   showSettings: boolean;
@@ -201,6 +204,7 @@ export function ConversationList({
                     item.kind === "chat" &&
                     (item.conversation.id in runningIds || loadingId === item.conversation.id)
                   }
+                  unseen={item.kind === "chat" && Boolean(unseenIds?.has(item.conversation.id))}
                   preview={
                     item.kind === "chat" && item.conversation.id in runningIds
                       ? runningPreview(item.conversation.id)
@@ -281,7 +285,7 @@ export function ConversationList({
         ) : null}
       </DragOverlay>
       {menu ? (
-        <ContextMenu
+        <ChatContextMenu
           x={menu.x}
           y={menu.y}
           target={menu.target}
@@ -403,6 +407,7 @@ function SortableRow({
   item,
   selected,
   running,
+  unseen,
   preview,
   dragging,
   insert,
@@ -420,6 +425,7 @@ function SortableRow({
   item: FlatItem;
   selected: boolean;
   running: boolean;
+  unseen?: boolean;
   preview: string;
   dragging: boolean;
   insert: boolean;
@@ -485,6 +491,7 @@ function SortableRow({
           row={item.conversation}
           selected={selected}
           running={running}
+          unseen={unseen}
           preview={preview}
           indent={item.indent}
           placeholder={hidden}
@@ -527,7 +534,7 @@ function JourneyCard({
 
   return (
     <div
-      className={`group flex items-center rounded-[6px] py-0.5 ${
+      className={`group flex items-center rounded-[6px] py-0.5 select-none ${
         overlay
           ? "cursor-grabbing border border-line bg-canvas shadow-card"
           : placeholder
@@ -555,7 +562,7 @@ function JourneyCard({
             if (ev.key === "Enter") onRename?.(draft.trim() || journey.title);
             if (ev.key === "Escape") onRename?.(journey.title);
           }}
-          className="mr-1 min-w-0 flex-1 rounded bg-canvas px-1 py-[5px] text-[13px] text-ink outline-none"
+          className="mr-1 min-w-0 flex-1 rounded bg-canvas px-1 py-[5px] text-[13px] text-ink outline-none select-text"
         />
       ) : (
         <button
@@ -630,6 +637,7 @@ function ConversationCard({
   row,
   selected,
   running,
+  unseen,
   preview,
   indent,
   placeholder,
@@ -642,6 +650,7 @@ function ConversationCard({
   row: ConversationSummary;
   selected: boolean;
   running: boolean;
+  unseen?: boolean;
   preview: string;
   indent?: boolean;
   placeholder?: boolean;
@@ -654,14 +663,16 @@ function ConversationCard({
   const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group flex items-center rounded-[6px] ${indent ? "pl-3" : ""} ${
+      className={`group flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
             ? "border border-transparent opacity-0"
-            : selected
-              ? "border border-transparent bg-wash-strong"
-              : "border border-transparent hover:bg-wash"
+            : unseen && !selected
+              ? "border border-transparent bg-warn/15 hover:bg-warn/25"
+              : selected
+                ? "border border-transparent bg-wash-strong"
+                : "border border-transparent hover:bg-wash"
       }`}
     >
       {handle ? <div className="pl-0.5">{handle}</div> : <div className="w-1.5 shrink-0" />}
@@ -717,7 +728,7 @@ function ConversationCard({
   );
 }
 
-function ContextMenu({
+function ChatContextMenu({
   x,
   y,
   target,
@@ -764,12 +775,7 @@ function ContextMenu({
         ];
 
   return (
-    <div
-      role="menu"
-      className="fixed z-50 min-w-[168px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
-      style={{ left: x, top: y }}
-      onMouseDown={(ev) => ev.stopPropagation()}
-    >
+    <AnchoredMenu x={x} y={y}>
       {items.map((item) => (
         <button
           key={item.label}
@@ -807,7 +813,7 @@ function ContextMenu({
           Close
         </button>
       ) : null}
-    </div>
+    </AnchoredMenu>
   );
 }
 

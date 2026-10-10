@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeSnapshot {
+    pub signature: String,
+    pub dirs: Vec<String>,
+    /// Workspace-relative file paths from the same walk. Omitted by older snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevEntry {
     pub name: String,
     pub path: String,

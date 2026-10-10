@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>TwanAgent uses the microphone to dictate into the message box.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>TwanAgent connects to SSH servers on your local network to open remote projects.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_ssh._tcp</string>
+  </array>
+</dict>
+</plist>
+

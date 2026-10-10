@@ -6,7 +6,7 @@ import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
-import { conversationActivityLabel, folderName } from "../../lib/core";
+import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
 import {
@@ -18,7 +18,7 @@ import {
   selectEditorTab,
   setEditorMarkdownView,
 } from "../../lib/editor";
-import { permissionLabel } from "../../lib/permission";
+import { permissionLabel, shellApprovalLabel } from "../../lib/permission";
 import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
@@ -27,7 +27,7 @@ import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
 import { CenterTabs } from "./AppChrome";
-import { useMain } from "./context";
+import { useMain, useStream } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
 export function ChatStage() {
@@ -48,6 +48,12 @@ export function ChatStage() {
     pendingClosePath,
     permission,
     pickPermission,
+    speechModel,
+    speechModels,
+    speechProgress,
+    speechDownloading,
+    pickSpeechModel,
+    downloadSpeech,
     projectSettings,
     reloadRuntime,
     setDirtyFiles,
@@ -97,6 +103,12 @@ export function ChatStage() {
               initialTab="grok"
               permission={permission}
               onPermission={pickPermission}
+              speechModel={speechModel}
+              speechModels={speechModels}
+              speechProgress={speechProgress}
+              speechDownloading={speechDownloading}
+              onSpeechModel={pickSpeechModel}
+              onSpeechDownload={downloadSpeech}
               onKeyChange={reloadRuntime}
               onClose={folderOpen ? undefined : closeSettings}
             />
@@ -181,7 +193,6 @@ function ChatColumn() {
     expandedAgents,
     fileDrag,
     holdScrollForOlder,
-    liveTools,
     mcpBusy,
     mcpServers,
     mentionFiles,
@@ -191,24 +202,24 @@ function ChatColumn() {
     openingId,
     pendingShell,
     permission,
+    remoteWorkspace,
     queued,
     reauthMcpServer,
     removePendingAt,
-    runningActivity,
     runningTurns,
     savePendingEdit,
     scroller,
     toggleSubagent,
     skillBusy,
     skills,
-    streamReasoning,
-    streamText,
     subagents,
     toggleMcpServer,
     toggleSkill,
     turnStartedAt,
     workspace,
+    allProjectGroups,
   } = useMain();
+  const { streamText, streamReasoning, liveTools, runningActivity } = useStream();
   const current = models.find((row: { id: string; name: string; context_windows?: number[]; context_window?: number; efforts: { id: string; label: string }[] }) => row.id === model);
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
     return (
@@ -245,7 +256,9 @@ function ChatColumn() {
           >
             <div className="mb-5">
               <div className="truncate text-[15px] font-semibold">
-                {workspace ? folderName(workspace) : "TwanAgent"}
+                {workspace
+                  ? allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace)
+                  : "TwanAgent"}
               </div>
               <div className="truncate text-[12px] text-muted">
                 {current?.name ?? "Grok"}
@@ -282,7 +295,9 @@ function ChatColumn() {
             )}
             {pendingShell && (
               <div className="mb-4 rounded-md border border-line bg-panel px-3 py-2.5">
-                <div className="text-[12px] font-medium">Run this command?</div>
+                <div className="text-[12px] font-medium">
+                  {shellApprovalLabel(pendingShell.command, remoteWorkspace?.machineName)}
+                </div>
                 <pre className="mt-1 mb-2 overflow-auto rounded bg-canvas px-2 py-1.5 font-mono text-[12px]">
                   {pendingShell.command}
                 </pre>

@@ -139,6 +139,7 @@ export type ApiUsageEvent = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  duration_ms?: number | null;
 };
 export type ApiUsageRecord = {
   workspace_path: string;
@@ -149,6 +150,7 @@ export type ApiUsageRecord = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  duration_ms?: number | null;
 };
 export type ChatEvent = {
   stream_id: string;
@@ -230,6 +232,13 @@ export function clearKey(): Promise<KeyStatus> {
 
 export function listDir(workspace: string, path = ""): Promise<Entry[]> {
   return invoke("dev_list_dir", { workspace, path });
+}
+
+export type TreeSnapshot = { signature: string; dirs: string[]; files?: string[] };
+
+/** File and folder paths, hashed. Unchanged when only file contents change. Works for remote projects. */
+export function treeSignature(workspace: string): Promise<TreeSnapshot> {
+  return invoke("dev_tree_signature", { workspace });
 }
 
 export function readFile(workspace: string, path: string): Promise<string> {
@@ -337,8 +346,8 @@ export function editFile(
   });
 }
 
-export function gitStatus(workspace: string): Promise<GitChange[]> {
-  return invoke("dev_git_status", { workspace });
+export function gitStatus(workspace: string, stats = true): Promise<GitChange[]> {
+  return invoke("dev_git_status", { workspace, stats });
 }
 
 export function gitDiff(workspace: string, path = ""): Promise<string> {
@@ -355,6 +364,136 @@ export function gitSwitch(workspace: string, name: string): Promise<GitBranches>
 
 export function runCommand(workspace: string, command: string): Promise<string> {
   return invoke("dev_run_command", { workspace, command });
+}
+
+export type MachineAuth = "agent" | "private_key" | "password";
+
+export type Machine = {
+  id: string;
+  name: string;
+  user: string;
+  host: string;
+  port: number;
+  auth: MachineAuth | string;
+  key_path?: string | null;
+  secret_account?: string | null;
+  created_at: string;
+};
+
+export type RemoteProject = {
+  id: string;
+  machine_id: string;
+  name: string;
+  remote_path: string;
+  mount_path: string;
+  created_at: string;
+};
+
+export type HostPrompt = {
+  machine_id: string;
+  host: string;
+  port: number;
+  key_type: string;
+  fingerprint: string;
+  changed: boolean;
+};
+
+export type TestMachineResult = {
+  ok: boolean;
+  message: string;
+  host_prompt?: HostPrompt | null;
+};
+
+export type WorkspaceRemote = {
+  machine_id: string;
+  machine_name: string;
+  host: string;
+  user: string;
+  port: number;
+  remote_path: string;
+  project_name: string;
+  online: boolean;
+};
+
+export type LanHost = { host: string; port: number; label: string };
+
+export type SshDefaults = { user: string; key_path?: string | null };
+
+export function discoverSsh(): Promise<LanHost[]> {
+  return invoke("dev_discover_ssh");
+}
+
+export function onSshFound(fn: (host: LanHost) => void): Promise<UnlistenFn> {
+  return listen<LanHost>("dev-ssh-found", (ev) => fn(ev.payload));
+}
+
+export function sshDefaults(): Promise<SshDefaults> {
+  return invoke("dev_ssh_defaults");
+}
+
+export function remoteHome(id: string): Promise<string> {
+  return invoke("dev_remote_home", { id });
+}
+
+export function listMachines(): Promise<Machine[]> {
+  return invoke("dev_list_machines");
+}
+
+export function saveMachine(input: {
+  name: string;
+  user: string;
+  host: string;
+  port?: number;
+  auth: MachineAuth;
+  keyPath?: string;
+  secret?: string;
+}): Promise<Machine> {
+  return invoke("dev_save_machine", {
+    name: input.name,
+    user: input.user,
+    host: input.host,
+    port: input.port ?? 22,
+    auth: input.auth,
+    keyPath: input.keyPath ?? null,
+    key_path: input.keyPath ?? null,
+    secret: input.secret ?? null,
+  });
+}
+
+export function deleteMachine(id: string): Promise<void> {
+  return invoke("dev_delete_machine", { id });
+}
+
+export function listRemoteProjects(): Promise<RemoteProject[]> {
+  return invoke("dev_list_remote_projects");
+}
+
+export function testMachine(id: string): Promise<TestMachineResult> {
+  return invoke("dev_test_machine", { id });
+}
+
+export function acceptHost(machineId: string, fingerprint: string, keyType: string): Promise<void> {
+  return invoke("dev_accept_host", {
+    machineId,
+    machine_id: machineId,
+    fingerprint,
+    keyType,
+    key_type: keyType,
+  });
+}
+
+export function createRemoteProject(name: string, machineId: string, remotePath: string): Promise<string> {
+  return invoke("dev_create_remote_project", {
+    name,
+    machineId,
+    machine_id: machineId,
+    remotePath,
+    remote_path: remotePath,
+  });
+}
+
+export function workspaceRemote(workspace: string): Promise<WorkspaceRemote | null> {
+  return invoke("dev_workspace_remote", { workspace });
 }
 
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
@@ -506,6 +645,58 @@ export function prepareImagePath(
 
 export function imageDataUrl(path: string): Promise<string> {
   return invoke("dev_image_data_url", { path });
+}
+
+export type SpeechModelStatus = "missing" | "partial" | "ready";
+
+export type SpeechModelInfo = {
+  id: string;
+  label: string;
+  file: string;
+  bytes: number;
+  english: boolean;
+  status: SpeechModelStatus;
+};
+
+export type SpeechDownloadEvent = {
+  id: string;
+  received: number;
+  total: number;
+  done: boolean;
+};
+
+export type MicrophoneInfo = {
+  ready: boolean;
+  exe: string;
+  reason: string;
+};
+
+export function microphoneInfo(): Promise<MicrophoneInfo> {
+  return invoke("dev_microphone_info");
+}
+
+export function microphoneReady(): Promise<boolean> {
+  return invoke("dev_microphone_ready");
+}
+
+export function speechModels(): Promise<SpeechModelInfo[]> {
+  return invoke("dev_speech_models");
+}
+
+export function speechDownload(id: string): Promise<SpeechModelInfo> {
+  return invoke("dev_speech_download", { id });
+}
+
+export function onSpeechDownload(fn: (event: SpeechDownloadEvent) => void): Promise<UnlistenFn> {
+  return listen<SpeechDownloadEvent>("speech-download", (ev) => fn(ev.payload));
+}
+
+export function transcribe(bytesBase64: string, filename: string): Promise<string> {
+  return invoke("dev_transcribe", {
+    bytesBase64,
+    bytes_base64: bytesBase64,
+    filename,
+  });
 }
 
 export function chatStart(

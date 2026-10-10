@@ -57,6 +57,18 @@ function sortKey(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/** One less than the current top, so a new row sorts above the existing project list. */
+export function nextTopSort(orders: Array<number | undefined>): number {
+  let min = 0;
+  let seen = false;
+  for (const order of orders) {
+    const value = sortKey(order);
+    if (!seen || value < min) min = value;
+    seen = true;
+  }
+  return seen ? min - 1 : 0;
+}
+
 export function buildSidebar(
   conversations: ConversationSummary[],
   journeys: JourneySummary[],

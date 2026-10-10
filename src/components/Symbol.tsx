@@ -66,6 +66,18 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  cloud: (
+    <path
+      d="M7.4 17.6h8.7a3.5 3.5 0 0 0 .5-7 4.6 4.6 0 0 0-8.8-1.2A3.2 3.2 0 0 0 7.4 17.6Z"
+      {...stroke}
+    />
+  ),
+  "cloud.fill": (
+    <path
+      d="M7.4 17.6h8.7a3.5 3.5 0 0 0 .5-7 4.6 4.6 0 0 0-8.8-1.2A3.2 3.2 0 0 0 7.4 17.6Z"
+      fill="currentColor"
+    />
+  ),
   link: (
     <path
       d="M9.2 14.8 7.6 16.4a3.2 3.2 0 1 1-4.5-4.5l3.2-3.2a3.2 3.2 0 0 1 4.5 0M14.8 9.2l1.6-1.6a3.2 3.2 0 1 1 4.5 4.5l-3.2 3.2a3.2 3.2 0 0 1-4.5 0M9.8 14.2l4.4-4.4"
@@ -210,6 +222,18 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M4.6 4.6 10 10" {...stroke} />
       <path d="M14.4 19.4V15.8H18" {...stroke} />
       <path d="M19.4 19.4 14 14" {...stroke} />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3.4" width="6" height="10.2" rx="3" {...stroke} />
+      <path d="M6.4 11.2a5.6 5.6 0 0 0 11.2 0M12 16.8v3.2" {...stroke} />
+    </>
+  ),
+  "mic.fill": (
+    <>
+      <rect x="9" y="3.4" width="6" height="10.2" rx="3" fill="currentColor" />
+      <path d="M6.4 11.2a5.6 5.6 0 0 0 11.2 0M12 16.8v3.2" {...stroke} />
     </>
   ),
   speaker: (

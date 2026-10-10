@@ -8,6 +8,7 @@ import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedM
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
+import { fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
@@ -35,10 +36,11 @@ import {
   saveSidebarWidth,
   saveWorkspace,
 } from "../lib/prefs";
-import { parsePermissionMode, type PermissionMode } from "../lib/permission";
+import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
+import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
-import { draftForChat, effortForModel, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { clearUnseenFinished, draftForChat, effortForModel, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -57,6 +59,10 @@ export function MainView() {
   const [effort, setEffort] = useState("");
   const [contextWindow, setContextWindow] = useState(0);
   const [permission, setPermission] = useState<PermissionMode>(() => parsePermissionMode(loadPermission()));
+  const [speechModelId, setSpeechModelId] = useState(speechModel(null).id);
+  const [speechRows, setSpeechRows] = useState<SpeechModelInfo[]>([]);
+  const [speechProgress, setSpeechProgress] = useState<{ id: string; received: number; total: number } | null>(null);
+  const [speechDownloading, setSpeechDownloading] = useState(false);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -71,6 +77,7 @@ export function MainView() {
   const [chatTabsByProject, setChatTabsByProject] = useState<Record<string, string[]>>({});
   const [runningId, setRunningId] = useState("");
   const [runningTurns, setRunningTurns] = useState<Record<string, RunningTurn>>({});
+  const [unseenFinished, setUnseenFinished] = useState<ReadonlySet<string>>(() => new Set());
   const [streamText, setStreamText] = useState("");
   const [streamReasoning, setStreamReasoning] = useState("");
   const [usageByChat, setUsageByChat] = useState<Record<string, ChatUsage>>({});
@@ -80,7 +87,7 @@ export function MainView() {
   const [turnStartedAt, setTurnStartedAt] = useState(0);
   const [openingId, setOpeningId] = useState("");
   const [shellQueue, setShellQueue] = useState<
-    { command: string; resolve: (ok: boolean) => void }[]
+    { chatId: string; command: string; resolve: (ok: boolean) => void }[]
   >([]);
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
@@ -123,6 +130,9 @@ export function MainView() {
   permissionRef.current = permission;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const viewingChatRef = useRef(true);
+  viewingChatRef.current =
+    editor.focus === "chat" && !showSettings && !showUsage && !projectSettings;
   runningIdRef.current = runningId;
   const pendingRef = useRef(pendingByChat);
   pendingRef.current = pendingByChat;
@@ -132,8 +142,13 @@ export function MainView() {
   mcpServersRef.current = mcpServers;
   const skillsRef = useRef(skills);
   skillsRef.current = skills;
+  const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
+  const remoteRef = useRef<RemoteWorkspace | null>(null);
+  remoteRef.current = remoteWorkspace;
   const sidebarSyncRef = useRef({ workspace, conversations, journeys });
   sidebarSyncRef.current = { workspace, conversations, journeys };
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
   const sidebarLoadedForRef = useRef("");
   const deletedIdsRef = useRef(new Set<string>());
   const turnMessagesRef = useRef<ChatMessage[] | null>(null);
@@ -231,6 +246,7 @@ export function MainView() {
     if (!isSameProject(ws, workspaceRef.current)) return;
     stickToBottomRef.current = true;
     setActiveId(found.id);
+    setUnseenFinished((prev) => clearUnseenFinished(prev, found.id));
     const loaded = (full.messages as ChatMessage[]) ?? [];
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
@@ -335,6 +351,69 @@ export function MainView() {
     reloadRuntime();
   }, [reloadRuntime]);
 
+  const refreshSpeech = useCallback(() => {
+    void api
+      .speechModels()
+      .then((rows) => setSpeechRows(rows))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    refreshSpeech();
+    let gone = false;
+    void api
+      .getAppSetting("speech.model")
+      .then((saved) => {
+        if (!gone) setSpeechModelId(normalizeSpeechModel(saved));
+      })
+      .catch(() => undefined);
+    let unlisten: (() => void) | undefined;
+    void api
+      .onSpeechDownload((event) => {
+        setSpeechProgress({ id: event.id, received: event.received, total: event.total });
+        if (event.done) {
+          setSpeechDownloading(false);
+          setSpeechProgress(null);
+          refreshSpeech();
+        }
+      })
+      .then((fn) => {
+        if (gone) fn();
+        else unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+      unlisten?.();
+    };
+  }, [refreshSpeech]);
+
+  const pickSpeechModel = useCallback((id: string) => {
+    const next = normalizeSpeechModel(id);
+    setSpeechModelId(next);
+    void api.setAppSetting("speech.model", next).catch((e) => setFlash({ kind: "err", text: String(e) }));
+  }, [setFlash]);
+
+  const downloadSpeech = useCallback((id: string) => {
+    setSpeechDownloading(true);
+    setSpeechProgress({ id: normalizeSpeechModel(id), received: 0, total: speechModel(id).bytes });
+    void api
+      .speechDownload(normalizeSpeechModel(id))
+      .then((row) => {
+        setSpeechRows((prev) => prev.map((item) => (item.id === row.id ? row : item)));
+      })
+      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+      .finally(() => {
+        setSpeechDownloading(false);
+        setSpeechProgress(null);
+        refreshSpeech();
+      });
+  }, [refreshSpeech, setFlash]);
+
+  const dictate = useCallback(async (bytesBase64: string, filename: string) => {
+    return api.transcribe(bytesBase64, filename);
+  }, []);
+
   useEffect(() => {
     if (!pathsReady || !workspace) return;
     setRecents(pushRecentWorkspace(workspace));
@@ -389,18 +468,61 @@ export function MainView() {
   }, [pathsReady, workspace, reloadConversations, setFlash]);
 
   useEffect(() => {
+    if (!workspace || !opened) return;
+    let gone = false;
+    let timer = 0;
+    const watch = () => {
+      void api
+        .treeSignature(workspace)
+        .then((snapshot) => {
+          if (!gone) {
+            publishFileStructure(
+              workspace,
+              snapshot.signature,
+              snapshot.dirs ?? [],
+              (snapshot.files ?? []).map((path) => {
+                const slash = path.lastIndexOf("/");
+                return { path, name: slash < 0 ? path : path.slice(slash + 1) };
+              }),
+            );
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (!gone) timer = window.setTimeout(watch, remoteRef.current ? 15000 : 8000);
+        });
+    };
+    watch();
+    return () => {
+      gone = true;
+      window.clearTimeout(timer);
+    };
+  }, [workspace, opened]);
+
+  useEffect(() => {
     if (!workspace || !opened) {
       setMentionFiles([]);
       return;
     }
     let gone = false;
-    void collectWorkspaceFiles((path) => api.listDir(workspace, path)).then((files) => {
-      if (!gone) setMentionFiles(files);
-    });
+    const apply = () => {
+      const known = fileStructureFiles(workspace);
+      if (known.length) {
+        setMentionFiles(known);
+        return;
+      }
+      if (fileStructureSignature(workspace)) return;
+      void collectWorkspaceFiles((path) => api.listDir(workspace, path)).then((files) => {
+        if (!gone && !fileStructureFiles(workspace).length) setMentionFiles(files);
+      });
+    };
+    apply();
+    const stop = subscribeFileStructure(apply);
     return () => {
       gone = true;
+      stop();
     };
-  }, [workspace, opened, tick]);
+  }, [workspace, opened]);
 
   useEffect(() => {
     if (!pathsReady) return;
@@ -408,20 +530,56 @@ export function MainView() {
     void (async () => {
       try {
         const fromDisk = await api.listProjects();
-        const rows = sidebarProjects(fromDisk);
-        const loaded = await Promise.all(
-          rows.map(async (row) => {
-            const [convs, nextJourneys] = await Promise.all([
-              api.listConversations(row.path).catch(() => [] as ConversationSummary[]),
-              api.listJourneys(row.path).catch(() => [] as JourneySummary[]),
-            ]);
-            return { ...row, conversations: convs, journeys: nextJourneys };
-          }),
+        let remoteMounts = new Set<string>();
+        try {
+          const remotes = await api.listRemoteProjects();
+          remoteMounts = new Set(remotes.map((row) => projectKey(row.mount_path)));
+        } catch {
+          remoteMounts = new Set();
+        }
+        const saved = sidebarProjects(fromDisk);
+        const rows = saved.map((row) =>
+          remoteMounts.has(projectKey(row.path)) ? { ...row, remote: true } : row,
         );
-        if (!cancelled) {
-          setAllProjectGroups(
-            applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current),
-          );
+        const currentPath = workspaceRef.current;
+        const ordered = [
+          ...rows.filter((row) => isSameProject(row.path, currentPath)),
+          ...rows.filter((row) => !isSameProject(row.path, currentPath)),
+        ];
+        const loaded: ProjectChatGroup[] = [];
+        for (const row of ordered) {
+          if (cancelled) return;
+          const [convs, nextJourneys] = await Promise.all([
+            api.listConversations(row.path).catch(() => [] as ConversationSummary[]),
+            api.listJourneys(row.path).catch(() => [] as JourneySummary[]),
+          ]);
+          let next = { ...row, conversations: convs, journeys: nextJourneys };
+          if (next.remote && isSameProject(next.path, workspaceRef.current)) {
+            try {
+              const remote = await api.workspaceRemote(next.path);
+              if (remote) {
+                next = {
+                  ...next,
+                  server: {
+                    machineName: remote.machine_name,
+                    host: remote.host,
+                    user: remote.user,
+                    port: remote.port,
+                    remotePath: remote.remote_path,
+                    online: remote.online,
+                  },
+                };
+              }
+            } catch {
+              /* leave the cloud without a status */
+            }
+          }
+          loaded.push(next);
+          if (!cancelled) {
+            setAllProjectGroups(
+              applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current),
+            );
+          }
         }
       } catch (e) {
         if (!cancelled) setFlash({ kind: "err", text: String(e) });
@@ -435,8 +593,27 @@ export function MainView() {
   useEffect(() => {
     if (!workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
-    setAllProjectGroups((prev) => placeProjectChats(prev, workspace, conversations, journeys));
-  }, [workspace, conversations, journeys]);
+    setAllProjectGroups((prev) =>
+      placeProjectChats(prev, workspace, conversations, journeys).map((group) =>
+        isSameProject(group.path, workspace)
+          ? {
+              ...group,
+              remote: Boolean(remoteWorkspace) || group.remote,
+              server: remoteWorkspace
+                ? {
+                    machineName: remoteWorkspace.machineName,
+                    host: remoteWorkspace.host,
+                    user: remoteWorkspace.user,
+                    port: remoteWorkspace.port,
+                    remotePath: remoteWorkspace.remotePath,
+                    online: remoteWorkspace.online,
+                  }
+                : group.server,
+            }
+          : group,
+      ),
+    );
+  }, [workspace, conversations, journeys, remoteWorkspace]);
 
   useEffect(() => {
     if (!pathsReady) return;
@@ -462,8 +639,36 @@ export function MainView() {
         setOpened(false);
         setFlash({ kind: "err", text: String(e) });
       });
+    let remoteTimer = 0;
+    const watchRemote = () => {
+      void api
+        .workspaceRemote(workspace)
+        .then((row) => {
+          if (cancelled) return;
+          setRemoteWorkspace(
+            row
+              ? {
+                  machineName: row.machine_name,
+                  host: row.host,
+                  user: row.user,
+                  port: row.port,
+                  remotePath: row.remote_path,
+                  online: row.online,
+                }
+              : null,
+          );
+        })
+        .catch(() => {
+          if (!cancelled) setRemoteWorkspace(null);
+        })
+        .finally(() => {
+          if (!cancelled) remoteTimer = window.setTimeout(watchRemote, 15000);
+        });
+    };
+    watchRemote();
     return () => {
       cancelled = true;
+      window.clearTimeout(remoteTimer);
     };
   }, [pathsReady, workspace, setFlash]);
 
@@ -532,7 +737,7 @@ export function MainView() {
     };
   }, [workspace, tick]);
 
-  const pendingShell = shellQueue[0] ?? null;
+  const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
 
   useLayoutEffect(() => {
     const el = composerDockRef.current;
@@ -662,6 +867,7 @@ export function MainView() {
     liveByChatRef,
     subagentsByChatRef,
     stickToBottomRef,
+    conversationsRef,
     openGeneration,
     setWorkspace,
     setConversations,
@@ -691,6 +897,7 @@ export function MainView() {
     setSubagents,
     setExpandedAgents,
     setOpeningId,
+    setUnseenFinished,
     setPendingByChat,
     setChatTabsByProject,
     setFlash,
@@ -731,6 +938,8 @@ export function MainView() {
     setBusy,
     setRunningId,
     setRunningTurns,
+    setUnseenFinished,
+    viewingChatRef,
     setMessages,
     setConversations,
     setTurnStartedAt,
@@ -756,6 +965,7 @@ export function MainView() {
     deletedIdsRef,
     mcpServersRef,
     skillsRef,
+    remoteRef,
     turnMessagesRef,
     turnLiveRef,
     liveByChatRef,
@@ -1039,7 +1249,6 @@ export function MainView() {
     fileDrag,
     folderOpen,
     journeys,
-    liveTools,
     mcpBusy,
     mcpServers,
     messages,
@@ -1066,6 +1275,14 @@ export function MainView() {
     pickEffort,
     pickModel,
     pickPermission,
+    pickSpeechModel,
+    dictate,
+    speechModel: speechModelId,
+    speechModels: speechRows,
+    speechProgress,
+    speechDownloading,
+    refreshSpeech,
+    downloadSpeech,
     projectMenu,
     projectSettings,
     projectsRoot,
@@ -1076,15 +1293,16 @@ export function MainView() {
     reauthMcpServer,
     recents,
     reloadRuntime,
+    remoteWorkspace,
     archiveChat,
     removeChat,
     removePendingAt,
     renameJourney,
     reorderChats,
     reorderSidebar,
-    runningActivity,
     runningId,
     runningTurns,
+    unseenFinished,
     runtime,
     savePendingEdit,
     scroller,
@@ -1113,8 +1331,6 @@ export function MainView() {
     skillBusy,
     skills,
     startNewChat,
-    streamText,
-    streamReasoning,
     subagents,
     tick,
     toggleJourney,
@@ -1128,7 +1344,10 @@ export function MainView() {
   };
 
   return (
-    <MainProvider value={main}>
+    <MainProvider
+      value={main}
+      stream={{ streamText, streamReasoning, liveTools, runningActivity }}
+    >
       <MainShell />
     </MainProvider>
   );

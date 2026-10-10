@@ -70,7 +70,7 @@ function UserBubble({
   if (!shown && !images?.length) return null;
   const clipped = Boolean(shown) && !open && overflow;
   return (
-    <div className="max-w-[min(100%,36rem)] rounded-2xl bg-inset px-3 py-2">
+    <div className="w-fit max-w-[min(100%,36rem)] rounded-2xl bg-inset px-3 py-2">
       {images?.length ? (
         <div className={text ? "mb-2" : undefined}>
           <PromptImages images={images} />
@@ -109,7 +109,7 @@ export function ActivityStatus({ label, startedAt }: { label: string; startedAt?
   useEffect(() => {
     if (!startedAt) return;
     setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 250);
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [startedAt]);
   const elapsed = startedAt ? formatElapsed(now - startedAt) : "";

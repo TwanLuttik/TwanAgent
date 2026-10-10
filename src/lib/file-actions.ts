@@ -59,11 +59,13 @@ export function canMoveSelection(paths: string[], nodes: Map<string, FileNode>):
 
 export function canDropOnDir(paths: string[], dest: string, nodes: Map<string, FileNode>): boolean {
   if (!canMoveSelection(paths, nodes)) return false;
-  if (nodes.get(dest)?.kind !== "dir") return false;
+  const target = dest.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  // The workspace root is a valid folder, but it is not an entry in the tree.
+  if (target && nodes.get(target)?.kind !== "dir") return false;
   const tops = topLevelPaths(paths);
   return tops.every((path) => {
-    if (isInsidePath(dest, path)) return false;
-    return fileParent(path) !== dest;
+    if (isInsidePath(target, path)) return false;
+    return fileParent(path) !== target;
   });
 }
 

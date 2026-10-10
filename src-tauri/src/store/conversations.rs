@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{insert_conversation, load_messages, next_sort, replace_messages, row_to_conversation};
+use super::{
+    insert_conversation, load_messages, next_sort, row_to_conversation, sync_messages,
+};
 use crate::dev::{Conversation, ConversationSummary};
 use crate::error::{Error, Result};
 
@@ -156,8 +158,8 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     if existing.is_some() {
-        // Archived is not part of a normal save. Keep the stored flag so a
-        // later turn cannot put an archived chat back in the sidebar.
+        // Journey, order, and archived live on their own commands. A turn save
+        // must not put a moved or archived chat back where it started.
         conn.execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2, kind = ?3,
              context_usage = COALESCE(?4, context_usage),
@@ -166,13 +168,11 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
              WHERE id = ?7",
             params![conv.title, conv.updated_at, kind, usage, compaction, effort, conv.id],
         )?;
-    } else {
-        let sort = next_sort(conn, conv.journey_id.as_deref())?;
-        insert_conversation(conn, conv, sort)?;
+        sync_messages(conn, &conv.id, &conv.messages)?;
         return Ok(());
     }
-    replace_messages(conn, &conv.id, &conv.messages)?;
-    Ok(())
+    let sort = next_sort(conn, conv.journey_id.as_deref())?;
+    insert_conversation(conn, conv, sort)
 }
 
 pub fn set_conversation_archived(conn: &Connection, id: &str, archived: bool) -> Result<()> {

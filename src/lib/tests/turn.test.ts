@@ -5,11 +5,13 @@ import {
   closeDanglingToolCalls,
   liveTurnMessages,
   clearPendingForChat,
+  clearUnseenFinished,
   dequeuePending,
   draftForChat,
   enqueuePending,
   isEmptyCompletion,
   isRetryableChatError,
+  markUnseenFinished,
   pendingEditBlocksSend,
   pendingForChat,
   pendingIndexAfterRemove,
@@ -21,6 +23,7 @@ import {
   foregroundRunningId,
   runningTurnStartedAt,
   shouldQueueForChat,
+  restoreStoppedPrompt,
   takeNextPending,
   updatePending,
   turnAppliesToChat,
@@ -171,6 +174,79 @@ describe("turnFailureMessage", () => {
     assert.equal(msg.role, "assistant");
     assert.match(String(msg.content), /xAI error 503/);
     assert.equal(msg.error, true);
+  });
+});
+
+describe("unseen finished chats", () => {
+  it("marks a reply that finished while the user was looking elsewhere", () => {
+    const marked = markUnseenFinished(new Set(), "chat-a", {
+      aborted: false,
+      failed: false,
+      looking: false,
+      queued: false,
+    });
+    assert.equal(marked.has("chat-a"), true);
+    assert.equal(markUnseenFinished(marked, "chat-a", { aborted: false, failed: false, looking: false, queued: false }), marked);
+  });
+
+  it("does not mark the chat the user is already reading, a stop, a failure, or a queued follow-up", () => {
+    const none = new Set<string>();
+    const opts = { aborted: false, failed: false, looking: false, queued: false };
+    assert.equal(markUnseenFinished(none, "chat-a", { ...opts, looking: true }), none);
+    assert.equal(markUnseenFinished(none, "chat-a", { ...opts, aborted: true }), none);
+    assert.equal(markUnseenFinished(none, "chat-a", { ...opts, failed: true }), none);
+    assert.equal(markUnseenFinished(none, "chat-a", { ...opts, queued: true }), none);
+    assert.equal(markUnseenFinished(none, "", opts), none);
+  });
+
+  it("clears the mark when that conversation is opened", () => {
+    const marked = new Set(["chat-a", "chat-b"]);
+    const next = clearUnseenFinished(marked, "chat-a");
+    assert.equal(next.has("chat-a"), false);
+    assert.equal(next.has("chat-b"), true);
+    assert.equal(clearUnseenFinished(next, "chat-a"), next);
+  });
+});
+
+describe("restoreStoppedPrompt", () => {
+  const image = {
+    id: "img-1",
+    path: "/tmp/a.jpg",
+    name: "a.jpg",
+    mime: "image/jpeg",
+    width: 10,
+    height: 10,
+    resized: false,
+    dataUrl: "data:image/jpeg;base64,abc",
+  };
+
+  it("returns the last user message and drops the unfinished reply", () => {
+    const restored = restoreStoppedPrompt([
+      { role: "user", content: "older" },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "fix the login", images: [image] },
+      { role: "assistant", content: "Looking…" },
+    ]);
+    assert.equal(restored?.text, "fix the login");
+    assert.equal(restored?.images.length, 1);
+    assert.equal(restored?.images[0]?.path, "/tmp/a.jpg");
+    assert.equal("dataUrl" in (restored?.images[0] ?? {}), false);
+    assert.deepEqual(
+      restored?.messages.map((message) => message.content),
+      ["older", "done"],
+    );
+  });
+
+  it("keeps an image-only prompt", () => {
+    const restored = restoreStoppedPrompt([{ role: "user", content: "  ", images: [image] }]);
+    assert.equal(restored?.text, "  ");
+    assert.equal(restored?.images.length, 1);
+    assert.deepEqual(restored?.messages, []);
+  });
+
+  it("does nothing when the transcript has no user message", () => {
+    assert.equal(restoreStoppedPrompt([]), null);
+    assert.equal(restoreStoppedPrompt([{ role: "assistant", content: "hello" }]), null);
   });
 });
 

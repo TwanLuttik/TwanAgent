@@ -19,6 +19,8 @@ pub struct UsageEvent {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -34,6 +36,8 @@ pub struct UsageRecord {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
 }
 
 fn db_path(data_dir: &Path) -> PathBuf {
@@ -114,6 +118,7 @@ fn open(data_dir: &Path) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS usage_events_workspace ON usage_events(workspace_path);
         ",
     )?;
+    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER", []);
     Ok(conn)
 }
 
@@ -144,8 +149,8 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
     conn.execute(
         "INSERT INTO usage_events (
             recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-            model, prompt_tokens, completion_tokens, total_tokens
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            model, prompt_tokens, completion_tokens, total_tokens, duration_ms
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             recorded_at,
             path,
@@ -156,6 +161,7 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
             rec.prompt_tokens as i64,
             rec.completion_tokens as i64,
             total as i64,
+            rec.duration_ms.filter(|ms| *ms >= 0),
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -170,6 +176,7 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
         prompt_tokens: rec.prompt_tokens,
         completion_tokens: rec.completion_tokens,
         total_tokens: total,
+        duration_ms: rec.duration_ms.filter(|ms| *ms >= 0),
     }))
 }
 
@@ -194,7 +201,7 @@ pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent
     let conn = open(data_dir)?;
     let mut stmt = conn.prepare(
         "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-                model, prompt_tokens, completion_tokens, total_tokens
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms
          FROM usage_events
          WHERE (?1 IS NULL OR recorded_at >= ?1)
          ORDER BY recorded_at ASC, id ASC",
@@ -211,6 +218,7 @@ pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent
             prompt_tokens: row.get::<_, i64>(7)? as u64,
             completion_tokens: row.get::<_, i64>(8)? as u64,
             total_tokens: row.get::<_, i64>(9)? as u64,
+            duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
         })
     })?;
     let mut out = Vec::new();
@@ -266,6 +274,7 @@ mod tests {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
+            duration_ms: None,
         }
     }
 

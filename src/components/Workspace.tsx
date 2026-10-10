@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type HTMLAttributes, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -19,7 +19,7 @@ import {
   gitChangeMap,
   gitChangeTotals,
   gitChangesTree,
-  gitFolderHasChanges,
+  gitDirtyDirs,
   gitLineStats,
   type GitChangeTreeNode,
 } from "../lib/core";
@@ -35,6 +35,7 @@ import {
   topLevelPaths,
   validEntryName,
 } from "../lib/file-actions";
+import { dirsToList, fileStructureDirs, subscribeFileStructure } from "../lib/file-structure";
 import {
   closedTerminalTabs,
   paneForWorkspace,
@@ -68,10 +69,11 @@ import {
 import * as api from "../lib/tauri";
 import type { Entry, GitBranches, GitChange } from "../lib/tauri";
 import { Terminal } from "./Terminal";
+import { AnchoredMenu } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
 
-export function Workspace({
+export const Workspace = memo(function Workspace({
   workspace,
   tick,
   selectedPath,
@@ -86,7 +88,9 @@ export function Workspace({
 }) {
   const [pane, setPaneState] = useState<PaneState>(() => paneForWorkspace(workspace));
   const [width, setWidth] = useState(loadPaneWidth);
-  const [dragging, setDragging] = useState(false);
+  const asideRef = useRef<HTMLElement>(null);
+  const widthRef = useRef(width);
+  widthRef.current = width;
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     openTreeState(loadOpenFileTree(workspace)),
   );
@@ -99,6 +103,8 @@ export function Workspace({
   const [branchError, setBranchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [structureTick, setStructureTick] = useState(0);
+  const refreshGen = useRef(0);
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -110,18 +116,29 @@ export function Workspace({
 
   const refreshTree = useCallback(async () => {
     if (!workspace) return;
+    const gen = ++refreshGen.current;
     setError(null);
     try {
-      const open = Object.keys(expanded).filter((k) => expanded[k]);
-      const [nextChanges] = await Promise.all([
-        api.gitStatus(workspace),
-        ...open.map((p) => loadDir(p)),
+      const open = dirsToList(expanded, fileStructureDirs(workspace));
+      const [nextChanges, listings] = await Promise.all([
+        api.gitStatus(workspace, pane.tabs.some((tab) => tab.kind === "git")),
+        Promise.all(open.map(async (path) => ({ path, rows: await api.listDir(workspace, path) }))),
       ]);
+      if (gen !== refreshGen.current) return;
       setChanges(nextChanges);
+      setChildren((prev) => {
+        const next = { ...prev };
+        for (const listing of listings) next[listing.path] = listing.rows;
+        const live = new Set(listings.flatMap((listing) => listing.rows.map((row) => row.path)));
+        for (const path of Object.keys(next)) {
+          if (path && !live.has(path)) delete next[path];
+        }
+        return next;
+      });
     } catch (e) {
-      setError(String(e));
+      if (gen === refreshGen.current) setError(String(e));
     }
-  }, [workspace, expanded, loadDir]);
+  }, [workspace, expanded, pane.tabs]);
 
   const refreshBranches = useCallback(async () => {
     if (!workspace) return;
@@ -155,9 +172,11 @@ export function Workspace({
     [workspace],
   );
 
+  useEffect(() => subscribeFileStructure(() => setStructureTick((n) => n + 1)), []);
+
   useEffect(() => {
     void refreshTree();
-  }, [workspace, tick, refreshTree]);
+  }, [workspace, tick, structureTick, refreshTree]);
 
   useEffect(() => {
     void loadDir("").catch((e) => setError(String(e)));
@@ -336,31 +355,39 @@ export function Workspace({
     const handle = ev.currentTarget;
     handle.setPointerCapture(ev.pointerId);
     const startX = ev.clientX;
-    const startWidth = width;
-    setDragging(true);
+    const startWidth = widthRef.current;
+    let latest = startWidth;
+    let frame = 0;
+    handle.dataset.dragging = "true";
 
+    function paint() {
+      frame = 0;
+      const aside = asideRef.current;
+      if (aside) aside.style.width = `${latest}px`;
+    }
     function onMove(move: PointerEvent) {
-      const next = Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(startWidth - (move.clientX - startX))));
-      setWidth(next);
+      latest = Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(startWidth - (move.clientX - startX))));
+      if (!frame) frame = requestAnimationFrame(paint);
     }
     function onUp(up: PointerEvent) {
       handle.releasePointerCapture(up.pointerId);
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onUp);
-      setDragging(false);
-      setWidth((next) => {
-        savePaneWidth(next);
-        return next;
-      });
+      if (frame) cancelAnimationFrame(frame);
+      delete handle.dataset.dragging;
+      widthRef.current = latest;
+      setWidth(latest);
+      savePaneWidth(latest);
     }
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
-  }, [width]);
+  }, []);
 
   return (
     <aside
+      ref={asideRef}
       className="relative flex min-h-0 shrink-0 flex-col border-l border-line/35 bg-canvas"
       style={{ width }}
     >
@@ -378,9 +405,7 @@ export function Workspace({
       >
         <span
           aria-hidden
-          className={`pointer-events-none absolute inset-y-0 left-0 w-0.5 ${
-            dragging ? "bg-accent/40" : "group-hover:bg-accent/30"
-          }`}
+          className="pointer-events-none absolute inset-y-0 left-0 w-0.5 group-hover:bg-accent/30 group-data-[dragging=true]:bg-accent/40"
         />
       </div>
       <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} />
@@ -391,6 +416,7 @@ export function Workspace({
             <div
               key={tab.id}
               className={`absolute inset-0 flex flex-col ${active ? "" : "invisible pointer-events-none"}`}
+              {...(active ? {} : { inert: true })}
               aria-hidden={!active}
             >
               {tab.kind === "terminal" ? (
@@ -435,7 +461,7 @@ export function Workspace({
       </div>
     </aside>
   );
-}
+});
 
 function PaneTabs({
   pane,
@@ -712,10 +738,16 @@ function FilesPane({
   onNewFolder: (parent: string) => void;
 }) {
   const byPath = gitChangeMap(changes);
+  const dirtyDirs = gitDirtyDirs(byPath);
   const [menu, setMenu] = useState<{ x: number; y: number; path: string; paths: string[] } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [dragPaths, setDragPaths] = useState<string[] | null>(null);
+  const dragPathsRef = useRef<string[] | null>(null);
+  const dropTargetRef = useRef<string | null>(null);
+  const nodeMapRef = useRef(fileNodeMap(childrenOf));
+  const listRef = useRef<HTMLDivElement>(null);
   const nodeMap = fileNodeMap(childrenOf);
+  nodeMapRef.current = nodeMap;
   const menuPaths = menu?.paths ?? [];
   const menuNodes = fileNodeMap(childrenOf);
   const allowRename = canRenameSelection(menuPaths, menuNodes);
@@ -743,29 +775,100 @@ function FilesPane({
     return selected.includes(path) ? selected : [path];
   }
 
+  function setDraggingPaths(paths: string[] | null) {
+    dragPathsRef.current = paths;
+    setDragPaths(paths);
+    if (!paths) {
+      dropTargetRef.current = null;
+      markFileDrop(null);
+    }
+  }
+
+  function aimDrop(dest: string | null, row: HTMLElement | null = null) {
+    markFileDrop(dest && dest !== "" ? row : null);
+    if (dropTargetRef.current === dest) return;
+    dropTargetRef.current = dest;
+    setDropTarget(dest);
+  }
+
+  function placeFromPoint(x: number, y: number) {
+    const paths = dragPathsRef.current;
+    if (!paths || (!x && !y)) return;
+    const list = listRef.current;
+    const hit = rowAtPoint(x, y);
+    const raw = hit?.dataset.path ?? "";
+    const kind = hit?.dataset.kind;
+    const dest = !hit || !list?.contains(hit) ? "" : kind === "dir" ? raw : fileParent(raw);
+    const nodes = nodeMapRef.current;
+    const blocked = paths.some((item) => item === dest || isInsidePath(dest, item));
+    if (blocked || !canDropOnDir(paths, dest, nodes)) {
+      aimDrop(null);
+      return;
+    }
+    const folder = dest
+      ? document.querySelector<HTMLElement>(`.file-row[data-path="${cssEscape(dest)}"]`)
+      : null;
+    aimDrop(dest, folder);
+  }
+
+  useEffect(() => {
+    if (!dragPaths) return;
+    let frame = 0;
+    const point = { x: 0, y: 0 };
+    function tick() {
+      frame = 0;
+      placeFromPoint(point.x, point.y);
+    }
+    function onPointer(ev: PointerEvent | MouseEvent) {
+      if (!ev.clientX && !ev.clientY) return;
+      point.x = ev.clientX;
+      point.y = ev.clientY;
+      if (!frame) frame = requestAnimationFrame(tick);
+    }
+    document.addEventListener("dragover", onPointer, true);
+    document.addEventListener("pointermove", onPointer, true);
+    document.addEventListener("mousemove", onPointer, true);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      document.removeEventListener("dragover", onPointer, true);
+      document.removeEventListener("pointermove", onPointer, true);
+      document.removeEventListener("mousemove", onPointer, true);
+    };
+  }, [dragPaths]);
+
   return (
     <div
+      ref={listRef}
       className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5"
       onDragOver={(ev) => {
-        if (!dragPaths) return;
+        const paths = dragPathsRef.current;
+        if (!paths && !ev.dataTransfer.types.includes(FILE_DRAG_TYPE)) return;
         ev.preventDefault();
-        setDropTarget("");
+        ev.dataTransfer.dropEffect = "move";
+        if (ev.clientX || ev.clientY) placeFromPoint(ev.clientX, ev.clientY);
       }}
       onDragLeave={(ev) => {
-        if (ev.currentTarget.contains(ev.relatedTarget as Node)) return;
-        setDropTarget(null);
+        const next = ev.relatedTarget;
+        if (!(next instanceof Node) || ev.currentTarget.contains(next)) return;
+        aimDrop(null);
       }}
       onDrop={(ev) => {
-        const paths = dragPaths ?? ev.dataTransfer.getData(FILE_DRAG_TYPE).split("\n").filter(Boolean);
-        setDropTarget(null);
-        setDragPaths(null);
-        if (!paths.length || ev.defaultPrevented) return;
+        const paths = dragPathsRef.current ?? ev.dataTransfer.getData(FILE_DRAG_TYPE).split("\n").filter(Boolean);
+        const dest = dropTargetRef.current;
+        aimDrop(null);
+        setDraggingPaths(null);
+        if (!paths.length || dest == null || ev.defaultPrevented) return;
         ev.preventDefault();
-        if (canDropOnDir(paths, "", nodeMap)) onMove(paths, "");
+        if (canDropOnDir(paths, dest, nodeMap)) onMove(paths, dest);
       }}
     >
       {error && <p className="px-2 text-[11px] text-err">{error}</p>}
-      {dropTarget === "" ? <div className="mx-1 mb-1 h-0.5 rounded-full bg-accent" /> : null}
+      {dropTarget === "" ? (
+        <div className="sticky top-0 z-10 mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/20 px-2 py-[5px] text-[12px] font-medium text-accent ring-1 ring-inset ring-accent">
+          <Symbol name="arrow.down.to.line" className="size-3.5" />
+          <span>Move to project root</span>
+        </div>
+      ) : null}
       <Tree
         path=""
         depth={0}
@@ -776,7 +879,9 @@ function FilesPane({
         renaming={renaming}
         creating={creating}
         dropTarget={dropTarget}
+        dragPaths={dragPaths}
         changes={byPath}
+        dirtyDirs={dirtyDirs}
         nodeMap={nodeMap}
         onToggle={onToggle}
         onSelect={onSelect}
@@ -789,17 +894,13 @@ function FilesPane({
           setMenu({ path, x, y, paths });
         }}
         onDragPaths={pathsFor}
-        onDragChange={setDragPaths}
-        onDropTarget={setDropTarget}
+        onDragChange={setDraggingPaths}
+        dragPathsRef={dragPathsRef}
+        onDropTarget={aimDrop}
         onMove={onMove}
       />
       {menu ? (
-        <div
-          role="menu"
-          className="fixed z-50 min-w-[168px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
-          style={{ left: menu.x, top: menu.y }}
-          onMouseDown={(ev) => ev.stopPropagation()}
-        >
+        <AnchoredMenu x={menu.x} y={menu.y}>
           <MenuItem
             label="New folder"
             onClick={() => {
@@ -827,7 +928,7 @@ function FilesPane({
           {!allowMove && menuPaths.length > 1 ? (
             <p className="m-0 px-2.5 py-1 text-[11px] text-muted">Move and rename need files or folders, not both.</p>
           ) : null}
-        </div>
+        </AnchoredMenu>
       ) : null}
     </div>
   );
@@ -860,6 +961,69 @@ function MenuItem({
 }
 
 const FILE_DRAG_TYPE = "application/x-twanagent-paths";
+const FILE_DROP_CLASS = "file-drop-target";
+
+function markFileDrop(row: HTMLElement | null) {
+  const prev = document.querySelector(`.${FILE_DROP_CLASS}`);
+  if (prev === row) return;
+  prev?.classList.remove(FILE_DROP_CLASS);
+  row?.classList.add(FILE_DROP_CLASS);
+}
+
+function cssEscape(value: string): string {
+  return window.CSS?.escape ? window.CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+}
+
+function rowAtPoint(x: number, y: number): HTMLElement | null {
+  const stack = document.elementsFromPoint(x, y);
+  for (const node of stack) {
+    if (!(node instanceof HTMLElement)) continue;
+    const row = node.closest<HTMLElement>(".file-row");
+    if (row) return row;
+  }
+  return null;
+}
+
+function dragPreviewLabel(paths: string[], nodes: Map<string, Entry>): { name: string; kind: string; count: number } {
+  const tops = topLevelPaths(paths);
+  const first = tops[0] ?? paths[0] ?? "";
+  return {
+    name: fileName(first),
+    kind: nodes.get(first)?.kind ?? "file",
+    count: tops.length,
+  };
+}
+
+function setFileDragImage(data: DataTransfer, source: HTMLElement, label: string) {
+  const node = document.createElement("div");
+  node.className = "file-drag-image";
+  const icons = source.querySelectorAll("svg");
+  const glyph = icons[icons.length - 1];
+  if (glyph) {
+    const clone = glyph.cloneNode(true) as SVGElement;
+    clone.style.width = "14px";
+    clone.style.height = "14px";
+    node.append(clone);
+  }
+  const text = document.createElement("span");
+  text.className = "file-drag-image-name";
+  text.textContent = label;
+  node.append(text);
+  // WKWebView does not deliver pointer or drag coordinates while a native drag
+  // is running, so a DOM chip cannot follow the cursor. The system drag image can.
+  // Keep the source in the viewport until the snapshot is taken.
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;left:0;top:0;z-index:80;pointer-events:none;";
+  host.append(node);
+  document.body.append(host);
+  const height = node.offsetHeight || 28;
+  try {
+    data.setDragImage(node, 14, Math.max(14, Math.round(height / 2)));
+  } catch {
+    // A missing drag image should not cancel the move.
+  }
+  setTimeout(() => host.remove(), 0);
+}
 
 function fileNodeMap(childrenOf: Record<string, Entry[]>): Map<string, Entry> {
   const map = new Map<string, Entry>();
@@ -1052,7 +1216,7 @@ function ChangeTree({
       <button
         type="button"
         onClick={() => onToggle(node.path)}
-        className="flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] text-ink/90 hover:bg-wash"
+        className="flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] text-ink/90 select-none hover:bg-wash"
         style={{ paddingLeft: 8 + depth * 12 }}
       >
         <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-3 text-muted" />
@@ -1094,7 +1258,7 @@ function ChangeFileRow({
       type="button"
       onClick={() => onOpen(row, "preview")}
       onDoubleClick={() => onOpen(row, "pin")}
-      className={`flex w-full items-center gap-2 rounded-[6px] py-[4px] pr-2 text-left text-[12px] ${
+      className={`flex w-full items-center gap-2 rounded-[6px] py-[4px] pr-2 text-left text-[12px] select-none ${
         selected ? "bg-wash-strong" : "hover:bg-wash"
       }`}
       style={{ paddingLeft: pad }}
@@ -1198,7 +1362,9 @@ function Tree({
   renaming,
   creating,
   dropTarget,
+  dragPaths,
   changes,
+  dirtyDirs,
   nodeMap,
   onToggle,
   onSelect,
@@ -1208,6 +1374,7 @@ function Tree({
   onContext,
   onDragPaths,
   onDragChange,
+  dragPathsRef,
   onDropTarget,
   onMove,
 }: {
@@ -1220,7 +1387,9 @@ function Tree({
   renaming: string | null;
   creating: string | null;
   dropTarget: string | null;
+  dragPaths: string[] | null;
   changes: ReturnType<typeof gitChangeMap>;
+  dirtyDirs: Set<string>;
   nodeMap: Map<string, Entry>;
   onToggle: (path: string) => void;
   onSelect: (path: string, kind: string, ev: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
@@ -1230,25 +1399,31 @@ function Tree({
   onContext: (path: string, x: number, y: number) => void;
   onDragPaths: (path: string) => string[];
   onDragChange: (paths: string[] | null) => void;
+  dragPathsRef: RefObject<string[] | null>;
   onDropTarget: (path: string | null) => void;
   onMove: (paths: string[], dest: string) => void;
 }) {
   const rows = (childrenOf[path] ?? []).filter((row) => !HEAVY_DIRS.has(row.name));
+
   return (
     <div className="flex flex-col gap-px">
       {rows.map((row, index) => {
         const isDir = row.kind === "dir";
         const open = Boolean(expanded[row.path]);
         const change = isDir ? undefined : gitChangeForPath(changes, row.path);
-        const dirty = Boolean(change) || (isDir && gitFolderHasChanges(changes, row.path));
+        const dirty = Boolean(change) || (isDir && dirtyDirs.has(row.path));
         const stats = gitLineStats(change);
         const on = selected.includes(row.path) || activePath === row.path;
         const prev = rows[index - 1];
         const separated = on && Boolean(prev && (selected.includes(prev.path) || activePath === prev.path));
         const editing = renaming === row.path || creating === row.path;
+        const dragging = Boolean(dragPaths?.includes(row.path));
+        const dropHere = Boolean(isDir && dropTarget === row.path);
         return (
-          <div key={row.path} className={separated ? "mt-1" : undefined}>
+          <div key={row.path} className={`file-branch ${separated ? "mt-1" : ""}`}>
             <div
+              data-path={row.path}
+              data-kind={row.kind}
               draggable={!editing}
               onDragStart={(ev) => {
                 const paths = onDragPaths(row.path);
@@ -1259,27 +1434,18 @@ function Tree({
                 ev.dataTransfer.setData(FILE_DRAG_TYPE, paths.join("\n"));
                 ev.dataTransfer.setData("text/plain", paths.join("\n"));
                 ev.dataTransfer.effectAllowed = "move";
+                const preview = dragPreviewLabel(paths, nodeMap);
+                setFileDragImage(
+                  ev.dataTransfer,
+                  ev.currentTarget,
+                  preview.count > 1 ? `${preview.count} items` : preview.name,
+                );
                 onDragChange(paths);
               }}
               onDragEnd={() => {
+                markFileDrop(null);
                 onDragChange(null);
                 onDropTarget(null);
-              }}
-              onDragOver={(ev) => {
-                if (!isDir) return;
-                ev.preventDefault();
-                ev.stopPropagation();
-                onDropTarget(row.path);
-              }}
-              onDrop={(ev) => {
-                if (!isDir) return;
-                const raw = ev.dataTransfer.getData(FILE_DRAG_TYPE) || ev.dataTransfer.getData("text/plain");
-                ev.preventDefault();
-                ev.stopPropagation();
-                onDropTarget(null);
-                onDragChange(null);
-                const paths = raw.split("\n").filter(Boolean);
-                if (canDropOnDir(paths, row.path, nodeMap)) onMove(paths, row.path);
               }}
               onContextMenu={(ev) => {
                 ev.preventDefault();
@@ -1296,9 +1462,11 @@ function Tree({
               onDoubleClick={() => {
                 if (!isDir) onOpen(row.path, "pin");
               }}
-              className={`flex w-full cursor-default items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] hover:bg-wash ${
-                on ? "bg-wash-strong" : ""
-              } ${dropTarget === row.path ? "bg-accent/15 ring-1 ring-accent" : ""} ${dirty ? "text-ok" : "text-ink/90"}`}
+              className={`file-row flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] select-none hover:bg-wash ${
+                editing ? "cursor-text" : "cursor-grab"
+              } ${on ? "bg-wash-strong" : ""} ${dragging ? "opacity-40" : ""} ${
+                dropHere ? FILE_DROP_CLASS : ""
+              } ${dirty && !dropHere ? "text-ok" : "text-ink/90"}`}
               style={{ paddingLeft: 8 + depth * 12 }}
             >
               <span className="flex min-w-0 flex-1 items-center gap-1">
@@ -1321,6 +1489,7 @@ function Tree({
                   <span className="min-w-0 flex-1 truncate">{row.name}</span>
                 )}
               </span>
+              {isDir ? <span className="file-drop-label">Move here</span> : null}
               {!isDir && !editing ? <GitLineStats additions={stats.additions} deletions={stats.deletions} /> : null}
             </div>
             {isDir && open && (
@@ -1334,7 +1503,9 @@ function Tree({
                 renaming={renaming}
                 creating={creating}
                 dropTarget={dropTarget}
+                dragPaths={dragPaths}
                 changes={changes}
+                dirtyDirs={dirtyDirs}
                 nodeMap={nodeMap}
                 onToggle={onToggle}
                 onSelect={onSelect}
@@ -1344,6 +1515,7 @@ function Tree({
                 onContext={onContext}
                 onDragPaths={onDragPaths}
                 onDragChange={onDragChange}
+                dragPathsRef={dragPathsRef}
                 onDropTarget={onDropTarget}
                 onMove={onMove}
               />
@@ -1377,7 +1549,7 @@ function NameField({ value, onCommit }: { value: string; onCommit: (name: string
         if (ev.key === "Enter") onCommit(draft);
         if (ev.key === "Escape") onCommit(value);
       }}
-      className="min-w-0 flex-1 rounded bg-canvas px-1 text-[12px] text-ink outline-none ring-1 ring-accent"
+      className="min-w-0 flex-1 rounded bg-canvas px-1 text-[12px] text-ink outline-none ring-1 ring-accent select-text"
     />
   );
 }

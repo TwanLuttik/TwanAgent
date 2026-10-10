@@ -1,6 +1,7 @@
 const EMPTY: Set<string> = new Set();
 
 const snapshots = new Map<string, Set<string>>();
+const pathHits = new Map<string, boolean>();
 const listeners = new Set<() => void>();
 const refreshers = new Set<() => void>();
 
@@ -21,7 +22,26 @@ export function subscribeFileExists(listener: () => void): () => void {
 
 export function fileExistsSnapshot(workspace: string | null, key: string): Set<string> {
   if (!workspace) return EMPTY;
-  return snapshots.get(snapshotId(workspace, key)) ?? EMPTY;
+  const id = snapshotId(workspace, key);
+  const cached = snapshots.get(id);
+  if (cached) return cached;
+  const paths = key ? key.split("\0").filter(Boolean) : [];
+  // Unknown paths stay on the shared empty set. A fresh Set here makes
+  // useSyncExternalStore re-render until React error 185 blanks the window.
+  if (!paths.length || paths.some((path) => !pathHits.has(pathKey(workspace, path)))) return EMPTY;
+  const found = new Set(paths.filter((path) => pathHits.get(pathKey(workspace, path))));
+  const stable = found.size ? found : EMPTY;
+  snapshots.set(id, stable);
+  return stable;
+}
+
+function pathKey(workspace: string, path: string): string {
+  return `${workspace}\0${path}`;
+}
+
+/** Paths in this bubble that have never been statted for the workspace. */
+export function uncachedFileExists(workspace: string, paths: string[]): string[] {
+  return paths.filter((path) => !pathHits.has(pathKey(workspace, path)));
 }
 
 /** Keep the previous set when membership did not change, so chat markdown does not reparse. */
@@ -31,7 +51,10 @@ export function publishFileExists(
   paths: string[],
   found: Set<string>,
 ): void {
-  const next = new Set(paths.filter((path) => found.has(path)));
+  for (const path of paths) pathHits.set(pathKey(workspace, path), found.has(path));
+  const next = new Set(
+    paths.filter((path) => found.has(path) || pathHits.get(pathKey(workspace, path)) === true),
+  );
   const id = snapshotId(workspace, key);
   const prev = snapshots.get(id) ?? EMPTY;
   if (sameMembers(prev, next)) return;
@@ -50,6 +73,7 @@ export function refreshFileExists(): void {
 
 export function resetFileExistsForTests(): void {
   snapshots.clear();
+  pathHits.clear();
   listeners.clear();
   refreshers.clear();
 }

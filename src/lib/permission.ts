@@ -54,3 +54,22 @@ export function permissionSystemLine(mode: PermissionMode): string {
       return "Use tools to inspect and edit this folder. File edits apply immediately. Shell commands require the user to approve.";
   }
 }
+
+export type RemoteWorkspace = {
+  machineName: string;
+  host: string;
+  user: string;
+  port: number;
+  remotePath: string;
+  online: boolean;
+};
+
+export function remoteWorkspaceLine(remote: RemoteWorkspace | null | undefined): string {
+  if (!remote?.machineName || !remote.remotePath) return "";
+  return `This folder is on ${remote.machineName} at ${remote.remotePath}. File tools read and write that project. Shell commands run on that server in that directory.`;
+}
+
+export function shellApprovalLabel(_command: string, machineName?: string | null): string {
+  const target = machineName?.trim();
+  return target ? `Run this command on ${target}?` : "Run this command?";
+}

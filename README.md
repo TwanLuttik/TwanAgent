@@ -18,3 +18,7 @@ npm run tauri dev
 ```
 
 The Vite dev server runs on port 1430.
+
+## macOS signing
+
+Release builds are signed by `npm run tauri build`. The debug app used for local network access is signed by `npm run dev:mac`. See [docs/signing.md](docs/signing.md).

@@ -1,0 +1,393 @@
+use std::path::{Component, Path};
+
+use crate::error::{Error, Result};
+
+/// Join a remote project root and a model-supplied relative path. Absolute paths and `..` are rejected.
+pub fn remote_join(root: &str, rel: &str) -> Result<String> {
+    let root = super::config::validate_remote_path(root)?;
+    if rel.contains("..") || rel.trim().starts_with('/') || rel.trim().starts_with('\\') {
+        return Err(Error::Other("path is outside the workspace".into()));
+    }
+    let rel = rel.trim().trim_matches('/');
+    if rel.is_empty() || rel == "." {
+        return Ok(root);
+    }
+    if rel.contains('\0') {
+        return Err(Error::Other("invalid path".into()));
+    }
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return Err(Error::Other("path must be relative to the workspace".into()));
+    }
+    let mut parts: Vec<String> = root
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                let part = part.to_string_lossy().into_owned();
+                if part.contains('/') || part.contains('\\') {
+                    return Err(Error::Other("invalid path".into()));
+                }
+                parts.push(part);
+            }
+            Component::ParentDir => {
+                if parts.len() <= 1 {
+                    return Err(Error::Other("path is outside the workspace".into()));
+                }
+                parts.pop();
+            }
+            _ => {
+                return Err(Error::Other("path must be relative to the workspace".into()));
+            }
+        }
+    }
+    Ok(format!("/{}", parts.join("/")))
+}
+
+/// Read a remote file by running `cat` on the checked path. The command itself comes from the SSH pool.
+pub fn remote_read_command(root: &str, rel: &str) -> Result<String> {
+    let remote = remote_join(root, rel)?;
+    Ok(format!("cat {}", super::ssh::shell_single_quote(&remote)))
+}
+
+pub fn remote_write_script(root: &str, rel: &str) -> Result<String> {
+    let remote = remote_join(root, rel)?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    // The braces keep the pipe attached to cat. Without them, mkdir eats the bytes and the file is empty.
+    Ok(format!("{{ mkdir -p \"$(dirname {quoted})\" && cat > {quoted}; }}"))
+}
+
+/// Pipe base64-decoded file bytes into `script`. The command string never contains the raw contents.
+/// Base64 is A-Za-z0-9+/=, so a single-quoted payload cannot break out or expand.
+pub fn remote_write_shell(contents: &str, script: &str) -> String {
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        contents.as_bytes(),
+    );
+    format!("printf '%s' '{encoded}' | base64 -d | {script}")
+}
+
+pub fn remote_list_command(root: &str, rel: &str) -> Result<String> {
+    let remote = remote_join(root, rel)?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    // A new project folder, or a folder the tree guessed, is empty rather than an ls error.
+    Ok(format!("if [ -d {quoted} ]; then ls -1ap {quoted}; fi"))
+}
+
+/// One remote exec that lists every file and folder, skipping heavy build trees.
+/// Output is `kind<TAB>path` lines, directories first in each folder is not required.
+pub fn remote_tree_command(root: &str) -> Result<String> {
+    let remote = remote_join(root, "")?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    let prune = HEAVY_DIR_NAMES
+        .iter()
+        .map(|name| format!("-name {}", super::ssh::shell_single_quote(name)))
+        .collect::<Vec<_>>()
+        .join(" -o ");
+    Ok(format!(
+        "if [ -d {quoted} ]; then find {quoted} \\( {prune} \\) -prune -o -print | while IFS= read -r item; do \
+         if [ \"$item\" = {quoted} ]; then continue; fi; \
+         if [ -d \"$item\" ]; then printf 'd\\t%s\\n' \"${{item#{quoted}/}}\"; \
+         elif [ -f \"$item\" ]; then printf 'f\\t%s\\n' \"${{item#{quoted}/}}\"; fi; done; fi"
+    ))
+}
+
+pub fn remote_rename_command(root: &str, from: &str, name: &str) -> Result<(String, String)> {
+    let from_rel = clean_rel(from)?;
+    if from_rel.is_empty() {
+        return Err(Error::Other("cannot rename the workspace root".into()));
+    }
+    let next = entry_name(name)?;
+    let parent = parent_rel(&from_rel);
+    let to_rel = join_rel(&parent, &next);
+    remote_move_command(root, &from_rel, &to_rel)
+}
+
+pub fn remote_move_command(root: &str, from: &str, to: &str) -> Result<(String, String)> {
+    let from_rel = clean_rel(from)?;
+    let to_rel = clean_rel(to)?;
+    if from_rel.is_empty() {
+        return Err(Error::Other("cannot move the workspace root".into()));
+    }
+    if to_rel.is_empty() {
+        return Err(Error::Other("invalid destination".into()));
+    }
+    if from_rel == to_rel {
+        return Ok((String::new(), to_rel));
+    }
+    if is_within(&to_rel, &from_rel) {
+        return Err(Error::Other("cannot move a folder into itself".into()));
+    }
+    let _ = entry_name(&to_rel)?;
+    let src = remote_join(root, &from_rel)?;
+    let dest = remote_join(root, &to_rel)?;
+    let src_q = super::ssh::shell_single_quote(&src);
+    let dest_q = super::ssh::shell_single_quote(&dest);
+    let parent_q = super::ssh::shell_single_quote(&parent_of_remote(&dest));
+    Ok((
+        format!(
+            "if [ ! -e {src_q} ]; then echo 'not found' >&2; exit 1; fi; \
+             if [ -e {dest_q} ]; then echo 'something with that name already exists' >&2; exit 1; fi; \
+             mkdir -p {parent_q} && mv {src_q} {dest_q}"
+        ),
+        to_rel,
+    ))
+}
+
+pub fn remote_delete_command(root: &str, rels: &[String]) -> Result<String> {
+    let tops = top_level_rels(rels)?;
+    if tops.is_empty() {
+        return Err(Error::Other("nothing to delete".into()));
+    }
+    let mut checks = Vec::new();
+    let mut removes = Vec::new();
+    for rel in tops {
+        let remote = remote_join(root, &rel)?;
+        let quoted = super::ssh::shell_single_quote(&remote);
+        checks.push(format!(
+            "if [ ! -e {quoted} ]; then echo 'not found: {rel}' >&2; exit 1; fi"
+        ));
+        removes.push(format!("rm -rf {quoted}"));
+    }
+    Ok(format!("{} && {}", checks.join(" && "), removes.join(" && ")))
+}
+
+pub fn remote_mkdir_command(root: &str, parent: &str, name: &str) -> Result<(String, String)> {
+    let next = entry_name(name)?;
+    let rel = join_rel(&clean_rel(parent).unwrap_or_default(), &next);
+    let remote = remote_join(root, &rel)?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    Ok((
+        format!(
+            "if [ -e {quoted} ]; then echo 'something with that name already exists' >&2; exit 1; fi; mkdir -p {quoted}"
+        ),
+        rel,
+    ))
+}
+
+/// `kind` is `d` or `f`. Paths are workspace-relative with forward slashes.
+pub fn parse_remote_tree(text: &str) -> Vec<(String, bool)> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let Some((kind, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let path = path.trim().trim_matches('/');
+        if path.is_empty() || path.contains('\0') || path.split('/').any(|part| HEAVY_DIR_NAMES.contains(&part)) {
+            continue;
+        }
+        let dir = kind == "d";
+        if kind != "d" && kind != "f" {
+            continue;
+        }
+        rows.push((path.to_string(), dir));
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.dedup();
+    rows
+}
+
+const HEAVY_DIR_NAMES: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".git",
+    "__pycache__",
+    ".next",
+    ".turbo",
+];
+
+fn clean_rel(rel: &str) -> Result<String> {
+    let rel = rel.trim().trim_matches('/');
+    if rel.contains('\0') {
+        return Err(Error::Other("invalid path".into()));
+    }
+    Ok(rel.to_string())
+}
+
+fn entry_name(name: &str) -> Result<String> {
+    let name = name.trim().trim_matches('/');
+    let base = Path::new(name)
+        .file_name()
+        .map(|part| part.to_string_lossy().into_owned())
+        .filter(|part| !part.is_empty() && part != "." && part != "..")
+        .ok_or_else(|| Error::Other("invalid name".into()))?;
+    if base.contains('/') || base.contains('\\') || base.contains('\0') {
+        return Err(Error::Other("invalid name".into()));
+    }
+    Ok(base)
+}
+
+fn parent_rel(rel: &str) -> String {
+    match rel.rsplit_once('/') {
+        Some((parent, _)) => parent.to_string(),
+        None => String::new(),
+    }
+}
+
+fn join_rel(dir: &str, name: &str) -> String {
+    let dir = dir.trim_matches('/');
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+fn is_within(path: &str, dir: &str) -> bool {
+    let path = path.trim_matches('/');
+    let dir = dir.trim_matches('/');
+    if dir.is_empty() {
+        return true;
+    }
+    path == dir || path.starts_with(&format!("{dir}/"))
+}
+
+fn parent_of_remote(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some((parent, _)) if !parent.is_empty() => parent.to_string(),
+        _ => "/".into(),
+    }
+}
+
+fn top_level_rels(rels: &[String]) -> Result<Vec<String>> {
+    let mut paths: Vec<String> = Vec::new();
+    for rel in rels {
+        let clean = clean_rel(rel)?;
+        if clean.is_empty() {
+            continue;
+        }
+        if !paths.contains(&clean) {
+            paths.push(clean);
+        }
+    }
+    paths.sort();
+    Ok(paths
+        .iter()
+        .filter(|rel| !paths.iter().any(|other| *other != **rel && is_within(rel, other)))
+        .cloned()
+        .collect())
+}
+
+pub fn parse_remote_list(text: &str, rel: &str) -> Vec<(String, bool)> {
+    let prefix = rel.trim_matches('/');
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "." && *line != "./" && *line != ".." && *line != "../")
+        .map(|line| {
+            let dir = line.ends_with('/');
+            let name = line.trim_end_matches('/').to_string();
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            (path, dir)
+        })
+        .filter(|(path, _)| !path.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joins_inside_the_remote_project_and_rejects_escapes() {
+        assert_eq!(
+            remote_join("/srv/billing", "src/main.rs").unwrap(),
+            "/srv/billing/src/main.rs"
+        );
+        assert_eq!(remote_join("/srv/billing", ".").unwrap(), "/srv/billing");
+        assert!(remote_join("/srv/billing", "../etc/passwd").is_err());
+        assert!(remote_join("/srv/billing", "/etc/passwd").is_err());
+        assert!(remote_join("/srv/billing", "src/../../etc").is_err());
+    }
+
+    #[test]
+    fn remote_file_commands_quote_the_checked_path() {
+        assert_eq!(
+            remote_read_command("/srv/billing", "src/a.rs").unwrap(),
+            "cat '/srv/billing/src/a.rs'"
+        );
+        let list = remote_list_command("/home/me/testX2", "src-tauri").unwrap();
+        assert!(list.contains("if [ -d '/home/me/testX2/src-tauri' ]"));
+        assert!(list.contains("ls -1ap"));
+        let write = remote_write_script("/home/me/testX2", "test.txt").unwrap();
+        assert!(write.starts_with("{ mkdir -p"));
+        assert!(write.contains("cat > '/home/me/testX2/test.txt'"));
+        assert!(remote_read_command("/srv/billing", "../etc/passwd").is_err());
+        let rows = parse_remote_list("src/\nREADME.md\n./\n../\n", "");
+        assert_eq!(rows, vec![("src".into(), true), ("README.md".into(), false)]);
+    }
+
+    #[test]
+    fn remote_write_shell_encodes_contents_so_the_command_has_no_raw_payload() {
+        let script = remote_write_script("/srv/billing", "src/a.rs").unwrap();
+        let payload = "hello $(touch /tmp/pwn) `whoami` 'quotes' \"double\"\nline two\n";
+        let command = remote_write_shell(payload, &script);
+        assert!(!command.contains("$(touch /tmp/pwn)"));
+        assert!(!command.contains("`whoami`"));
+        assert!(!command.contains("line two"));
+        assert!(command.starts_with("printf '%s' '"));
+        assert!(command.contains(" | base64 -d | "));
+        assert!(command.ends_with(&script));
+        let encoded = command
+            .strip_prefix("printf '%s' '")
+            .and_then(|rest| rest.split_once("' | base64 -d | "))
+            .map(|(b64, _)| b64)
+            .expect("base64 payload");
+        assert!(encoded.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')));
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap();
+        assert_eq!(decoded, payload.as_bytes());
+
+        let empty = remote_write_shell("", &script);
+        assert!(empty.starts_with("printf '%s' '' | base64 -d | "));
+        assert!(empty.ends_with(&script));
+    }
+
+    #[test]
+    fn remote_tree_skips_heavy_dirs_and_parses_kind_lines() {
+        let command = remote_tree_command("/srv/billing").unwrap();
+        assert!(command.contains("find '/srv/billing'"));
+        assert!(command.contains("-name 'node_modules'"));
+        assert!(command.contains("-name '.git'"));
+        assert!(command.contains("-prune"));
+        let rows = parse_remote_tree("d\tsrc\nf\tsrc/a.rs\nd\tnode_modules\nf\tREADME.md\n?\tbad\n");
+        assert_eq!(
+            rows,
+            vec![
+                ("README.md".into(), false),
+                ("src".into(), true),
+                ("src/a.rs".into(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_mutations_quote_paths_and_reject_escapes() {
+        let (rename, renamed) = remote_rename_command("/srv/billing", "src/a.rs", "b.rs").unwrap();
+        assert_eq!(renamed, "src/b.rs");
+        assert!(rename.contains("mv '/srv/billing/src/a.rs' '/srv/billing/src/b.rs'"));
+        assert!(remote_rename_command("/srv/billing", "../etc", "x").is_err());
+
+        let (mkdir, made) = remote_mkdir_command("/srv/billing", "src", "box").unwrap();
+        assert_eq!(made, "src/box");
+        assert!(mkdir.contains("mkdir -p '/srv/billing/src/box'"));
+
+        let delete = remote_delete_command("/srv/billing", &["src/box".into(), "src/box/a.rs".into()]).unwrap();
+        assert!(delete.contains("rm -rf '/srv/billing/src/box'"));
+        assert!(!delete.contains("src/box/a.rs"));
+        assert!(remote_delete_command("/srv/billing", &["".into()]).is_err());
+
+        let (mv, dest) = remote_move_command("/srv/billing", "src/a.rs", "docs/a.rs").unwrap();
+        assert_eq!(dest, "docs/a.rs");
+        assert!(mv.contains("mkdir -p '/srv/billing/docs'"));
+        assert!(remote_move_command("/srv/billing", "src", "src/nested").is_err());
+    }
+}

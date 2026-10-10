@@ -17,6 +17,7 @@ import {
 } from "../lib/core";
 import * as api from "../lib/tauri";
 import type { FolderSuggestion } from "../lib/tauri";
+import { MachinesDialog } from "./MachinesDialog";
 import { Symbol } from "./Symbol";
 
 type Focus =
@@ -44,6 +45,7 @@ export function FolderDialog({
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [serversOpen, setServersOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const visibleProjects = showProjects ? filterProjectRows(projects, query) : [];
   const nameTaken = isExistingProjectName(query, projects);
@@ -81,7 +83,7 @@ export function FolderDialog({
     if (manual && (active === "clone" || active === "create" || folderActionEnabled(active, query))) {
       return;
     }
-    if (showProjects && visibleProjects.length && !looksLikeGitUrl(query)) {
+    if (showProjects && visibleProjects.length && !looksLikeGitUrl(query) && !looksLikePath(query)) {
       setFocus({ kind: "project", index: 0 });
       setManual(false);
       return;
@@ -479,7 +481,25 @@ export function FolderDialog({
             })}
           </div>
           {error && <p className="m-0 px-3.5 pb-2.5 text-[12px] text-err">{error}</p>}
+          <div className="border-t border-line px-3 py-2">
+            <button
+              type="button"
+              className="text-[12px] text-accent hover:underline"
+              onClick={() => setServersOpen(true)}
+            >
+              Manage servers
+            </button>
+          </div>
         </motion.div>
+        {serversOpen && (
+          <MachinesDialog
+            onClose={() => setServersOpen(false)}
+            onOpenProject={(path) => {
+              setServersOpen(false);
+              onPick(path);
+            }}
+          />
+        )}
       </motion.div>
     </AnimatePresence>
   );

@@ -6,12 +6,13 @@ import {
   type ToolFileChange,
 } from "../lib/core";
 import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
-import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
+import { compactDiffRows, lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
 
 const PEEK_DELAY = 220;
-const PEEK_LINES = 8;
+const PEEK_LINES = 6;
+const PEEK_EASE = [0.22, 1, 0.36, 1] as const;
 const ROW_STAGGER_MS = 200;
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
 
@@ -329,10 +330,7 @@ function FileChangeBadge({ file, onOpen }: { file: ToolFileChange; onOpen?: (pat
   useEffect(() => () => clearTimers(), []);
 
   useLayoutEffect(() => {
-    if (!open || !wrap.current) {
-      setPos(null);
-      return;
-    }
+    if (!open || !wrap.current) return;
     const box = wrap.current.getBoundingClientRect();
     const width = 320;
     const left = Math.min(Math.max(8, box.left), window.innerWidth - width - 8);
@@ -368,11 +366,17 @@ function FileChangeBadge({ file, onOpen }: { file: ToolFileChange; onOpen?: (pat
         {file.additions > 0 ? <span className="shrink-0 text-ok">+{file.additions}</span> : null}
         {file.deletions > 0 ? <span className="shrink-0 text-err">-{file.deletions}</span> : null}
       </button>
-      {open && pos
-        ? createPortal(
-            <div
+      {createPortal(
+        <AnimatePresence>
+          {open && pos ? (
+            <motion.div
+              key={file.path}
               role="tooltip"
-              className="fixed z-50 w-[320px] overflow-hidden rounded-lg border border-line bg-canvas shadow-card"
+              initial={{ opacity: 0, y: pos.above ? 6 : -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: pos.above ? 4 : -4 }}
+              transition={{ duration: 0.16, ease: PEEK_EASE }}
+              className="fixed z-50 w-[300px] overflow-hidden rounded-md border border-line/80 bg-canvas shadow-card"
               style={{
                 left: pos.left,
                 top: pos.top,
@@ -381,67 +385,30 @@ function FileChangeBadge({ file, onOpen }: { file: ToolFileChange; onOpen?: (pat
               onMouseEnter={show}
               onMouseLeave={hide}
             >
-              <FileChangePeek file={file} onOpen={onOpen} />
-            </div>,
-            document.body,
-          )
-        : null}
+              <FileChangePeek file={file} />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>,
+        document.body,
+      )}
     </span>
   );
 }
 
-function FileChangePeek({ file, onOpen }: { file: ToolFileChange; onOpen?: (path: string) => void }) {
-  const removed = file.removed.slice(0, PEEK_LINES);
-  const added = file.added.slice(0, PEEK_LINES);
-  const more =
-    Math.max(0, file.removed.length - removed.length) + Math.max(0, file.added.length - added.length);
+function FileChangePeek({ file }: { file: ToolFileChange }) {
+  const rows = compactDiffRows(file.removed, file.added, PEEK_LINES);
+  const changed = lineDiffRows(file.removed, file.added).filter((row) => row.kind !== "same").length;
+  const more = Math.max(0, changed - rows.length);
+  if (rows.length === 0) {
+    return <div className="px-2 py-1.5 text-[11px] text-muted">No line changes</div>;
+  }
   return (
-    <>
-      <div className="flex items-center gap-2 px-2.5 pt-2 pb-1.5">
-        <FileIcon name={file.path} className="size-3.5 shrink-0" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-medium text-ink">{file.name}</div>
-          <div className="truncate font-mono text-[11px] text-muted">{file.path}</div>
-        </div>
-        <div className="shrink-0 font-mono text-[11px] tabular-nums">
-          {file.additions > 0 ? <span className="text-ok">+{file.additions}</span> : null}
-          {file.additions > 0 && file.deletions > 0 ? " " : null}
-          {file.deletions > 0 ? <span className="text-err">-{file.deletions}</span> : null}
-        </div>
-      </div>
-      {removed.length === 0 && added.length === 0 ? (
-        <div className="px-2.5 pb-2 text-[11px] text-muted">No line preview</div>
-      ) : (
-        <pre className="max-h-[180px] overflow-auto border-t border-line bg-panel px-0 py-1 font-mono text-[11px] leading-[1.45]">
-          {removed.map((line, i) => (
-            <div key={`-${i}`} className="flex gap-2 px-2.5 text-err">
-              <span className="w-3 shrink-0 select-none">−</span>
-              <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
-            </div>
-          ))}
-          {added.map((line, i) => (
-            <div key={`+${i}`} className="flex gap-2 px-2.5 text-ok">
-              <span className="w-3 shrink-0 select-none">+</span>
-              <span className="min-w-0 whitespace-pre-wrap break-all">{line || " "}</span>
-            </div>
-          ))}
-          {more > 0 ? (
-            <div className="px-2.5 pt-1 text-[10px] text-muted">+{more} more</div>
-          ) : null}
-        </pre>
-      )}
-      {onOpen ? (
-        <div className="border-t border-line px-2 py-1">
-          <button
-            type="button"
-            className="w-full rounded-md px-2 py-1 text-left text-[11px] text-accent hover:bg-wash"
-            onClick={() => onOpen(file.path)}
-          >
-            Open file
-          </button>
-        </div>
-      ) : null}
-    </>
+    <div className="max-h-[168px] overflow-hidden bg-panel py-1 font-mono text-[11px] leading-[1.45]">
+      {rows.map((row, i) => (
+        <InlineDiffRow key={i} row={row} />
+      ))}
+      {more > 0 ? <div className="px-2 pt-0.5 text-[10px] text-muted">+{more} more</div> : null}
+    </div>
   );
 }
 

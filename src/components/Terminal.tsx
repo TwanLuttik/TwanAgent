@@ -59,6 +59,7 @@ export function Terminal({
       (data) => shellSessions.writeBytes(id, data),
     );
     term.onResize(({ cols, rows }) => {
+      if (!paneIsShown(el)) return;
       shellSessions.resize(id, cols, rows);
     });
 
@@ -74,13 +75,19 @@ export function Terminal({
       }
     })();
 
+    let frame = 0;
     const ro = new ResizeObserver(() => {
-      if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit();
+      if (frame || !paneIsShown(el)) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (paneIsShown(el)) fit.fit();
+      });
     });
     ro.observe(el);
 
     return () => {
       cancelled = true;
+      if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
       unsub();
       term.dispose();
@@ -111,6 +118,10 @@ export function Terminal({
       />
     </div>
   );
+}
+
+export function paneIsShown(el: HTMLElement): boolean {
+  return el.clientWidth > 0 && el.clientHeight > 0 && !el.closest("[inert]");
 }
 
 function cssVar(name: string): string {

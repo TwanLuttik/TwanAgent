@@ -65,6 +65,8 @@ fn imports_conversations_json_once() {
         r#"[{"id":"other","title":"Nope","created_at":"t","updated_at":"t","messages":[]}]"#,
     )
     .unwrap();
+    // Release the per-db lock before opening the same directory again.
+    drop(conn);
     let again = open(dir.path()).unwrap();
     let rows = list_conversations(&again).unwrap();
     assert_eq!(rows[0].id, "c1");
@@ -114,6 +116,70 @@ fn save_keeps_compaction_until_a_new_one_is_written() {
     save_conversation(&conn, &row).unwrap();
     let updated = get_conversation(&conn, "c1").unwrap();
     assert_eq!(updated.compaction.as_ref().unwrap().through, 8);
+}
+
+#[test]
+fn appending_a_message_keeps_the_earlier_rows() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(
+        &conn,
+        &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]),
+    )
+    .unwrap();
+    let first_id: i64 = conn
+        .query_row(
+            "SELECT id FROM messages WHERE conversation_id = 'c1' AND sort_order = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"Done."}),
+            ],
+        ),
+    )
+    .unwrap();
+    let kept: i64 = conn
+        .query_row(
+            "SELECT id FROM messages WHERE conversation_id = 'c1' AND sort_order = 0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, first_id);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = 'c1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[1]["content"], "Done.");
+}
+
+#[test]
+fn save_does_not_move_a_chat_out_of_its_journey() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(&conn, &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})])).unwrap();
+    let journey = create_journey(&conn, dir.path(), "c1").unwrap();
+    let mut row = conv("c1", "Hello again", vec![json!({"role":"user","content":"next"})]);
+    row.journey_id = None;
+    row.sort_order = 99;
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.journey_id.as_deref(), Some(journey.id.as_str()));
+    assert_ne!(loaded.sort_order, 99);
+    assert_eq!(loaded.title, "Hello again");
 }
 
 #[test]

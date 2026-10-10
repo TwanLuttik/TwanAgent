@@ -28,6 +28,7 @@ import {
   JOURNEY_SUMMARIZE_PROMPT,
   journeyKnowledgePath,
   lastAssistantText,
+  nextTopSort,
   parseJourneyColor,
   type JourneyColor,
   type JourneySummary,
@@ -36,7 +37,7 @@ import { forgetPaneWorkspace } from "../../lib/pane-sessions";
 import { shellSessions } from "../../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../../lib/terminal-chat";
 import { terminalSessions } from "../../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, effortForModel, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, effortForModel, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
 import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
 import {
   loadConversation,
@@ -115,6 +116,8 @@ export type LibraryDeps = {
   >;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
+  /** Latest sidebar rows, so a turn save does not write a stale journey or archive flag. */
+  conversationsRef: RefObject<ConversationSummary[]>;
   /** Bumped when the visible chat or project changes, so a late load cannot overwrite it. */
   openGeneration: RefObject<number>;
   setWorkspace: Update<string>;
@@ -145,6 +148,7 @@ export type LibraryDeps = {
   setSubagents: Update<import("../../lib/subagent").SubagentRecord[]>;
   setExpandedAgents: Update<Record<string, boolean>>;
   setOpeningId: Update<string>;
+  setUnseenFinished: Update<ReadonlySet<string>>;
   setPendingByChat: Update<Record<string, PendingMessage[]>>;
   setChatTabsByProject: Update<Record<string, string[]>>;
   setFlash: (flash: { kind: "ok" | "err"; text: string } | null) => void;
@@ -156,13 +160,16 @@ export function useLibrary(deps: LibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, models, defaultEffort, setEffort, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, openGeneration, workspaceRef,
+    runningWsRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
-    setSubagents, setExpandedAgents, setOpeningId, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
+    setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
   } = deps;
+
+  const persistQueue = useRef(new Map<string, Promise<void>>());
+  const persistGen = useRef(new Map<string, number>());
 
   function setPending(next: Record<string, PendingMessage[]>) {
     pendingRef.current = next;
@@ -382,9 +389,29 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   }
   stickToBottomRef.current = true;
   const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId, loadEffort());
-  await api.saveConversation(path, conv);
+  const rows = projectConversations(path);
+  const journeysHere = projectJourneys(path);
+  const sortOrder = journeyId
+    ? nextTopSort(rows.filter((row) => row.journey_id === journeyId).map((row) => row.sort_order))
+    : nextTopSort([
+        ...rows.filter((row) => !row.journey_id).map((row) => row.sort_order),
+        ...journeysHere.map((row) => row.sort_order),
+      ]);
+  const summary: ConversationSummary = {
+    id: conv.id,
+    title: conv.title,
+    created_at: conv.created_at,
+    updated_at: conv.updated_at,
+    kind: conv.kind,
+    journey_id: journeyId ?? null,
+    sort_order: sortOrder,
+    effort: conv.effort ?? null,
+  };
+  await api.saveConversation(path, { ...conv, sort_order: sortOrder });
   saveConversation(path, conv.id);
+  expandProject(path);
   if (!isSameProject(path, workspace)) {
+    applyProjectData(path, [summary, ...rows.filter((row) => row.id !== conv.id)]);
     applyWorkspace(path);
     return;
   }
@@ -398,19 +425,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   hideSubagents();
   retargetForegroundTurn(conv.id);
   setEditor((prev) => selectChatTab(prev));
-  setConversations((rows) => [
-    {
-      id: conv.id,
-      title: conv.title,
-      created_at: conv.created_at,
-      updated_at: conv.updated_at,
-      kind: conv.kind,
-      journey_id: journeyId ?? null,
-      sort_order: 0,
-      effort: conv.effort ?? null,
-    },
-    ...rows,
-  ]);
+  setConversations((current) => [summary, ...current.filter((row) => row.id !== conv.id)]);
 }
 
 async function openSidebarChat(path: string, id: string) {
@@ -469,6 +484,7 @@ function retargetForegroundTurn(id: string) {
 
 async function openChat(id: string) {
   const generation = ++openGeneration.current;
+  setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
   setShowUsage(false);
   setProjectSettings(null);
@@ -604,6 +620,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
 async function removeChat(id: string, path = workspace) {
   if (!path) return;
   deletedIdsRef.current.add(id);
+  setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setPendingByChat((prev) => {
     const next = clearPendingForChat(prev, id);
     pendingRef.current = next;
@@ -654,52 +671,69 @@ async function persist(
   }
   if (!canPersistTurn(id, deletedIdsRef.current)) return;
   if (!ws || !id) return;
-  const title = conversationTitleFrom(next);
-  const now = nowIso();
-  const existing = conversations.find((c) => c.id === id);
-  const kind = parseConversationKind(existing?.kind);
-  await api.saveConversation(ws, {
-    id,
-    title,
-    created_at: existing?.created_at ?? now,
-    updated_at: now,
-    kind,
-    journey_id: existing?.journey_id ?? null,
-    sort_order: existing?.sort_order ?? 0,
-    effort: existing?.effort ?? null,
-    archived: existing?.archived ?? false,
-    messages: persistableMessages(next),
-    context_usage: usageToPersist(usage, usageByChat[id]),
-    compaction: persistableCompaction(compaction ?? compactionByChat[id]),
-  });
-  const summary = {
-    title,
-    created_at: existing?.created_at ?? now,
-    updated_at: now,
-    kind,
-    journey_id: existing?.journey_id ?? null,
-    sort_order: existing?.sort_order ?? 0,
-    effort: existing?.effort ?? null,
-    archived: existing?.archived ?? false,
-  };
-  if (isSameProject(ws, workspaceRef.current)) {
-    setConversations((rows) => {
-      const prev = rows.find((row) => row.id === id);
-      const next = {
+  const generation = (persistGen.current.get(id) ?? 0) + 1;
+  persistGen.current.set(id, generation);
+  const previous = persistQueue.current.get(id) ?? Promise.resolve();
+  const run = previous
+    .catch(() => undefined)
+    .then(async () => {
+      if (persistGen.current.get(id) !== generation) return;
+      if (!canPersistTurn(id, deletedIdsRef.current)) return;
+      const title = conversationTitleFrom(next);
+      const now = nowIso();
+      const existing =
+        conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
+      const kind = parseConversationKind(existing?.kind);
+      await api.saveConversation(ws, {
         id,
-        ...summary,
-        created_at: prev?.created_at ?? summary.created_at,
-        journey_id: prev?.journey_id ?? summary.journey_id,
-        sort_order: prev?.sort_order ?? summary.sort_order,
-        archived: prev?.archived ?? summary.archived,
+        title,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        kind,
+        journey_id: existing?.journey_id ?? null,
+        sort_order: existing?.sort_order ?? 0,
+        effort: existing?.effort ?? null,
+        archived: existing?.archived ?? false,
+        messages: persistableMessages(next),
+        context_usage: usageToPersist(usage, usageByChat[id]),
+        compaction: persistableCompaction(compaction ?? compactionByChat[id]),
+      });
+      if (persistGen.current.get(id) !== generation) return;
+      const summary = {
+        title,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        kind,
+        effort: existing?.effort ?? null,
       };
-      const idx = rows.findIndex((r) => r.id === id);
-      if (idx < 0) return [next, ...rows];
-      return rows.map((r, i) => (i === idx ? { ...r, ...next } : r));
+      if (isSameProject(ws, workspaceRef.current)) {
+        setConversations((rows) => {
+          const prev = rows.find((row) => row.id === id);
+          const next = {
+            id,
+            ...summary,
+            created_at: prev?.created_at ?? summary.created_at,
+            journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
+            sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
+            archived: prev?.archived ?? existing?.archived ?? false,
+          };
+          const idx = rows.findIndex((r) => r.id === id);
+          if (idx < 0) return [next, ...rows];
+          return rows.map((r, i) => (i === idx ? { ...r, ...next } : r));
+        });
+        return;
+      }
+      setAllProjectGroups((groups) =>
+        renameConversationInGroups(groups, id, {
+          ...summary,
+          journey_id: existing?.journey_id ?? null,
+          sort_order: existing?.sort_order ?? 0,
+          archived: existing?.archived ?? false,
+        }).groups,
+      );
     });
-    return;
-  }
-  setAllProjectGroups((groups) => renameConversationInGroups(groups, id, summary).groups);
+  persistQueue.current.set(id, run);
+  await run;
 }
 
 async function reorderChats(fromId: string, toId: string, path = workspace) {

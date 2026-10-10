@@ -16,6 +16,7 @@ import {
   publishFileExists,
   refreshFileExists,
   subscribeFileExists,
+  uncachedFileExists,
   watchFileRefresh,
 } from "../lib/file-exists";
 import * as api from "../lib/tauri";
@@ -109,6 +110,8 @@ function useSettledStream(text: string, live: boolean): string {
   return live ? shown : text;
 }
 
+const FILE_CANDIDATE_CAP = 40;
+
 function fileCandidates(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -118,6 +121,7 @@ function fileCandidates(text: string): string[] {
     if (seen.has(path)) continue;
     seen.add(path);
     out.push(path);
+    if (out.length >= FILE_CANDIDATE_CAP) break;
   }
   return out;
 }
@@ -136,11 +140,18 @@ function useExistingFiles(workspace: string | null, paths: string[]): Set<string
     }
     let cancelled = false;
     const run = () => {
+      const missing = uncachedFileExists(workspace, paths);
+      const known = new Set(paths.filter((path) => fileExistsSnapshot(workspace, path).has(path)));
+      if (missing.length === 0) {
+        publishFileExists(workspace, key, paths, known);
+        return;
+      }
       void api
-        .existingFiles(workspace, paths)
+        .existingFiles(workspace, missing)
         .then((rows) => {
           if (cancelled) return;
-          publishFileExists(workspace, key, paths, new Set(rows.map(normalizeWorkspacePath)));
+          for (const row of rows) known.add(normalizeWorkspacePath(row));
+          publishFileExists(workspace, key, paths, known);
         })
         .catch(() => undefined);
     };

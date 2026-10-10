@@ -36,6 +36,25 @@ export function isTurnFailureMessage(msg: ChatMessage): boolean {
   return Boolean(msg.error) || String(msg.content ?? "").startsWith(TURN_FAILURE_PREFIX);
 }
 
+/** A finished reply the user has not opened yet. Failures and stops do not count. */
+export function markUnseenFinished(
+  ids: ReadonlySet<string>,
+  id: string,
+  opts: { aborted: boolean; failed: boolean; looking: boolean; queued: boolean },
+): ReadonlySet<string> {
+  if (!id || opts.aborted || opts.failed || opts.looking || opts.queued || ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.add(id);
+  return next;
+}
+
+export function clearUnseenFinished(ids: ReadonlySet<string>, id: string): ReadonlySet<string> {
+  if (!id || !ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
+}
+
 export const EMPTY_COMPLETION_MESSAGE = "Grok returned an empty reply.";
 
 export function isEmptyCompletion(text: string, toolCalls: { length: number }): boolean {
@@ -279,4 +298,36 @@ export function clearPendingForChat(
 
 export function skipToolIfAborted(signal: AbortSignal): string | null {
   return signal.aborted ? SKIPPED_STOPPED : null;
+}
+
+export type RestoredPrompt = {
+  messages: ChatMessage[];
+  text: string;
+  images: ChatImage[];
+};
+
+/**
+ * Pull the latest user message back out of a stopped turn so it can be edited.
+ * Assistant text, tool calls, and earlier turns stay. Nothing is restored when
+ * the transcript has no user message.
+ */
+export function restoreStoppedPrompt(messages: ChatMessage[]): RestoredPrompt | null {
+  let index = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") {
+      index = i;
+      break;
+    }
+  }
+  if (index < 0) return null;
+  const message = messages[index];
+  if (!message) return null;
+  const text = String(message.content ?? "");
+  const images = (message.images ?? []).map(({ dataUrl: _dataUrl, ...image }) => image);
+  if (!text.trim() && images.length === 0) return null;
+  return {
+    messages: messages.slice(0, index),
+    text,
+    images,
+  };
 }

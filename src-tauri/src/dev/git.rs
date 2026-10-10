@@ -139,6 +139,9 @@ fn classify_git(x: char, y: char) -> (String, bool) {
 }
 
 fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
+    if let Some(text) = crate::remote::git::try_remote(workspace, args)? {
+        return Ok(text);
+    }
     let out = Command::new("git")
         .args(args)
         .current_dir(workspace)
@@ -155,10 +158,16 @@ fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn git_status(workspace: &Path) -> Result<Vec<GitChange>> {
+    git_status_with(workspace, true)
+}
+
+/// `stats` runs `git diff --numstat` and reads untracked files. The file tree
+/// only needs paths, so it skips that work.
+pub fn git_status_with(workspace: &Path, stats: bool) -> Result<Vec<GitChange>> {
     let root = resolve_in_workspace(workspace, "")?;
     let text = git_output(&root, &["status", "--porcelain=v1", "-uall"])?;
     let mut rows = parse_git_status(&text);
-    if rows.is_empty() {
+    if !stats || rows.is_empty() {
         return Ok(rows);
     }
     apply_git_stats(&mut rows, &git_numstat(&root));
@@ -212,6 +221,9 @@ pub fn sanitize_git_branch(raw: &str) -> Result<String> {
 }
 
 fn git_run(workspace: &Path, args: &[&str]) -> Result<String> {
+    if let Some(text) = crate::remote::git::try_remote(workspace, args)? {
+        return Ok(text);
+    }
     let out = Command::new("git")
         .args(args)
         .current_dir(workspace)

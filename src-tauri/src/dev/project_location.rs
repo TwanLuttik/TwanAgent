@@ -497,6 +497,7 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 1,
                 total_tokens: 4,
+                duration_ms: None,
             },
         )
         .unwrap();

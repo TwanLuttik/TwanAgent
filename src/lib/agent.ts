@@ -5,7 +5,7 @@ import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatM
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
-import { parsePermissionMode, toolDeniedByPermission, type PermissionMode } from "./permission.ts";
+import { parsePermissionMode, toolDeniedByPermission, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { formatTodoWriteResult, parseTodoWriteArgs } from "./todo.ts";
 import {
   compactionPrompt,
@@ -147,6 +147,7 @@ export type TurnOpts = {
   journeyKnowledge?: string;
   mcpServers?: DetectedMcpServer[];
   skills?: DetectedSkill[];
+  remote?: RemoteWorkspace | null;
 };
 
 function assistantMessage(text: string, reasoning: string, toolCalls: ToolCall[]): ChatMessage {
@@ -184,14 +185,14 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
     let result = await streamCompletion(
-      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
+      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
       opts,
       imageCache,
     );
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
         opts,
         imageCache,
       );

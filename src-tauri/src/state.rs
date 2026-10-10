@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{Manager, Runtime};
 
 use crate::appdb;
 use crate::error::{Error, Result};
+use crate::remote::client::LiveConnector;
+use crate::remote::ssh::Pool;
+use crate::speech::SpeechEngine;
 use crate::workspace::OpenedRoots;
 
 pub struct AppState {
@@ -12,6 +15,8 @@ pub struct AppState {
     pub projects_root: PathBuf,
     pub legacy_projects_root: PathBuf,
     opened: Mutex<OpenedRoots>,
+    pub ssh_pool: Arc<Pool>,
+    pub speech: SpeechEngine,
 }
 
 impl AppState {
@@ -37,6 +42,8 @@ impl AppState {
             projects_root: location.root,
             legacy_projects_root: location.legacy,
             opened: Mutex::new(opened),
+            ssh_pool: Arc::new(Pool::new(Arc::new(LiveConnector))),
+            speech: SpeechEngine::new(),
         }
     }
 

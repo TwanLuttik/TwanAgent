@@ -1,9 +1,11 @@
 import { Composer } from "../../components/Composer";
 import { contextWindowForModel } from "../../lib/context";
-import { setImagesForChat } from "../../lib/image";
+import { fileToBase64, setImagesForChat } from "../../lib/image";
 import type { ChatImage } from "../../lib/core";
+import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
 import { chatHasRunningTurn } from "../../lib/turn";
+import { useApp } from "../../state/app-state";
 import { useMain } from "./context";
 
 export function SessionComposer({ placement }: { placement: "landing" | "chat" }) {
@@ -34,10 +36,27 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     stop,
     usageByChat,
     workspace,
+    dictate,
   } = useMain();
+  const { setFlash } = useApp();
   const landing = placement === "landing";
   return (
     <Composer
+      onDictate={async (blob, mime) => {
+        const filename = dictationFilename(mime);
+        if (!filename) {
+          setFlash({ kind: "err", text: "This browser recorded a format the local model cannot read." });
+          return null;
+        }
+        try {
+          const text = await dictate(await fileToBase64(blob), filename);
+          return (draft, start, end) => insertTranscript(draft, start, end, text);
+        } catch (err) {
+          setFlash({ kind: "err", text: String(err) });
+          return null;
+        }
+      }}
+      onDictateError={(message) => setFlash({ kind: "err", text: message })}
       draft={draft}
       onDraft={setDraft}
       onSend={() => void send()}

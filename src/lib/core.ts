@@ -1,5 +1,5 @@
 import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
-import { permissionSystemLine, type PermissionMode } from "./permission.ts";
+import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
 import { skillSystemLine, type DetectedSkill } from "./skill.ts";
@@ -50,7 +50,16 @@ export function folderName(path: string): string {
   return parts[parts.length - 1] || path || "Folder";
 }
 
-export type ProjectRow = { name: string; path: string };
+export type ProjectServer = {
+  machineName: string;
+  host: string;
+  user: string;
+  port: number;
+  remotePath: string;
+  online: boolean;
+};
+
+export type ProjectRow = { name: string; path: string; remote?: boolean; server?: ProjectServer };
 
 export function projectKey(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -419,13 +428,25 @@ export function gitChangeForPath(
 }
 
 export function gitFolderHasChanges(map: Map<string, GitDecorChange>, dirPath: string): boolean {
-  const prefix = normalizeGitPath(dirPath);
-  if (!prefix) return map.size > 0;
-  const withSlash = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  return gitDirtyDirs(map).has(normalizeGitPath(dirPath));
+}
+
+/** Every folder that contains a change, including the workspace root. Built once per status. */
+export function gitDirtyDirs(map: Map<string, GitDecorChange>): Set<string> {
+  const dirs = new Set<string>();
+  if (map.size === 0) return dirs;
+  dirs.add("");
   for (const path of map.keys()) {
-    if (path === prefix || path.startsWith(withSlash)) return true;
+    const normalized = normalizeGitPath(path);
+    let slash = normalized.lastIndexOf("/");
+    while (slash > 0) {
+      const dir = normalized.slice(0, slash);
+      if (dirs.has(dir)) break;
+      dirs.add(dir);
+      slash = dir.lastIndexOf("/");
+    }
   }
-  return false;
+  return dirs;
 }
 
 export function gitLineStats(change: GitDecorChange | undefined): { additions: number; deletions: number } {
@@ -781,15 +802,18 @@ export function systemPrompt(
   knowledge?: string,
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
+  remote?: RemoteWorkspace | null,
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
     : "";
   const extra = extraSystemLines(mcpServers, skills);
+  const remoteLine = remoteWorkspaceLine(remote);
+  const place = remoteLine ? `\n${remoteLine}` : "";
   return {
     role: "system",
     content: `You are Grok, a coding agent in TwanAgent. Only Grok is available — do not suggest other models.
-Workspace: ${workspace}
+Workspace: ${workspace}${place}
 ${permissionSystemLine(permission)}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
@@ -805,8 +829,9 @@ export function withSystem(
   knowledge?: string,
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
+  remote?: RemoteWorkspace | null,
 ): ChatMessage[] {
-  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills);
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote);
   const extra = system ? extraSystemLines(mcpServers, skills) : "";
   const content =
     extra && !String(base.content ?? "").includes(extra.trim())

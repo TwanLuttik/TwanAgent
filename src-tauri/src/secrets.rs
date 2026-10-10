@@ -9,6 +9,80 @@ const RELEASE_SERVICE: &str = "app.twanagent.desktop";
 const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
 
+fn ssh_entry(account: &str) -> std::result::Result<Entry, String> {
+    Entry::new(keychain_service(), account).map_err(|e| e.to_string())
+}
+
+pub fn set_ssh_secret(account: &str, value: &str) -> Result<()> {
+    set_ssh_secret_in(account, value, &SystemKeychain)
+}
+
+pub fn set_ssh_secret_in(account: &str, value: &str, store: &dyn SshSecretStore) -> Result<()> {
+    let account = account.trim();
+    if !account.starts_with("ssh-secret:") || account == "ssh-secret:" {
+        return Err(Error::Other("invalid SSH secret account".into()));
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return delete_ssh_secret_in(account, store);
+    }
+    store
+        .set(account, value)
+        .map_err(|e| Error::Keychain(format!("could not save SSH secret: {e}")))
+}
+
+pub fn get_ssh_secret(account: &str) -> Option<String> {
+    get_ssh_secret_in(account, &SystemKeychain)
+}
+
+pub fn get_ssh_secret_in(account: &str, store: &dyn SshSecretStore) -> Option<String> {
+    store
+        .get(account.trim())
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn delete_ssh_secret(account: &str) -> Result<()> {
+    delete_ssh_secret_in(account, &SystemKeychain)
+}
+
+pub fn delete_ssh_secret_in(account: &str, store: &dyn SshSecretStore) -> Result<()> {
+    let account = account.trim();
+    if !account.starts_with("ssh-secret:") {
+        return Err(Error::Other("invalid SSH secret account".into()));
+    }
+    store.delete(account);
+    Ok(())
+}
+
+pub trait SshSecretStore {
+    fn set(&self, account: &str, value: &str) -> std::result::Result<(), String>;
+    fn get(&self, account: &str) -> std::result::Result<Option<String>, String>;
+    fn delete(&self, account: &str);
+}
+
+impl SshSecretStore for SystemKeychain {
+    fn set(&self, account: &str, value: &str) -> std::result::Result<(), String> {
+        ssh_entry(account)?.set_password(value).map_err(|e| e.to_string())
+    }
+
+    fn get(&self, account: &str) -> std::result::Result<Option<String>, String> {
+        match ssh_entry(account)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn delete(&self, account: &str) {
+        if let Ok(entry) = ssh_entry(account) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
 fn keychain_service() -> &'static str {
     if cfg!(debug_assertions) {
         DEV_SERVICE
@@ -213,6 +287,46 @@ pub fn resolve_xai_key_on_disk(data_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod xai_key_tests {
     use super::*;
+
+    #[test]
+    fn ssh_secret_roundtrip_does_not_touch_the_xai_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MemSsh::default();
+        let xai = MemStore::default();
+        set_xai_key_in(dir.path(), "xai-secret", &xai).unwrap();
+        set_ssh_secret_in("ssh-secret:box", "pass-1", &store).unwrap();
+        assert_eq!(
+            get_ssh_secret_in("ssh-secret:box", &store).as_deref(),
+            Some("pass-1")
+        );
+        assert_eq!(
+            get_xai_key_in(dir.path(), &xai).as_deref(),
+            Some("xai-secret")
+        );
+        delete_ssh_secret_in("ssh-secret:box", &store).unwrap();
+        assert_eq!(get_ssh_secret_in("ssh-secret:box", &store), None);
+        assert!(set_ssh_secret_in("xai", "nope", &store).is_err());
+        assert!(set_ssh_secret_in("ssh-secret:", "nope", &store).is_err());
+    }
+
+    #[derive(Default)]
+    struct MemSsh(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+    impl SshSecretStore for MemSsh {
+        fn set(&self, account: &str, value: &str) -> std::result::Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), value.to_string());
+            Ok(())
+        }
+        fn get(&self, account: &str) -> std::result::Result<Option<String>, String> {
+            Ok(self.0.lock().unwrap().get(account).cloned())
+        }
+        fn delete(&self, account: &str) {
+            self.0.lock().unwrap().remove(account);
+        }
+    }
 
     #[test]
     fn settings_key_wins_over_env() {

@@ -7,7 +7,7 @@ import { attachXtermInput } from "../lib/term-io";
 import { terminalSessions } from "../lib/terminal-sessions";
 import type { TerminalSession } from "../lib/terminal-chat";
 import * as api from "../lib/tauri";
-import { applyXtermTheme, xtermTheme } from "./Terminal";
+import { applyXtermTheme, paneIsShown, xtermTheme } from "./Terminal";
 import { PlanPreview } from "./PlanPreview";
 
 export function GrokTerminal({
@@ -54,7 +54,7 @@ export function GrokTerminal({
       }
     }
     void load();
-    const timer = window.setInterval(() => void load(), 800);
+    const timer = window.setInterval(() => void load(), 4000);
     return () => {
       stop = true;
       window.clearInterval(timer);
@@ -69,7 +69,7 @@ export function GrokTerminal({
       fontSize: 12,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       theme: xtermTheme(),
-      scrollback: 4000,
+      scrollback: 1000,
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: true,
     });
@@ -105,6 +105,7 @@ export function GrokTerminal({
       },
     );
     term.onResize(({ cols, rows }) => {
+      if (!paneIsShown(el)) return;
       const live = terminalSessions.get(conversationId);
       if (live?.ptyId) void api.ptyResize(live.ptyId, cols, rows);
     });
@@ -123,13 +124,19 @@ export function GrokTerminal({
       }
     })();
 
+    let frame = 0;
     const ro = new ResizeObserver(() => {
-      if (el.clientWidth > 0 && el.clientHeight > 0) fit.fit();
+      if (frame || !paneIsShown(el)) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (paneIsShown(el)) fit.fit();
+      });
     });
     ro.observe(el);
 
     return () => {
       cancelled = true;
+      if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
       unsub();
       terminalSessions.detach(conversationId);

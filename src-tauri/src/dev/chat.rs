@@ -438,8 +438,10 @@ async fn stream_chat(
                 .get("content")
                 .map(text_from_content)
                 .unwrap_or_default();
-            if !piece.is_empty() {
-                pending_delta.push_str(&piece);
+            // Flush each SSE data line that carried content. Waiting for [DONE]
+            // drops the reply when the provider never sends it or the body ends early.
+            if note_streamed_content(&mut pending_delta, &piece) {
+                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
             }
             let thought = reasoning_from_delta(&delta);
             if !thought.is_empty() {
@@ -514,6 +516,17 @@ async fn stream_chat(
         fallback_done_text(emitted_text, &fallback_text),
     );
     Ok(())
+}
+
+/// Append one SSE content piece and report whether it should be emitted now.
+/// Empty pieces (tool-call or usage lines) leave any pending text untouched.
+fn note_streamed_content(pending: &mut String, piece: &str) -> bool {
+    if piece.is_empty() {
+        false
+    } else {
+        pending.push_str(piece);
+        true
+    }
 }
 
 fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
@@ -824,6 +837,23 @@ mod tests {
         assert_eq!(fallback_done_text(true, "Saved."), None);
         assert_eq!(fallback_done_text(false, ""), None);
         assert_eq!(fallback_done_text(false, "Saved."), Some("Saved.".into()));
+    }
+
+    #[test]
+    fn content_lines_flush_without_waiting_for_done() {
+        let mut pending = String::new();
+        assert!(!note_streamed_content(&mut pending, ""));
+        assert!(pending.is_empty());
+
+        assert!(note_streamed_content(&mut pending, "Hel"));
+        assert_eq!(pending, "Hel");
+        let flushed = std::mem::take(&mut pending);
+        assert_eq!(flushed, "Hel");
+
+        assert!(note_streamed_content(&mut pending, "lo"));
+        assert_eq!(pending, "lo");
+        assert!(!note_streamed_content(&mut pending, ""));
+        assert_eq!(pending, "lo");
     }
 
     #[test]

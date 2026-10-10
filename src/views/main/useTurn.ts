@@ -30,7 +30,7 @@ import { expandFileMentions, type MentionFile } from "../../lib/mention";
 import { expandPasteTokens, type PasteBlock } from "../../lib/paste";
 import { fileBaseName } from "../../lib/file-icon";
 import type { DetectedMcpServer } from "../../lib/mcp";
-import { parsePermissionMode, shouldPromptShell, type PermissionMode } from "../../lib/permission";
+import { parsePermissionMode, shouldPromptShell, type PermissionMode, type RemoteWorkspace } from "../../lib/permission";
 import type { DetectedSkill } from "../../lib/skill";
 import {
   applySubagentToChat,
@@ -43,10 +43,14 @@ import { isTodoTool } from "../../lib/todo";
 import {
   clearPendingForChat,
   closeDanglingToolCalls,
+  clearUnseenFinished,
   effortForModel,
+  isTurnFailureMessage,
+  markUnseenFinished,
   enqueuePending,
   pendingIndexAfterRemove,
   removePending,
+  restoreStoppedPrompt,
   setDraftForChat,
   shouldQueueForChat,
   takeNextPending,
@@ -69,7 +73,7 @@ import * as api from "../../lib/tauri";
 import type { ConversationSummary, Model, Runtime } from "../../lib/tauri";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
-type ShellRequest = { command: string; resolve: (ok: boolean) => void };
+type ShellRequest = { chatId: string; command: string; resolve: (ok: boolean) => void };
 
 export type TurnDeps = {
   workspace: string;
@@ -111,6 +115,8 @@ export type TurnDeps = {
   setBusy: Update<boolean>;
   setRunningId: Update<string>;
   setRunningTurns: Update<Record<string, RunningTurn>>;
+  setUnseenFinished: Update<ReadonlySet<string>>;
+  viewingChatRef: RefObject<boolean>;
   setMessages: Update<ChatMessage[]>;
   setConversations: Update<ConversationSummary[]>;
   setTurnStartedAt: Update<number>;
@@ -136,6 +142,7 @@ export type TurnDeps = {
   deletedIdsRef: RefObject<Set<string>>;
   mcpServersRef: RefObject<DetectedMcpServer[]>;
   skillsRef: RefObject<DetectedSkill[]>;
+  remoteRef: RefObject<RemoteWorkspace | null>;
   turnMessagesRef: RefObject<ChatMessage[] | null>;
   turnLiveRef: RefObject<{
     streamText: string;
@@ -163,24 +170,41 @@ export function bindTurn(deps: TurnDeps) {
   const {
     workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, model, effort, contextWindow, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
-    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
+    setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
     setShellQueue, permissionRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
-    deletedIdsRef, mcpServersRef, skillsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef,
+    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
-function confirmShell(command: string): Promise<boolean> {
+function confirmShell(command: string, chatId = activeIdRef.current): Promise<boolean> {
   if (!shouldPromptShell(permissionRef.current)) {
     return Promise.resolve(permissionRef.current === "approve-all");
   }
-  return new Promise((resolve) => setShellQueue((q) => [...q, { command, resolve }]));
+  return new Promise((resolve) => setShellQueue((q) => [...q, { chatId, command, resolve }]));
 }
 
 function answerShell(ok: boolean) {
+  const chatId = activeIdRef.current;
   setShellQueue((q) => {
-    const [head, ...rest] = q;
-    head?.resolve(ok);
-    return rest;
+    const index = q.findIndex((item) => item.chatId === chatId);
+    if (index < 0) return q;
+    const next = q.slice();
+    const [item] = next.splice(index, 1);
+    item?.resolve(ok);
+    return next;
+  });
+}
+
+function rejectShells(chatId: string) {
+  setShellQueue((q) => {
+    let changed = false;
+    const next = q.filter((item) => {
+      if (item.chatId !== chatId) return true;
+      item.resolve(false);
+      changed = true;
+      return false;
+    });
+    return changed ? next : q;
   });
 }
 
@@ -474,10 +498,31 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
   return images.length ? { role: "user", content: text, images } : { role: "user", content: text };
 }
 
+function fillPrompt(id: string, text: string, images: ChatImage[]) {
+  saveComposerDraft(id, text);
+  setDrafts((prev) => setDraftForChat(prev, id, text));
+  setDraftImages((prev) => setImagesForChat(prev, id, images));
+}
+
+/** Put the stopped turn's user message back in the composer and drop it from the transcript. */
+function restorePrompt(id: string, messages: ChatMessage[]): ChatMessage[] | null {
+  const restored = restoreStoppedPrompt(messages);
+  if (!restored) return null;
+  fillPrompt(id, restored.text, restored.images);
+  return restored.messages;
+}
+
 async function send() {
   const text = expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(promptImages);
   if (!canSendPrompt(text, images)) return;
+  if (remoteRef.current && remoteRef.current.online === false) {
+    setFlash({
+      kind: "err",
+      text: `${remoteRef.current.machineName} is offline. Messages stay here until it answers.`,
+    });
+    return;
+  }
   if (!ready) {
     setFlash({ kind: "err", text: runtime?.hint || "Grok isn’t signed in." });
     return;
@@ -542,10 +587,15 @@ async function runTurn(
   const previous = turnsRef.current.get(id);
   previous?.abort();
   turnsRef.current.set(id, ac);
+  let stoppedByUser = false;
+  ac.signal.addEventListener("abort", () => {
+    stoppedByUser = true;
+  });
   busyRef.current = true;
   setBusy(true);
   const startedAt = Date.now();
   markRunning(id, { activity: null, startedAt });
+  setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   const foreground = turnAppliesToChat(id, activeIdRef.current);
   if (foreground) {
     setRunningId(id);
@@ -598,6 +648,7 @@ async function runTurn(
       journeyKnowledge: kind === "chat" ? knowledge : undefined,
       mcpServers: mcpServersRef.current,
       skills: skillsRef.current,
+      remote: remoteRef.current,
       onDelta: (chunk) => {
         const live = liveByChatRef.current.get(id);
         const streamText = `${live?.streamText ?? ""}` + chunk;
@@ -611,7 +662,7 @@ async function runTurn(
       onError: (err) => {
         if (visible()) setFlash({ kind: "err", text: err });
       },
-      confirmShell,
+      confirmShell: (command) => confirmShell(command, id),
       getPermission: () => permissionRef.current,
       priorPromptTokens: usageByChat[id]?.promptTokens,
       compaction: latestCompaction,
@@ -664,6 +715,7 @@ async function runTurn(
             prompt_tokens: usage.promptTokens,
             completion_tokens: usage.completionTokens,
             total_tokens: usage.totalTokens,
+            duration_ms: Math.max(0, Date.now() - startedAt),
           })
           .then(() => setUsageTick((n) => n + 1))
           .catch(() => undefined);
@@ -671,6 +723,10 @@ async function runTurn(
       signal: ac.signal,
     });
     latestMessages = stampTurnDuration(closeDanglingToolCalls(done), Date.now() - startedAt);
+    if (stoppedByUser && !pendingRef.current[id]?.length) {
+      const restored = restorePrompt(id, latestMessages);
+      if (restored) latestMessages = restored;
+    }
     saveMessages(latestMessages);
     rememberLive(id, { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
     if (visible()) {
@@ -681,9 +737,22 @@ async function runTurn(
       setRunningActivity(null);
     }
     await persistQueue;
+    const last = latestMessages[latestMessages.length - 1];
+    const failed = Boolean(last && isTurnFailureMessage(last));
+    const looking = visible() && viewingChatRef.current;
+    const queued = Boolean(pendingRef.current[id]?.length);
+    if (!ac.signal.aborted && !failed && !looking && !queued) {
+      setUnseenFinished((prev) =>
+        markUnseenFinished(prev, id, { aborted: false, failed: false, looking: false, queued: false }),
+      );
+    }
     await after?.(latestMessages);
   } catch (e) {
     latestMessages = closeDanglingToolCalls(liveByChatRef.current.get(id)?.messages ?? next);
+    if (stoppedByUser && !pendingRef.current[id]?.length) {
+      const restored = restorePrompt(id, latestMessages);
+      if (restored) latestMessages = restored;
+    }
     if (latestMessages.length) {
       saveMessages(latestMessages);
       if (visible()) setMessages(latestMessages);
@@ -711,10 +780,7 @@ async function runTurn(
       turnMessagesRef.current = null;
       turnLiveRef.current = { streamText: "", streamReasoning: "", liveTools: [], activity: null };
     }
-    setShellQueue((q) => {
-      for (const item of q) item.resolve(false);
-      return [];
-    });
+    rejectShells(id);
     syncRunningFromTurns();
     if (visible()) {
       setSubagents([]);
@@ -729,10 +795,7 @@ function stop() {
   const visibleId = activeIdRef.current;
   const target = visibleId ? turnsRef.current.get(visibleId) : undefined;
   (target ?? abortRef.current)?.abort();
-  setShellQueue((q) => {
-    for (const item of q) item.resolve(false);
-    return [];
-  });
+  if (visibleId) rejectShells(visibleId);
 }
 
   return {

@@ -58,14 +58,18 @@ pub(crate) fn conv_store_dir(data_dir: &Path, workspace: &str) -> PathBuf {
     super::project_location::resolve_conv_dir(data_dir, workspace)
 }
 
-pub(crate) fn open_store(data_dir: &Path, workspace: &str) -> Result<rusqlite::Connection> {
-    store::open(&conv_store_dir(data_dir, workspace))
+pub(crate) fn with_store<T>(
+    data_dir: &Path,
+    workspace: &str,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+) -> Result<T> {
+    store::with_conn(&conv_store_dir(data_dir, workspace), f)
 }
 
 pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec<Conversation>> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::list_conversations(&conn),
+    match store::with_conn(&dir, store::list_conversations) {
+        Ok(rows) => Ok(rows),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 Err(e)
@@ -78,8 +82,8 @@ pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec
 
 fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::list_conversation_summaries(&conn),
+    match store::with_conn(&dir, store::list_conversation_summaries) {
+        Ok(rows) => Ok(rows),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 Err(e)
@@ -100,21 +104,21 @@ pub(crate) fn save_conversations(
     rows: &[Conversation],
 ) -> Result<()> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::open(&dir) {
-        Ok(conn) => {
-            let existing = store::list_conversations(&conn)?;
-            for row in existing {
-                if !rows.iter().any(|c| c.id == row.id) {
-                    store::delete_conversation(&conn, &row.id)?;
-                }
+    match store::with_conn(&dir, |conn| {
+        let existing = store::list_conversations(conn)?;
+        for row in existing {
+            if !rows.iter().any(|c| c.id == row.id) {
+                store::delete_conversation(conn, &row.id)?;
             }
-            for row in rows {
-                store::save_conversation(&conn, row)?;
-            }
-            let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
-            store::reorder_conversations(&conn, &ids)?;
-            Ok(())
         }
+        for row in rows {
+            store::save_conversation(conn, row)?;
+        }
+        let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+        store::reorder_conversations(conn, &ids)?;
+        Ok(())
+    }) {
+        Ok(()) => Ok(()),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 Err(e)
@@ -158,8 +162,8 @@ pub fn dev_get_conversation(
     id: String,
 ) -> Result<Conversation> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::get_conversation(&conn, &id),
+    match store::with_conn(&dir, |conn| store::get_conversation(conn, &id)) {
+        Ok(row) => Ok(row),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 Err(e)
@@ -180,11 +184,8 @@ pub fn dev_save_conversation(
     conversation: Conversation,
 ) -> Result<Conversation> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::open(&dir) {
-        Ok(conn) => {
-            store::save_conversation(&conn, &conversation)?;
-            Ok(conversation)
-        }
+    match store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation)) {
+        Ok(()) => Ok(conversation),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -228,8 +229,8 @@ pub fn dev_reorder_conversations(
     ids: Vec<String>,
 ) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::reorder_conversations(&conn, &ids),
+    match store::with_conn(&dir, |conn| store::reorder_conversations(conn, &ids)) {
+        Ok(rows) => Ok(rows),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -252,8 +253,10 @@ pub fn dev_archive_conversation(
     archived: bool,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::set_conversation_archived(&conn, &id, archived),
+    match store::with_conn(&dir, |conn| {
+        store::set_conversation_archived(conn, &id, archived)
+    }) {
+        Ok(()) => Ok(()),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -275,8 +278,8 @@ pub fn dev_delete_conversation(
     id: String,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::open(&dir) {
-        Ok(conn) => store::delete_conversation(&conn, &id),
+    match store::with_conn(&dir, |conn| store::delete_conversation(conn, &id)) {
+        Ok(()) => Ok(()),
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -290,8 +293,7 @@ pub fn dev_delete_conversation(
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::list_journeys(&conn)
+    with_store(&state.data_dir, &workspace, store::list_journeys)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -301,8 +303,7 @@ pub fn dev_create_journey(
     conversation_id: String,
 ) -> Result<Journey> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let conn = store::open(&dir)?;
-    store::create_journey(&conn, &dir, &conversation_id)
+    store::with_conn(&dir, |conn| store::create_journey(conn, &dir, &conversation_id))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -312,8 +313,9 @@ pub fn dev_rename_journey(
     id: String,
     title: String,
 ) -> Result<Journey> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::rename_journey(&conn, &id, &title)
+    with_store(&state.data_dir, &workspace, |conn| {
+        store::rename_journey(conn, &id, &title)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -324,8 +326,9 @@ pub fn dev_delete_journey(
     delete_chats: bool,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let conn = store::open(&dir)?;
-    store::delete_journey(&conn, &dir, &id, delete_chats)
+    store::with_conn(&dir, |conn| {
+        store::delete_journey(conn, &dir, &id, delete_chats)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -335,8 +338,9 @@ pub fn dev_set_journey_collapsed(
     id: String,
     collapsed: bool,
 ) -> Result<()> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::set_journey_collapsed(&conn, &id, collapsed)
+    with_store(&state.data_dir, &workspace, |conn| {
+        store::set_journey_collapsed(conn, &id, collapsed)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -346,8 +350,9 @@ pub fn dev_set_journey_color(
     id: String,
     color: String,
 ) -> Result<Journey> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::set_journey_color(&conn, &id, &color)
+    with_store(&state.data_dir, &workspace, |conn| {
+        store::set_journey_color(conn, &id, &color)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -357,8 +362,9 @@ pub fn dev_move_conversation(
     id: String,
     journey_id: Option<String>,
 ) -> Result<Conversation> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::move_conversation(&conn, &id, journey_id.as_deref())
+    with_store(&state.data_dir, &workspace, |conn| {
+        store::move_conversation(conn, &id, journey_id.as_deref())
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -367,9 +373,10 @@ pub fn dev_reorder_sidebar(
     workspace: String,
     items: Vec<SidebarItem>,
 ) -> Result<Vec<ConversationSummary>> {
-    let conn = open_store(&state.data_dir, &workspace)?;
-    store::reorder_sidebar(&conn, &items)?;
-    store::list_conversation_summaries(&conn)
+    with_store(&state.data_dir, &workspace, |conn| {
+        store::reorder_sidebar(conn, &items)?;
+        store::list_conversation_summaries(conn)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -379,8 +386,7 @@ pub fn dev_get_journey_knowledge(
     journey_id: String,
 ) -> Result<String> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let conn = store::open(&dir)?;
-    store::get_knowledge(&dir, &conn, &journey_id)
+    store::with_conn(&dir, |conn| store::get_knowledge(&dir, conn, &journey_id))
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -391,8 +397,9 @@ pub fn dev_save_journey_knowledge(
     contents: String,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let conn = store::open(&dir)?;
-    store::save_knowledge(&dir, &conn, &journey_id, &contents)
+    store::with_conn(&dir, |conn| {
+        store::save_knowledge(&dir, conn, &journey_id, &contents)
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -406,16 +413,17 @@ pub fn dev_update_journey_knowledge(
     new_string: Option<String>,
 ) -> Result<String> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let conn = store::open(&dir)?;
-    store::update_knowledge(
-        &dir,
-        &conn,
-        &journey_id,
-        &mode,
-        contents.as_deref(),
-        old_string.as_deref(),
-        new_string.as_deref(),
-    )
+    store::with_conn(&dir, |conn| {
+        store::update_knowledge(
+            &dir,
+            conn,
+            &journey_id,
+            &mode,
+            contents.as_deref(),
+            old_string.as_deref(),
+            new_string.as_deref(),
+        )
+    })
 }
 
 #[cfg(test)]

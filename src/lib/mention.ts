@@ -20,16 +20,27 @@ export function mentionAtCursor(text: string, cursor: number): MentionQuery | nu
 
 export function filterMentionFiles(files: MentionFile[], query: string, limit = 8): MentionFile[] {
   const q = query.trim().toLowerCase();
-  const scored = files
-    .map((file) => ({ file, score: mentionScore(file, q) }))
-    .filter((row) => row.score > 0)
-    .sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.file.path.length - b.file.path.length ||
-        a.file.path.localeCompare(b.file.path),
+  const ranked: { file: MentionFile; score: number }[] = [];
+  for (const file of files) {
+    const score = mentionScore(file, q);
+    if (score <= 0) continue;
+    const row = { file, score };
+    const at = ranked.findIndex(
+      (item) =>
+        row.score > item.score ||
+        (row.score === item.score &&
+          (row.file.path.length < item.file.path.length ||
+            (row.file.path.length === item.file.path.length &&
+              row.file.path.localeCompare(item.file.path) < 0))),
     );
-  return scored.slice(0, limit).map((row) => row.file);
+    if (at === -1) {
+      if (ranked.length < limit) ranked.push(row);
+      continue;
+    }
+    ranked.splice(at, 0, row);
+    if (ranked.length > limit) ranked.pop();
+  }
+  return ranked.map((row) => row.file);
 }
 
 function mentionScore(file: MentionFile, query: string): number {

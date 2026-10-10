@@ -331,6 +331,47 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   height: 0;
 }
 
+.file-row.file-drop-target {
+  background: color-mix(in srgb, var(--color-accent) 24%, var(--color-canvas));
+  color: var(--color-ink);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
+.file-drop-label {
+  display: none;
+  flex-shrink: 0;
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.file-row.file-drop-target .file-drop-label {
+  display: block;
+}
+
+.file-drag-image {
+  display: flex;
+  max-width: 240px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-line) 80%, transparent);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  padding: 5px 8px;
+  color: var(--color-ink);
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: var(--shadow-card);
+  pointer-events: none;
+}
+
+.file-drag-image-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hop-packet {
   position: absolute;
   top: 0;
@@ -378,4 +419,35 @@ html[data-theme-mode="light"] .sidebar-space-dots {
   .hop-indet {
     animation: none;
   }
+}
+
+.color-picker .react-colorful {
+  width: 196px;
+  height: 168px;
+  gap: 10px;
+}
+
+.color-picker .react-colorful__saturation {
+  border-radius: 6px;
+  border-bottom: none;
+}
+
+.color-picker .react-colorful__hue {
+  height: 14px;
+  border-radius: 999px;
+}
+
+.color-picker .react-colorful__hue.react-colorful__last-control {
+  border-radius: 999px;
+}
+
+.color-picker .react-colorful__pointer {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+.color-picker .react-colorful__interactive:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }

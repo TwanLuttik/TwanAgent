@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   isAppProject,
   isProjectCollapsed,
@@ -7,6 +8,7 @@ import {
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
+import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
 
 export function AllProjectsList({
@@ -76,7 +78,7 @@ export function AllProjectsList({
         return (
           <section key={projectKey(group.path)}>
             <div
-              className="group flex items-center rounded-[6px] hover:bg-wash"
+              className="group flex items-center rounded-[6px] select-none hover:bg-wash"
               onContextMenu={(ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
@@ -104,6 +106,7 @@ export function AllProjectsList({
                   className={`size-3.5 shrink-0 ${current ? "text-accent" : "text-muted"}`}
                 />
                 <span className="min-w-0 truncate">{group.name}</span>
+                <ProjectMarks remote={group.remote} server={group.server} />
               </button>
               {hasArchived ? (
                 <button
@@ -187,6 +190,83 @@ export function AllProjectsList({
   );
 }
 
+/** Status icons that sit on the project name. Add the next one as another child. */
+export function ProjectMarks({
+  remote,
+  server,
+}: {
+  remote?: boolean;
+  server?: {
+    machineName: string;
+    host: string;
+    user: string;
+    port: number;
+    remotePath: string;
+    online: boolean;
+  };
+}) {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+  if (!remote && !server) return null;
+  const offline = server?.online === false;
+  const address = server
+    ? `${server.user}@${server.host}${server.port === 22 ? "" : `:${server.port}`}`
+    : "";
+  return (
+    <span
+      ref={anchor}
+      className="ml-auto flex shrink-0 items-center pl-1.5"
+      onMouseEnter={() => {
+        const rect = anchor.current?.getBoundingClientRect();
+        if (!rect) return;
+        setBox({ top: rect.bottom + 6, left: Math.max(8, rect.right - 220) });
+      }}
+      onMouseLeave={() => setBox(null)}
+    >
+      <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Server offline" : "On a server"}>
+        <Symbol name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"} className="size-4" />
+      </span>
+      {box
+        ? createPortal(
+            <span
+              role="tooltip"
+              className="pointer-events-none fixed z-50 w-[220px] overflow-hidden rounded-xl border border-line bg-canvas text-left font-normal shadow-card"
+              style={{ top: box.top, left: box.left }}
+            >
+              <span className={`flex items-center gap-2 px-3 py-2 ${offline ? "bg-err/10" : "bg-[#3b82f6]/10"}`}>
+                <Symbol
+                  name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"}
+                  className={`size-4 ${offline ? "text-err" : "text-[#3b82f6]"}`}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-semibold text-ink">{server?.machineName ?? "Server"}</span>
+                  <span className={`block text-[11px] font-medium ${offline ? "text-err" : "text-[#3b82f6]"}`}>
+                    {offline ? "Offline" : "Reachable"}
+                  </span>
+                </span>
+              </span>
+              {server ? (
+                <span className="grid gap-1.5 px-3 py-2.5">
+                  <span className="block">
+                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Login</span>
+                    <span className="block truncate font-mono text-[11px] text-ink">{address}</span>
+                  </span>
+                  <span className="block">
+                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Folder</span>
+                    <span className="block truncate font-mono text-[11px] text-ink">{server.remotePath}</span>
+                  </span>
+                </span>
+              ) : (
+                <span className="block px-3 py-2 text-[12px] text-muted">On a server</span>
+              )}
+            </span>,
+            document.body,
+          )
+        : null}
+    </span>
+  );
+}
+
 export function ProjectContextMenu({
   x,
   y,
@@ -205,13 +285,7 @@ export function ProjectContextMenu({
   onDelete: () => void;
 }) {
   return (
-    <div
-      role="menu"
-      aria-label={name}
-      className="fixed z-50 min-w-[168px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
-      style={{ left: x, top: y }}
-      onMouseDown={(ev) => ev.stopPropagation()}
-    >
+    <AnchoredMenu x={x} y={y} label={name}>
       {onNewChat ? (
         <button
           type="button"
@@ -240,7 +314,7 @@ export function ProjectContextMenu({
       >
         {appManaged ? "Delete project" : "Remove from list"}
       </button>
-    </div>
+    </AnchoredMenu>
   );
 }
 
@@ -255,7 +329,7 @@ export function DeleteProjectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20" onMouseDown={onCancel}>
       <div
         className="w-[280px] rounded-lg border border-line bg-canvas p-3 shadow-card"
@@ -286,7 +360,8 @@ export function DeleteProjectDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

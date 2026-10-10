@@ -36,6 +36,8 @@ export type TerminalSession = {
   error: string | null;
   buffer: string;
   viewing: boolean;
+  /** Output that arrived while the terminal was hidden. Painted on the next attach. */
+  pending: string;
 };
 
 export type TerminalPtyEvent = {
@@ -106,7 +108,8 @@ export function createTerminalSessionStore(io: TerminalSessionIo) {
         if (!session) return;
         if (ev.kind === "data" && ev.data) {
           session.buffer = appendOutput(session.buffer, ev.data);
-          emitData(session.conversationId, ev.data);
+          if (session.viewing) emitData(session.conversationId, ev.data);
+          else session.pending = appendOutput(session.pending, ev.data);
           return;
         }
         if (ev.kind === "exit") {
@@ -136,6 +139,7 @@ export function createTerminalSessionStore(io: TerminalSessionIo) {
       error: null,
       buffer: "",
       viewing: true,
+      pending: "",
     };
     sessions.set(id, session);
     emitState(session);
@@ -172,6 +176,11 @@ export function createTerminalSessionStore(io: TerminalSessionIo) {
     if (existing) existing.viewing = true;
     if (action === "reuse" || action === "show-stopped") {
       const session = sessions.get(id)!;
+      if (session.pending) {
+        const missed = session.pending;
+        session.pending = "";
+        emitData(id, missed);
+      }
       emitState(session);
       return { ...session };
     }

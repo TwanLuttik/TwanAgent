@@ -1,4 +1,5 @@
 mod appdb;
+mod remote;
 mod dev;
 mod error;
 mod grok_cli;
@@ -7,6 +8,7 @@ mod paths;
 mod perf;
 mod pty;
 mod secrets;
+mod speech;
 mod state;
 mod store;
 mod usage;
@@ -85,6 +87,7 @@ pub fn run() {
             dev::commands::dev_create_project,
             dev::commands::dev_delete_project,
             dev::commands::dev_clone_repo,
+            dev::commands::dev_tree_signature,
             dev::commands::dev_list_dir,
             dev::commands::dev_read_file,
             dev::commands::dev_read_user_mcp,
@@ -136,6 +139,17 @@ pub fn run() {
             pty::dev_pty_write_bytes,
             pty::dev_pty_resize,
             pty::dev_pty_kill,
+            remote::commands::dev_discover_ssh,
+            remote::commands::dev_ssh_defaults,
+            remote::commands::dev_remote_home,
+            remote::commands::dev_list_machines,
+            remote::commands::dev_save_machine,
+            remote::commands::dev_delete_machine,
+            remote::commands::dev_list_remote_projects,
+            remote::commands::dev_test_machine,
+            remote::commands::dev_accept_host,
+            remote::commands::dev_create_remote_project,
+            remote::commands::dev_workspace_remote,
             appdb::dev_app_list_projects,
             appdb::dev_app_add_project,
             appdb::dev_app_remove_project,
@@ -149,6 +163,11 @@ pub fn run() {
             image::dev_prepare_image,
             image::dev_prepare_image_path,
             image::dev_image_data_url,
+            speech::dev_microphone_info,
+            speech::dev_microphone_ready,
+            speech::dev_speech_models,
+            speech::dev_speech_download,
+            speech::dev_transcribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running TwanAgent");

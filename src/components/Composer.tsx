@@ -18,8 +18,11 @@ import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../l
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
+import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
+import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Effort, Model } from "../lib/tauri";
+import { AnchoredMenu } from "./ContextMenu";
 import { ContextUsageChip } from "./ContextUsageChip";
 import { FileIcon } from "./FileIcon";
 import { PromptImages } from "./PromptImages";
@@ -62,6 +65,8 @@ export function Composer({
   pastes = [],
   onPastes,
   todos = [],
+  onDictate,
+  onDictateError,
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -92,6 +97,8 @@ export function Composer({
   pastes?: PasteBlock[];
   onPastes?: (pastes: PasteBlock[]) => void;
   todos?: AgentTodo[];
+  onDictate?: (blob: Blob, mime: string) => Promise<((draft: string, start: number, end: number) => { text: string; cursor: number }) | null>;
+  onDictateError?: (message: string) => void;
 }) {
   const selected = models.find((m) => m.id === model) ?? models[0];
   const efforts = selected?.efforts ?? [];
@@ -104,6 +111,19 @@ export function Composer({
   const mirror = useRef<HTMLDivElement>(null);
   const [usageHover, setUsageHover] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [micMenu, setMicMenu] = useState<{ x: number; y: number } | null>(null);
+  const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
+  const [micDeviceId, setMicDeviceId] = useState(loadMicDevice);
+  const [voiceLevel, setVoiceLevel] = useState(0);
+  const voiceLevelRef = useRef(0);
+  const recordStream = useRef<MediaStream | null>(null);
+  const recordContext = useRef<AudioContext | null>(null);
+  const recordChunks = useRef<Float32Array[]>([]);
+  const recordSelection = useRef({ start: 0, end: 0 });
+  const discardRecording = useRef(false);
+  const recordingRef = useRef(false);
   const [cursor, setCursor] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
@@ -111,6 +131,173 @@ export function Composer({
   const mentionRows = mention ? filterMentionFiles(mentionFiles, mention.query) : [];
   const canSend = canSendPrompt(expandPasteTokens(draft, pastes), images) && ready;
   const showUsage = Boolean(usage && usageWindow);
+
+  function stopMic() {
+    recordStream.current?.getTracks().forEach((track) => track.stop());
+    recordStream.current = null;
+    const ctx = recordContext.current;
+    recordContext.current = null;
+    if (ctx && ctx.state !== "closed") void ctx.close();
+  }
+
+  function finishRecording() {
+    if (!recordingRef.current) return;
+    recordingRef.current = false;
+    const chunks = recordChunks.current;
+    const rate = recordContext.current?.sampleRate ?? 48_000;
+    const keep = !discardRecording.current;
+    stopMic();
+    setRecording(false);
+    setVoiceLevel(0);
+    voiceLevelRef.current = 0;
+    recordChunks.current = [];
+    if (!keep || !onDictate) return;
+    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (!length) return;
+    const samples = new Float32Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      samples.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const blob = encodeWav(samples, rate);
+    const selection = recordSelection.current;
+    setTranscribing(true);
+    void onDictate(blob, "audio/wav")
+      .then((apply) => {
+        if (!apply) return;
+        const current = area.current?.value ?? draft;
+        const next = apply(current, selection.start, selection.end);
+        onDraft(next.text);
+        requestAnimationFrame(() => {
+          const node = area.current;
+          if (!node) return;
+          node.focus();
+          node.setSelectionRange(next.cursor, next.cursor);
+        });
+      })
+      .catch((err) => onDictateError?.(String(err)))
+      .finally(() => setTranscribing(false));
+  }
+
+  async function startRecording() {
+    if (recordingRef.current || transcribing || !onDictate) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      onDictateError?.("Allow the microphone to dictate.");
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(loadMicDevice()) });
+    } catch {
+      onDictateError?.("Allow the microphone to dictate.");
+      return;
+    }
+    const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) {
+      stream.getTracks().forEach((track) => track.stop());
+      onDictateError?.("This browser recorded a format the local model cannot read.");
+      return;
+    }
+    const ctx = new AudioCtx();
+    try {
+      await ctx.audioWorklet.addModule(pcmCaptureUrl);
+    } catch {
+      stream.getTracks().forEach((track) => track.stop());
+      void ctx.close();
+      onDictateError?.("This browser recorded a format the local model cannot read.");
+      return;
+    }
+    const source = ctx.createMediaStreamSource(stream);
+    const processor = new AudioWorkletNode(ctx, "pcm-capture");
+    recordChunks.current = [];
+    processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
+      if (!recordingRef.current || !(event.data instanceof Float32Array)) return;
+      recordChunks.current.push(new Float32Array(event.data));
+      const next = micLevel(event.data);
+      voiceLevelRef.current = Math.max(voiceLevelRef.current * 0.72, next);
+    };
+    source.connect(processor);
+    const el = area.current;
+    recordSelection.current = {
+      start: el?.selectionStart ?? draft.length,
+      end: el?.selectionEnd ?? draft.length,
+    };
+    discardRecording.current = false;
+    recordStream.current = stream;
+    recordContext.current = ctx;
+    recordingRef.current = true;
+    setRecording(true);
+  }
+
+  useEffect(() => {
+    if (!recording) return;
+    function onKey(ev: globalThis.KeyboardEvent) {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      discardRecording.current = true;
+      finishRecording();
+    }
+    const timer = window.setTimeout(() => finishRecording(), 60_000);
+    const meter = window.setInterval(() => setVoiceLevel(voiceLevelRef.current), 120);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearInterval(meter);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [recording]);
+
+  useEffect(() => {
+    return () => {
+      discardRecording.current = true;
+      recordingRef.current = false;
+      stopMic();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!micMenu) return;
+    function close() {
+      setMicMenu(null);
+    }
+    function onKey(ev: globalThis.KeyboardEvent) {
+      if (ev.key === "Escape") setMicMenu(null);
+    }
+    document.addEventListener("mousedown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [micMenu]);
+
+  async function openMicMenu(x: number, y: number) {
+    setMicDeviceId(loadMicDevice());
+    setMicMenu({ x, y });
+    const devices = navigator.mediaDevices;
+    if (!devices?.enumerateDevices) return;
+    try {
+      const listed = audioInputDevices(await devices.enumerateDevices());
+      const unlabeled = listed.length > 0 && listed.every((row) => /^Microphone \d+$/.test(row.label));
+      if (!unlabeled) {
+        setMicDevices(listed);
+        return;
+      }
+      const probe = await devices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((track) => track.stop());
+      setMicDevices(audioInputDevices(await devices.enumerateDevices()));
+    } catch {
+      setMicDevices([]);
+    }
+  }
+
+  function pickMic(id: string) {
+    saveMicDevice(id);
+    setMicDeviceId(id);
+    setMicMenu(null);
+  }
 
   function takeImageFiles(list: File[]) {
     if (!list.length) return;
@@ -371,6 +558,42 @@ export function Composer({
             onChange={onPermission}
           />
           <div className="min-w-0 flex-1" />
+          {recording ? <VoiceMeter level={voiceLevel} /> : null}
+          {onDictate ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (recording) finishRecording();
+                else void startRecording();
+              }}
+              onContextMenu={(ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                void openMicMenu(ev.clientX, ev.clientY);
+              }}
+              disabled={transcribing}
+              aria-label={recording ? "Stop dictation" : "Dictate"}
+              title={recording ? "Stop dictation" : transcribing ? "Transcribing" : "Dictate. Right-click to choose a microphone."}
+              className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-wash ${
+                recording ? "text-err" : "text-muted hover:text-ink"
+              } disabled:opacity-60`}
+            >
+              <Symbol name={recording ? "mic.fill" : "mic"} className="size-3.5" />
+            </button>
+          ) : null}
+          {micMenu ? (
+            <AnchoredMenu x={micMenu.x} y={micMenu.y} label="Microphone">
+              <MicChoice label="System default" selected={micDeviceId === ""} onPick={() => pickMic("")} />
+              {micDevices.map((device) => (
+                <MicChoice
+                  key={device.id}
+                  label={device.label}
+                  selected={device.id === micDeviceId}
+                  onPick={() => pickMic(device.id)}
+                />
+              ))}
+            </AnchoredMenu>
+          ) : null}
           <button
             type="button"
             onClick={onOpenFolder}
@@ -792,6 +1015,38 @@ function PasteEditor({
         </button>
       </div>
     </div>
+  );
+}
+
+function VoiceMeter({ level }: { level: number }) {
+  const bars = voiceBars(level);
+  return (
+    <span className="mr-1 flex h-4 items-center gap-[2px]" aria-hidden title="Microphone level">
+      {bars.map((height, index) => (
+        <span
+          key={index}
+          className={`w-[2px] rounded-full ${level > 0.08 ? "bg-err" : "bg-muted/50"}`}
+          style={{ height: `${Math.round(height * 14)}px` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function MicChoice({ label, selected, onPick }: { label: string; selected: boolean; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={onPick}
+      className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] hover:bg-inset ${
+        selected ? "font-medium text-ink" : "text-ink/80"
+      }`}
+    >
+      <Symbol name={selected ? "checkmark" : "mic"} className={`size-3 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
+      <span className="min-w-0 truncate">{label}</span>
+    </button>
   );
 }
 

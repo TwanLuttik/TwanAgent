@@ -93,6 +93,8 @@ export function applyLiveProjectChats(
     {
       name: folderName(live.workspace),
       path: live.workspace,
+      remote: groups.find((group) => isSameProject(group.path, live.workspace))?.remote,
+      server: groups.find((group) => isSameProject(group.path, live.workspace))?.server,
       conversations: live.conversations,
       journeys: live.journeys,
     },
@@ -117,7 +119,14 @@ export function placeProjectChats(
   });
   if (patched.some((group) => isSameProject(group.path, path))) return patched;
   return [
-    { name: folderName(path), path, conversations, journeys },
+    {
+      name: folderName(path),
+      path,
+      remote: groups.find((group) => isSameProject(group.path, path))?.remote,
+      server: groups.find((group) => isSameProject(group.path, path))?.server,
+      conversations,
+      journeys,
+    },
     ...patched,
   ];
 }
@@ -134,6 +143,8 @@ export function upsertProjectGroup(
       {
         name: patch.name || folderName(path),
         path,
+        remote: patch.remote,
+        server: patch.server,
         conversations: patch.conversations ?? [],
         journeys: patch.journeys ?? [],
       },

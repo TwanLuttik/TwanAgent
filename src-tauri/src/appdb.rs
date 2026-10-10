@@ -10,7 +10,7 @@ use crate::dev::{expand_folder_path, path_string, FolderSuggestion};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const DB_FILE: &str = "app.db";
 const LEGACY_IMPORTED_KEY: &str = "projects.legacy_imported";
 
@@ -45,6 +45,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+    migrate_remote_tables(conn)?;
     let version: Option<i64> = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -57,6 +58,33 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [SCHEMA_VERSION],
         )?;
     }
+    Ok(())
+}
+
+fn migrate_remote_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS machines (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            user TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            auth TEXT NOT NULL,
+            key_path TEXT,
+            secret_account TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS remote_projects (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            remote_path TEXT NOT NULL,
+            mount_path TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        ",
+    )?;
     Ok(())
 }
 
@@ -87,16 +115,26 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<FolderSuggestion>> {
 
 /// Remember a folder. Returns the stored path. Existing rows keep their place and only refresh the name.
 pub fn add_project(conn: &Connection, path: &Path) -> Result<FolderSuggestion> {
+    add_project_named(conn, path, None)
+}
+
+/// Like `add_project`, but a remote project keeps the name the user typed instead of the mount id.
+pub fn add_project_named(conn: &Connection, path: &Path, display_name: Option<&str>) -> Result<FolderSuggestion> {
     let canon = fs::canonicalize(path).map_err(|_| Error::Other("folder is missing".into()))?;
     if !canon.is_dir() {
         return Err(Error::Other("not a folder".into()));
     }
     let stored = path_string(&canon);
-    let name = canon
+    let folder_name = canon
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| !n.is_empty() && n != "." && n != "..")
         .unwrap_or_else(|| stored.clone());
+    let name = display_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(&folder_name)
+        .to_string();
     if let Some(existing) = find_project(conn, &stored)? {
         if existing.name != name {
             conn.execute(

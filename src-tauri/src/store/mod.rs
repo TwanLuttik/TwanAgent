@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -22,13 +24,119 @@ pub fn knowledge_path(dir: &Path, journey_id: &str) -> PathBuf {
     dir.join("journeys").join(format!("{journey_id}.md"))
 }
 
-fn open_lock() -> &'static Mutex<()> {
+type SharedConn = Arc<Mutex<Connection>>;
+
+fn conn_cache() -> &'static Mutex<HashMap<PathBuf, SharedConn>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, SharedConn>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Process-wide lock held only while a database file is created or first migrated.
+/// Later opens of an already-cached connection do not take it.
+fn create_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub fn open(dir: &Path) -> Result<Connection> {
-    let _guard = open_lock().lock().unwrap_or_else(|e| e.into_inner());
+fn cache_key(dir: &Path) -> PathBuf {
+    fs::canonicalize(dir).unwrap_or_else(|_| {
+        if dir.is_absolute() {
+            dir.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(dir))
+                .unwrap_or_else(|_| dir.to_path_buf())
+        }
+    })
+}
+
+fn cached(dir: &Path) -> Option<SharedConn> {
+    let key = cache_key(dir);
+    let guard = conn_cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard.get(&key).cloned()
+}
+
+fn remember(dir: &Path, shared: SharedConn) -> SharedConn {
+    let key = cache_key(dir);
+    let mut guard = conn_cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard.entry(key).or_insert(shared).clone()
+}
+
+fn forget(dir: &Path) {
+    let key = cache_key(dir);
+    let mut guard = conn_cache().lock().unwrap_or_else(|e| e.into_inner());
+    guard.remove(&key);
+}
+
+/// Run `f` against the cached connection for `dir`, locking only that database.
+pub fn with_conn<T>(dir: &Path, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let conn = open(dir)?;
+    f(&conn)
+}
+
+/// Cached connection for one synchronous caller. Derefs to [`Connection`].
+///
+/// Holds the per-database mutex for its lifetime. Poison after the schema
+/// exists is recovered with `into_inner`. First-time migration never runs
+/// twice: it finishes before the connection is cached, under the process-wide
+/// create lock only.
+pub struct Conn {
+    // Drop order is reverse of declaration, so `guard` unlocks before `owner`.
+    guard: MutexGuard<'static, Connection>,
+    #[allow(dead_code)]
+    owner: SharedConn,
+}
+
+impl Conn {
+    fn lock(owner: SharedConn) -> Self {
+        // `'static` only lets the guard sit beside the Arc that owns the mutex.
+        // `owner` keeps that allocation alive and is dropped after `guard`.
+        let guard = unsafe {
+            let mutex: &'static Mutex<Connection> = &*Arc::as_ptr(&owner);
+            std::mem::transmute::<MutexGuard<'_, Connection>, MutexGuard<'static, Connection>>(
+                mutex.lock().unwrap_or_else(|e| e.into_inner()),
+            )
+        };
+        Self { guard, owner }
+    }
+}
+
+impl Deref for Conn {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        &self.guard
+    }
+}
+
+impl DerefMut for Conn {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.guard
+    }
+}
+
+fn open_shared(dir: &Path) -> Result<SharedConn> {
+    if let Some(shared) = cached(dir) {
+        return Ok(shared);
+    }
+    // Only the first create/migration takes the process-wide lock. A poisoned
+    // create lock is not recovered here: two racers must not both migrate.
+    let _guard = create_lock().lock().map_err(|_| {
+        crate::error::Error::Other("conversation store create lock poisoned".into())
+    })?;
+    if let Some(shared) = cached(dir) {
+        return Ok(shared);
+    }
+    match open_new(dir) {
+        Ok(conn) => Ok(remember(dir, Arc::new(Mutex::new(conn)))),
+        Err(e) => {
+            forget(dir);
+            Err(e)
+        }
+    }
+}
+
+fn open_new(dir: &Path) -> Result<Connection> {
     fs::create_dir_all(dir)?;
     let db = db_path(dir);
     let json = json_path(dir);
@@ -46,6 +154,14 @@ pub fn open(dir: &Path) -> Result<Connection> {
         return connect(&db);
     }
     connect(&db)
+}
+
+/// Open the project conversation store. One connection is cached per directory;
+/// the returned guard locks only that database. A later `open` of the same dir
+/// waits for this guard, then sees the same data. Schema migration runs once,
+/// before the connection is cached, under the process-wide create lock.
+pub fn open(dir: &Path) -> Result<Conn> {
+    Ok(Conn::lock(open_shared(dir)?))
 }
 
 fn connect(path: &Path) -> Result<Connection> {
@@ -195,6 +311,82 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
     Ok(())
 }
 
+fn message_columns(msg: &Value) -> Result<MessageColumns> {
+    let role = msg
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("user")
+        .to_string();
+    let content = msg.get("content").cloned();
+    let content_text = match content {
+        Some(Value::String(s)) => Some(s),
+        Some(other) => Some(other.to_string()),
+        None => None,
+    };
+    let tool_calls = msg
+        .get("tool_calls")
+        .map(|v| serde_json::to_string(v))
+        .transpose()?;
+    let tool_call_id = msg
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let images = msg
+        .get("images")
+        .filter(|v| !v.is_null())
+        .map(serde_json::to_string)
+        .transpose()?;
+    let reasoning = msg
+        .get("reasoning")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|text| !text.trim().is_empty());
+    let duration_ms = msg
+        .get("durationMs")
+        .and_then(Value::as_i64)
+        .filter(|ms| *ms >= 0);
+    Ok(MessageColumns {
+        role,
+        content_text,
+        tool_calls,
+        tool_call_id,
+        images,
+        reasoning,
+        duration_ms,
+    })
+}
+
+struct MessageColumns {
+    role: String,
+    content_text: Option<String>,
+    tool_calls: Option<String>,
+    tool_call_id: Option<String>,
+    images: Option<String>,
+    reasoning: Option<String>,
+    duration_ms: Option<i64>,
+}
+
+fn insert_message(
+    stmt: &mut rusqlite::Statement<'_>,
+    conversation_id: &str,
+    sort_order: i64,
+    msg: &Value,
+) -> Result<()> {
+    let cols = message_columns(msg)?;
+    stmt.execute(params![
+        conversation_id,
+        sort_order,
+        cols.role,
+        cols.content_text,
+        cols.tool_calls,
+        cols.tool_call_id,
+        cols.images,
+        cols.reasoning,
+        cols.duration_ms,
+    ])?;
+    Ok(())
+}
+
 fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]) -> Result<()> {
     conn.execute(
         "DELETE FROM messages WHERE conversation_id = ?1",
@@ -205,47 +397,34 @@ fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     for (i, msg) in messages.iter().enumerate() {
-        let role = msg
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("user")
-            .to_string();
-        let content = msg.get("content").cloned();
-        let content_text = match content {
-            Some(Value::String(s)) => Some(s),
-            Some(other) => Some(other.to_string()),
-            None => None,
-        };
-        let tool_calls = msg
-            .get("tool_calls")
-            .map(|v| serde_json::to_string(v))
-            .transpose()?;
-        let tool_call_id = msg
-            .get("tool_call_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let images = msg
-            .get("images")
-            .filter(|v| !v.is_null())
-            .map(serde_json::to_string)
-            .transpose()?;
-        let reasoning = msg
-            .get("reasoning")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .filter(|text| !text.trim().is_empty());
-        let duration_ms = msg.get("durationMs").and_then(Value::as_i64).filter(|ms| *ms >= 0);
-        stmt.execute(params![
-            conversation_id,
-            i as i64,
-            role,
-            content_text,
-            tool_calls,
-            tool_call_id,
-            images,
-            reasoning,
-            duration_ms,
-        ])?;
+        insert_message(&mut stmt, conversation_id, i as i64, msg)?;
+    }
+    Ok(())
+}
+
+/// Keep messages that already match the stored prefix. Rewrite from the first difference.
+fn sync_messages(conn: &Connection, conversation_id: &str, messages: &[Value]) -> Result<()> {
+    let stored = load_messages(conn, conversation_id)?;
+    let mut prefix = 0;
+    while prefix < stored.len() && prefix < messages.len() && stored[prefix] == messages[prefix] {
+        prefix += 1;
+    }
+    if prefix == stored.len() && prefix == messages.len() {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1 AND sort_order >= ?2",
+        params![conversation_id, prefix as i64],
+    )?;
+    if prefix >= messages.len() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )?;
+    for (i, msg) in messages.iter().enumerate().skip(prefix) {
+        insert_message(&mut stmt, conversation_id, i as i64, msg)?;
     }
     Ok(())
 }
