@@ -80,6 +80,7 @@ function conversationKey(ev: UsageEvent): string {
 /**
  * Tokens introduced by one model request.
  * A later tool round resends the whole prompt, so only the growth counts.
+ * The same prompt with a different completion is another send of that prompt, not new context.
  * An identical row is a double write and counts as nothing.
  */
 export function usageDelta(current: UsageEvent, previous?: UsageEvent): UsageTotals {
@@ -95,6 +96,10 @@ export function usageDelta(current: UsageEvent, previous?: UsageEvent): UsageTot
     const prompt = Math.max(0, current.prompt_tokens - previous.prompt_tokens - previous.completion_tokens);
     const completion = Math.max(0, current.completion_tokens);
     return { prompt, completion, total: prompt + completion };
+  }
+  if (previous && current.prompt_tokens === previous.prompt_tokens) {
+    const completion = Math.max(0, current.completion_tokens);
+    return { prompt: 0, completion, total: completion };
   }
   return {
     prompt: Math.max(0, current.prompt_tokens),

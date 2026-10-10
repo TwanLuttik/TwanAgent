@@ -306,6 +306,43 @@ describe("tool-loop usage", () => {
     ];
     assert.equal(usageTotalSince(events, now - 60_000, now), 120);
   });
+
+  it("does not recount a prompt that stays the same while completion changes", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 120_000).toISOString(),
+        workspace_path: "/a",
+        prompt_tokens: 206_406,
+        completion_tokens: 223,
+        total_tokens: 206_629,
+      }),
+      ev({
+        id: 2,
+        recorded_at: new Date(now - 60_000).toISOString(),
+        workspace_path: "/a",
+        prompt_tokens: 206_406,
+        completion_tokens: 176,
+        total_tokens: 206_582,
+      }),
+      ev({
+        id: 3,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        prompt_tokens: 206_406,
+        completion_tokens: 232,
+        total_tokens: 206_638,
+      }),
+    ];
+    const snap = buildUsageSnapshot(events, { range: 7, nowMs: now });
+    assert.equal(snap.totals.prompt, 206_406);
+    assert.equal(snap.totals.completion, 223 + 176 + 232);
+    assert.equal(snap.totals.total, 206_406 + 223 + 176 + 232);
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    const longInput = 4;
+    const longOutput = 12;
+    assert.equal(cost.usd, (206_406 * longInput + (223 + 176 + 232) * longOutput) / 1_000_000);
+  });
 });
 
 describe("usage teaser windows", () => {
@@ -313,10 +350,10 @@ describe("usage teaser windows", () => {
 
   it("sums tokens inside each rolling window", () => {
     const events = [
-      ev({ recorded_at: new Date(now - 10 * 60_000).toISOString(), workspace_path: "/a", total_tokens: 100 }),
-      ev({ recorded_at: new Date(now - 90 * 60_000).toISOString(), workspace_path: "/a", total_tokens: 200 }),
-      ev({ recorded_at: new Date(now - 5 * 3600_000).toISOString(), workspace_path: "/a", total_tokens: 400 }),
-      ev({ recorded_at: new Date(now - 10 * 3600_000).toISOString(), workspace_path: "/a", total_tokens: 800 }),
+      ev({ id: 1, recorded_at: new Date(now - 10 * 60_000).toISOString(), workspace_path: "/a", prompt_tokens: 80, completion_tokens: 20, total_tokens: 100 }),
+      ev({ id: 2, conversation_id: "c2", recorded_at: new Date(now - 90 * 60_000).toISOString(), workspace_path: "/a", prompt_tokens: 160, completion_tokens: 40, total_tokens: 200 }),
+      ev({ id: 3, conversation_id: "c3", recorded_at: new Date(now - 5 * 3600_000).toISOString(), workspace_path: "/a", prompt_tokens: 320, completion_tokens: 80, total_tokens: 400 }),
+      ev({ id: 4, conversation_id: "c4", recorded_at: new Date(now - 10 * 3600_000).toISOString(), workspace_path: "/a", prompt_tokens: 640, completion_tokens: 160, total_tokens: 800 }),
     ];
     assert.equal(usageTotalSince(events, now - 30 * 60_000, now), 100);
     assert.equal(usageTotalSince(events, now - 2 * 3600_000, now), 300);
@@ -340,12 +377,12 @@ describe("usageSeries", () => {
 
   it("buckets tokens across the window and ignores outsiders", () => {
     const events = [
-      ev({ recorded_at: new Date(since - 1).toISOString(), workspace_path: "/a", total_tokens: 999 }),
-      ev({ recorded_at: new Date(since).toISOString(), workspace_path: "/a", total_tokens: 10 }),
-      ev({ recorded_at: new Date(since + 2 * 60_000).toISOString(), workspace_path: "/a", total_tokens: 20 }),
-      ev({ recorded_at: new Date(since + 2 * 60_000 + 1).toISOString(), workspace_path: "/a", total_tokens: 5 }),
-      ev({ recorded_at: new Date(now).toISOString(), workspace_path: "/a", total_tokens: 40 }),
-      ev({ recorded_at: new Date(now + 1).toISOString(), workspace_path: "/a", total_tokens: 888 }),
+      ev({ id: 1, recorded_at: new Date(since - 1).toISOString(), workspace_path: "/a", prompt_tokens: 900, completion_tokens: 99, total_tokens: 999 }),
+      ev({ id: 2, conversation_id: "c2", recorded_at: new Date(since).toISOString(), workspace_path: "/a", prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 }),
+      ev({ id: 3, conversation_id: "c3", recorded_at: new Date(since + 2 * 60_000).toISOString(), workspace_path: "/a", prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 }),
+      ev({ id: 4, conversation_id: "c4", recorded_at: new Date(since + 2 * 60_000 + 1).toISOString(), workspace_path: "/a", prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 }),
+      ev({ id: 5, conversation_id: "c5", recorded_at: new Date(now).toISOString(), workspace_path: "/a", prompt_tokens: 30, completion_tokens: 10, total_tokens: 40 }),
+      ev({ id: 6, conversation_id: "c6", recorded_at: new Date(now + 1).toISOString(), workspace_path: "/a", prompt_tokens: 800, completion_tokens: 88, total_tokens: 888 }),
     ];
     const series = usageSeries(events, since, now, 15);
     assert.equal(series.length, 15);
