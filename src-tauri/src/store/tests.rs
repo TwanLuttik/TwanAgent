@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use super::{json_path, *};
-use crate::dev::Conversation;
+use crate::dev::{Conversation, SidebarItem};
 
 fn conv(id: &str, title: &str, messages: Vec<Value>) -> Conversation {
     Conversation {

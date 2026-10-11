@@ -139,7 +139,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn window_size_rejects_a_missing_or_too_small_value() {
         assert_eq!(parse_window_size("1280x800"), Some((1280.0, 800.0)));
         assert_eq!(parse_window_size(" 1440 x 900 "), Some((1440.0, 900.0)));

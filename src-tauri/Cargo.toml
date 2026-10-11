@@ -5,6 +5,14 @@ edition = "2021"
 license = "MIT"
 description = "TwanAgent desktop"
 
+# Unused items fail the build, the way ESLint fails on unused code.
+# `dead_code` covers unused functions, methods, structs, enums, and fields.
+# `unused` covers unused imports, variables, and other unused names.
+# Tests and items reached only from tests are not flagged.
+[lints.rust]
+dead_code = "deny"
+unused = "deny"
+
 [lib]
 name = "twanagent_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

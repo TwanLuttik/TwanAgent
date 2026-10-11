@@ -2,7 +2,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 
 use tauri::{AppHandle, Manager, State};
 
@@ -320,20 +319,10 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AppSetting {
-    pub key: String,
-    pub value: String,
-}
-
-pub fn list_settings(conn: &Connection) -> Result<Vec<AppSetting>> {
+#[cfg(test)]
+fn list_settings(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key ASC")?;
-    let rows = stmt.query_map([], |row| {
-        Ok(AppSetting {
-            key: row.get(0)?,
-            value: row.get(1)?,
-        })
-    })?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);

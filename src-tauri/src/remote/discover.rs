@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -71,17 +71,8 @@ pub fn default_key_path() -> Option<String> {
     None
 }
 
-/// Local interface address that should source a connection to `host`.
-/// A VPN default route otherwise makes the kernel answer "no route to host" for LAN addresses.
-pub fn source_for(host: &str) -> Option<Ipv4Addr> {
-    let target = host.trim().parse::<Ipv4Addr>().ok()?;
-    local_networks()
-        .into_iter()
-        .find(|(addr, prefix)| same_subnet(target, *addr, *prefix))
-        .map(|(addr, _)| addr)
-}
-
-pub fn same_subnet(target: Ipv4Addr, local: Ipv4Addr, prefix: u8) -> bool {
+#[cfg(test)]
+fn same_subnet(target: Ipv4Addr, local: Ipv4Addr, prefix: u8) -> bool {
     let bits = prefix.clamp(0, 32);
     if bits == 0 {
         return true;
@@ -95,22 +86,6 @@ pub fn ssh_defaults() -> SshDefaults {
         user: local_user(),
         key_path: default_key_path(),
     }
-}
-
-pub async fn scan_ssh() -> Result<Vec<LanHost>> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let handle = tokio::spawn(async move {
-        let _ = scan_ssh_stream(tx).await;
-    });
-    let mut found = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    while let Some(host) = rx.recv().await {
-        if seen.insert(host.host.clone()) {
-            found.push(host);
-        }
-    }
-    let _ = handle.await;
-    Ok(found)
 }
 
 /// Probe saved SSH hosts and the LAN gateway first, then the rest of the /24.

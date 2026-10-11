@@ -222,10 +222,6 @@ pub fn finished_thinking(blocks: &ThinkingAccum) -> Vec<ThinkingBlock> {
         .collect()
 }
 
-pub fn usage_event(prompt_tokens: u64, completion_tokens: u64) -> DevChatUsage {
-    usage_event_with_cache(prompt_tokens, completion_tokens, 0, 0)
-}
-
 /// `prompt_tokens` is the whole prompt the next call has to fit, cache included.
 pub fn usage_event_with_cache(
     prompt_tokens: u64,

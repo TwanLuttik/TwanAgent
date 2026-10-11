@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -285,43 +284,6 @@ fn friendly_ssh_error(host: &str, raw: &str) -> String {
         format!("SSH rejected the login for {host}. Your existing key was tried.")
     } else {
         format!("could not connect to {host}: {raw}")
-    }
-}
-
-async fn connect_from(
-    config: Arc<client::Config>,
-    target: &str,
-    source: SocketAddr,
-    handler: AcceptHandler,
-) -> Result<client::Handle<AcceptHandler>> {
-    let socket = tokio::net::TcpSocket::new_v4()
-        .map_err(|e| Error::Other(format!("could not open a local socket: {e}")))?;
-    socket
-        .bind(source)
-        .map_err(|e| Error::Other(format!("could not use the local network for this server: {e}")))?;
-    let stream = socket
-        .connect(resolve_target(target)?)
-        .await
-        .map_err(|e| Error::Other(route_message(target, e)))?;
-    client::connect_stream(config, stream, handler)
-        .await
-        .map_err(|e| Error::Other(format!("could not connect to {target}: {e}")))
-}
-
-fn resolve_target(target: &str) -> Result<SocketAddr> {
-    use std::net::ToSocketAddrs;
-    target
-        .to_socket_addrs()
-        .map_err(|e| Error::Other(format!("could not resolve {target}: {e}")))?
-        .find(|addr| addr.is_ipv4())
-        .ok_or_else(|| Error::Other(format!("could not resolve {target}")))
-}
-
-fn route_message(target: &str, err: std::io::Error) -> String {
-    if err.raw_os_error() == Some(65) || err.raw_os_error() == Some(64) {
-        format!("{target} is on the local network, but this Mac has no route to it. Check that it is online and on the same Wi-Fi.")
-    } else {
-        format!("could not connect to {target}: {err}")
     }
 }
 

@@ -80,6 +80,7 @@ pub fn list_conversation_summaries(conn: &Connection) -> Result<Vec<Conversation
     Ok(out)
 }
 
+#[cfg(test)]
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(&format!("{HEAD_SQL} ORDER BY sort_order ASC, id ASC"))?;
     let heads = stmt.query_map([], map_head)?;

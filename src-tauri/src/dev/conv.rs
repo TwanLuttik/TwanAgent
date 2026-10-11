@@ -66,6 +66,7 @@ pub(crate) fn with_store<T>(
     store::with_conn(&conv_store_dir(data_dir, workspace), f)
 }
 
+#[cfg(test)]
 pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec<Conversation>> {
     let dir = conv_store_dir(data_dir, workspace);
     match store::with_conn(&dir, store::list_conversations) {

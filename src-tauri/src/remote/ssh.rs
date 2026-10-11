@@ -269,9 +269,6 @@ pub enum AuthUse<'a> {
     Password(&'a str),
 }
 
-/// The live client lives in `client.rs`. This name stays so older call sites still compile.
-pub type SshClient = super::client::LiveConnector;
-
 #[cfg(test)]
 mod tests {
     use super::*;

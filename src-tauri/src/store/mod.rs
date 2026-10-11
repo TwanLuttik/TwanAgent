@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-use crate::dev::{Conversation, DevChatUsage, SidebarItem};
+use crate::dev::{Conversation, DevChatUsage};
 use crate::error::Result;
 
 const SCHEMA_VERSION: i64 = 10;
@@ -610,9 +610,11 @@ mod conversations;
 mod journeys;
 
 pub use conversations::{
-    delete_conversation, get_conversation, list_conversation_summaries, list_conversations,
-    reorder_conversations, save_conversation, set_conversation_archived,
+    delete_conversation, get_conversation, list_conversation_summaries, reorder_conversations,
+    save_conversation, set_conversation_archived,
 };
+#[cfg(test)]
+pub use conversations::list_conversations;
 pub use journeys::{
     create_journey, delete_journey, get_knowledge, list_journeys, move_conversation,
     rename_journey, reorder_sidebar, save_knowledge, set_journey_collapsed, set_journey_color,

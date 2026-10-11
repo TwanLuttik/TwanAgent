@@ -343,7 +343,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn remote_shell_creates_the_project_before_cd() {
         let quoted = crate::remote::ssh::shell_single_quote("/home/twanluttik/BOZO_BUCKOS");
         let remote = format!("mkdir -p {quoted} && cd {quoted} && exec ${{SHELL:-/bin/bash}} -l");
