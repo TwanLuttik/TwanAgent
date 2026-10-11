@@ -20,11 +20,24 @@ pub fn dev_key_status(state: State<'_, AppState>) -> KeyStatus {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRuntime> {
     let mut status = grok_cli::runtime(&state.data_dir);
-    if let Some(auth) = crate::anthropic::resolve_claude_auth() {
-        let live = crate::anthropic::available_models(&auth).await;
-        status.models.retain(|row| row.provider != crate::anthropic::PROVIDER_ANTHROPIC);
-        status.models.extend(live);
-    }
+    status.models = crate::model_providers::registry::list_models(&state.data_dir).await;
+    let claude_ready = crate::anthropic::resolve_claude_auth_fresh().await.is_some();
+    status.providers = vec![
+        grok_cli::ProviderStatus {
+            id: "xai".into(),
+            ready: status.ready,
+            hint: status.hint.clone(),
+        },
+        grok_cli::ProviderStatus {
+            id: "anthropic".into(),
+            ready: claude_ready,
+            hint: if claude_ready {
+                "Using Claude".into()
+            } else {
+                crate::anthropic::SIGN_IN_ERROR.into()
+            },
+        },
+    ];
     Ok(status)
 }
 

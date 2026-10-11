@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import { Composer } from "../../components/Composer";
 import { contextWindowForModel } from "../../lib/context";
-import { providerFor } from "../../lib/provider";
+import { providerProfile } from "../../lib/provider";
 import { fileToBase64, setImagesForChat } from "../../lib/image";
 import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
@@ -32,6 +32,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     planMode,
     promptImages,
     ready,
+    runtime,
     runningTurns,
     send,
     setDraft,
@@ -45,10 +46,11 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
   const { setFlash } = useApp();
   const todos = useMemo(() => todosFromMessages(messages), [messages]);
   const landing = placement === "landing";
-  const claude = providerFor(model) === "anthropic";
-  const ask = claude ? "Ask Claude…" : "Ask Grok…";
-  const message = claude ? "Message Claude…" : "Message Grok…";
-  const signIn = claude ? "Sign in to Claude" : "Sign in to Grok";
+  const profile = providerProfile(model);
+  const providerReady = runtime?.providers?.find((row: { id: string; ready: boolean }) => row.id === profile.id)?.ready ?? ready;
+  const ask = `Ask ${profile.agentName}…`;
+  const message = `Message ${profile.agentName}…`;
+  const signIn = `Sign in to ${profile.agentName}`;
   return (
     <Composer
       onDictate={async (blob, mime) => {
@@ -71,9 +73,9 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       onSend={() => void send()}
       onStop={stop}
       busy={chatHasRunningTurn(runningTurns, activeId)}
-      ready={ready}
+      ready={providerReady}
       placeholder={
-        ready ? (landing ? ask : message) : landing ? `${signIn} to start` : `${signIn} to continue`
+        providerReady ? (landing ? ask : message) : landing ? `${signIn} to start` : `${signIn} to continue`
       }
       workspace={workspace}
       onOpenFolder={openFolder}
@@ -86,8 +88,8 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       onContextWindow={pickContextWindow}
       permission={permission}
       onPermission={pickPermission}
-      planMode={claude ? undefined : planMode}
-      onPlanMode={claude ? undefined : pickPlanMode}
+      planMode={profile.planMode ? planMode : undefined}
+      onPlanMode={profile.planMode ? pickPlanMode : undefined}
       autoFocus={landing}
       compact={!landing}
       usage={landing || !activeId ? undefined : usageByChat[activeId]}

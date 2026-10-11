@@ -40,7 +40,7 @@ import {
   type PlanModeState,
   type PlanPrompt,
 } from "../../lib/plan";
-import { providerFor } from "../../lib/provider";
+import { providerProfile } from "../../lib/provider";
 import type { DetectedSkill } from "../../lib/skill";
 import {
   applySubagentToChat,
@@ -374,7 +374,7 @@ function rememberPlan(chatId: string, plan: GrokPlan) {
 
 function pickPlanMode(mode: "off" | "pending" | "on") {
   const chatId = activeIdRef.current;
-  if (!chatId || !workspace || providerFor(modelRef.current) !== "xai") return;
+  if (!chatId || !workspace || !providerProfile(modelRef.current).planMode) return;
   const running = turnsRef.current.has(chatId);
   const state: PlanModeState =
     mode === "on"
@@ -797,7 +797,7 @@ async function runTurn(
   );
   const journeyId = journeyIdOverride || chat?.journey_id || undefined;
   const kind = parseConversationKind(chat?.kind);
-  if (providerFor(turnSettings.model) === "xai" && planForChat(id).state === "Pending") {
+  if (providerProfile(turnSettings.model).planMode && planForChat(id).state === "Pending") {
     try {
       const armed = grokPlanFromPayload(await api.grokPlanSet(ws, id, "Active", false));
       rememberPlan(id, armed);
@@ -841,7 +841,7 @@ async function runTurn(
       },
       confirmShell: (command) => confirmShell(command, id),
       getPermission: () => permissionForChat(id),
-      plan: providerFor(turnSettings.model) === "xai"
+      plan: providerProfile(turnSettings.model).planMode
         ? {
             sessionId: id,
             enabled: true,

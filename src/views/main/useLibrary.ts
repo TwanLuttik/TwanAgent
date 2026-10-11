@@ -42,7 +42,7 @@ import { terminalSessions } from "../../lib/terminal-sessions";
 import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
 import { parsePermissionMode, type PermissionMode } from "../../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../../lib/plan";
-import { providerFor } from "../../lib/provider";
+import { providerProfile } from "../../lib/provider";
 import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
 import {
   loadContextWindow,
@@ -416,7 +416,7 @@ const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => 
 const openSettingsRef = useRef(openSettings);
 
 async function ensureChatPlan(path: string, id: string, modelId: string | null | undefined) {
-  if (!path || !id || providerFor(modelId ?? "") !== "xai") return;
+  if (!path || !id || !providerProfile(modelId ?? "").planMode) return;
   if (planByChatRef.current.has(id)) return;
   try {
     const plan = grokPlanFromPayload(await api.grokPlan(path, id));

@@ -92,7 +92,7 @@ export function UsageLineChart({
           x: Math.max(0, activeBox.x - slot / 2),
           w: Math.min(width, activeBox.x + slot / 2) - Math.max(0, activeBox.x - slot / 2),
         };
-  const ticks = tickIndexes(points);
+  const ticks = tickIndexes(points, range);
   const peak = max > 0 ? nicePeak(max) : 0;
   const focusClass = focusModel ? `usage-swatch-${modelColorIndex(focusModel)}` : "";
 
@@ -339,11 +339,15 @@ function nicePeak(max: number): number {
   return nice * pow;
 }
 
-function tickIndexes(points: UsageTrendPoint[]): number[] {
+function tickIndexes(points: UsageTrendPoint[], range: UsageTrendRange): number[] {
   if (points.length === 0) return [];
   if (points.length <= 8) return points.map((_, i) => i);
   const mid = Math.floor((points.length - 1) / 2);
-  return [0, mid, points.length - 1];
+  const last = points.length - 1;
+  if (range !== "24h") return [0, mid, last];
+  // Start, middle, and the hour we are in. The last bucket is only partway through.
+  const indexes = [0, mid, last];
+  return indexes.filter((index, i) => indexes.indexOf(index) === i);
 }
 
 function chartLabel(trend: UsageTrend): string {

@@ -1,27 +1,16 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, State};
 
-use super::types::{DevChatEvent, DevChatUsage, DevToolCall};
+use super::types::{DevChatEvent, DevChatUsage};
 use crate::error::{Error, Result};
 use crate::grok_cli;
 use crate::state::AppState;
 
 fn http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
-            .pool_idle_timeout(Duration::from_secs(90))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    })
+    crate::model_providers::runner::http_client()
 }
 
 fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
@@ -299,20 +288,22 @@ pub async fn dev_chat_start(
     let model = model
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "grok-4.6".into());
-    let provider = crate::anthropic::provider_for(&model);
-    let auth = if provider == crate::anthropic::Provider::Xai {
+    let provider = crate::model_providers::registry::find(&model);
+    let auth = if provider == crate::model_providers::registry::ProviderId::Xai {
         let Some(auth) = grok_cli::resolve_auth(&state.data_dir) else {
             return Err(Error::Other(
-                "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings.".into(),
+                crate::model_providers::registry::sign_in_error(provider).into(),
             ));
         };
         Some(auth)
     } else {
         None
     };
-    let anthropic_auth = if provider == crate::anthropic::Provider::Anthropic {
-        let Some(auth) = crate::anthropic::resolve_claude_auth() else {
-            return Err(Error::Other(crate::anthropic::SIGN_IN_ERROR.into()));
+    let anthropic_auth = if provider == crate::model_providers::registry::ProviderId::Anthropic {
+        let Some(auth) = crate::anthropic::resolve_claude_auth_fresh().await else {
+            return Err(Error::Other(
+                crate::model_providers::registry::sign_in_error(provider).into(),
+            ));
         };
         Some(auth)
     } else {
@@ -332,7 +323,7 @@ pub async fn dev_chat_start(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .is_some();
-        let result = if provider == crate::anthropic::Provider::Anthropic {
+        let result = if provider == crate::model_providers::registry::ProviderId::Anthropic {
             stream_anthropic(
                 &app2,
                 &sid,
@@ -392,7 +383,7 @@ async fn stream_anthropic(
         &messages,
         &model,
         effort.as_deref(),
-        &tools_json_for(include_journey, false),
+        &tools_json_for(include_journey, crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Anthropic)),
     );
     let mut req = http_client()
         .post(crate::anthropic::MESSAGES_URL)
@@ -418,156 +409,15 @@ async fn stream_anthropic(
             &text,
         )));
     }
-    let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
-    let mut tools: Vec<crate::anthropic::SseTool> = Vec::new();
-    let mut thinking = crate::anthropic::ThinkingAccum::default();
-    let mut last_usage: Option<DevChatUsage> = None;
-    let mut emitted_text = false;
-    let mut emitted_reasoning = false;
-    let mut pending_delta = String::new();
-    let mut pending_reasoning = String::new();
-    let mut last_delta_emit: Option<Instant> = None;
-    let mut last_reasoning_emit: Option<Instant> = None;
-    while let Some(chunk) = stream.next().await {
-        if cancel.load(Ordering::Relaxed) {
-            flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-            flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-            let _ = app.emit(
-                "dev-chat",
-                DevChatEvent {
-                    stream_id: stream_id.into(),
-                    kind: "error".into(),
-                    text: Some("Stopped.".into()),
-                    tool_calls: None,
-                    usage: None,
-                    thinking: None,
-                },
-            );
-            return Ok(());
-        }
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-                if emitted_text || emitted_reasoning || !tools.is_empty() {
-                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
-                    return Ok(());
-                }
-                return Err(Error::Other(format!("error decoding response body: {err}")));
-            }
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find('\n') {
-            let line = buf[..idx].trim().to_string();
-            buf.drain(..=idx);
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let Some(piece) = crate::anthropic::parse_sse_data(data.trim()) else {
-                continue;
-            };
-            crate::anthropic::apply_tool_piece(&mut tools, &piece);
-            crate::anthropic::apply_thinking_piece(&mut thinking, &piece);
-            match piece {
-                crate::anthropic::SsePiece::Delta(text) => {
-                    if note_coalesced(&mut pending_delta, &text, &mut last_delta_emit) {
-                        flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                        last_delta_emit = Some(Instant::now());
-                    }
-                }
-                crate::anthropic::SsePiece::Reasoning(text) => {
-                    if note_coalesced(&mut pending_reasoning, &text, &mut last_reasoning_emit) {
-                        flush_reasoning(
-                            app,
-                            stream_id,
-                            &mut pending_reasoning,
-                            &mut emitted_reasoning,
-                        );
-                        last_reasoning_emit = Some(Instant::now());
-                    }
-                }
-                crate::anthropic::SsePiece::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                } => {
-                    let (prompt_tokens, completion_tokens) = crate::anthropic::merge_usage(
-                        last_usage.as_ref().map(|usage| (usage.prompt_tokens, usage.completion_tokens)),
-                        prompt_tokens,
-                        completion_tokens,
-                    );
-                    let usage = DevChatUsage {
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens: prompt_tokens.saturating_add(completion_tokens),
-                    };
-                    let first = last_usage.is_none();
-                    last_usage = Some(usage.clone());
-                    if first {
-                        let _ = app.emit(
-                            "dev-chat",
-                            DevChatEvent {
-                                stream_id: stream_id.into(),
-                                kind: "usage".into(),
-                                text: None,
-                                tool_calls: None,
-                                usage: Some(usage),
-                                thinking: None,
-                            },
-                        );
-                    }
-                }
-                crate::anthropic::SsePiece::Stop => {
-                    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
-                    return Ok(());
-                }
-                _ => {}
-            }
-        }
-    }
-    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-    if emitted_text || emitted_reasoning || !tools.is_empty() {
-        emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage, None);
-    }
-    Ok(())
-}
-
-fn emit_anthropic_done(
-    app: &AppHandle,
-    stream_id: &str,
-    tools: &[crate::anthropic::SseTool],
-    thinking: &crate::anthropic::ThinkingAccum,
-    usage: Option<DevChatUsage>,
-    text: Option<String>,
-) {
-    let tool_calls: Vec<DevToolCall> = crate::anthropic::finished_tools(tools)
-        .into_iter()
-        .map(|(id, name, arguments)| DevToolCall { id, name, arguments })
-        .collect();
-    let thinking = crate::anthropic::finished_thinking(thinking);
-    let _ = app.emit(
-        "dev-chat",
-        DevChatEvent {
-            stream_id: stream_id.into(),
-            kind: "done".into(),
-            text,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            usage,
-            thinking: if thinking.is_empty() {
-                None
-            } else {
-                Some(thinking)
-            },
-        },
-    );
+    crate::model_providers::runner::consume_sse(
+        app,
+        stream_id,
+        resp,
+        cancel,
+        |data| crate::anthropic::parse_sse_data(data).into_iter().collect(),
+        |_| None,
+    )
+    .await
 }
 
 async fn stream_chat(
@@ -634,255 +484,106 @@ async fn stream_chat(
         };
         return Err(Error::Other(msg));
     }
-    let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
-    let mut pending_delta = String::new();
-    let mut pending_reasoning = String::new();
-    let mut last_delta_emit: Option<Instant> = None;
-    let mut last_reasoning_emit: Option<Instant> = None;
-    let mut tool_acc: HashMap<u32, (String, String, String)> = HashMap::new();
-    let mut last_usage: Option<DevChatUsage> = None;
-    let mut emitted_text = false;
-    let mut emitted_reasoning = false;
-    let mut fallback_text = String::new();
-    let mut fallback_reasoning = String::new();
-    while let Some(chunk) = stream.next().await {
-        if cancel.load(Ordering::Relaxed) {
-            flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-            flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-            let _ = app.emit(
-                "dev-chat",
-                DevChatEvent {
-                    stream_id: stream_id.into(),
-                    kind: "error".into(),
-                    text: Some("Stopped.".into()),
-                    tool_calls: None,
-                    usage: None,
-                    thinking: None,
-                },
-            );
-            return Ok(());
-        }
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(err) => {
-                // A dropped body after we already have text or tool calls is still a usable reply.
-                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-                if emitted_text || emitted_reasoning || !tool_acc.is_empty() {
-                    emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
-                    emit_done(
-                        app,
-                        stream_id,
-                        &tool_acc,
-                        last_usage.clone(),
-                        fallback_done_text(emitted_text, &fallback_text),
-                    );
-                    return Ok(());
-                }
-                return Err(Error::Other(format!("error decoding response body: {err}")));
-            }
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        while let Some(idx) = buf.find('\n') {
-            let line = buf[..idx].trim().to_string();
-            buf.drain(..=idx);
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            if data.is_empty() {
-                continue;
-            }
-            if data == "[DONE]" {
-                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-                emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
-                emit_done(
-                    app,
-                    stream_id,
-                    &tool_acc,
-                    last_usage.clone(),
-                    fallback_done_text(emitted_text, &fallback_text),
-                );
-                return Ok(());
-            }
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
-                continue;
-            };
-            if let Some(usage) = parse_usage(&json) {
-                let first = last_usage.is_none();
-                last_usage = Some(usage.clone());
-                if first {
-                    let _ = app.emit(
-                        "dev-chat",
-                        DevChatEvent {
-                            stream_id: stream_id.into(),
-                            kind: "usage".into(),
-                            text: None,
-                            tool_calls: None,
-                            usage: Some(usage),
-                            thinking: None,
-                        },
-                    );
-                }
-            }
-            let Some(choice) = json.get("choices").and_then(|c| c.get(0)) else {
-                continue;
-            };
-            let delta = choice
-                .get("delta")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
-            let piece = delta
-                .get("content")
-                .map(text_from_content)
-                .unwrap_or_default();
-            // Coalesce SSE content instead of emitting every line. Still flush on
-            // [DONE], cancel, decode errors, and when the body ends, so a missing
-            // [DONE] cannot drop the reply.
-            if note_coalesced(&mut pending_delta, &piece, &mut last_delta_emit) {
-                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                last_delta_emit = Some(Instant::now());
-            }
-            let thought = reasoning_from_delta(&delta);
-            if note_coalesced(&mut pending_reasoning, &thought, &mut last_reasoning_emit) {
-                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-                last_reasoning_emit = Some(Instant::now());
-            }
-            let fallback = fallback_choice_text(choice);
-            if !fallback.is_empty() {
-                fallback_text = fallback;
-            }
-            let thought_fallback = message_reasoning(choice);
-            if !thought_fallback.is_empty() {
-                fallback_reasoning = thought_fallback;
-            }
-            if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-                for call in calls {
-                    let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-                    let entry = tool_acc.entry(index).or_insert_with(|| {
-                        (
-                            call.get("id")
-                                .and_then(|i| i.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            String::new(),
-                            String::new(),
-                        )
-                    });
-                    if let Some(id) = call.get("id").and_then(|i| i.as_str()) {
-                        if !id.is_empty() {
-                            entry.0 = id.to_string();
-                        }
-                    }
-                    if let Some(name) = call
-                        .get("function")
-                        .and_then(|f| f.get("name"))
-                        .and_then(|n| n.as_str())
-                    {
-                        entry.1.push_str(name);
-                    }
-                    if let Some(args) = call
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|n| n.as_str())
-                    {
-                        entry.2.push_str(args);
-                    }
-                }
-            }
-            if choice.get("finish_reason").and_then(|f| f.as_str()) == Some("stop")
-                || choice.get("finish_reason").and_then(|f| f.as_str()) == Some("tool_calls")
-            {
-                // Flush now so a missing [DONE] cannot drop the last words, then
-                // still wait for [DONE] (or the body ending) before emitting done.
-                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-            }
-        }
-    }
-    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
-    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
-    emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
-    emit_done(
+    let fallback_text = Arc::new(Mutex::new(String::new()));
+    let fallback_reasoning = Arc::new(Mutex::new(String::new()));
+    let text_slot = fallback_text.clone();
+    let thought_slot = fallback_reasoning.clone();
+    crate::model_providers::runner::consume_sse(
         app,
         stream_id,
-        &tool_acc,
-        last_usage,
-        fallback_done_text(emitted_text, &fallback_text),
-    );
-    Ok(())
+        resp,
+        cancel,
+        move |data| parse_xai_data(data, &text_slot, &thought_slot),
+        move |session| {
+            let reasoning = fallback_reasoning.lock().ok().map(|s| s.clone()).unwrap_or_default();
+            if !session.saw_reasoning() && !reasoning.is_empty() {
+                let _ = app.emit(
+                    "dev-chat",
+                    DevChatEvent {
+                        stream_id: stream_id.into(),
+                        kind: "reasoning".into(),
+                        text: Some(reasoning),
+                        tool_calls: None,
+                        usage: None,
+                        thinking: None,
+                    },
+                );
+            }
+            let text = fallback_text.lock().ok().map(|s| s.clone()).unwrap_or_default();
+            fallback_done_text(session.saw_text(), &text)
+        },
+    )
+    .await
 }
 
-/// Hold text and reasoning this long before emitting, unless the buffer is large.
-const COALESCE_INTERVAL: Duration = Duration::from_millis(50);
-/// Flush immediately once a pending buffer reaches this many bytes.
-const COALESCE_MAX_BYTES: usize = 2048;
-
-/// Append one SSE piece. Returns true when the buffer should be emitted now.
-/// Empty pieces leave the buffer and the last-emit clock untouched.
-/// The first piece starts the interval without emitting. Later pieces emit the
-/// buffer (including themselves) once the interval has elapsed or it is large.
-fn note_coalesced(pending: &mut String, piece: &str, last_emit: &mut Option<Instant>) -> bool {
-    if piece.is_empty() {
-        return false;
+fn parse_xai_data(
+    data: &str,
+    fallback_text: &Mutex<String>,
+    fallback_reasoning: &Mutex<String>,
+) -> Vec<crate::model_providers::event::StreamPiece> {
+    use crate::model_providers::event::StreamPiece;
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
+        return Vec::new();
+    };
+    let mut pieces = Vec::new();
+    if let Some(usage) = parse_usage(&json) {
+        pieces.push(StreamPiece::Usage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+        });
     }
-    pending.push_str(piece);
-    let due = match *last_emit {
-        Some(at) => at.elapsed() >= COALESCE_INTERVAL,
-        None => {
-            *last_emit = Some(Instant::now());
-            false
+    let Some(choice) = json.get("choices").and_then(|c| c.get(0)) else {
+        return pieces;
+    };
+    let delta = choice.get("delta").cloned().unwrap_or(serde_json::Value::Null);
+    let text = delta.get("content").map(text_from_content).unwrap_or_default();
+    if !text.is_empty() {
+        pieces.push(StreamPiece::Delta(text));
+    }
+    let thought = reasoning_from_delta(&delta);
+    if !thought.is_empty() {
+        pieces.push(StreamPiece::Reasoning(thought));
+    }
+    let fallback = fallback_choice_text(choice);
+    if !fallback.is_empty() {
+        if let Ok(mut slot) = fallback_text.lock() {
+            *slot = fallback;
         }
-    };
-    due || pending.len() >= COALESCE_MAX_BYTES
-}
-
-/// Take whatever is buffered so it can be emitted before done, error, or stop.
-/// Empty input stays empty and does not count as an emit.
-fn take_coalesced(pending: &mut String) -> Option<String> {
-    if pending.is_empty() {
-        None
-    } else {
-        Some(std::mem::take(pending))
     }
-}
-
-fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
-    let Some(text) = take_coalesced(pending) else {
-        return;
-    };
-    *emitted = true;
-    let _ = app.emit(
-        "dev-chat",
-        DevChatEvent {
-            stream_id: stream_id.into(),
-            kind: "delta".into(),
-            text: Some(text),
-            tool_calls: None,
-            usage: None,
-            thinking: None,
-        },
-    );
-}
-
-fn flush_reasoning(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
-    let Some(text) = take_coalesced(pending) else {
-        return;
-    };
-    *emitted = true;
-    let _ = app.emit(
-        "dev-chat",
-        DevChatEvent {
-            stream_id: stream_id.into(),
-            kind: "reasoning".into(),
-            text: Some(text),
-            tool_calls: None,
-            usage: None,
-            thinking: None,
-        },
-    );
+    let thought_fallback = message_reasoning(choice);
+    if !thought_fallback.is_empty() {
+        if let Ok(mut slot) = fallback_reasoning.lock() {
+            *slot = thought_fallback;
+        }
+    }
+    if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
+        for call in calls {
+            let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let id = call.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let name = call
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let arguments = call
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !id.is_empty() || !name.is_empty() {
+                pieces.push(StreamPiece::ToolStart { index, id, name });
+            }
+            if !arguments.is_empty() {
+                pieces.push(StreamPiece::ToolDelta {
+                    index,
+                    partial: arguments,
+                });
+            }
+        }
+    }
+    pieces
 }
 
 fn is_reasoning_part(kind: &str) -> bool {
@@ -980,23 +681,6 @@ fn message_reasoning(choice: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
-fn emit_pending_reasoning(app: &AppHandle, stream_id: &str, emitted: bool, fallback: &str) {
-    if emitted || fallback.is_empty() {
-        return;
-    }
-    let _ = app.emit(
-        "dev-chat",
-        DevChatEvent {
-            stream_id: stream_id.into(),
-            kind: "reasoning".into(),
-            text: Some(fallback.to_string()),
-            tool_calls: None,
-            usage: None,
-            thinking: None,
-        },
-    );
-}
-
 fn fallback_choice_text(choice: &serde_json::Value) -> String {
     choice
         .get("message")
@@ -1011,31 +695,6 @@ fn fallback_done_text(emitted_text: bool, fallback: &str) -> Option<String> {
     } else {
         Some(fallback.to_string())
     }
-}
-
-fn emit_done(
-    app: &AppHandle,
-    stream_id: &str,
-    tool_acc: &HashMap<u32, (String, String, String)>,
-    usage: Option<DevChatUsage>,
-    text: Option<String>,
-) {
-    let tool_calls = finish_tools(tool_acc);
-    let _ = app.emit(
-        "dev-chat",
-        DevChatEvent {
-            stream_id: stream_id.into(),
-            kind: "done".into(),
-            text,
-            tool_calls: if tool_calls.is_empty() {
-                None
-            } else {
-                Some(tool_calls)
-            },
-            usage,
-            thinking: None,
-        },
-    );
 }
 
 fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
@@ -1073,28 +732,6 @@ fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
         completion_tokens,
         total_tokens,
     })
-}
-
-fn finish_tools(acc: &HashMap<u32, (String, String, String)>) -> Vec<DevToolCall> {
-    let mut keys: Vec<u32> = acc.keys().copied().collect();
-    keys.sort();
-    keys.into_iter()
-        .filter_map(|k| {
-            let (id, name, arguments) = acc.get(&k)?;
-            if name.is_empty() {
-                return None;
-            }
-            Some(DevToolCall {
-                id: if id.is_empty() {
-                    format!("call_{k}")
-                } else {
-                    id.clone()
-                },
-                name: name.clone(),
-                arguments: arguments.clone(),
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1177,54 +814,6 @@ mod tests {
         assert_eq!(fallback_done_text(true, "Saved."), None);
         assert_eq!(fallback_done_text(false, ""), None);
         assert_eq!(fallback_done_text(false, "Saved."), Some("Saved.".into()));
-    }
-
-    #[test]
-    fn rapid_pieces_stay_buffered_until_the_interval_elapses() {
-        let mut pending = String::new();
-        let mut last = None;
-        assert!(!note_coalesced(&mut pending, "Hel", &mut last));
-        assert_eq!(pending, "Hel");
-        assert!(last.is_some());
-        assert!(!note_coalesced(&mut pending, "lo", &mut last));
-        assert_eq!(pending, "Hello");
-    }
-
-    #[test]
-    fn piece_after_the_interval_flushes_the_previous_buffer() {
-        let mut pending = String::new();
-        let mut last = Some(Instant::now() - COALESCE_INTERVAL);
-        assert!(note_coalesced(&mut pending, "lo", &mut last));
-        assert_eq!(pending, "lo");
-    }
-
-    #[test]
-    fn large_buffer_flushes_immediately() {
-        let mut pending = "x".repeat(COALESCE_MAX_BYTES - 1);
-        let mut last = None;
-        assert!(!note_coalesced(&mut pending, "", &mut last));
-        assert!(last.is_none());
-        assert!(note_coalesced(&mut pending, "yy", &mut last));
-        assert!(pending.len() >= COALESCE_MAX_BYTES);
-    }
-
-    #[test]
-    fn flush_now_sends_whatever_is_pending() {
-        let mut pending = String::from("held");
-        assert_eq!(take_coalesced(&mut pending), Some("held".into()));
-        assert!(pending.is_empty());
-        assert_eq!(take_coalesced(&mut pending), None);
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn empty_pieces_do_not_flush_or_change_the_buffer() {
-        let mut pending = String::from("stay");
-        let mut last = Some(Instant::now() - COALESCE_INTERVAL - Duration::from_millis(10));
-        let before = last;
-        assert!(!note_coalesced(&mut pending, "", &mut last));
-        assert_eq!(pending, "stay");
-        assert_eq!(last, before);
     }
 
     #[test]

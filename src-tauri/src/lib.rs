@@ -1,10 +1,12 @@
-mod anthropic;
+mod model_providers;
 mod appdb;
 mod remote;
 mod dev;
 mod env_path;
 mod error;
-mod grok_cli;
+
+pub use model_providers::anthropic;
+pub use model_providers::grok_cli;
 mod image;
 mod paths;
 mod perf;

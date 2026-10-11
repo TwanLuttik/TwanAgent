@@ -51,6 +51,13 @@ pub struct GrokCliInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStatus {
+    pub id: String,
+    pub ready: bool,
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DevRuntime {
     pub installed: bool,
     pub logged_in: bool,
@@ -60,8 +67,12 @@ pub struct DevRuntime {
     pub default_effort: String,
     pub models: Vec<DevModel>,
     pub has_key: bool,
+    /// Grok can send. Kept so older screens still read one flag.
     pub ready: bool,
     pub hint: String,
+    /// One row per model provider. The composer uses the row for the selected model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<ProviderStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -795,12 +806,11 @@ pub fn runtime(data_dir: &Path) -> DevRuntime {
     let installed = bin.is_some();
     let version = bin.as_ref().and_then(|p| grok_version(p));
     let home = grok_home();
-    let mut models = home
+    let models = home
         .as_ref()
         .map(|h| load_models(h))
         .filter(|m| !m.is_empty())
         .unwrap_or_else(fallback_models);
-    models.extend(crate::anthropic::claude_models());
     let (default_model, default_effort) = home
         .as_ref()
         .map(|h| load_defaults(h, &models))
@@ -853,6 +863,7 @@ pub fn runtime(data_dir: &Path) -> DevRuntime {
         has_key,
         ready,
         hint,
+        providers: Vec::new(),
     }
 }
 
@@ -981,9 +992,7 @@ mod tests {
             .map(|row| (row.id.as_str(), row.provider.as_str()))
             .collect();
         assert!(providers.iter().any(|(id, provider)| *id == "grok-4.5" && *provider == "xai"));
-        assert!(providers
-            .iter()
-            .any(|(id, provider)| *id == "claude-sonnet-4-6" && *provider == "anthropic"));
+        assert!(!providers.iter().any(|(id, _)| id.starts_with("claude-")));
         assert!(!providers.iter().any(|(id, _)| id.starts_with("sxs-")));
     }
 

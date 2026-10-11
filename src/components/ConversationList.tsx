@@ -35,7 +35,7 @@ import {
 } from "../lib/journey";
 import type { ConversationKind } from "../lib/terminal-chat";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
-import { providerFor } from "../lib/provider";
+import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { formatModelName } from "../lib/usage";
 
@@ -730,18 +730,28 @@ const ConversationCard = memo(function ConversationCard({
           ) : null}
         </span>
       </button>
-      {row.kind === "terminal" ? (
-        <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
-      ) : (
-        <ModelMark model={row.model} />
-      )}
-      {running ? (
-        <span
-          className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-          aria-label={preview || "Loading"}
-        />
-      ) : null}
-      <span className="relative mr-1.5 flex h-4 w-6 shrink-0 items-center justify-center">
+      <span className="flex shrink-0 items-center transition-transform duration-150 ease-out group-hover:-translate-x-1">
+        {row.kind === "terminal" ? (
+          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
+        ) : (
+          <ModelMark model={row.model} />
+        )}
+        {running ? (
+          <span
+            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+            aria-label={preview || "Loading"}
+          />
+        ) : null}
+      </span>
+      <span
+        className={`relative flex h-4 shrink-0 items-center justify-end overflow-hidden transition-[width,margin] duration-150 ease-out ${
+          onDelete && !overlay && !placeholder
+            ? "mr-1 w-0 group-hover:mr-1.5 group-hover:w-6"
+            : age
+              ? "mr-1.5 w-6"
+              : "w-0"
+        }`}
+      >
         <span
           className={`text-[11px] leading-none tabular-nums text-muted ${
             onDelete && !overlay && !placeholder ? "group-hover:opacity-0" : ""
@@ -757,8 +767,8 @@ const ConversationCard = memo(function ConversationCard({
             type="button"
             aria-label="Delete conversation"
             onClick={() => onDelete?.(rowId)}
-            className={`absolute inset-0 hidden items-center justify-center text-muted hover:text-ink ${
-              placeholder ? "" : "group-hover:flex"
+            className={`absolute inset-0 flex items-center justify-center text-muted opacity-0 hover:text-ink ${
+              placeholder ? "" : "group-hover:opacity-100"
             }`}
           >
             <Symbol name="xmark" className="size-2.5" />
@@ -926,7 +936,7 @@ function TodoMark({ badge }: { badge: TodoBadge }) {
 const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) {
   const id = model?.trim() ?? "";
   if (!id) return null;
-  const claude = providerFor(id) === "anthropic";
+  const claude = providerProfile(id).id === "anthropic";
   const name = formatModelName(id);
   return (
     <span

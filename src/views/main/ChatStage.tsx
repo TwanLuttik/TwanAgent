@@ -10,7 +10,7 @@ import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } fr
 import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
-import { providerFor } from "../../lib/provider";
+import { providerProfile } from "../../lib/provider";
 import {
   editorFileView,
   focusEditor,
@@ -460,7 +460,7 @@ function LiveTranscript({
     <>
       {showEmpty ? (
         <p className="m-0 text-center text-[13px] text-muted">
-          Ask {providerFor(model) === "anthropic" ? "Claude" : "Grok"} to inspect, edit, or run something in this folder.
+          Ask {providerProfile(model).agentName} to inspect, edit, or run something in this folder.
         </p>
       ) : null}
       <ChatTranscript

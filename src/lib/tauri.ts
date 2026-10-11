@@ -47,6 +47,12 @@ export type Model = {
   /** Claude capability ids: vision, thinking, pdf, effort. */
   capabilities?: string[] | null;
 };
+export type ProviderStatus = {
+  id: string;
+  ready: boolean;
+  hint: string;
+};
+
 export type Runtime = {
   installed: boolean;
   logged_in: boolean;
@@ -58,6 +64,7 @@ export type Runtime = {
   has_key: boolean;
   ready: boolean;
   hint: string;
+  providers?: ProviderStatus[];
 };
 
 export function runtime(): Promise<Runtime> {

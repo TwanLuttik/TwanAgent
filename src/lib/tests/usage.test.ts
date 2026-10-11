@@ -488,7 +488,7 @@ describe("buildUsageTrend", () => {
     const events = [
       ev({
         id: 1,
-        recorded_at: new Date(now - 24 * 3600_000 + 60_000).toISOString(),
+        recorded_at: new Date(now - 23 * 3600_000).toISOString(),
         workspace_path: "/a",
         total_tokens: 100,
         prompt_tokens: 80,
@@ -515,6 +515,10 @@ describe("buildUsageTrend", () => {
     assert.equal(trend.totals.total, 140);
     assert.equal(trend.points[0].total, 100);
     assert.equal(trend.points[23].total, 40);
+    const current = new Date(now);
+    current.setMinutes(0, 0, 0);
+    assert.equal(trend.points[23].atMs, current.getTime());
+    assert.equal(trend.points[23].label, current.toLocaleTimeString(undefined, { hour: "numeric" }));
     assert.ok(trend.points[0].label.length > 0);
   });
 

@@ -154,16 +154,29 @@ export const MODEL_RATES: Record<string, ModelRate> = {
   "grok-4.20-multi-agent-0309": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
   "grok-build-0.1": { input: 1, cachedInput: 0.2, output: 2, longContextFrom: 200_000, longInput: 2, longCachedInput: 0.4, longOutput: 4 },
   // Anthropic standard context, per million tokens. No cached or long-context tier in this slice.
+  "claude-fable-5-1": { input: 10, output: 50 },
+  "claude-opus-5-5": { input: 4, output: 20 },
+  "claude-sonnet-5-5": { input: 2, output: 10 },
   "claude-opus-4-8": { input: 5, output: 25 },
+  "claude-opus-4-7": { input: 5, output: 25 },
+  "claude-opus-4-6": { input: 5, output: 25 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
 };
 
 const PER_MILLION = 1_000_000;
 
 const MODEL_NAMES: Record<string, string> = {
+  "claude-fable-5-1": "Claude Fable 5.1",
+  "claude-opus-5-5": "Claude Opus 5.5",
+  "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "claude-haiku-5-5": "Claude Haiku 5.5",
   "claude-opus-4-8": "Claude Opus 4.8",
+  "claude-opus-4-7": "Claude Opus 4.7",
+  "claude-opus-4-6": "Claude Opus 4.6",
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
+  "claude-sonnet-4-5": "Claude Sonnet 4.5",
   "claude-haiku-4-5": "Claude Haiku 4.5",
 };
 
@@ -178,6 +191,7 @@ export function formatModelName(model: string): string {
 export function modelColorIndex(model: string): number {
   const id = model.trim().toLowerCase();
   if (!id) return 7;
+  if (id.startsWith("claude-fable")) return 4;
   if (id.startsWith("claude-opus")) return 4;
   if (id.startsWith("claude-sonnet")) return 5;
   if (id.startsWith("claude-haiku")) return 3;
@@ -551,13 +565,20 @@ function trendBucketStart(range: UsageTrendRange, nowMs: number): number {
     const end = new Date(nowMs);
     return new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29).setHours(0, 0, 0, 0);
   }
-  return nowMs - usageTrendRangeMs(range);
+  // Clock hours, not a slice of "now minus 24h". The last bucket is the hour we are in.
+  const hour = new Date(nowMs);
+  hour.setMinutes(0, 0, 0);
+  const count = trendBucketCount(range);
+  return hour.getTime() - (count - 1) * HOUR;
 }
 
 function trendBucketAt(range: UsageTrendRange, startMs: number, index: number, size: number): number {
-  if (range !== "30d") return startMs + index * size;
-  const start = new Date(startMs);
-  return new Date(start.getFullYear(), start.getMonth(), start.getDate() + index).setHours(0, 0, 0, 0);
+  if (range === "30d") {
+    const start = new Date(startMs);
+    return new Date(start.getFullYear(), start.getMonth(), start.getDate() + index).setHours(0, 0, 0, 0);
+  }
+  return startMs + index * HOUR;
+  void size;
 }
 
 function dayIndex(startMs: number, atMs: number): number {
@@ -613,8 +634,7 @@ export function buildUsageTrend(
   const nowMs = opts.nowMs ?? Date.now();
   const count = trendBucketCount(opts.range);
   const startMs = trendBucketStart(opts.range, nowMs);
-  const span = Math.max(1, nowMs - startMs);
-  const size = span / count;
+  const size = opts.range === "30d" ? DAY : HOUR;
   const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
   const points: UsageTrendPoint[] = Array.from({ length: count }, (_, i) => {
     const atMs = trendBucketAt(opts.range, startMs, i, size);

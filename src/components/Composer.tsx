@@ -18,8 +18,8 @@ import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../l
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
-import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "../lib/model-family";
-import { providerFor, type ProviderId } from "../lib/provider";
+import { groupModelFamilies, sharedModelCapabilities } from "../lib/model-family";
+import { providerProfile, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
@@ -1152,7 +1152,7 @@ const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
 ];
 
 function modelProvider(model: Model): ProviderId {
-  return model.provider === "anthropic" || model.provider === "xai" ? model.provider : providerFor(model.id);
+  return model.provider === "anthropic" || model.provider === "xai" ? model.provider : providerProfile(model.id).id;
 }
 
 function ModelSelect({
@@ -1229,7 +1229,7 @@ function ModelSelect({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: menuAbove ? 6 : -6 }}
             transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
-            className={`absolute left-0 z-30 flex h-80 w-[280px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
+            className={`absolute left-0 z-30 flex h-80 w-[420px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
               menuAbove ? "bottom-full mb-1 origin-bottom" : "top-full mt-1 origin-top"
             }`}
           >
@@ -1277,11 +1277,9 @@ function ModelSelect({
                         <div className="flex items-center gap-2 px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
                           <span className="min-w-0 flex-1 truncate">{family.label}</span>
                           {shared ? <CapabilityIcons ids={shared} /> : null}
-                          {shared ? <span className="size-3 shrink-0" aria-hidden /> : null}
                         </div>
                       ) : null}
                       {family.models.map((row) => {
-                        const version = modelFamilyName(row.name).version;
                         const current = row.id === value;
                         const context = contextWindowLabel(row.context_window ?? 0);
                         return (
@@ -1295,18 +1293,17 @@ function ModelSelect({
                               onChange(row.id);
                               setOpen(false);
                             }}
-                            className={`flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
-                              current ? "font-medium text-ink" : "text-ink/80"
-                            }`}
+                            className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                              versions ? "pr-2.5 pl-6" : "px-2.5"
+                            } ${current ? "font-medium text-ink" : "text-ink/80"}`}
                           >
                             <ModelIcon model={row} className="size-3.5" />
-                            <span className="min-w-0 truncate">{versions ? version || row.name : row.name}</span>
+                            <span className="min-w-0 flex-1 truncate">{row.name}</span>
                             {context ? (
                               <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
                                 {context} ctx
                               </span>
                             ) : null}
-                            <span className="min-w-2 flex-1" />
                             <CapabilityIcons ids={row.capabilities} faded={Boolean(shared)} />
                             <Symbol
                               name="checkmark"

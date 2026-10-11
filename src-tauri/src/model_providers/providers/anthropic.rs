@@ -5,29 +5,85 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
+use crate::model_providers::event::{
+    apply_thinking, apply_tool, finished_thinking as shared_finished_thinking, finished_tools as shared_finished_tools,
+    merge_usage as merge_stream_usage, ThinkingBlock, StreamPiece,
+};
 
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
 
+/// One picker row per Claude family. Current lineup first, then the previous
+/// generation, so a short models-API page cannot hide the rest.
+/// Context windows and output caps follow Anthropic's model overview.
 const CLAUDE_MODELS: &[(&str, &str, u64, u32, &[&str])] = &[
+    (
+        "claude-fable-5-1",
+        "Claude Fable 5.1",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-5-5",
+        "Claude Opus 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-5-5",
+        "Claude Sonnet 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-haiku-5-5",
+        "Claude Haiku 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high"],
+    ),
     (
         "claude-opus-4-8",
         "Claude Opus 4.8",
-        200_000,
-        32_000,
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-4-7",
+        "Claude Opus 4.7",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-4-6",
+        "Claude Opus 4.6",
+        1_000_000,
+        128_000,
         &["low", "medium", "high", "xhigh", "max"],
     ),
     (
         "claude-sonnet-4-6",
         "Claude Sonnet 4.6",
+        1_000_000,
+        64_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-4-5",
+        "Claude Sonnet 4.5",
         200_000,
-        32_000,
+        64_000,
         &["low", "medium", "high", "xhigh", "max"],
     ),
     (
         "claude-haiku-4-5",
         "Claude Haiku 4.5",
         200_000,
-        16_000,
+        64_000,
         &["low", "medium", "high"],
     ),
 ];
@@ -97,10 +153,14 @@ pub fn max_tokens_for(id: &str) -> u32 {
     if let Some(row) = claude_model(id) {
         return row.3;
     }
-    if id.contains("haiku") {
-        16_000
+    let family = id.strip_suffix("-latest").unwrap_or(id);
+    if let Some(row) = claude_model(family) {
+        return row.3;
+    }
+    if id.contains("haiku") && !id.contains("haiku-5") {
+        64_000
     } else if is_claude_model(id) {
-        32_000
+        128_000
     } else {
         16_000
     }
@@ -293,8 +353,27 @@ pub struct ClaudeAuth {
 }
 
 /// Saved API key first, then the same Claude CLI login the settings screen shows as signed in.
-/// The token is not returned to the UI.
+/// The token is not returned to the UI. An expired CLI token is not refreshed here.
 pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
+    resolve_claude_auth_with(false)
+}
+
+/// Like `resolve_claude_auth`, but renews the CLI OAuth token when it is near expiry.
+pub async fn resolve_claude_auth_fresh() -> Option<ClaudeAuth> {
+    if let Some(auth) = resolve_claude_auth_with(false) {
+        if !auth.via_cli {
+            return Some(auth);
+        }
+    }
+    let home = home_dir()?;
+    let token = read_cli_access_token_fresh(&home).await?;
+    Some(ClaudeAuth {
+        token,
+        via_cli: true,
+    })
+}
+
+fn resolve_claude_auth_with(allow_expired_cli: bool) -> Option<ClaudeAuth> {
     if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk() {
         return Some(ClaudeAuth {
             token: key,
@@ -302,7 +381,16 @@ pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
         });
     }
     let home = home_dir()?;
-    let token = read_claude_access_token(&home)?;
+    if let Some(token) = read_claude_access_token(&home) {
+        return Some(ClaudeAuth {
+            token,
+            via_cli: true,
+        });
+    }
+    if !allow_expired_cli {
+        return None;
+    }
+    let (token, _) = cli_access_token(&home, true)?;
     Some(ClaudeAuth {
         token,
         via_cli: true,
@@ -333,22 +421,114 @@ pub fn read_claude_access_token_with(
 }
 
 pub fn read_cli_access_token(home: &Path) -> Option<String> {
-    let path = home
-        .join(".config")
+    cli_access_token(home, false).map(|(token, _)| token)
+}
+
+/// The Claude CLI login. When `refresh` is set, an expired access token is renewed and written back.
+pub async fn read_cli_access_token_fresh(home: &Path) -> Option<String> {
+    let (token, expired) = cli_access_token(home, true)?;
+    if !expired {
+        return Some(token);
+    }
+    let path = cli_credentials_path(home);
+    let raw = fs::read_to_string(&path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let refresh = value
+        .get("refresh_token")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())?
+        .to_string();
+    refresh_cli_credentials(&path, &refresh).await
+}
+
+/// `(token, needs_refresh)`. An expired token is still returned when `allow_expired` is set so the caller can refresh it.
+fn cli_access_token(home: &Path, allow_expired: bool) -> Option<(String, bool)> {
+    let raw = fs::read_to_string(cli_credentials_path(home)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let token = access_token_of(&value)?;
+    let expired = token_needs_refresh(value.get("expires_at").and_then(|item| item.as_i64()));
+    if expired && !allow_expired {
+        return None;
+    }
+    Some((token, expired))
+}
+
+fn cli_credentials_path(home: &Path) -> PathBuf {
+    home.join(".config")
         .join("anthropic")
         .join("credentials")
-        .join("default.json");
-    let raw = fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let token = value
+        .join("default.json")
+}
+
+fn access_token_of(value: &serde_json::Value) -> Option<String> {
+    value
         .get("access_token")
         .and_then(|item| item.as_str())
         .map(str::trim)
-        .filter(|token| !token.is_empty())?;
-    if token_expired(value.get("expires_at").and_then(|item| item.as_i64())) {
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
+/// Refresh a few minutes early so a send does not race the expiry.
+fn token_needs_refresh(expires_at: Option<i64>) -> bool {
+    let Some(expires_at) = expires_at.filter(|value| *value > 0) else {
+        return false;
+    };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let expires_ms = if expires_at < 10_000_000_000 {
+        expires_at.saturating_mul(1000)
+    } else {
+        expires_at
+    };
+    expires_ms <= now.as_millis() as i64 + 5 * 60 * 1000
+}
+
+/// Same login the Claude CLI reports as `oauth_token`. The refresh token rotates, so the file is rewritten.
+async fn refresh_cli_credentials(path: &Path, refresh_token: &str) -> Option<String> {
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+    });
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?
+        .post(CLAUDE_OAUTH_TOKEN_URL)
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
         return None;
     }
-    Some(token.to_string())
+    let fresh: serde_json::Value = response.json().await.ok()?;
+    let access = access_token_of(&fresh)?;
+    let mut stored = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(path).ok()?).ok()?;
+    let obj = stored.as_object_mut()?;
+    obj.insert("access_token".into(), serde_json::Value::String(access.clone()));
+    if let Some(next) = fresh.get("refresh_token").and_then(|item| item.as_str()) {
+        if !next.trim().is_empty() {
+            obj.insert("refresh_token".into(), serde_json::Value::String(next.to_string()));
+        }
+    }
+    if let Some(expires_at) = fresh.get("expires_at").and_then(|item| item.as_i64()) {
+        obj.insert("expires_at".into(), serde_json::Value::from(expires_at));
+    } else if let Some(expires_in) = fresh.get("expires_in").and_then(|item| item.as_i64()) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs() as i64;
+        obj.insert("expires_at".into(), serde_json::Value::from(now.saturating_add(expires_in)));
+    }
+    let text = serde_json::to_string_pretty(&stored).ok()?;
+    fs::write(path, text).ok()?;
+    Some(access)
 }
 
 /// Claude writes `expires_at` as unix seconds. Older payloads used milliseconds.
@@ -368,8 +548,8 @@ fn token_expired(expires_at: Option<i64>) -> bool {
 }
 
 /// Turn one page of `GET /v1/models` into picker rows.
-/// Retired models and non-Claude ids are dropped. The bundled three supply thinking levels
-/// when the same id is listed; anything else gets the line default.
+/// Retired models and non-Claude ids are dropped. A known catalog row supplies thinking
+/// levels when the same id is listed; anything else gets the line default.
 pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
         return (Vec::new(), None, false);
@@ -482,7 +662,10 @@ fn efforts_for_line(id: &str) -> &'static [&'static str] {
     }
 }
 
-/// Models this account can call. Falls back to the bundled three when the list is unavailable.
+/// Models this account can call.
+/// The catalog is the picker. A live page fills in display names, windows, and effort
+/// for ids it returns, including dated snapshots, but it never hides a catalog family
+/// that the page left out.
 pub async fn available_models(auth: &ClaudeAuth) -> Vec<DevModel> {
     let client = reqwest::Client::builder()
         .build()
@@ -528,10 +711,67 @@ pub async fn available_models(auth: &ClaudeAuth) -> Vec<DevModel> {
         };
         after = Some(cursor);
     }
-    if out.is_empty() {
-        claude_models()
-    } else {
-        out
+    merge_catalog(out)
+}
+
+/// Keep every catalog family, in catalog order. Live rows overlay the same id and
+/// dated snapshots (`claude-sonnet-4-5-20250929`) follow their family.
+fn merge_catalog(live: Vec<DevModel>) -> Vec<DevModel> {
+    let mut used = vec![false; live.len()];
+    let mut out = Vec::with_capacity(CLAUDE_MODELS.len() + live.len());
+    for (id, name, window, _max_tokens, efforts) in CLAUDE_MODELS {
+        let mut row = DevModel {
+            id: (*id).into(),
+            name: (*name).into(),
+            efforts: efforts_for(efforts),
+            context_window: Some(*window),
+            context_windows: Vec::new(),
+            provider: PROVIDER_ANTHROPIC.into(),
+            capabilities: bundled_capabilities(id),
+        };
+        if let Some(index) = live.iter().position(|item| item.id == *id) {
+            row = overlay_catalog(row, &live[index]);
+            used[index] = true;
+        }
+        out.push(row);
+        let prefix = format!("{id}-");
+        for (index, item) in live.iter().enumerate() {
+            if used[index] || !item.id.starts_with(&prefix) {
+                continue;
+            }
+            used[index] = true;
+            out.push(item.clone());
+        }
+    }
+    for (index, item) in live.into_iter().enumerate() {
+        if !used[index] {
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn overlay_catalog(catalog: DevModel, live: &DevModel) -> DevModel {
+    DevModel {
+        id: catalog.id,
+        name: if live.name.trim().is_empty() {
+            catalog.name
+        } else {
+            live.name.clone()
+        },
+        efforts: if live.efforts.is_empty() {
+            catalog.efforts
+        } else {
+            live.efforts.clone()
+        },
+        context_window: live.context_window.or(catalog.context_window),
+        context_windows: live.context_windows.clone(),
+        provider: PROVIDER_ANTHROPIC.into(),
+        capabilities: if live.capabilities.is_empty() {
+            catalog.capabilities
+        } else {
+            live.capabilities.clone()
+        },
     }
 }
 
@@ -548,6 +788,8 @@ pub fn claude_cli_info() -> ClaudeCliInfo {
     }
 }
 
+pub const CLAUDE_OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+pub const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -832,69 +1074,20 @@ pub fn http_error_message(status: u16, body: &str) -> String {
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SseTool {
-    pub index: u32,
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SsePiece {
-    Delta(String),
-    Reasoning(String),
-    Usage {
-        prompt_tokens: u64,
-        completion_tokens: u64,
-    },
-    ToolStart {
-        index: u32,
-        id: String,
-        name: String,
-    },
-    ToolDelta {
-        index: u32,
-        partial: String,
-    },
-    /// A thinking block opened. The signature arrives later and must be kept.
-    ThinkingStart { index: u32 },
-    /// Encrypted thinking. There is no readable text, only `data` to replay.
-    RedactedThinking { index: u32, data: String },
-    /// Signature for the thinking block at this index. Replay it unmodified.
-    ThinkingSignature { index: u32, signature: String },
-    Stop,
-}
-
-/// One thinking block exactly as Anthropic requires it on the next request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ThinkingBlock {
-    #[serde(rename = "type")]
-    pub kind: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub thinking: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub signature: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub data: String,
-}
+pub type SsePiece = StreamPiece;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ThinkingAccum {
-    rows: Vec<OpenThinking>,
+    inner: crate::model_providers::event::ThinkingAccum,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OpenThinking {
-    index: u32,
-    redacted: bool,
-    thinking: String,
-    signature: String,
-    data: String,
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolAccum {
+    inner: crate::model_providers::event::ToolAccum,
 }
 
 /// One Anthropic SSE `data:` payload. Event names are ignored; the JSON `type` is enough.
-pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
+pub fn parse_sse_data(data: &str) -> Option<StreamPiece> {
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return None;
@@ -905,7 +1098,7 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
             let index = json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let block = json.get("content_block")?;
             match block.get("type").and_then(|v| v.as_str())? {
-                "tool_use" => Some(SsePiece::ToolStart {
+                "tool_use" => Some(StreamPiece::ToolStart {
                     index,
                     id: block
                         .get("id")
@@ -918,8 +1111,8 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
                         .unwrap_or("")
                         .to_string(),
                 }),
-                "thinking" => Some(SsePiece::ThinkingStart { index }),
-                "redacted_thinking" => Some(SsePiece::RedactedThinking {
+                "thinking" => Some(StreamPiece::ThinkingStart { index }),
+                "redacted_thinking" => Some(StreamPiece::RedactedThinking {
                     index,
                     data: block
                         .get("data")
@@ -939,7 +1132,7 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
                     if text.is_empty() {
                         None
                     } else {
-                        Some(SsePiece::Delta(text.to_string()))
+                        Some(StreamPiece::Delta(text.to_string()))
                     }
                 }
                 "thinking_delta" => {
@@ -947,7 +1140,7 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
                     if text.is_empty() {
                         None
                     } else {
-                        Some(SsePiece::Reasoning(text.to_string()))
+                        Some(StreamPiece::Reasoning(text.to_string()))
                     }
                 }
                 "signature_delta" => {
@@ -955,13 +1148,13 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
                     if signature.is_empty() {
                         None
                     } else {
-                        Some(SsePiece::ThinkingSignature {
+                        Some(StreamPiece::ThinkingSignature {
                             index,
                             signature: signature.to_string(),
                         })
                     }
                 }
-                "input_json_delta" => Some(SsePiece::ToolDelta {
+                "input_json_delta" => Some(StreamPiece::ToolDelta {
                     index,
                     partial: delta
                         .get("partial_json")
@@ -974,7 +1167,7 @@ pub fn parse_sse_data(data: &str) -> Option<SsePiece> {
         }
         "message_start" => usage_piece(json.get("message").and_then(|m| m.get("usage"))),
         "message_delta" => usage_piece(json.get("usage")),
-        "message_stop" => Some(SsePiece::Stop),
+        "message_stop" => Some(StreamPiece::Stop),
         _ => None,
     }
 }
@@ -987,153 +1180,46 @@ fn usage_piece(usage: Option<&serde_json::Value>) -> Option<SsePiece> {
     if prompt.is_none() && completion.is_none() {
         return None;
     }
-    Some(SsePiece::Usage {
+    Some(StreamPiece::Usage {
         prompt_tokens: prompt.unwrap_or(u64::MAX),
         completion_tokens: completion.unwrap_or(u64::MAX),
     })
 }
 
 pub fn merge_usage(prev: Option<(u64, u64)>, prompt_tokens: u64, completion_tokens: u64) -> (u64, u64) {
-    let (prev_prompt, prev_completion) = prev.unwrap_or((0, 0));
-    (
-        if prompt_tokens == u64::MAX { prev_prompt } else { prompt_tokens },
-        if completion_tokens == u64::MAX { prev_completion } else { completion_tokens },
-    )
+    merge_stream_usage(prev, prompt_tokens, completion_tokens)
 }
 
-pub fn apply_thinking_piece(blocks: &mut ThinkingAccum, piece: &SsePiece) {
-    apply_open_thinking(&mut blocks.rows, piece);
-}
-
-fn apply_open_thinking(blocks: &mut Vec<OpenThinking>, piece: &SsePiece) {
-    match piece {
-        SsePiece::ThinkingStart { index } => {
-            if blocks.iter().any(|row| row.index == *index) {
-                return;
-            }
-            blocks.push(OpenThinking {
-                index: *index,
-                redacted: false,
-                thinking: String::new(),
-                signature: String::new(),
-                data: String::new(),
-            });
-        }
-        SsePiece::Reasoning(text) => {
-            if let Some(row) = blocks.iter_mut().rev().find(|row| !row.redacted) {
-                row.thinking.push_str(text);
-            }
-        }
-        SsePiece::ThinkingSignature { index, signature } => {
-            if let Some(row) = blocks.iter_mut().find(|row| row.index == *index && !row.redacted) {
-                row.signature.push_str(signature);
-                return;
-            }
-            if let Some(row) = blocks.iter_mut().rev().find(|row| !row.redacted && row.signature.is_empty()) {
-                row.signature.push_str(signature);
-            }
-        }
-        SsePiece::RedactedThinking { index, data } => {
-            if data.is_empty() {
-                return;
-            }
-            if let Some(row) = blocks.iter_mut().find(|row| row.index == *index) {
-                row.redacted = true;
-                row.data = data.clone();
-                return;
-            }
-            blocks.push(OpenThinking {
-                index: *index,
-                redacted: true,
-                thinking: String::new(),
-                signature: String::new(),
-                data: data.clone(),
-            });
-        }
-        _ => {}
-    }
-}
-
-/// Blocks worth sending back. A thinking block without its signature is dropped.
 pub fn finished_thinking(blocks: &ThinkingAccum) -> Vec<ThinkingBlock> {
-    let mut rows = blocks.rows.clone();
-    rows.sort_by_key(|row| row.index);
-    rows.into_iter()
-        .filter_map(|row| {
-            if row.redacted {
-                if row.data.is_empty() {
-                    return None;
-                }
-                return Some(ThinkingBlock {
-                    kind: "redacted_thinking".into(),
-                    thinking: String::new(),
-                    signature: String::new(),
-                    data: row.data,
-                });
-            }
-            if row.signature.is_empty() {
-                return None;
-            }
-            Some(ThinkingBlock {
-                kind: "thinking".into(),
-                thinking: row.thinking,
-                signature: row.signature,
-                data: String::new(),
-            })
-        })
-        .collect()
+    finished_thinking_blocks(blocks)
 }
 
-pub fn apply_tool_piece(tools: &mut Vec<SseTool>, piece: &SsePiece) {
-    match piece {
-        SsePiece::ToolStart { index, id, name } => {
-            if let Some(row) = tools.iter_mut().find(|row| row.index == *index) {
-                if !id.is_empty() {
-                    row.id = id.clone();
-                }
-                if !name.is_empty() {
-                    row.name = name.clone();
-                }
-                return;
-            }
-            tools.push(SseTool {
-                index: *index,
-                id: id.clone(),
-                name: name.clone(),
-                arguments: String::new(),
-            });
-        }
-        SsePiece::ToolDelta { index, partial } => {
-            if let Some(row) = tools.iter_mut().find(|row| row.index == *index) {
-                row.arguments.push_str(partial);
-                return;
-            }
-            tools.push(SseTool {
-                index: *index,
-                id: String::new(),
-                name: String::new(),
-                arguments: partial.clone(),
-            });
-        }
-        _ => {}
-    }
+pub fn finished_tools(tools: &ToolAccum) -> Vec<(String, String, String)> {
+    finished_tool_rows(tools)
 }
 
-pub fn finished_tools(tools: &[SseTool]) -> Vec<(String, String, String)> {
-    let mut rows = tools.to_vec();
-    rows.sort_by_key(|row| row.index);
-    rows.into_iter()
-        .filter(|row| !row.name.is_empty())
+pub fn apply_thinking_piece(blocks: &mut ThinkingAccum, piece: &StreamPiece) {
+    apply_thinking(&mut blocks.inner, piece);
+}
+
+pub fn finished_thinking_blocks(blocks: &ThinkingAccum) -> Vec<ThinkingBlock> {
+    shared_finished_thinking(&blocks.inner)
+}
+
+pub fn apply_tool_piece(tools: &mut ToolAccum, piece: &StreamPiece) {
+    apply_tool(&mut tools.inner, piece);
+}
+
+pub fn finished_tool_rows(tools: &ToolAccum) -> Vec<(String, String, String)> {
+    shared_finished_tools(&tools.inner)
+        .into_iter()
         .map(|row| {
-            (
-                if row.id.is_empty() {
-                    format!("toolu_{}", row.index)
-                } else {
-                    row.id
-                },
-                row.name,
-                row.arguments,
-            )
+            let id = if row.id.starts_with("tool_") && !row.id.starts_with("toolu_") {
+                row.id.replacen("tool_", "toolu_", 1)
+            } else {
+                row.id
+            };
+            (id, row.name, row.arguments)
         })
         .collect()
 }
@@ -1232,6 +1318,9 @@ mod tests {
         assert!(token_expired(Some(1)));
         assert!(!token_expired(Some(4_102_444_800)));
         assert!(!token_expired(Some(4_102_444_800_000)));
+        assert!(token_needs_refresh(Some(1)));
+        assert!(!token_needs_refresh(None));
+        assert!(!token_needs_refresh(Some(4_102_444_800)));
     }
 
     #[test]
@@ -1287,21 +1376,49 @@ mod tests {
     }
 
     #[test]
-    fn catalog_is_the_three_claude_models() {
+    fn catalog_lists_each_claude_family() {
         let rows = claude_models();
         assert_eq!(
             rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-            ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+            [
+                "claude-fable-5-1",
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-opus-4-8",
+                "claude-opus-4-7",
+                "claude-opus-4-6",
+                "claude-sonnet-4-6",
+                "claude-sonnet-4-5",
+                "claude-haiku-4-5",
+            ]
         );
         assert!(rows.iter().all(|row| row.provider == PROVIDER_ANTHROPIC));
-        assert!(rows.iter().all(|row| row.context_window == Some(200_000)));
         assert!(rows.iter().all(|row| row.context_windows.is_empty()));
+        assert_eq!(rows[0].context_window, Some(1_000_000));
         assert_eq!(rows[0].efforts[0].id, "low");
         assert_eq!(rows[0].efforts[0].label, "Low");
         assert_eq!(rows[0].efforts[3].label, "Extra high");
         assert_eq!(rows[0].efforts.last().map(|e| e.id.as_str()), Some("max"));
-        assert_eq!(rows[0].efforts.last().map(|e| e.label.as_str()), Some("Max"));
-        assert_eq!(rows[2].efforts.len(), 3);
+        let haiku = rows.iter().find(|row| row.id == "claude-haiku-4-5").unwrap();
+        assert_eq!(haiku.efforts.len(), 3);
+        assert_eq!(haiku.context_window, Some(200_000));
+    }
+
+    #[test]
+    fn live_page_does_not_hide_catalog_families() {
+        let page = claude_models()
+            .into_iter()
+            .filter(|row| row.id == "claude-opus-4-8")
+            .collect();
+        let rows = merge_catalog(page);
+        let ids: Vec<_> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert!(ids.contains(&"claude-fable-5-1"));
+        assert!(ids.contains(&"claude-opus-5-5"));
+        assert!(ids.contains(&"claude-sonnet-5-5"));
+        assert!(ids.contains(&"claude-haiku-5-5"));
+        assert!(ids.contains(&"claude-opus-4-7"));
+        assert_eq!(ids.iter().filter(|id| **id == "claude-opus-4-8").count(), 1);
     }
 
     #[test]
@@ -1351,11 +1468,12 @@ mod tests {
 
     #[test]
     fn max_tokens_follow_the_catalog() {
-        assert_eq!(max_tokens_for("claude-opus-4-8"), 32_000);
-        assert_eq!(max_tokens_for("claude-sonnet-4-6"), 32_000);
-        assert_eq!(max_tokens_for("claude-haiku-4-5"), 16_000);
-        assert_eq!(max_tokens_for("claude-opus-4-8-latest"), 32_000);
-        assert_eq!(max_tokens_for("claude-3-haiku-20240307"), 16_000);
+        assert_eq!(max_tokens_for("claude-fable-5-1"), 128_000);
+        assert_eq!(max_tokens_for("claude-opus-4-8"), 128_000);
+        assert_eq!(max_tokens_for("claude-sonnet-4-6"), 64_000);
+        assert_eq!(max_tokens_for("claude-haiku-4-5"), 64_000);
+        assert_eq!(max_tokens_for("claude-opus-4-8-latest"), 128_000);
+        assert_eq!(max_tokens_for("claude-3-haiku-20240307"), 64_000);
     }
 
     #[test]
@@ -1390,7 +1508,7 @@ mod tests {
             &sample_tools(false),
         );
         assert_eq!(body["system"], "You are Claude.\n\nBe brief.");
-        assert_eq!(body["max_tokens"], 32_000);
+        assert_eq!(body["max_tokens"], 64_000);
         assert_eq!(body["stream"], true);
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert!(body.get("output_config").is_none());
@@ -1430,7 +1548,7 @@ mod tests {
         assert!(body.get("output_config").is_none());
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 8_192);
-        assert_eq!(body["max_tokens"], 16_000);
+        assert_eq!(body["max_tokens"], 64_000);
         let opus = to_messages_body(
             &serde_json::json!([{ "role": "user", "content": "go" }]),
             "claude-opus-4-8",
@@ -1537,7 +1655,7 @@ mod tests {
             r#"{"type":"message_delta","usage":{"output_tokens":20}}"#,
             r#"{"type":"message_stop"}"#,
         ];
-        let mut tools = Vec::new();
+        let mut tools = ToolAccum::default();
         let mut thinking = ThinkingAccum::default();
         let mut deltas = Vec::new();
         let mut thoughts = Vec::new();

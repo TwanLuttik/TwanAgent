@@ -168,7 +168,7 @@ pub struct DevChatEvent {
     pub usage: Option<DevChatUsage>,
     /// Signed Claude thinking blocks for the next request. Not used by Grok.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Vec<crate::anthropic::ThinkingBlock>>,
+    pub thinking: Option<Vec<crate::model_providers::ThinkingBlock>>,
 }
 
 /// One website found while a web search is still running.
