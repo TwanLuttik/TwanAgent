@@ -3,6 +3,7 @@ import { isAllDiffPath } from "../lib/editor";
 import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import {
   addedFileDiff,
+  deletedFileDiff,
   groupDiffByFile,
   parseGitDiff,
   type DiffFile,
@@ -36,12 +37,7 @@ export function GitDiffView({
         }
         let text = await api.gitDiff(workspace, path);
         if (!text.trim()) {
-          try {
-            const contents = await api.readFile(workspace, path);
-            text = addedFileDiff(path, contents);
-          } catch {
-            text = "";
-          }
+          text = await fallbackFileDiff(workspace, path);
         }
         if (cancelled) return;
         setSections(parseGitDiff(text));
@@ -115,16 +111,33 @@ async function loadAllDiffs(workspace: string): Promise<DiffFile[]> {
   const files = groupDiffByFile(parseGitDiff(text));
   const seen = new Set(files.map((file) => file.path));
   for (const change of changes) {
-    if (change.status !== "untracked" || seen.has(change.path)) continue;
-    try {
-      const contents = await api.readFile(workspace, change.path);
-      const parsed = parseGitDiff(addedFileDiff(change.path, contents));
-      files.push({ path: change.path, lines: parsed[0]?.lines ?? [] });
-    } catch {
-      files.push({ path: change.path, lines: [] });
-    }
+    if (seen.has(change.path)) continue;
+    if (change.status !== "untracked" && change.status !== "deleted") continue;
+    const text = await fallbackFileDiff(workspace, change.path, change.status);
+    const parsed = parseGitDiff(text);
+    files.push({ path: change.path, lines: parsed[0]?.lines ?? [] });
   }
   return files.filter((file) => file.lines.length > 0 || file.path);
+}
+
+async function fallbackFileDiff(workspace: string, path: string, status?: string): Promise<string> {
+  if (status === "deleted") {
+    try {
+      return deletedFileDiff(path, await api.gitFileAt(workspace, path, "HEAD"));
+    } catch {
+      return "";
+    }
+  }
+  try {
+    return addedFileDiff(path, await api.readFile(workspace, path));
+  } catch {
+    if (status) return "";
+    try {
+      return deletedFileDiff(path, await api.gitFileAt(workspace, path, "HEAD"));
+    } catch {
+      return "";
+    }
+  }
 }
 
 function DiffRow({ line }: { line: DiffLine }) {

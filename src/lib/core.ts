@@ -43,6 +43,8 @@ export type ChatMessage = {
   images?: ChatImage[];
   /** How long this prompt took, in milliseconds. Kept on the final assistant reply. */
   durationMs?: number;
+  /** When this reply finished, as an ISO timestamp. Kept on the final assistant reply. */
+  finishedAt?: string;
 };
 
 export const HEAVY_DIRS = new Set([
@@ -285,7 +287,13 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
   if (name === "edit_file") return `Edit ${fileBaseName(path) || path || "file"}`;
   if (name === "list_dir") return `List ${path || "."}`;
   if (name === "git_status") return "Git status";
-  if (name === "git_diff") return path ? `Diff ${fileBaseName(path) || path}` : "Diff";
+  if (name === "git_diff") {
+    const commit = String(args.commit ?? args.hash ?? "").trim();
+    if (commit) return `Commit ${commit.slice(0, 7)}`;
+    return path ? `Diff ${fileBaseName(path) || path}` : "Diff";
+  }
+  if (name === "git_log") return "Git log";
+  if (name === "git_commit") return "Commit";
   if (name === "web_search") {
     const query = String(args.query ?? args.search_term ?? "")
       .trim()
@@ -398,6 +406,8 @@ export function toolDetail(call: ChatToolCall): string {
     return path ? `git diff ${path}` : "git diff";
   }
   if (call.name === "git_status") return "git status";
+  if (call.name === "git_log") return "git log";
+  if (call.name === "git_commit") return String(args.message ?? "").trim();
   if (call.name === "read_file" || call.name === "list_dir") {
     return String(args.path ?? "").trim();
   }
@@ -478,8 +488,10 @@ export function toolTrailFileChanges(calls: ChatToolCall[]): ToolFileChange[] {
 
 export type GitDecorChange = {
   path: string;
+  original?: string | null;
   status: string;
   staged: boolean;
+  unstaged?: boolean;
   additions?: number;
   deletions?: number;
 };
@@ -640,7 +652,7 @@ export function liveToolDetail(tool: LiveToolInput): string {
 export type TranscriptItem =
   | { kind: "user"; content: string; images?: ChatImage[] }
   | { kind: "thinking"; content: string; live?: boolean }
-  | { kind: "assistant"; content: string; durationMs?: number }
+  | { kind: "assistant"; content: string; durationMs?: number; finishedAt?: string }
   | { kind: "compaction" }
   | { kind: "error"; content: string }
   | {
@@ -778,8 +790,10 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     if (reasoning) out.push({ kind: "thinking", content: reasoning });
     if (text) {
       const item: TranscriptItem = { kind: "assistant", content: String(msg.content ?? "") };
-      if (!calls.length && typeof msg.durationMs === "number" && msg.durationMs >= 0) {
-        item.durationMs = msg.durationMs;
+      if (!calls.length) {
+        if (typeof msg.durationMs === "number" && msg.durationMs >= 0) item.durationMs = msg.durationMs;
+        const finishedAt = String(msg.finishedAt ?? "").trim();
+        if (finishedAt) item.finishedAt = finishedAt;
       }
       out.push(item);
     }
@@ -1093,16 +1107,100 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
   });
 }
 
-export function stampTurnDuration(messages: ChatMessage[], durationMs: number): ChatMessage[] {
-  if (!Number.isFinite(durationMs) || durationMs < 0) return messages;
+export type FinishStamp = { at: string; durationMs?: number | null };
+
+/**
+ * Fill `finishedAt` on replies that were saved before the clock time was stored.
+ * `events` are usage records for one conversation, oldest first. Each record is
+ * the end of one model step, so a tool round and the final reply both count.
+ * A reply that already has a time is left alone.
+ */
+export function backfillFinishedAt(messages: ChatMessage[], events: FinishStamp[]): ChatMessage[] {
+  const stamps = events
+    .map((event) => ({ at: event.at.trim(), durationMs: event.durationMs }))
+    .filter((event) => Number.isFinite(Date.parse(event.at)));
+  if (!stamps.length || !messages.some(needsFinishStamp)) return messages;
+
+  const steps: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (isModelStep(messages[i]!)) steps.push(i);
+  }
+  if (!steps.length) return messages;
+
+  let cursor = 0;
+  const assigned = new Map<number, FinishStamp>();
+  for (const index of steps) {
+    const message = messages[index]!;
+    if (String(message.finishedAt ?? "").trim()) {
+      const known = Date.parse(message.finishedAt!);
+      while (cursor < stamps.length && Date.parse(stamps[cursor]!.at) <= known) cursor += 1;
+      continue;
+    }
+    if (cursor >= stamps.length) break;
+    assigned.set(index, stamps[cursor]!);
+    cursor += 1;
+  }
+  if (!assigned.size) return messages;
+
+  let changed = false;
+  const next = messages.slice();
+  for (const [index, stamp] of assigned) {
+    const message = next[index]!;
+    if (!showsFinishedLine(message)) continue;
+    changed = true;
+    const duration =
+      typeof message.durationMs === "number" || typeof stamp.durationMs !== "number" || stamp.durationMs < 0
+        ? {}
+        : { durationMs: stamp.durationMs };
+    next[index] = { ...message, finishedAt: stamp.at, ...duration };
+  }
+  return changed ? next : messages;
+}
+
+function needsFinishStamp(message: ChatMessage): boolean {
+  return showsFinishedLine(message) && !String(message.finishedAt ?? "").trim();
+}
+
+function showsFinishedLine(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    !message.error &&
+    !String(message.content ?? "").startsWith(TURN_FAILURE_PREFIX) &&
+    Boolean((message.content ?? "").trim()) &&
+    !(message.tool_calls ?? []).some(
+      (call) => call.name !== "todo_write" && call.name !== "enter_plan_mode" && call.name !== "exit_plan_mode",
+    )
+  );
+}
+
+function isModelStep(message: ChatMessage): boolean {
+  if (message.role !== "assistant" || message.error) return false;
+  if (String(message.content ?? "").startsWith(TURN_FAILURE_PREFIX)) return false;
+  return Boolean((message.content ?? "").trim() || message.tool_calls?.length || message.thinking?.length);
+}
+
+export function stampTurnDuration(
+  messages: ChatMessage[],
+  durationMs: number,
+  finishedAt = "",
+): ChatMessage[] {
+  const stampTime = finishedAt.trim();
+  const stampDuration = Number.isFinite(durationMs) && durationMs >= 0;
+  if (!stampDuration && !stampTime) return messages;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (!msg || msg.role === "user") return messages;
     if (msg.role !== "assistant" || msg.error) continue;
     if (!(msg.content ?? "").trim() || msg.tool_calls?.length) continue;
-    if (msg.durationMs === durationMs) return messages;
+    const sameDuration = !stampDuration || msg.durationMs === durationMs;
+    const sameTime = !stampTime || msg.finishedAt === stampTime;
+    if (sameDuration && sameTime) return messages;
     const next = messages.slice();
-    next[i] = { ...msg, durationMs };
+    next[i] = {
+      ...msg,
+      ...(stampDuration ? { durationMs } : {}),
+      ...(stampTime ? { finishedAt: stampTime } : {}),
+    };
     return next;
   }
   return messages;

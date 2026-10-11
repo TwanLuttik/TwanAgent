@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -247,13 +248,48 @@ pub fn clone_repo(root: &Path, url: &str, name: Option<&str>) -> Result<PathBuf>
     let dest_str = dest
         .to_str()
         .ok_or_else(|| Error::Other("invalid path".into()))?;
-    let out = Command::new("git")
+    let mut child = Command::new("git")
         .args(["clone", "--", url, dest_str])
-        .output()
+        .env("PATH", crate::env_path::command_path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|_| Error::Other("git is not available".into()))?;
-    if !out.status.success() {
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    #[cfg(unix)]
+    if let (Some(out), Some(err)) = (stdout.as_mut(), stderr.as_mut()) {
+        use std::os::fd::AsRawFd;
+        set_clone_nonblocking(out.as_raw_fd());
+        set_clone_nonblocking(err.as_raw_fd());
+    }
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(out) = stdout.as_mut() {
+            drain_clone(out, &mut out_buf);
+        }
+        if let Some(err) = stderr.as_mut() {
+            drain_clone(err, &mut err_buf);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > Duration::from_secs(600) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = fs::remove_dir_all(&dest);
+                return Err(Error::Other("git clone timed out".into()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(err) => return Err(Error::Other(err.to_string())),
+        }
+    };
+    let err = String::from_utf8_lossy(&err_buf);
+    if !status.success() {
         let _ = fs::remove_dir_all(&dest);
-        let err = String::from_utf8_lossy(&out.stderr);
         let msg = err.trim();
         return Err(Error::Other(if msg.is_empty() {
             "git clone failed".into()
@@ -262,6 +298,33 @@ pub fn clone_repo(root: &Path, url: &str, name: Option<&str>) -> Result<PathBuf>
         }));
     }
     Ok(dest)
+}
+
+#[cfg(unix)]
+fn set_clone_nonblocking(fd: i32) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+fn drain_clone(file: &mut impl std::io::Read, buf: &mut Vec<u8>) {
+    use std::io::ErrorKind;
+    let mut chunk = [0u8; 8192];
+    loop {
+        if buf.len() > 200_000 {
+            break;
+        }
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => buf.extend_from_slice(&chunk[..n.min(200_000_usize.saturating_sub(buf.len()))]),
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -209,8 +209,7 @@ function ProjectsNav({
       await Promise.all(
         paths.map(async (path: string) => {
           try {
-            await api.openFolder(path);
-            const label = projectGitLabel(await api.gitBranches(path));
+            const label = projectGitLabel(await api.gitProjectSummary(path));
             if (label) found[projectGitKey(path)] = label;
           } catch {
             /* a missing folder or closed workspace just stays unlabeled */

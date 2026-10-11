@@ -34,8 +34,14 @@ pub struct FilePreview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitChange {
     pub path: String,
+    /// Source path of a rename or copy. Empty for every other status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
     pub status: String,
     pub staged: bool,
+    /// True when the worktree side still differs from the index.
+    #[serde(default)]
+    pub unstaged: bool,
     #[serde(default)]
     pub additions: u32,
     #[serde(default)]

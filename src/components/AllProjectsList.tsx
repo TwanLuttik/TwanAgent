@@ -193,7 +193,7 @@ export function AllProjectsList({
             )}
             {closed || showArchived || !git ? null : (
               <ProjectGitRow
-                branch={git.branch}
+                git={git}
                 onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
               />
             )}
@@ -279,18 +279,26 @@ function ProjectSection({
 }
 
 function ProjectGitRow({
-  branch,
+  git,
   onMenu,
 }: {
-  branch: string;
+  git: ProjectGit;
   onMenu: (x: number, y: number) => void;
 }) {
+  const tracking = [
+    git.ahead ? `↑${git.ahead}` : "",
+    git.behind ? `↓${git.behind}` : "",
+    git.dirty ? `${git.dirty}` : "",
+  ].filter(Boolean);
   return (
     <div className="group/git flex items-center gap-1.5 rounded-[6px] py-[3px] pr-1 pl-1 text-[12px] text-muted select-none hover:bg-wash">
       <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-ink/80" title={branch}>
-        {branch}
+      <span className="min-w-0 flex-1 truncate text-ink/80" title={git.branch}>
+        {git.branch}
       </span>
+      {tracking.length ? (
+        <span className="shrink-0 font-mono text-[10px] text-muted tabular-nums">{tracking.join(" ")}</span>
+      ) : null}
       <button
         type="button"
         aria-label="Project actions"

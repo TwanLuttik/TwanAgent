@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { addedFileDiff, groupDiffByFile, gutterMarksFromDiff, parseGitDiff } from "../git-diff.ts";
+import { addedFileDiff, deletedFileDiff, groupDiffByFile, gutterMarksFromDiff, parseGitDiff } from "../git-diff.ts";
 
 describe("parseGitDiff", () => {
   it("splits staged and unstaged sections and numbers hunk lines", () => {
@@ -59,6 +59,7 @@ diff --git a/src/b.ts b/src/b.ts
       files.map((file) => file.path),
       ["src/a.ts", "src/b.ts"],
     );
+    assert.equal(files[0].lines.filter((line) => line.kind === "meta" && line.text.startsWith("diff --git")).length, 1);
     assert.equal(files[0].lines.some((line) => line.kind === "add" && line.text === "added"), true);
     assert.equal(files[1].lines.some((line) => line.kind === "del" && line.text === "old"), true);
   });
@@ -78,6 +79,19 @@ diff --git a/src/b.ts b/src/b.ts
   it("returns an empty list for blank input", () => {
     assert.deepEqual(parseGitDiff(""), []);
     assert.deepEqual(parseGitDiff("   \n"), []);
+  });
+
+  it("keeps a blank context line so later line numbers stay correct", () => {
+    const sections = parseGitDiff(`@@ -1,4 +1,4 @@
+ keep
+
+-old
++new
+`);
+    const body = sections[0].lines.filter((line) => line.kind !== "hunk");
+    assert.equal(body[1].kind, "context");
+    assert.equal(body[1].text, "");
+    assert.equal(body[3].newNo, 3);
   });
 });
 
@@ -121,6 +135,19 @@ describe("gutterMarksFromDiff", () => {
     const marks = gutterMarksFromDiff(parseGitDiff(addedFileDiff("a.ts", "one\ntwo\n")));
     assert.equal(marks.get(1), "add");
     assert.equal(marks.get(2), "add");
+  });
+});
+
+describe("deletedFileDiff", () => {
+  it("builds a unified diff that removes every line", () => {
+    const body = parseGitDiff(deletedFileDiff("src/old.ts", "one\ntwo\n"))[0].lines.filter(
+      (line) => line.kind === "del",
+    );
+    assert.deepEqual(
+      body.map((line) => line.text),
+      ["one", "two"],
+    );
+    assert.equal(body[0].oldNo, 1);
   });
 });
 

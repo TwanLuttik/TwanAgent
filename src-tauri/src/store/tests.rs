@@ -237,7 +237,7 @@ fn older_store_gains_archived_column() {
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
     // Opening any older store runs every later migration, including composer settings.
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn older_store_gains_composer_setting_columns() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 }
 
 #[test]
@@ -370,6 +370,79 @@ fn persists_turn_duration() {
     let loaded = get_conversation(&conn, "c1").unwrap();
     assert_eq!(loaded.messages[0]["durationMs"], 12400);
     assert_eq!(loaded.messages[0]["content"], "Done.");
+}
+
+#[test]
+fn persists_finished_at() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let row = conv(
+        "c1",
+        "Hello",
+        vec![json!({
+            "role":"assistant",
+            "content":"Done.",
+            "durationMs": 12400,
+            "finishedAt": "2026-09-16T15:04:00Z"
+        })],
+    );
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[0]["finishedAt"], "2026-09-16T15:04:00Z");
+    assert_eq!(loaded.messages[0]["durationMs"], 12400);
+}
+
+#[test]
+fn older_store_gains_finished_at_column() {
+    let dir = tempdir().unwrap();
+    let conn = Connection::open(dir.path().join("store.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_migrations (version) VALUES (9);
+         CREATE TABLE conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
+            journey_id TEXT,
+            sort_order INTEGER NOT NULL,
+            context_usage TEXT,
+            compaction TEXT,
+            effort TEXT,
+            model TEXT,
+            context_window INTEGER,
+            permission TEXT,
+            archived INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT,
+            tool_call_id TEXT,
+            images TEXT,
+            reasoning TEXT,
+            duration_ms INTEGER
+         );
+         INSERT INTO conversations (id, title, created_at, updated_at, kind, sort_order, archived)
+         VALUES ('old', 'Legacy', 't', 't', 'chat', 0, 0);
+         INSERT INTO messages (conversation_id, sort_order, role, content, duration_ms)
+         VALUES ('old', 0, 'assistant', 'Done.', 800);",
+    )
+    .unwrap();
+    drop(conn);
+    let conn = open(dir.path()).unwrap();
+    let loaded = get_conversation(&conn, "old").unwrap();
+    assert_eq!(loaded.messages[0]["content"], "Done.");
+    assert_eq!(loaded.messages[0]["durationMs"], 800);
+    assert!(loaded.messages[0].get("finishedAt").is_none());
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 10);
 }
 
 #[test]

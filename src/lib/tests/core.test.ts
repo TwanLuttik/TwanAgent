@@ -45,6 +45,7 @@ import {
   liveTranscriptItems,
   splitLiveTranscript,
   groupTranscriptTurns,
+  backfillFinishedAt,
   stampTurnDuration,
   systemPrompt,
   withSystem,
@@ -658,13 +659,67 @@ describe("stampTurnDuration", () => {
       { role: "assistant", content: "", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] },
       { role: "assistant", content: "Done." },
     ];
-    const stamped = stampTurnDuration(messages, 12_400);
+    const stamped = stampTurnDuration(messages, 12_400, "2026-09-16T15:04:00Z");
     assert.equal(stamped[2]?.durationMs, 12_400);
+    assert.equal(stamped[2]?.finishedAt, "2026-09-16T15:04:00Z");
     assert.equal(stamped[1]?.durationMs, undefined);
+    assert.equal(stamped[1]?.finishedAt, undefined);
     const items = transcriptItems(stamped);
     const reply = items.find((item) => item.kind === "assistant");
     assert.equal(reply?.kind === "assistant" && reply.durationMs, 12_400);
-    assert.equal(stampTurnDuration(stamped, 12_400), stamped);
+    assert.equal(reply?.kind === "assistant" && reply.finishedAt, "2026-09-16T15:04:00Z");
+    assert.equal(stampTurnDuration(stamped, 12_400, "2026-09-16T15:04:00Z"), stamped);
+  });
+
+  it("does not put the finish time on an intermediate tool reply", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "Looking.",
+        tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }],
+      },
+      { role: "tool", tool_call_id: "1", content: "ok" },
+      { role: "assistant", content: "Done." },
+    ];
+    const stamped = stampTurnDuration(messages, 800, "2026-09-16T15:04:00Z");
+    assert.equal(stamped[1]?.finishedAt, undefined);
+    assert.equal(stamped[3]?.finishedAt, "2026-09-16T15:04:00Z");
+    const items = transcriptItems(stamped);
+    const first = items.find((item) => item.kind === "assistant");
+    const last = items.filter((item) => item.kind === "assistant").at(-1);
+    assert.equal(first?.kind === "assistant" && first.finishedAt, undefined);
+    assert.equal(last?.kind === "assistant" && last.finishedAt, "2026-09-16T15:04:00Z");
+  });
+});
+
+describe("backfillFinishedAt", () => {
+  it("pairs each model step with the next usage record, including tool rounds", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      { role: "assistant", content: "", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] },
+      { role: "tool", tool_call_id: "1", content: "ok" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "again" },
+      { role: "assistant", content: "Also done.", durationMs: 400 },
+    ];
+    const filled = backfillFinishedAt(messages, [
+      { at: "2026-09-16T15:01:00Z", durationMs: 900 },
+      { at: "2026-09-16T15:04:00Z", durationMs: 12_400 },
+      { at: "2026-09-16T16:00:00Z", durationMs: 800 },
+    ]);
+    assert.equal(filled[1]?.finishedAt, undefined);
+    assert.equal(filled[3]?.finishedAt, "2026-09-16T15:04:00Z");
+    assert.equal(filled[3]?.durationMs, 12_400);
+    assert.equal(filled[5]?.finishedAt, "2026-09-16T16:00:00Z");
+    assert.equal(filled[5]?.durationMs, 400);
+    assert.equal(backfillFinishedAt(filled, [{ at: "2026-09-16T15:04:00Z" }]), filled);
+  });
+
+  it("leaves replies alone when there is no usage history", () => {
+    const messages: ChatMessage[] = [{ role: "assistant", content: "Done." }];
+    assert.equal(backfillFinishedAt(messages, []), messages);
+    assert.equal(backfillFinishedAt(messages, [{ at: "not-a-date" }]), messages);
   });
 });
 

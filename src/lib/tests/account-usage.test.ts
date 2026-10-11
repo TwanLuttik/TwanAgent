@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  accountUsageIsFresh,
   formatAccountBalance,
   formatAccountReset,
   formatAccountUsed,
@@ -71,6 +72,21 @@ describe("parseAccountUsage", () => {
     assert.equal(parsed?.connected, false);
     assert.deepEqual(parsed?.windows, []);
     assert.equal(parseAccountUsage(null), null);
+  });
+
+  it("keeps the fetch time and treats a missing one as fresh", () => {
+    const now = Date.parse("2026-07-20T12:00:00Z");
+    const parsed = parseAccountUsage({
+      provider: "anthropic",
+      connected: true,
+      label: "Claude",
+      windows: [],
+      fetched_at: "2026-07-20T11:50:00Z",
+    });
+    assert.equal(parsed?.fetchedAt, "2026-07-20T11:50:00Z");
+    assert.equal(accountUsageIsFresh(parsed!, now), true);
+    assert.equal(accountUsageIsFresh({ ...parsed!, fetchedAt: "2026-07-20T11:00:00Z" }, now), false);
+    assert.equal(accountUsageIsFresh({ ...parsed!, fetchedAt: null }, now), true);
   });
 });
 

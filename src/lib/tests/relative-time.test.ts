@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { formatElapsed, formatRelativeAge, relativeAgeTickMs } from "../relative-time.ts";
+import { formatElapsed, formatMessageTime, formatRelativeAge, relativeAgeTickMs } from "../relative-time.ts";
 
 const NOW = Date.parse("2026-09-16T12:00:00.000Z");
 
@@ -41,5 +41,18 @@ describe("formatElapsed", () => {
 
   it("does not go negative", () => {
     assert.equal(formatElapsed(-400), "0s");
+  });
+});
+
+describe("formatMessageTime", () => {
+  it("shows the local clock time", () => {
+    const iso = "2026-09-16T15:04:00.000Z";
+    const expected = new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    assert.equal(formatMessageTime(iso), expected);
+  });
+
+  it("returns empty for a missing timestamp", () => {
+    assert.equal(formatMessageTime(""), "");
+    assert.equal(formatMessageTime("not-a-date"), "");
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction }
 import { isMacOS } from "../../components/WindowButtons";
 import { scrollChatToEnd } from "../../lib/chat-scroll";
 import {
+  backfillFinishedAt,
   conversationTitleFrom,
   moveById,
   newConversationId,
@@ -672,7 +673,7 @@ async function openChat(id: string) {
       context_window: full.context_window ?? known?.context_window,
       permission: full.permission ?? known?.permission,
     });
-    const loaded = (full.messages as ChatMessage[]) ?? [];
+    const loaded = await withBackfilledTimes(workspace, id, (full.messages as ChatMessage[]) ?? []);
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
         ? insertCompactionEvent(loaded, full.compaction.through)
@@ -683,8 +684,10 @@ async function openChat(id: string) {
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
     }
-    if (withNotice !== loaded) {
-      void persist(withNotice, id, workspace, parseChatUsage(full.context_usage) ?? undefined, full.compaction);
+    if (loaded !== ((full.messages as ChatMessage[]) ?? []) || withNotice !== loaded) {
+      void persist(withNotice, id, workspace, parseChatUsage(full.context_usage) ?? undefined, full.compaction, {
+        touch: false,
+      });
     }
     saveConversation(workspace, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
@@ -692,6 +695,27 @@ async function openChat(id: string) {
   } finally {
     setOpeningId("");
   }
+}
+
+const finishEvents = new Map<string, { at: string; durationMs?: number | null }[]>();
+
+async function withBackfilledTimes(ws: string, id: string, messages: ChatMessage[]): Promise<ChatMessage[]> {
+  if (!messages.some((message) => message.role === "assistant" && !(message.finishedAt ?? "").trim())) {
+    return messages;
+  }
+  let events = finishEvents.get(id);
+  if (!events) {
+    try {
+      const rows = await api.usageList();
+      events = rows
+        .filter((row) => row.conversation_id === id && isSameProject(row.workspace_path, ws))
+        .map((row) => ({ at: row.recorded_at, durationMs: row.duration_ms }));
+    } catch {
+      events = [];
+    }
+    finishEvents.set(id, events);
+  }
+  return backfillFinishedAt(messages, events);
 }
 
 async function archiveChat(id: string, archived = true, path = workspace) {
@@ -781,6 +805,8 @@ type PersistPayload = {
   usage?: ChatUsage;
   compaction?: { summary: string; through: number } | null;
   generation: number;
+  /** Keep the sidebar age. A backfill save must not look like a new reply. */
+  touch?: boolean;
 };
 
 async function writePersisted(id: string, payload: PersistPayload) {
@@ -788,9 +814,9 @@ async function writePersisted(id: string, payload: PersistPayload) {
   if (!canPersistTurn(id, deletedIdsRef.current)) return;
   const { next, ws, usage, compaction } = payload;
   const title = conversationTitleFrom(next);
-  const now = nowIso();
   const existing =
     conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
+  const now = payload.touch === false ? (existing?.updated_at || nowIso()) : nowIso();
   const kind = parseConversationKind(existing?.kind);
   // Until an assistant reply exists, the composer chip is the model for this
   // chat. The row may still hold the model copied when the empty chat was created.
@@ -867,7 +893,7 @@ async function persist(
   ws = workspace,
   usage?: ChatUsage,
   compaction?: { summary: string; through: number } | null,
-  options?: { flush?: boolean },
+  options?: { flush?: boolean; touch?: boolean },
 ) {
   if (compaction?.summary && compaction.through > 0) {
     setCompactionByChat((prev) =>
@@ -881,7 +907,14 @@ async function persist(
   const generation = (persistGen.current.get(id) ?? 0) + 1;
   persistGen.current.set(id, generation);
   const trail = persistTrail.current!;
-  const payload: PersistPayload = { next, ws, usage, compaction, generation };
+  const payload: PersistPayload = {
+    next,
+    ws,
+    usage,
+    compaction,
+    generation,
+    ...(options?.touch === false ? { touch: false } : {}),
+  };
   // Tool steps only schedule. The turn's last save flushes so the await sees this payload.
   if (options?.flush) {
     const queued = trail.enqueue(id, payload).catch(() => undefined);

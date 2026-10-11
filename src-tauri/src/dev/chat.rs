@@ -137,12 +137,45 @@ fn base_tools_json() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "git_diff",
-                "description": "Show the git diff. Pass a relative path to limit it to one file.",
+                "description": "Show the git diff. Pass a relative path to limit it to one file. Pass a commit hash to show that commit.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string" }
+                        "path": { "type": "string" },
+                        "commit": { "type": "string", "description": "Optional commit hash. Omit for the working tree." }
                     }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_log",
+                "description": "Recent commits for this workspace: hash, author, date, subject.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": { "type": "integer", "description": "How many commits. Defaults to 20, max 80." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_commit",
+                "description": "Stage the given paths and commit them. Only call this when the user asked to commit. Requires a message.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Workspace-relative paths to stage. Empty stages everything already listed by git status."
+                        }
+                    },
+                    "required": ["message"]
                 }
             }
         },

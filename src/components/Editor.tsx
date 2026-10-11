@@ -17,7 +17,7 @@ import {
 } from "../lib/editor";
 import { parseJourneyId } from "../lib/journey";
 import { userMcpRel } from "../lib/mcp";
-import { addedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
+import { addedFileDiff, deletedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
 import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
 import { normalizeGitPath } from "../lib/core";
@@ -132,9 +132,18 @@ export function Editor({
   }, [selectionTip]);
 
   useEffect(() => {
-    if (!path || tick === seenRefresh.current) return;
+    if (tick === seenRefresh.current) return;
     seenRefresh.current = tick;
-    void load(path, true);
+    // A branch switch or discard rewrote the worktree. Drop clean buffers so the
+    // next open reads disk. A dirty buffer is the user's unsaved edit.
+    setBuffers((prev) => {
+      const next: Record<string, Buffer> = {};
+      for (const [file, buffer] of Object.entries(prev)) {
+        if (buffer.draft !== buffer.original) next[file] = buffer;
+      }
+      return next;
+    });
+    if (path) void load(path, true);
   }, [tick, path, load]);
 
   useEffect(() => {
@@ -168,6 +177,12 @@ export function Editor({
           if (change?.status === "untracked") {
             const contents = buffersRef.current[path]?.original ?? (await api.readFile(workspace, path));
             text = addedFileDiff(path, contents);
+          } else if (change?.status === "deleted") {
+            try {
+              text = deletedFileDiff(path, await api.gitFileAt(workspace, path, "HEAD"));
+            } catch {
+              text = "";
+            }
           }
         }
         if (!cancelled) setGutterMarks(gutterMarksFromDiff(parseGitDiff(text)));

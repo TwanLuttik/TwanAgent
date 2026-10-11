@@ -169,12 +169,36 @@ export function forgetWorkspace(path: string): Promise<boolean> {
 export type Entry = { name: string; path: string; kind: "file" | "dir" | string; size: number | null };
 export type GitChange = {
   path: string;
+  original?: string | null;
   status: string;
   staged: boolean;
+  unstaged?: boolean;
   additions: number;
   deletions: number;
 };
 export type GitBranches = { current: string | null; branches: string[]; repo?: boolean };
+export type GitRepoSummary = {
+  repo: boolean;
+  current: string | null;
+  detached: boolean;
+  commit: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  dirty: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicts: number;
+};
+export type GitCommit = {
+  hash: string;
+  short: string;
+  author: string;
+  at: string;
+  subject: string;
+};
+export type GitIdentity = { name: string; email: string; configured: boolean };
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -488,6 +512,63 @@ export function gitBranches(workspace: string): Promise<GitBranches> {
 
 export function gitSwitch(workspace: string, name: string): Promise<GitBranches> {
   return invoke("dev_git_switch", { workspace, name });
+}
+
+export function gitSummary(workspace: string): Promise<GitRepoSummary> {
+  return invoke("dev_git_summary", { workspace });
+}
+
+/** Branch label for a folder that is not the open workspace. Does not register it. */
+export function gitProjectSummary(path: string): Promise<GitRepoSummary> {
+  return invoke("dev_git_project_summary", { path });
+}
+
+export function gitCreateBranch(workspace: string, name: string, checkout = true): Promise<GitBranches> {
+  return invoke("dev_git_create_branch", { workspace, name, checkout });
+}
+
+export function gitStage(workspace: string, paths: string[]): Promise<GitChange[]> {
+  return invoke("dev_git_stage", { workspace, paths });
+}
+
+export function gitUnstage(workspace: string, paths: string[]): Promise<GitChange[]> {
+  return invoke("dev_git_unstage", { workspace, paths });
+}
+
+export function gitDiscard(workspace: string, paths: string[]): Promise<GitChange[]> {
+  return invoke("dev_git_discard", { workspace, paths });
+}
+
+export function gitCommit(workspace: string, message: string): Promise<string> {
+  return invoke("dev_git_commit", { workspace, message });
+}
+
+export function gitIdentity(workspace: string): Promise<GitIdentity> {
+  return invoke("dev_git_identity", { workspace });
+}
+
+export function gitSetIdentity(workspace: string, name: string, email: string): Promise<GitIdentity> {
+  return invoke("dev_git_set_identity", { workspace, name, email });
+}
+
+export function gitSync(workspace: string, action: "fetch" | "pull" | "push" | "publish"): Promise<string> {
+  return invoke("dev_git_sync", { workspace, action });
+}
+
+export function gitStash(workspace: string, action: "push" | "pop" | "list", message = ""): Promise<string> {
+  return invoke("dev_git_stash", { workspace, action, message });
+}
+
+export function gitLog(workspace: string, limit = 40): Promise<GitCommit[]> {
+  return invoke("dev_git_log", { workspace, limit });
+}
+
+export function gitShow(workspace: string, hash: string): Promise<string> {
+  return invoke("dev_git_show", { workspace, hash });
+}
+
+export function gitFileAt(workspace: string, path: string, revision = "HEAD"): Promise<string> {
+  return invoke("dev_git_file_at", { workspace, path, revision });
 }
 
 export function runCommand(workspace: string, command: string): Promise<string> {

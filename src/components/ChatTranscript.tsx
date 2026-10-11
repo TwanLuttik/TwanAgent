@@ -13,13 +13,22 @@ import {
   type TranscriptTurn,
 } from "../lib/core";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
-import { formatElapsed } from "../lib/relative-time";
+import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 
-function FinishedLine({ durationMs }: { durationMs: number }) {
+function FinishedLine({ durationMs, finishedAt }: { durationMs?: number; finishedAt?: string }) {
+  const time = finishedAt ? formatMessageTime(finishedAt) : "";
+  if (typeof durationMs !== "number" && !time) return null;
   return (
     <div className="mt-2 text-[11px] text-muted/55">
       Finished
-      <span className="ml-1.5 tabular-nums text-muted/40">{formatElapsed(durationMs)}</span>
+      {typeof durationMs === "number" ? (
+        <span className="ml-1.5 tabular-nums text-muted/40">{formatElapsed(durationMs)}</span>
+      ) : null}
+      {time ? (
+        <time dateTime={finishedAt} className="ml-1.5 tabular-nums text-muted/40" title={finishedAt}>
+          {time}
+        </time>
+      ) : null}
     </div>
   );
 }
@@ -417,7 +426,9 @@ function TranscriptTurn({
           <div key={index} className={last ? undefined : "mb-4"}>
             {!turn.user && i === 0 ? <StickyTurnHeader>{badge}</StickyTurnHeader> : badge}
             <ChatMarkdown text={item.content} live={streaming} />
-            {typeof item.durationMs === "number" ? <FinishedLine durationMs={item.durationMs} /> : null}
+            {typeof item.durationMs === "number" || item.finishedAt ? (
+              <FinishedLine durationMs={item.durationMs} finishedAt={item.finishedAt} />
+            ) : null}
           </div>
         );
       })}

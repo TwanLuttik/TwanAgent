@@ -553,6 +553,9 @@ pub struct AccountUsage {
     pub balance_currency: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credit_status: Option<String>,
+    /// When this snapshot was fetched. The sidebar ignores a cache older than a few minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<String>,
 }
 
 fn empty_usage(connected: bool) -> AccountUsage {
@@ -564,6 +567,7 @@ fn empty_usage(connected: bool) -> AccountUsage {
         balance_cents: None,
         balance_currency: None,
         credit_status: None,
+        fetched_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     }
 }
 
@@ -730,10 +734,21 @@ pub fn cached_account_usage(data_dir: &std::path::Path) -> Option<AccountUsage> 
     serde_json::from_str(&raw).ok()
 }
 
+/// A confirmed sign-out replaces the snapshot. A failed read does not, so one bad
+/// poll cannot hide an account that was connected a moment ago.
 fn store_account_usage(data_dir: &std::path::Path, usage: &AccountUsage) {
     let Ok(conn) = crate::appdb::open(data_dir) else {
         return;
     };
+    if !usage.connected {
+        let previous = crate::appdb::get_account_usage(&conn, account_usage_cache_key())
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<AccountUsage>(&raw).ok());
+        if previous.as_ref().is_some_and(|row| row.connected) {
+            return;
+        }
+    }
     let Ok(raw) = serde_json::to_string(usage) else {
         return;
     };

@@ -131,8 +131,24 @@ export async function executeTool(
         return `Edited ${args.path ?? ""}`;
       case "git_status":
         return JSON.stringify(await api.gitStatus(workspace), null, 2);
-      case "git_diff":
+      case "git_diff": {
+        const commit = String(args.commit ?? args.hash ?? "").trim();
+        if (commit) return await api.gitShow(workspace, commit);
         return await api.gitDiff(workspace, String(args.path ?? ""));
+      }
+      case "git_log":
+        return JSON.stringify(await api.gitLog(workspace, Number(args.limit ?? 20) || 20), null, 2);
+      case "git_commit": {
+        const paths = Array.isArray(args.paths) ? args.paths.map((path) => String(path)) : [];
+        if (paths.length) await api.gitStage(workspace, paths);
+        else {
+          const rows = await api.gitStatus(workspace);
+          const pending = rows.filter((row) => !row.staged).map((row) => row.path);
+          if (pending.length) await api.gitStage(workspace, pending);
+        }
+        const hash = await api.gitCommit(workspace, String(args.message ?? ""));
+        return `Committed ${hash}`;
+      }
       case "run_command":
         return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
       case "web_search":
@@ -437,6 +453,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         call.name === "write_file" ||
         call.name === "edit_file" ||
         call.name === "run_command" ||
+        call.name === "git_commit" ||
         call.name === "update_journey_knowledge"
       ) {
         opts.onRefresh?.();

@@ -18,4 +18,24 @@ describe("projectGitLabel", () => {
     assert.deepEqual(projectGitLabel({ current: null, branches: ["main"], repo: true }), { branch: "detached" });
     assert.equal(projectGitLabel({ current: null, branches: [], repo: true }), null);
   });
+
+  it("keeps ahead, behind, and dirty counts from a summary", () => {
+    assert.deepEqual(
+      projectGitLabel({
+        repo: true,
+        current: "main",
+        detached: false,
+        commit: "abc1234",
+        upstream: "origin/main",
+        ahead: 2,
+        behind: 0,
+        dirty: 3,
+        staged: 1,
+        unstaged: 1,
+        untracked: 1,
+        conflicts: 0,
+      }),
+      { branch: "main", ahead: 2, dirty: 3 },
+    );
+  });
 });

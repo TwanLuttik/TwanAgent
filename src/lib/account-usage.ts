@@ -15,7 +15,19 @@ export type AccountUsage = {
   balanceCurrency: string | null;
   /** `available` or `exhausted` when a prepaid org has no dollar balance. */
   creditStatus: string | null;
+  /** When this snapshot was fetched. Absent on a cached row that predates it. */
+  fetchedAt: string | null;
 };
+
+/** A cached snapshot older than this is not painted. The live fetch still runs. */
+export const ACCOUNT_USAGE_MAX_AGE_MS = 15 * 60 * 1000;
+
+export function accountUsageIsFresh(usage: AccountUsage, nowMs = Date.now()): boolean {
+  if (!usage.fetchedAt) return true;
+  const at = Date.parse(usage.fetchedAt);
+  if (!Number.isFinite(at)) return true;
+  return nowMs - at <= ACCOUNT_USAGE_MAX_AGE_MS;
+}
 
 /** 0–100, or null when the payload has no usable number. */
 export function accountUsedPercent(value: unknown): number | null {
@@ -52,6 +64,7 @@ export function parseAccountUsage(raw: unknown): AccountUsage | null {
   const cents = row.balance_cents ?? row.balanceCents;
   const currency = row.balance_currency ?? row.balanceCurrency;
   const credit = row.credit_status ?? row.creditStatus;
+  const fetched = row.fetched_at ?? row.fetchedAt;
   return {
     provider: String(row.provider ?? "anthropic"),
     connected: row.connected === true,
@@ -60,6 +73,7 @@ export function parseAccountUsage(raw: unknown): AccountUsage | null {
     balanceCents: typeof cents === "number" && Number.isFinite(cents) && cents >= 0 ? Math.floor(cents) : null,
     balanceCurrency: typeof currency === "string" && currency.trim() ? currency.trim() : null,
     creditStatus: credit === "available" || credit === "exhausted" ? credit : null,
+    fetchedAt: typeof fetched === "string" && fetched.trim() ? fetched.trim() : null,
   };
 }
 

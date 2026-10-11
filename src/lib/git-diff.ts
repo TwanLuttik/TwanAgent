@@ -16,7 +16,7 @@ const SECTION_RE = /^# (staged|unstaged)\s*$/;
 const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 export function parseGitDiff(raw: string): DiffSection[] {
-  const text = raw.replace(/\r\n/g, "\n");
+  const text = raw.replace(/\r\n/g, "\n").replace(/\0/g, "\n");
   if (!text.trim()) return [];
 
   const sections: DiffSection[] = [];
@@ -31,7 +31,10 @@ export function parseGitDiff(raw: string): DiffSection[] {
     inHunk = false;
   };
 
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+
+  for (const line of lines) {
     const section = line.match(SECTION_RE);
     if (section) {
       flush();
@@ -46,23 +49,26 @@ export function parseGitDiff(raw: string): DiffSection[] {
       current.lines.push({ kind: "hunk", text: line });
       continue;
     }
-    if (inHunk && line.startsWith("+") && !line.startsWith("+++")) {
+    if (inHunk && (line === "\\ No newline at end of file" || line.startsWith("\\"))) {
+      current.lines.push({ kind: "meta", text: line });
+      continue;
+    }
+    if (inHunk && (line.startsWith("+") || line === "+") && !line.startsWith("+++")) {
       current.lines.push({ kind: "add", text: line.slice(1), newNo });
       newNo += 1;
       continue;
     }
-    if (inHunk && line.startsWith("-") && !line.startsWith("---")) {
+    if (inHunk && (line.startsWith("-") || line === "-") && !line.startsWith("---")) {
       current.lines.push({ kind: "del", text: line.slice(1), oldNo });
       oldNo += 1;
       continue;
     }
-    if (inHunk && line.startsWith(" ")) {
-      current.lines.push({ kind: "context", text: line.slice(1), oldNo, newNo });
+    if (inHunk && (line.startsWith(" ") || line === "")) {
+      current.lines.push({ kind: "context", text: line.startsWith(" ") ? line.slice(1) : line, oldNo, newNo });
       oldNo += 1;
       newNo += 1;
       continue;
     }
-    if (line === "") continue;
     current.lines.push({ kind: "meta", text: line });
   }
 
@@ -72,12 +78,14 @@ export function parseGitDiff(raw: string): DiffSection[] {
 
 export type DiffFile = {
   path: string;
+  original?: string;
   label?: DiffSection["label"];
   lines: DiffLine[];
 };
 
 const GIT_FILE_RE = /^diff --git a\/(.+?) b\/(.+)$/;
 const PLUSPLUS_RE = /^\+\+\+ (?:b\/)?(.+)$/;
+const MINUSMINUS_RE = /^--- (?:a\/)?(.+)$/;
 
 export function groupDiffByFile(sections: DiffSection[]): DiffFile[] {
   const files: DiffFile[] = [];
@@ -87,22 +95,43 @@ export function groupDiffByFile(sections: DiffSection[]): DiffFile[] {
       if (line.kind === "meta") {
         const git = line.text.match(GIT_FILE_RE);
         if (git) {
-          const next = git[2] === "/dev/null" ? git[1] : git[2];
-          current = { path: next, label: section.label, lines: [line] };
+          const from = gitPath(git[1]);
+          const to = gitPath(git[2]);
+          const next = to === "/dev/null" ? from : to;
+          current = {
+            path: next,
+            original: from !== next && from !== "/dev/null" ? from : undefined,
+            label: section.label,
+            lines: [line],
+          };
           files.push(current);
           continue;
         }
         const plus = line.text.match(PLUSPLUS_RE);
-        if (plus && current && plus[1] !== "/dev/null") current.path = plus[1];
+        if (plus && current) {
+          const path = gitPath(plus[1]);
+          if (path !== "/dev/null") current.path = path;
+        }
+        const minus = line.text.match(MINUSMINUS_RE);
+        if (minus && current) {
+          const path = gitPath(minus[1]);
+          if (path !== "/dev/null" && path !== current.path) current.original = path;
+        }
       }
       if (!current) {
         current = { path: "", label: section.label, lines: [] };
         files.push(current);
       }
+      if (line.kind === "meta" && GIT_FILE_RE.test(line.text)) continue;
       current.lines.push(line);
     }
   }
   return files.filter((file) => file.lines.length > 0);
+}
+
+function gitPath(raw: string): string {
+  const text = raw.trim().replace(/^"(.*)"$/, "$1");
+  return text === "/dev/null" ? text : text.replace(/\\/g, "/");
 }
 
 export type GutterMark = "add" | "del" | "mod";
@@ -167,10 +196,19 @@ export function gutterMarksFromDiff(sections: DiffSection[]): Map<number, Gutter
   return marks;
 }
 
+export function deletedFileDiff(path: string, contents: string): string {
+  const lines = contents.split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const count = Math.max(lines.length, 1);
+  const body = (lines.length ? lines : [""]).map((line) => `-${line}`).join("\n");
+  const clean = path.replace(/\\/g, "/");
+  return `diff --git a/${clean} b/${clean}\n--- a/${clean}\n+++ /dev/null\n@@ -1,${count} +0,0 @@\n${body}\n`;
+}
+
 export function addedFileDiff(path: string, contents: string): string {
   const lines = contents.split("\n");
   if (lines.length && lines[lines.length - 1] === "") lines.pop();
   const count = Math.max(lines.length, 1);
   const body = (lines.length ? lines : [""]).map((line) => `+${line}`).join("\n");
-  return `--- /dev/null\n+++ b/${path.replace(/\\/g, "/")}\n@@ -0,0 +1,${count} @@\n${body}\n`;
+  return `diff --git a/${path.replace(/\\/g, "/")} b/${path.replace(/\\/g, "/")}\n--- /dev/null\n+++ b/${path.replace(/\\/g, "/")}\n@@ -0,0 +1,${count} @@\n${body}\n`;
 }

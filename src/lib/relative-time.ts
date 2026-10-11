@@ -6,6 +6,13 @@ export function formatElapsed(ms: number): string {
   return `${min}:${String(sec).padStart(2, "0")}`;
 }
 
+/** Local clock time for a finished reply, such as `3:04 PM`. */
+export function formatMessageTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  return new Date(then).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
 /** How long until the compact age label (`now`, `5m`, `2h`) can change. */
 export function relativeAgeTickMs(iso: string, nowMs = Date.now()): number {
   const then = Date.parse(iso);

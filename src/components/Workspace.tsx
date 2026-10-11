@@ -67,7 +67,7 @@ import {
   type GitChangesView,
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
-import type { Entry, GitBranches, GitChange } from "../lib/tauri";
+import type { Entry, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary } from "../lib/tauri";
 import { Terminal } from "./Terminal";
 import { AnchoredMenu } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
@@ -98,8 +98,12 @@ export const Workspace = memo(function Workspace({
   const [creating, setCreating] = useState<string | null>(null);
   const [changes, setChanges] = useState<GitChange[]>([]);
   const [branches, setBranches] = useState<GitBranches>({ current: null, branches: [] });
+  const [summary, setSummary] = useState<GitRepoSummary | null>(null);
+  const [identity, setIdentity] = useState<GitIdentity | null>(null);
+  const [history, setHistory] = useState<GitCommit[]>([]);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
+  const [gitBusy, setGitBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
@@ -142,7 +146,16 @@ export const Workspace = memo(function Workspace({
   const refreshBranches = useCallback(async () => {
     if (!workspace) return;
     try {
-      setBranches(await api.gitBranches(workspace));
+      const [next, repo, who, log] = await Promise.all([
+        api.gitBranches(workspace),
+        api.gitSummary(workspace).catch(() => null),
+        api.gitIdentity(workspace).catch(() => null),
+        api.gitLog(workspace, 30).catch(() => [] as GitCommit[]),
+      ]);
+      setBranches(next);
+      setSummary(repo);
+      setIdentity(who);
+      setHistory(log);
       setBranchError(null);
     } catch (e) {
       setBranchError(String(e));
@@ -342,10 +355,27 @@ export const Workspace = memo(function Workspace({
       setChanges(await api.gitStatus(workspace));
       setBranchError(null);
       onRefresh?.();
+      void refreshBranches();
     } catch (e) {
       setBranchError(String(e));
     } finally {
       setSwitching(false);
+    }
+  }
+
+  async function runGit(work: () => Promise<unknown>) {
+    if (!workspace || gitBusy) return;
+    setGitBusy(true);
+    try {
+      await work();
+      setChanges(await api.gitStatus(workspace));
+      setBranchError(null);
+      onRefresh?.();
+      void refreshBranches();
+    } catch (e) {
+      setBranchError(String(e));
+    } finally {
+      setGitBusy(false);
     }
   }
 
@@ -445,9 +475,22 @@ export const Workspace = memo(function Workspace({
               {tab.kind === "git" ? (
                 <GitPane
                   branches={branches}
+                  summary={summary}
+                  identity={identity}
+                  history={history}
                   branchError={branchError}
                   switching={switching}
+                  busy={gitBusy}
                   onSwitch={(name) => void switchBranch(name)}
+                  onCreate={(name) => void runGit(() => api.gitCreateBranch(workspace, name, true))}
+                  onStage={(paths) => void runGit(() => api.gitStage(workspace, paths))}
+                  onUnstage={(paths) => void runGit(() => api.gitUnstage(workspace, paths))}
+                  onDiscard={(paths) => void runGit(() => api.gitDiscard(workspace, paths))}
+                  onCommit={(message) => void runGit(() => api.gitCommit(workspace, message))}
+                  onIdentity={(name, email) => void runGit(() => api.gitSetIdentity(workspace, name, email))}
+                  onSync={(action) => void runGit(() => api.gitSync(workspace, action))}
+                  onStash={(action) => void runGit(() => api.gitStash(workspace, action))}
+                  onShow={(hash) => api.gitShow(workspace, hash)}
                   changes={changes}
                   selected={selectedPath ?? null}
                   onOpen={(row, mode) => openChange(row, mode)}
@@ -1061,18 +1104,44 @@ function visibleRange(
 
 function GitPane({
   branches,
+  summary,
+  identity,
+  history,
   branchError,
   switching,
+  busy,
   onSwitch,
+  onCreate,
+  onStage,
+  onUnstage,
+  onDiscard,
+  onCommit,
+  onIdentity,
+  onSync,
+  onStash,
+  onShow,
   changes,
   selected,
   onOpen,
   onOpenAll,
 }: {
   branches: GitBranches;
+  summary: GitRepoSummary | null;
+  identity: GitIdentity | null;
+  history: GitCommit[];
   branchError: string | null;
   switching: boolean;
+  busy: boolean;
   onSwitch: (name: string) => void;
+  onCreate: (name: string) => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
+  onCommit: (message: string) => void;
+  onIdentity: (name: string, email: string) => void;
+  onSync: (action: "fetch" | "pull" | "push" | "publish") => void;
+  onStash: (action: "push" | "pop" | "list") => void;
+  onShow: (hash: string) => Promise<string>;
   changes: GitChange[];
   selected: string | null;
   onOpen: (row: GitChange, mode?: "preview" | "pin") => void;
@@ -1080,8 +1149,30 @@ function GitPane({
 }) {
   const [view, setView] = useState<GitChangesView>(loadGitChangesView);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [message, setMessage] = useState("");
+  const [newBranch, setNewBranch] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [commitText, setCommitText] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const tree = view === "tree" ? gitChangesTree(changes) : [];
   const totals = gitChangeTotals(changes);
+  const staged = changes.filter((row) => row.staged);
+  const unstaged = changes.filter((row) => !row.staged || row.unstaged || row.status === "untracked");
+  const repo = branches.repo !== false && (summary?.repo !== false);
+  const tracking = summary
+    ? [
+        summary.ahead ? `↑${summary.ahead}` : "",
+        summary.behind ? `↓${summary.behind}` : "",
+        summary.upstream ? summary.upstream : "",
+      ].filter(Boolean).join(" ")
+    : "";
+
+  useEffect(() => {
+    if (!identity) return;
+    setName(identity.name);
+    setEmail(identity.email);
+  }, [identity]);
 
   function setChangesView(next: GitChangesView) {
     setView(next);
@@ -1092,13 +1183,59 @@ function GitPane({
     <>
       <div className="px-1.5 pt-1.5">
         <BranchSwitch
-          current={branches.current}
+          current={summary?.detached ? summary.commit : branches.current}
           names={branches.branches}
           switching={switching}
           onSwitch={onSwitch}
         />
+        {tracking ? <p className="px-2 pt-0.5 text-[11px] text-muted">{tracking}</p> : null}
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
+        {repo ? (
+          <div className="flex flex-wrap gap-1 px-1 pt-1">
+            <GitAction label="Fetch" disabled={busy} onClick={() => onSync("fetch")} />
+            <GitAction label="Pull" disabled={busy} onClick={() => onSync("pull")} />
+            <GitAction label={summary?.upstream ? "Push" : "Publish"} disabled={busy} onClick={() => onSync(summary?.upstream ? "push" : "publish")} />
+            <GitAction label="Stash" disabled={busy || changes.length === 0} onClick={() => onStash("push")} />
+            <GitAction label="Pop" disabled={busy} onClick={() => onStash("pop")} />
+            <GitAction label={showNew ? "Cancel" : "Branch"} disabled={busy} onClick={() => setShowNew((v) => !v)} />
+          </div>
+        ) : null}
+        {showNew ? (
+          <form
+            className="flex gap-1 px-1 pt-1"
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              const next = newBranch.trim();
+              if (!next) return;
+              onCreate(next);
+              setNewBranch("");
+              setShowNew(false);
+            }}
+          >
+            <input
+              value={newBranch}
+              onChange={(ev) => setNewBranch(ev.target.value)}
+              placeholder="feature/name"
+              className="min-w-0 flex-1 rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
+            />
+            <GitAction label="Create" disabled={busy || !newBranch.trim()} onClick={() => undefined} submit />
+          </form>
+        ) : null}
       </div>
+      {repo && identity && !identity.configured ? (
+        <form
+          className="grid gap-1 px-2.5 pt-2"
+          onSubmit={(ev) => {
+            ev.preventDefault();
+            if (name.trim() && email.trim()) onIdentity(name.trim(), email.trim());
+          }}
+        >
+          <p className="text-[11px] text-muted">Set a name and email for this repo before committing.</p>
+          <input value={name} onChange={(ev) => setName(ev.target.value)} placeholder="Name" className="rounded-[6px] bg-wash px-2 py-1 text-[12px] outline-none" />
+          <input value={email} onChange={(ev) => setEmail(ev.target.value)} placeholder="Email" className="rounded-[6px] bg-wash px-2 py-1 text-[12px] outline-none" />
+          <GitAction label="Save identity" disabled={busy || !name.trim() || !email.trim()} onClick={() => undefined} submit />
+        </form>
+      ) : null}
       {changes.length > 0 ? (
         <div className="px-1.5 pt-1">
           <button
@@ -1116,6 +1253,32 @@ function GitPane({
               <span className="font-medium text-err">-{formatDiffCount(totals.deletions)}</span>
             ) : null}
           </button>
+          <form
+            className="mt-1 grid gap-1"
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              const text = message.trim();
+              if (!text || staged.length === 0) return;
+              onCommit(text);
+              setMessage("");
+            }}
+          >
+            <textarea
+              value={message}
+              onChange={(ev) => setMessage(ev.target.value)}
+              placeholder={staged.length ? "Commit message" : "Stage files to commit"}
+              rows={2}
+              className="resize-none rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
+            />
+            <div className="flex gap-1">
+              <GitAction label={`Stage ${unstaged.length || ""}`.trim()} disabled={busy || unstaged.length === 0} onClick={() => onStage(unstaged.map((row) => row.path))} />
+              <GitAction label="Unstage" disabled={busy || staged.length === 0} onClick={() => onUnstage(staged.map((row) => row.path))} />
+              <GitAction label="Discard" disabled={busy || changes.length === 0} onClick={() => {
+                if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
+              }} />
+              <GitAction label={busy ? "Working…" : "Commit"} disabled={busy || !message.trim() || staged.length === 0} onClick={() => undefined} submit />
+            </div>
+          </form>
         </div>
       ) : null}
       <div className="flex h-7 items-center justify-between gap-2 px-3">
@@ -1163,23 +1326,79 @@ function GitPane({
               collapsed={collapsed}
               onToggle={(path) => setCollapsed((prev) => ({ ...prev, [path]: !prev[path] }))}
               onOpen={onOpen}
+              onStage={onStage}
+              onUnstage={onUnstage}
+              onDiscard={onDiscard}
             />
           ))
         ) : (
           changes.map((row) => (
             <ChangeFileRow
-              key={row.path}
+              key={`${row.path}-${row.staged}`}
               row={row}
-              label={row.path}
+              label={changeLabel(row)}
               selected={selected === row.path}
               pad={8}
               onOpen={onOpen}
+              onStage={onStage}
+              onUnstage={onUnstage}
+              onDiscard={onDiscard}
             />
           ))
         )}
+        {history.length ? (
+          <div className="mt-2 border-t border-line/50 pt-1">
+            <p className="px-2 py-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">History</p>
+            {history.map((row) => (
+              <button
+                key={row.hash}
+                type="button"
+                title={`${row.short} ${row.subject}\n${row.author}`}
+                onClick={() => {
+                  void onShow(row.hash).then(setCommitText).catch((e) => setCommitText(String(e)));
+                }}
+                className="flex w-full items-baseline gap-2 rounded-[6px] px-2 py-[3px] text-left text-[12px] hover:bg-wash"
+              >
+                <span className="shrink-0 font-mono text-[10px] text-muted">{row.short}</span>
+                <span className="min-w-0 flex-1 truncate text-ink/90">{row.subject}</span>
+              </button>
+            ))}
+            {commitText ? (
+              <pre className="mt-1 max-h-48 overflow-auto rounded-[6px] bg-wash px-2 py-1 font-mono text-[10px] whitespace-pre-wrap text-ink/80">{commitText}</pre>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </>
   );
+}
+
+function GitAction({
+  label,
+  disabled,
+  onClick,
+  submit,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+  submit?: boolean;
+}) {
+  return (
+    <button
+      type={submit ? "submit" : "button"}
+      disabled={disabled}
+      onClick={submit ? undefined : onClick}
+      className="rounded-[6px] bg-wash px-2 py-1 text-[11px] text-ink hover:bg-wash-strong disabled:opacity-40"
+    >
+      {label}
+    </button>
+  );
+}
+
+function changeLabel(row: GitChange): string {
+  if (row.original && row.original !== row.path) return `${row.original} → ${row.path}`;
+  return row.path;
 }
 
 function ChangeTree({
@@ -1189,6 +1408,9 @@ function ChangeTree({
   collapsed,
   onToggle,
   onOpen,
+  onStage,
+  onUnstage,
+  onDiscard,
 }: {
   node: GitChangeTreeNode<GitChange>;
   depth: number;
@@ -1196,6 +1418,9 @@ function ChangeTree({
   collapsed: Record<string, boolean>;
   onToggle: (path: string) => void;
   onOpen: (row: GitChange, mode?: "preview" | "pin") => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
 }) {
   if (node.kind === "file") {
     return (
@@ -1205,6 +1430,9 @@ function ChangeTree({
         selected={selected === node.change.path}
         pad={8 + depth * 12}
         onOpen={onOpen}
+        onStage={onStage}
+        onUnstage={onUnstage}
+        onDiscard={onDiscard}
       />
     );
   }
@@ -1232,6 +1460,9 @@ function ChangeTree({
               collapsed={collapsed}
               onToggle={onToggle}
               onOpen={onOpen}
+              onStage={onStage}
+              onUnstage={onUnstage}
+              onDiscard={onDiscard}
             />
           ))
         : null}
@@ -1245,30 +1476,63 @@ function ChangeFileRow({
   selected,
   pad,
   onOpen,
+  onStage,
+  onUnstage,
+  onDiscard,
 }: {
   row: GitChange;
   label: string;
   selected: boolean;
   pad: number;
   onOpen: (row: GitChange, mode?: "preview" | "pin") => void;
+  onStage: (paths: string[]) => void;
+  onUnstage: (paths: string[]) => void;
+  onDiscard: (paths: string[]) => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(row, "preview")}
-      onDoubleClick={() => onOpen(row, "pin")}
-      className={`flex w-full items-center gap-2 rounded-[6px] py-[4px] pr-2 text-left text-[12px] select-none ${
+    <div
+      className={`group/change flex w-full items-center gap-1 rounded-[6px] py-[2px] pr-1 text-left text-[12px] select-none ${
         selected ? "bg-wash-strong" : "hover:bg-wash"
       }`}
       style={{ paddingLeft: pad }}
     >
-      <span className={`w-3 shrink-0 text-[10px] font-semibold ${statusTone(row.status)}`}>
-        {statusMark(row.status)}
-      </span>
-      <FileIcon name={row.path} className="size-3.5 text-muted" />
-      <span className="min-w-0 flex-1 truncate text-ok">{label}</span>
-      <GitLineStats {...gitLineStats(row)} />
-    </button>
+      <button
+        type="button"
+        onClick={() => onOpen(row, "preview")}
+        onDoubleClick={() => onOpen(row, "pin")}
+        className="flex min-w-0 flex-1 items-center gap-2 py-[2px] text-left"
+      >
+        <span className={`w-3 shrink-0 text-[10px] font-semibold ${statusTone(row.status)}`}>
+          {statusMark(row.status)}
+        </span>
+        <FileIcon name={row.path} className="size-3.5 text-muted" />
+        <span className="min-w-0 flex-1 truncate text-ok" title={row.original ? `${row.original} → ${row.path}` : row.path}>
+          {label}
+        </span>
+        {row.staged ? <span className="shrink-0 text-[10px] text-muted">staged</span> : null}
+        <GitLineStats {...gitLineStats(row)} />
+      </button>
+      <button
+        type="button"
+        title={row.staged && !row.unstaged ? "Unstage" : "Stage"}
+        aria-label={row.staged && !row.unstaged ? "Unstage" : "Stage"}
+        onClick={() => (row.staged && !row.unstaged ? onUnstage([row.path]) : onStage([row.path]))}
+        className="hidden size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink group-hover/change:flex"
+      >
+        <Symbol name={row.staged && !row.unstaged ? "xmark" : "plus"} className="size-3" />
+      </button>
+      <button
+        type="button"
+        title="Discard"
+        aria-label="Discard"
+        onClick={() => {
+          if (window.confirm(`Discard changes in ${row.path}?`)) onDiscard([row.path]);
+        }}
+        className="hidden size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-err group-hover/change:flex"
+      >
+        <Symbol name="arrow.2.circlepath" className="size-3" />
+      </button>
+    </div>
   );
 }
 

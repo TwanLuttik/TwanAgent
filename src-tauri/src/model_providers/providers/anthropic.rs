@@ -359,18 +359,18 @@ pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
 }
 
 /// Like `resolve_claude_auth`, but renews the CLI OAuth token when it is near expiry.
+/// A saved API key is used for chat. It does not skip renewing the CLI login, because
+/// session usage can only be read with that OAuth token.
 pub async fn resolve_claude_auth_fresh() -> Option<ClaudeAuth> {
-    if let Some(auth) = resolve_claude_auth_with(false) {
-        if !auth.via_cli {
-            return Some(auth);
-        }
-    }
+    let _ = refresh_claude_cli_login().await;
+    resolve_claude_auth()
+}
+
+/// Renew `~/.config/anthropic/credentials` when the access token is near expiry.
+/// Returns the fresh token. `None` when there is nothing to renew or the refresh fails.
+pub async fn refresh_claude_cli_login() -> Option<String> {
     let home = home_dir()?;
-    let token = read_cli_access_token_fresh(&home).await?;
-    Some(ClaudeAuth {
-        token,
-        via_cli: true,
-    })
+    read_cli_access_token_fresh(&home).await
 }
 
 fn resolve_claude_auth_with(allow_expired_cli: bool) -> Option<ClaudeAuth> {
@@ -398,6 +398,7 @@ fn resolve_claude_auth_with(allow_expired_cli: bool) -> Option<ClaudeAuth> {
 }
 
 /// The login the settings screen counts as signed in. Keychain first, then the credentials file.
+/// An expired keychain item is skipped so a still-valid file token can be used.
 pub fn read_claude_access_token(home: &Path) -> Option<String> {
     read_claude_access_token_with(home, keychain_credentials)
 }
@@ -406,13 +407,11 @@ pub fn read_claude_access_token_with(
     home: &Path,
     keychain: impl Fn() -> Option<String>,
 ) -> Option<String> {
-    if let Some(raw) = keychain() {
-        if let Some(token) = oauth_access_token(&raw) {
-            return Some(token);
-        }
-    }
-    let creds = home.join(".claude").join(".credentials.json");
-    if let Ok(raw) = fs::read_to_string(creds) {
+    let sources = [
+        keychain(),
+        fs::read_to_string(home.join(".claude").join(".credentials.json")).ok(),
+    ];
+    for raw in sources.into_iter().flatten() {
         if let Some(token) = oauth_access_token(&raw) {
             return Some(token);
         }
@@ -424,22 +423,29 @@ pub fn read_cli_access_token(home: &Path) -> Option<String> {
     cli_access_token(home, false).map(|(token, _)| token)
 }
 
-/// The Claude CLI login. When `refresh` is set, an expired access token is renewed and written back.
+/// The Claude CLI login. A token inside the refresh window is renewed and written back.
+/// A token that is still fresh is returned as-is, so callers can always try a refresh.
 pub async fn read_cli_access_token_fresh(home: &Path) -> Option<String> {
-    let (token, expired) = cli_access_token(home, true)?;
-    if !expired {
-        return Some(token);
-    }
     let path = cli_credentials_path(home);
     let raw = fs::read_to_string(&path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let token = access_token_of(&value)?;
+    if !token_needs_refresh(value.get("expires_at").and_then(|item| item.as_i64())) {
+        return Some(token);
+    }
     let refresh = value
         .get("refresh_token")
         .and_then(|item| item.as_str())
         .map(str::trim)
         .filter(|item| !item.is_empty())?
         .to_string();
-    refresh_cli_credentials(&path, &refresh).await
+    match refresh_cli_credentials(&path, &refresh).await {
+        Some(fresh) => Some(fresh),
+        // Keep the current access token until it is actually expired. A failed refresh
+        // a few minutes early should not sign the account out.
+        None if !token_expired(value.get("expires_at").and_then(|item| item.as_i64())) => Some(token),
+        None => None,
+    }
 }
 
 /// `(token, needs_refresh)`. An expired token is still returned when `allow_expired` is set so the caller can refresh it.
@@ -455,10 +461,76 @@ fn cli_access_token(home: &Path, allow_expired: bool) -> Option<(String, bool)> 
 }
 
 fn cli_credentials_path(home: &Path) -> PathBuf {
-    home.join(".config")
-        .join("anthropic")
-        .join("credentials")
-        .join("default.json")
+    let root = home.join(".config").join("anthropic");
+    let name = fs::read_to_string(root.join("active_config"))
+        .ok()
+        .map(|raw| raw.trim().to_string())
+        .filter(|name| profile_name_ok(name))
+        .unwrap_or_else(|| "default".into());
+    root.join("credentials").join(format!("{name}.json"))
+}
+
+/// Profile names Claude Code accepts: letters, digits, `_`, `.`, `-`.
+fn profile_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-')
+}
+
+/// The OAuth client that issued this login. A profile config wins over the public default,
+/// because a refresh token is bound to the client that created it.
+fn claude_oauth_client_id(credentials: &Path) -> String {
+    let Some(root) = credentials.parent().and_then(|dir| dir.parent()) else {
+        return CLAUDE_OAUTH_CLIENT_ID.into();
+    };
+    let name = credentials
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|name| profile_name_ok(name))
+        .unwrap_or("default");
+    let config = root.join("configs").join(format!("{name}.json"));
+    if let Some(client) = read_profile_client_id(&config) {
+        return client;
+    }
+    // The profile file exists but has no client id. Current Claude Code pins the profile client.
+    if config.is_file() {
+        return CLAUDE_PROFILE_CLIENT_ID.into();
+    }
+    CLAUDE_OAUTH_CLIENT_ID.into()
+}
+
+fn read_profile_client_id(path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .pointer("/authentication/client_id")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+}
+
+fn claude_cli_user_agent() -> String {
+    let version = home_dir()
+        .and_then(|home| claude_bin_version(&home))
+        .or_else(|| claude_bin().as_deref().and_then(claude_version));
+    match version {
+        Some(version) => format!("claude-code/{version}"),
+        None => "claude-code".into(),
+    }
+}
+
+fn claude_bin_version(home: &Path) -> Option<String> {
+    let local = home.join(".claude").join("local").join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
+    if local.is_file() {
+        return claude_version(&local);
+    }
+    None
 }
 
 fn access_token_of(value: &serde_json::Value) -> Option<String> {
@@ -488,13 +560,16 @@ fn token_needs_refresh(expires_at: Option<i64>) -> bool {
 
 /// Same login the Claude CLI reports as `oauth_token`. The refresh token rotates, so the file is rewritten.
 async fn refresh_cli_credentials(path: &Path, refresh_token: &str) -> Option<String> {
+    let client_id = claude_oauth_client_id(path);
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+        "client_id": client_id,
     });
+    // Cloudflare rejects a request with no user agent. Claude Code sends its own.
     let response = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
+        .user_agent(claude_cli_user_agent())
         .build()
         .ok()?
         .post(CLAUDE_OAUTH_TOKEN_URL)
@@ -786,10 +861,21 @@ pub fn cached_account_usage(data_dir: &std::path::Path) -> Option<AccountUsage> 
     serde_json::from_str(&raw).ok()
 }
 
+/// A confirmed sign-out replaces the snapshot. A failed read does not, so one bad
+/// poll cannot hide an account that was connected a moment ago.
 fn store_account_usage(data_dir: &std::path::Path, usage: &AccountUsage) {
     let Ok(conn) = crate::appdb::open(data_dir) else {
         return;
     };
+    if !usage.connected {
+        let previous = crate::appdb::get_account_usage(&conn, account_usage_cache_key())
+            .ok()
+            .flatten()
+            .and_then(|raw| serde_json::from_str::<AccountUsage>(&raw).ok());
+        if previous.as_ref().is_some_and(|row| row.connected) {
+            return;
+        }
+    }
     let Ok(raw) = serde_json::to_string(usage) else {
         return;
     };
@@ -823,7 +909,10 @@ pub fn claude_cli_info() -> ClaudeCliInfo {
 }
 
 pub const CLAUDE_OAUTH_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+/// Claude Code's public OAuth client. A profile can pin a different one.
 pub const CLAUDE_OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+/// Claude Code 2.1+ writes this client into `~/.config/anthropic/configs/*.json`.
+pub const CLAUDE_PROFILE_CLIENT_ID: &str = "41077d10-94b8-4194-be48-d251e9eb21b4";
 /// Session usage for the signed-in Claude account. An API key cannot read this.
 pub const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const CLAUDE_ACCOUNT_URL: &str = "https://api.anthropic.com/api/oauth/account";
@@ -853,6 +942,9 @@ pub struct AccountUsage {
     /// `available` when a prepaid API org still has credits and no dollar balance was returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credit_status: Option<String>,
+    /// When this snapshot was fetched. The sidebar ignores a cache older than a few minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetched_at: Option<String>,
 }
 
 fn usage_percent(value: &serde_json::Value) -> Option<f64> {
@@ -953,6 +1045,7 @@ fn empty_usage(connected: bool, label: impl Into<String>) -> AccountUsage {
         balance_cents: None,
         balance_currency: None,
         credit_status: None,
+        fetched_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     }
 }
 
@@ -1023,66 +1116,168 @@ fn oauth_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-async fn oauth_get(client: &reqwest::Client, url: &str, token: &str) -> Option<String> {
-    let response = client
+enum OauthGet {
+    Ok(String),
+    /// The token was rejected. The caller should refresh and try once more.
+    Unauthorized,
+    /// The network failed or the server answered with something other than 401.
+    Failed,
+}
+
+async fn oauth_get(client: &reqwest::Client, url: &str, token: &str) -> OauthGet {
+    let response = match client
         .get(url)
         .bearer_auth(token)
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("accept", "application/json")
+        .header("user-agent", claude_cli_user_agent())
         .send()
         .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+    {
+        Ok(response) => response,
+        Err(_) => return OauthGet::Failed,
+    };
+    let status = response.status();
+    // 403 on the credits endpoint means this plan cannot read a dollar balance.
+    // The caller still has the account, so that is not a failed login.
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return OauthGet::Unauthorized;
     }
-    response.text().await.ok()
+    if !status.is_success() {
+        return OauthGet::Failed;
+    }
+    match response.text().await {
+        Ok(body) => OauthGet::Ok(body),
+        Err(_) => OauthGet::Failed,
+    }
 }
 
-/// The connected Claude account's own allowance. An API-key-only login has no session usage.
-/// A prepaid API org with no session windows reports its credit balance instead.
-pub async fn account_usage() -> AccountUsage {
-    let Some(home) = home_dir() else {
-        return empty_usage(false, "Claude");
+/// OAuth tokens that can read session usage, newest first. An API key is not one of them.
+/// The CLI file is listed even when it is inside the refresh window, so a 401 can renew it.
+fn claude_usage_tokens(home: &Path) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let push = |tokens: &mut Vec<String>, token: Option<String>| {
+        let Some(token) = token else {
+            return;
+        };
+        if !tokens.iter().any(|row| row == &token) {
+            tokens.push(token);
+        }
     };
-    let Some(token) = read_claude_access_token(&home).or(read_cli_access_token_fresh(&home).await) else {
-        return empty_usage(false, "Claude");
-    };
-    let email = read_claude_account(&home).and_then(|(_, email)| email);
-    let label = email.unwrap_or_else(|| "Claude".into());
-    let client = oauth_client();
-    let windows = oauth_get(&client, CLAUDE_USAGE_URL, &token)
-        .await
-        .map(|body| parse_account_usage(&body))
-        .unwrap_or_default();
+    push(&mut tokens, read_claude_access_token(home));
+    push(
+        &mut tokens,
+        cli_access_token(home, true).map(|(token, _)| token),
+    );
+    tokens
+}
+
+async fn usage_from_token(client: &reqwest::Client, token: &str, label: String) -> (AccountUsage, OauthGet) {
+    let usage_body = oauth_get(client, CLAUDE_USAGE_URL, token).await;
     let mut usage = AccountUsage {
         provider: PROVIDER_ANTHROPIC.into(),
         connected: true,
         label,
-        windows,
+        windows: match &usage_body {
+            OauthGet::Ok(body) => parse_account_usage(body),
+            _ => Vec::new(),
+        },
         balance_cents: None,
         balance_currency: None,
         credit_status: None,
+        fetched_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     };
     if !usage.windows.is_empty() {
-        return usage;
+        return (usage, OauthGet::Ok(String::new()));
     }
-    let Some(account) = oauth_get(&client, CLAUDE_ACCOUNT_URL, &token).await else {
-        return usage;
+    // A 401 on usage is the token. Don't spend another request before refreshing.
+    if matches!(usage_body, OauthGet::Unauthorized) {
+        return (usage, OauthGet::Unauthorized);
+    }
+    let account = match oauth_get(client, CLAUDE_ACCOUNT_URL, token).await {
+        OauthGet::Ok(body) => body,
+        other => return (usage, other),
     };
     let Some((org, status)) = parse_api_org(&account) else {
-        return usage;
+        // The usage endpoint answered. An account with no session windows and no
+        // API org is still signed in. Session limits simply do not apply.
+        return (usage, OauthGet::Ok(account));
     };
+    usage.credit_status = status.filter(|item| item == "available" || item == "exhausted");
     let credits_url = format!("https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits");
-    if let Some((cents, currency)) = oauth_get(&client, &credits_url, &token)
-        .await
-        .and_then(|body| parse_prepaid_balance(&body))
-    {
-        usage.balance_cents = Some(cents);
-        usage.balance_currency = Some(currency);
+    match oauth_get(client, &credits_url, token).await {
+        OauthGet::Ok(body) => {
+            if let Some((cents, currency)) = parse_prepaid_balance(&body) {
+                usage.balance_cents = Some(cents);
+                usage.balance_currency = Some(currency);
+                // A dollar balance replaces the free-credit flag.
+                usage.credit_status = None;
+            }
+            (usage, OauthGet::Ok(body))
+        }
+        // Pro and Max only. The account payload already said whether credits remain.
+        OauthGet::Unauthorized => (usage, OauthGet::Ok(account)),
+        OauthGet::Failed => (usage, OauthGet::Ok(account)),
+    }
+}
+
+/// The connected Claude account's own allowance. An API-key-only login has no session usage.
+/// A prepaid API org with no session windows reports its credit balance instead.
+/// The CLI token is refreshed before the call when it is near expiry, and once more on 401.
+pub async fn account_usage() -> AccountUsage {
+    let Some(home) = home_dir() else {
+        return empty_usage(false, "Claude");
+    };
+    let _ = read_cli_access_token_fresh(&home).await;
+    let email = read_claude_account(&home).and_then(|(_, email)| email);
+    let label = email
+        .or_else(|| cli_account_email(&home))
+        .unwrap_or_else(|| "Claude".into());
+    let mut tokens = claude_usage_tokens(&home);
+    if tokens.is_empty() {
+        return empty_usage(false, label);
+    }
+    let client = oauth_client();
+    let mut saw_auth_failure = false;
+    let mut last_connected: Option<AccountUsage> = None;
+    for token in tokens.iter() {
+        let (usage, status) = usage_from_token(&client, token, label.clone()).await;
+        match status {
+            OauthGet::Unauthorized => saw_auth_failure = true,
+            OauthGet::Failed => last_connected = Some(usage),
+            OauthGet::Ok(_) => return usage,
+        }
+    }
+    if saw_auth_failure {
+        if let Some(fresh) = read_cli_access_token_fresh(&home).await {
+            if !tokens.iter().any(|token| token == &fresh) {
+                tokens.push(fresh.clone());
+                let (usage, status) = usage_from_token(&client, &fresh, label.clone()).await;
+                if !matches!(status, OauthGet::Unauthorized) {
+                    return usage;
+                }
+            }
+        }
+    }
+    if let Some(usage) = last_connected {
         return usage;
     }
-    usage.credit_status = status.filter(|item| item == "available" || item == "exhausted");
-    usage
+    // Every candidate token was rejected. That is a real sign-out, not a blip.
+    if saw_auth_failure {
+        return empty_usage(false, label);
+    }
+    empty_usage(false, label)
+}
+
+fn cli_account_email(home: &Path) -> Option<String> {
+    let raw = fs::read_to_string(cli_credentials_path(home)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("account_email")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|email| email.contains('@'))
+        .map(str::to_string)
 }
 pub const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 pub const MODELS_URL: &str = "https://api.anthropic.com/v1/models";
@@ -1546,6 +1741,69 @@ mod tests {
         assert_eq!(
             read_claude_account_with(dir.path(), none),
             Some((true, Some("ada@example.com".into())))
+        );
+    }
+
+    #[test]
+    fn expired_keychain_does_not_hide_a_fresh_file_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join(".claude");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000}}"#,
+        )
+        .unwrap();
+        let expired = r#"{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}"#;
+        assert_eq!(
+            read_claude_access_token_with(dir.path(), || Some(expired.into())).as_deref(),
+            Some("file-token")
+        );
+    }
+
+    #[test]
+    fn cli_email_is_read_without_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = dir
+            .path()
+            .join(".config")
+            .join("anthropic")
+            .join("credentials");
+        fs::create_dir_all(&creds).unwrap();
+        fs::write(
+            creds.join("default.json"),
+            r#"{"access_token":"oauth-token","expires_at":1,"account_email":"ada@example.com","refresh_token":"refresh"}"#,
+        )
+        .unwrap();
+        assert_eq!(cli_account_email(dir.path()).as_deref(), Some("ada@example.com"));
+        assert_eq!(claude_oauth_client_id(&creds.join("default.json")), CLAUDE_OAUTH_CLIENT_ID);
+        let root = dir.path().join(".config").join("anthropic");
+        fs::create_dir_all(root.join("configs")).unwrap();
+        fs::write(
+            root.join("configs").join("default.json"),
+            r#"{"authentication":{"type":"user_oauth","client_id":"41077d10-94b8-4194-be48-d251e9eb21b4"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            claude_oauth_client_id(&creds.join("default.json")),
+            CLAUDE_PROFILE_CLIENT_ID
+        );
+        fs::write(root.join("active_config"), "work\n").unwrap();
+        assert_eq!(
+            cli_credentials_path(dir.path()),
+            root.join("credentials").join("work.json")
+        );
+        fs::write(root.join("active_config"), "../secrets").unwrap();
+        assert_eq!(
+            cli_credentials_path(dir.path()),
+            root.join("credentials").join("default.json")
+        );
+        // The access token is expired, but it stays a candidate so the caller can refresh it.
+        assert_eq!(claude_usage_tokens(dir.path()), vec!["oauth-token".to_string()]);
+        assert_eq!(read_claude_access_token(dir.path()), None);
+        assert_eq!(
+            cli_access_token(dir.path(), true).map(|(token, expired)| (token, expired)),
+            Some(("oauth-token".into(), true))
         );
     }
 

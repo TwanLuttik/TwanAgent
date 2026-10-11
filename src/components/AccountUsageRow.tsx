@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  accountUsageIsFresh,
   formatAccountBalance,
   formatAccountReset,
   formatAccountUsed,
@@ -91,23 +92,38 @@ function ProviderAccountUsage({
 }) {
   const [usage, setUsage] = useState<AccountUsage | null>(null);
   const [loading, setLoading] = useState(true);
+  const usageRef = useRef<AccountUsage | null>(null);
+  usageRef.current = usage;
+  const loadRef = useRef(load);
+  const loadCachedRef = useRef(loadCached);
+  loadRef.current = load;
+  loadCachedRef.current = loadCached;
 
   useEffect(() => {
     let gone = false;
     setLoading(true);
-    void loadCached()
+    void loadCachedRef.current()
       .then((row) => {
-        if (gone || !row) return;
+        if (gone || !row || usageRef.current?.connected) return;
         const cached = parseAccountUsage(row);
-        if (cached?.connected) setUsage(cached);
+        // A stale cache is not painted. The live fetch below replaces it.
+        if (cached?.connected && accountUsageIsFresh(cached)) setUsage(cached);
       })
       .catch(() => undefined);
     function reload() {
+      if (document.visibilityState === "hidden") return;
       if (!gone) setLoading(true);
-      void load()
+      void loadRef.current()
         .then((row) => {
           if (gone) return;
-          setUsage(parseAccountUsage(row));
+          const next = parseAccountUsage(row);
+          const previous = usageRef.current;
+          // One failed poll must not hide an account we already showed.
+          if (next && !next.connected && previous?.connected) {
+            setLoading(false);
+            return;
+          }
+          setUsage(next);
           setLoading(false);
         })
         .catch(() => {
@@ -116,11 +132,18 @@ function ProviderAccountUsage({
     }
     reload();
     const poll = window.setInterval(reload, 60_000);
+    function onVisible() {
+      if (document.visibilityState === "visible") reload();
+    }
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       gone = true;
       window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh, load, loadCached]);
+    // `refresh` is the only trigger. The loaders are read through refs so a new
+    // function identity does not restart the poll.
+  }, [refresh]);
 
   if (!usage?.connected) {
     if (!loading) return null;

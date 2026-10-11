@@ -7,7 +7,11 @@ use super::files::{
     create_dir, delete_paths, edit_file, existing_files, file_preview, list_dir, move_path,
     read_file, rename_path, resolve_file, tree_snapshot, write_file,
 };
-use super::git::{git_branches, git_diff, git_status_with, git_switch};
+use super::git::{
+    git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
+    git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with, git_summary,
+    git_switch, git_sync, git_unstage, GitCommit, GitIdentity, GitRepoSummary, GitTarget,
+};
 use super::paths::{expand_folder_path, path_string};
 use super::project_location::ProjectsLocation;
 use super::projects::FolderSuggestion;
@@ -412,10 +416,9 @@ pub async fn dev_git_status(
     workspace: String,
     stats: Option<bool>,
 ) -> Result<Vec<GitChange>> {
-    let root = state.require_workspace(&workspace)?;
-    let remote = remote_git_context(&state, &root)?;
+    let target = git_target(&state, &workspace)?;
     let with_stats = stats.unwrap_or(true);
-    off_main(move || run_remote_git(remote, || git_status_with(&root, with_stats))).await
+    off_main(move || git_status_with(&target, with_stats)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -424,17 +427,24 @@ pub async fn dev_git_diff(
     workspace: String,
     path: Option<String>,
 ) -> Result<String> {
-    let root = state.require_workspace(&workspace)?;
-    let remote = remote_git_context(&state, &root)?;
+    let target = git_target(&state, &workspace)?;
     let rel = path.unwrap_or_default();
-    off_main(move || run_remote_git(remote, || git_diff(&root, &rel))).await
+    off_main(move || git_diff(&target, &rel)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_git_branches(state: State<'_, AppState>, workspace: String) -> Result<GitBranches> {
-    let root = state.require_workspace(&workspace)?;
-    let remote = remote_git_context(&state, &root)?;
-    off_main(move || run_remote_git(remote, || git_branches(&root))).await
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_branches(&target)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_summary(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<GitRepoSummary> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_summary(&target)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -443,16 +453,130 @@ pub async fn dev_git_switch(
     workspace: String,
     name: String,
 ) -> Result<GitBranches> {
-    let root = state.require_workspace(&workspace)?;
-    let remote = remote_git_context(&state, &root)?;
-    off_main(move || run_remote_git(remote, || git_switch(&root, &name))).await
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_switch(&target, &name)).await
 }
 
-struct RemoteGit {
-    machine: crate::remote::config::Machine,
-    project: crate::remote::config::RemoteProject,
-    pool: std::sync::Arc<crate::remote::ssh::Pool>,
-    secret: Option<String>,
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_create_branch(
+    state: State<'_, AppState>,
+    workspace: String,
+    name: String,
+    checkout: Option<bool>,
+) -> Result<GitBranches> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_create_branch(&target, &name, checkout.unwrap_or(true))).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_stage(
+    state: State<'_, AppState>,
+    workspace: String,
+    paths: Vec<String>,
+) -> Result<Vec<GitChange>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_stage(&target, &paths)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_unstage(
+    state: State<'_, AppState>,
+    workspace: String,
+    paths: Vec<String>,
+) -> Result<Vec<GitChange>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_unstage(&target, &paths)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_discard(
+    state: State<'_, AppState>,
+    workspace: String,
+    paths: Vec<String>,
+) -> Result<Vec<GitChange>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_discard(&target, &paths)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_commit(
+    state: State<'_, AppState>,
+    workspace: String,
+    message: String,
+) -> Result<String> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_commit(&target, &message)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_identity(state: State<'_, AppState>, workspace: String) -> Result<GitIdentity> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_identity(&target)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_set_identity(
+    state: State<'_, AppState>,
+    workspace: String,
+    name: String,
+    email: String,
+) -> Result<GitIdentity> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_set_identity(&target, &name, &email)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_sync(
+    state: State<'_, AppState>,
+    workspace: String,
+    action: String,
+) -> Result<String> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_sync(&target, &action)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_stash(
+    state: State<'_, AppState>,
+    workspace: String,
+    action: String,
+    message: Option<String>,
+) -> Result<String> {
+    let target = git_target(&state, &workspace)?;
+    let message = message.unwrap_or_default();
+    off_main(move || git_stash(&target, &action, &message)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_log(
+    state: State<'_, AppState>,
+    workspace: String,
+    limit: Option<u32>,
+) -> Result<Vec<GitCommit>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_log(&target, limit.unwrap_or(40))).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_show(
+    state: State<'_, AppState>,
+    workspace: String,
+    hash: String,
+) -> Result<String> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_show(&target, &hash)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_file_at(
+    state: State<'_, AppState>,
+    workspace: String,
+    path: String,
+    revision: Option<String>,
+) -> Result<String> {
+    let target = git_target(&state, &workspace)?;
+    let revision = revision.unwrap_or_else(|| "HEAD".into());
+    off_main(move || git_file_at(&target, &path, &revision)).await
 }
 
 struct RemoteFiles {
@@ -614,9 +738,18 @@ fn remote_files(state: &AppState, root: &Path) -> Result<Option<RemoteFiles>> {
     }))
 }
 
-fn remote_git_context(state: &AppState, root: &std::path::Path) -> Result<Option<RemoteGit>> {
-    let Some(project) = crate::remote::project_for_workspace(state, root)? else {
-        return Ok(None);
+/// Branch label for a sidebar row. Does not register the folder as an opened workspace.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_project_summary(path: String) -> Result<GitRepoSummary> {
+    let root = super::paths::expand_folder_path(&path)?;
+    let target = GitTarget::local(&root)?;
+    off_main(move || git_summary(&target)).await
+}
+
+fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
+    let root = state.require_workspace(workspace)?;
+    let Some(project) = crate::remote::project_for_workspace(state, &root)? else {
+        return GitTarget::local(&root);
     };
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
@@ -625,19 +758,7 @@ fn remote_git_context(state: &AppState, root: &std::path::Path) -> Result<Option
         .secret_account
         .as_deref()
         .and_then(crate::secrets::get_ssh_secret);
-    Ok(Some(RemoteGit {
-        machine,
-        project,
-        pool: state.ssh_pool.clone(),
-        secret,
-    }))
-}
-
-fn run_remote_git<T>(remote: Option<RemoteGit>, work: impl FnOnce() -> Result<T>) -> Result<T> {
-    let Some(remote) = remote else {
-        return work();
-    };
-    crate::remote::git::with_remote(remote.machine, remote.project, remote.pool, remote.secret, work)
+    GitTarget::remote(&root, machine, project, state.ssh_pool.clone(), secret)
 }
 
 /// http(s) only. `open` would also launch local files and custom URL schemes.

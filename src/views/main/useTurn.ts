@@ -946,7 +946,11 @@ async function runTurn(
       },
       signal: ac.signal,
     });
-    latestMessages = stampTurnDuration(closeDanglingToolCalls(done), Date.now() - startedAt);
+    latestMessages = stampTurnDuration(
+      closeDanglingToolCalls(done),
+      Date.now() - startedAt,
+      nowIso(),
+    );
     if (stoppedByUser && !pendingRef.current[id]?.length) {
       const restored = restorePrompt(id, latestMessages);
       if (restored) latestMessages = restored;

@@ -1,36 +1,244 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 use super::paths::resolve_in_workspace;
 use super::types::{GitBranches, GitChange};
+use crate::env_path::command_path;
 use crate::error::{Error, Result};
+use crate::remote::config::{Machine, RemoteProject};
+use crate::remote::ssh::{ExecRequest, Pool};
+
+const GIT_TIMEOUT_SECS: u64 = 60;
+const OUTPUT_LIMIT: usize = 2_000_000;
+const UNTRACKED_LINE_CAP: u64 = 2_000_000;
+
+/// One git invocation. Local commands spawn `git`. Remote commands run the same argv over SSH.
+#[derive(Clone)]
+pub struct GitTarget {
+    pub root: PathBuf,
+    remote: Option<RemoteGit>,
+}
+
+#[derive(Clone)]
+struct RemoteGit {
+    machine: Machine,
+    project: RemoteProject,
+    pool: std::sync::Arc<Pool>,
+    secret: Option<String>,
+}
+
+impl GitTarget {
+    pub fn local(workspace: &Path) -> Result<Self> {
+        Ok(Self {
+            root: resolve_in_workspace(workspace, "")?,
+            remote: None,
+        })
+    }
+
+    pub fn remote(
+        workspace: &Path,
+        machine: Machine,
+        project: RemoteProject,
+        pool: std::sync::Arc<Pool>,
+        secret: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            root: resolve_in_workspace(workspace, "")?,
+            remote: Some(RemoteGit {
+                machine,
+                project,
+                pool,
+                secret,
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRepoSummary {
+    pub repo: bool,
+    pub current: Option<String>,
+    pub detached: bool,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub dirty: u32,
+    pub staged: u32,
+    pub unstaged: u32,
+    pub untracked: u32,
+    pub conflicts: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    pub at: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitIdentity {
+    pub name: String,
+    pub email: String,
+    pub configured: bool,
+}
+
+enum GitText {
+    Output(String),
+    NotRepo,
+}
 
 pub fn parse_git_status(porcelain: &str) -> Vec<GitChange> {
     let mut rows = Vec::new();
     for line in porcelain.lines() {
-        if line.len() < 4 {
-            continue;
+        if let Some(row) = parse_status_line(line) {
+            rows.push(row);
         }
-        let x = line.as_bytes()[0] as char;
-        let y = line.as_bytes()[1] as char;
-        let rest = &line[3..];
-        let path = if let Some((_, dest)) = rest.split_once(" -> ") {
-            dest.to_string()
-        } else {
-            rest.to_string()
-        };
-        let (status, staged) = classify_git(x, y);
-        rows.push(GitChange {
-            path,
-            status,
-            staged,
-            additions: 0,
-            deletions: 0,
-        });
     }
     rows
+}
+
+fn parse_status_line(line: &str) -> Option<GitChange> {
+    if line.len() < 4 {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let x = bytes[0] as char;
+    let y = bytes[1] as char;
+    // porcelain v1 is "XY PATH". A rename score can make the third byte a digit.
+    if bytes[2] != b' ' && !bytes[2].is_ascii_digit() {
+        return None;
+    }
+    let mut rest = line[3..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut original: Option<String> = None;
+    if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') {
+        if let Some((from, to)) = split_rename(rest) {
+            original = Some(unquote_git(from));
+            rest = to;
+        }
+    }
+    let path = unquote_git(rest);
+    if path.is_empty() {
+        return None;
+    }
+    let (status, staged, unstaged) = classify_git(x, y);
+    Some(GitChange {
+        path,
+        original,
+        status,
+        staged,
+        unstaged,
+        additions: 0,
+        deletions: 0,
+    })
+}
+
+/// `old -> new`, including the quoted form `"old -> new"` and paths that contain `->`.
+fn split_rename(rest: &str) -> Option<(&str, &str)> {
+    if let Some(stripped) = rest.strip_prefix('"') {
+        if let Some(end) = find_closing_quote(stripped) {
+            let inner = &stripped[..end];
+            if let Some((from, to)) = inner.split_once(" -> ") {
+                return Some((from, to));
+            }
+        }
+    }
+    rest.split_once(" -> ")
+}
+
+fn find_closing_quote(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+pub fn unquote_git(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return trimmed.to_string();
+    };
+    let mut out = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('a') => out.push('\u{7}'),
+            Some('b') => out.push('\u{8}'),
+            Some('v') => out.push('\u{b}'),
+            Some('f') => out.push('\u{c}'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some(oct @ '0'..='7') => {
+                let mut bytes = vec![oct.to_digit(8).unwrap_or(0) as u8];
+                for _ in 0..2 {
+                    if let Some(next) = chars.peek().copied() {
+                        if let Some(digit) = next.to_digit(8) {
+                            chars.next();
+                            let last = bytes.last_mut().expect("octal byte");
+                            *last = last.saturating_mul(8).saturating_add(digit as u8);
+                        }
+                    }
+                }
+                // Git quotes non-ASCII as a run of octal bytes, not one code point each.
+                while let Some('\\') = chars.peek().copied() {
+                    let mut look = chars.clone();
+                    look.next();
+                    let Some(next) = look.next() else { break };
+                    if !next.is_digit(8) {
+                        break;
+                    }
+                    chars.next();
+                    chars.next();
+                    let mut val = next.to_digit(8).unwrap_or(0) as u8;
+                    for _ in 0..2 {
+                        if let Some(more) = chars.peek().copied() {
+                            if let Some(digit) = more.to_digit(8) {
+                                chars.next();
+                                val = val.saturating_mul(8).saturating_add(digit as u8);
+                            }
+                        }
+                    }
+                    bytes.push(val);
+                }
+                match String::from_utf8(bytes) {
+                    Ok(text) => out.push_str(&text),
+                    Err(err) => out.push_str(&String::from_utf8_lossy(err.as_bytes())),
+                }
+            }
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 pub fn parse_git_numstat(text: &str) -> HashMap<String, (u32, u32)> {
@@ -58,33 +266,291 @@ fn parse_numstat_count(raw: &str) -> u32 {
 }
 
 fn numstat_path(rest: &str) -> String {
-    if let Some((_, dest)) = rest.split_once(" => ") {
-        dest.to_string()
-    } else {
-        rest.to_string()
+    let rest = rest.trim();
+    // numstat rename form is `old => new`, not porcelain's `old -> new`.
+    if let Some((_, to)) = rest.split_once(" => ") {
+        let dest = if let Some(start) = to.rfind('}') {
+            // `dir/{old => new}/file` keeps the common prefix and suffix.
+            let prefix = rest.split_once('{').map(|(pre, _)| pre).unwrap_or("");
+            let suffix = &to[start + 1..];
+            let middle = to[..start].trim();
+            format!("{prefix}{middle}{suffix}")
+        } else {
+            to.split('\t').next().unwrap_or(to).to_string()
+        };
+        return unquote_git(dest.trim());
+    }
+    let path = rest.split('\t').next().unwrap_or(rest);
+    unquote_git(path)
+}
+
+/// Index and worktree counts stay separate so a partially staged file is not one number.
+pub fn apply_git_stats(
+    rows: &mut [GitChange],
+    staged: &HashMap<String, (u32, u32)>,
+    unstaged: &HashMap<String, (u32, u32)>,
+) {
+    for row in rows {
+        let index = staged.get(&row.path).copied().unwrap_or((0, 0));
+        let work = unstaged.get(&row.path).copied().unwrap_or((0, 0));
+        row.additions = index.0.saturating_add(work.0);
+        row.deletions = index.1.saturating_add(work.1);
     }
 }
 
-pub fn apply_git_stats(rows: &mut [GitChange], stats: &HashMap<String, (u32, u32)>) {
-    for row in rows {
-        if let Some((add, del)) = stats.get(&row.path) {
-            row.additions = *add;
-            row.deletions = *del;
+fn classify_git(x: char, y: char) -> (String, bool, bool) {
+    let staged = x != ' ' && x != '?';
+    let unstaged = y != ' ' && y != '?';
+    if x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D') {
+        return ("conflict".into(), false, true);
+    }
+    if x == '?' && y == '?' {
+        return ("untracked".into(), false, false);
+    }
+    if x == '!' && y == '!' {
+        return ("ignored".into(), false, false);
+    }
+    if y == 'D' || (x == 'D' && y == ' ') {
+        return ("deleted".into(), staged, unstaged);
+    }
+    if y == 'A' || (x == 'A' && y == ' ') {
+        return ("added".into(), staged, unstaged);
+    }
+    if y == 'R' || x == 'R' {
+        return ("renamed".into(), staged, unstaged);
+    }
+    if y == 'C' || x == 'C' {
+        return ("copied".into(), staged, unstaged);
+    }
+    if y == 'T' || x == 'T' {
+        return ("typechange".into(), staged, unstaged);
+    }
+    ("modified".into(), staged, unstaged)
+}
+
+fn git_text(target: &GitTarget, args: &[&str]) -> Result<GitText> {
+    let text = match &target.remote {
+        Some(remote) => remote_git(remote, args)?,
+        None => local_git(&target.root, args)?,
+    };
+    if text.starts_with("ERR\n") {
+        let err = text.trim_start_matches("ERR\n");
+        if err.contains("not a git repository") {
+            return Ok(GitText::NotRepo);
+        }
+        return Err(Error::Other(clip(err)));
+    }
+    Ok(GitText::Output(text))
+}
+
+fn git_output(target: &GitTarget, args: &[&str]) -> Result<String> {
+    match git_text(target, args)? {
+        GitText::Output(text) => Ok(text),
+        GitText::NotRepo => Ok(String::new()),
+    }
+}
+
+fn git_run(target: &GitTarget, args: &[&str]) -> Result<String> {
+    match git_text(target, args)? {
+        GitText::Output(text) => Ok(text),
+        GitText::NotRepo => Err(Error::Other("not a git repository".into())),
+    }
+}
+
+fn local_git(root: &Path, args: &[&str]) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(root)
+        .env("PATH", command_path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|_| Error::Other("git is not available".into()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Other("missing git stdout".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Other("missing git stderr".into()))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        set_nonblocking(stdout.as_raw_fd());
+        set_nonblocking(stderr.as_raw_fd());
+    }
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    let started = std::time::Instant::now();
+    let status = loop {
+        drain(&mut stdout, &mut out_buf);
+        drain(&mut stderr, &mut err_buf);
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                drain(&mut stdout, &mut out_buf);
+                drain(&mut stderr, &mut err_buf);
+                break status;
+            }
+            Ok(None) if started.elapsed() > Duration::from_secs(GIT_TIMEOUT_SECS) => {
+                kill_git(&mut child);
+                drain(&mut stdout, &mut out_buf);
+                drain(&mut stderr, &mut err_buf);
+                return Err(Error::Other(format!(
+                    "git timed out after {GIT_TIMEOUT_SECS}s"
+                )));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(err) => return Err(Error::Other(err.to_string())),
+        }
+    };
+    let stdout = String::from_utf8_lossy(&out_buf).into_owned();
+    if status.success() {
+        return Ok(clip_bytes(&stdout));
+    }
+    let stderr = String::from_utf8_lossy(&err_buf);
+    Ok(format!("ERR\n{}", stderr.trim()))
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: i32) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
         }
     }
 }
 
+fn drain(file: &mut impl Read, buf: &mut Vec<u8>) {
+    let mut chunk = [0u8; 8192];
+    loop {
+        if buf.len() >= OUTPUT_LIMIT {
+            break;
+        }
+        match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = OUTPUT_LIMIT.saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+}
+
+fn kill_git(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn remote_git(remote: &RemoteGit, args: &[&str]) -> Result<String> {
+    let command = crate::remote::git::git_command(args)?;
+    let script = crate::remote::ssh::remote_shell_command(&remote.project.remote_path, &command)?;
+    let result = remote.pool.exec(
+        &remote.machine,
+        remote.secret.as_deref(),
+        &ExecRequest {
+            cwd: remote.project.remote_path.clone(),
+            command: format!("GIT_TERMINAL_PROMPT=0 {script}"),
+            timeout_secs: GIT_TIMEOUT_SECS,
+        },
+    )?;
+    if result.timed_out {
+        return Err(Error::Other(format!(
+            "git timed out after {GIT_TIMEOUT_SECS}s"
+        )));
+    }
+    if result.exit_code.is_some_and(|code| code != 0) {
+        let err = if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        };
+        return Ok(format!("ERR\n{}", err.trim()));
+    }
+    Ok(clip_bytes(&result.stdout))
+}
+
+fn clip(text: &str) -> String {
+    text.trim().chars().take(400).collect()
+}
+
+fn clip_bytes(text: &str) -> String {
+    if text.len() <= OUTPUT_LIMIT {
+        return text.to_string();
+    }
+    let mut end = OUTPUT_LIMIT;
+    while !text.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    let mut out = text[..end].to_string();
+    out.push_str("\n…truncated");
+    out
+}
+
+pub fn git_status(target: &GitTarget) -> Result<Vec<GitChange>> {
+    git_status_with(target, true)
+}
+
+/// `stats` runs numstat and reads untracked files. The file tree only needs paths.
+pub fn git_status_with(target: &GitTarget, stats: bool) -> Result<Vec<GitChange>> {
+    let text = git_output(target, &["status", "--porcelain=v1", "-uall"])?;
+    let mut rows = parse_git_status(&text);
+    if !stats || rows.is_empty() {
+        return Ok(rows);
+    }
+    let staged = git_numstat(target, &["diff", "--cached", "--numstat"])?;
+    let unstaged = git_numstat(target, &["diff", "--numstat"])?;
+    apply_git_stats(&mut rows, &staged, &unstaged);
+    for row in &mut rows {
+        if row.additions == 0 && row.deletions == 0 && row.status == "untracked" {
+            row.additions = untracked_lines(target, &row.path);
+        }
+    }
+    Ok(rows)
+}
+
+fn git_numstat(target: &GitTarget, args: &[&str]) -> Result<HashMap<String, (u32, u32)>> {
+    Ok(parse_git_numstat(&git_output(target, args)?))
+}
+
+fn untracked_lines(target: &GitTarget, rel: &str) -> u32 {
+    if target.remote.is_some() {
+        return remote_line_count(target, rel).unwrap_or(0);
+    }
+    count_file_lines(&target.root.join(rel))
+}
+
 fn count_file_lines(path: &Path) -> u32 {
-    const MAX: u64 = 2_000_000;
     let Ok(meta) = fs::metadata(path) else {
         return 0;
     };
-    if !meta.is_file() || meta.len() > MAX {
+    if !meta.is_file() || meta.len() > UNTRACKED_LINE_CAP {
         return 0;
     }
     let Ok(data) = fs::read(path) else {
         return 0;
     };
+    line_count(&data)
+}
+
+fn line_count(data: &[u8]) -> u32 {
     if data.is_empty() || data.contains(&0) {
         return 0;
     }
@@ -95,107 +561,12 @@ fn count_file_lines(path: &Path) -> u32 {
     n
 }
 
-fn git_numstat(root: &Path) -> HashMap<String, (u32, u32)> {
-    if let Ok(text) = git_output(root, &["diff", "--numstat", "HEAD"]) {
-        return parse_git_numstat(&text);
+fn remote_line_count(target: &GitTarget, rel: &str) -> Result<u32> {
+    let text = git_output(target, &["diff", "--no-index", "--numstat", "--", "/dev/null", rel])?;
+    if let Some((add, _)) = parse_git_numstat(&text).get(rel) {
+        return Ok(*add);
     }
-    let mut map = HashMap::new();
-    if let Ok(text) = git_output(root, &["diff", "--numstat"]) {
-        map = parse_git_numstat(&text);
-    }
-    if let Ok(text) = git_output(root, &["diff", "--cached", "--numstat"]) {
-        for (path, (add, del)) in parse_git_numstat(&text) {
-            let entry = map.entry(path).or_insert((0, 0));
-            entry.0 = entry.0.saturating_add(add);
-            entry.1 = entry.1.saturating_add(del);
-        }
-    }
-    map
-}
-
-fn classify_git(x: char, y: char) -> (String, bool) {
-    if x == 'U' || y == 'U' || (x == 'D' && y == 'D') || (x == 'A' && y == 'A') {
-        return ("conflict".into(), false);
-    }
-    if x == '?' && y == '?' {
-        return ("untracked".into(), false);
-    }
-    if y == 'D' || x == 'D' && y == ' ' {
-        return ("deleted".into(), x != ' ');
-    }
-    if y == 'A' || x == 'A' && y == ' ' {
-        return ("added".into(), x != ' ');
-    }
-    if y == 'R' || x == 'R' {
-        return ("renamed".into(), x != ' ');
-    }
-    if y == 'M' || x == 'M' {
-        return ("modified".into(), x == 'M' && y == ' ');
-    }
-    if x != ' ' && x != '?' {
-        return ("modified".into(), true);
-    }
-    ("modified".into(), false)
-}
-
-enum GitText {
-    Output(String),
-    NotRepo,
-}
-
-fn git_text(workspace: &Path, args: &[&str]) -> Result<GitText> {
-    match crate::remote::git::try_remote(workspace, args) {
-        Ok(Some(text)) => return Ok(GitText::Output(text)),
-        Ok(None) => {}
-        Err(err) if err.to_string().contains("not a git repository") => {
-            return Ok(GitText::NotRepo);
-        }
-        Err(err) => return Err(err),
-    }
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(workspace)
-        .output()
-        .map_err(|_| Error::Other("git is not available".into()))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        if err.contains("not a git repository") {
-            return Ok(GitText::NotRepo);
-        }
-        return Err(Error::Other(err.trim().to_string()));
-    }
-    Ok(GitText::Output(
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-    ))
-}
-
-fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
-    match git_text(workspace, args)? {
-        GitText::Output(text) => Ok(text),
-        GitText::NotRepo => Ok(String::new()),
-    }
-}
-
-pub fn git_status(workspace: &Path) -> Result<Vec<GitChange>> {
-    git_status_with(workspace, true)
-}
-
-/// `stats` runs `git diff --numstat` and reads untracked files. The file tree
-/// only needs paths, so it skips that work.
-pub fn git_status_with(workspace: &Path, stats: bool) -> Result<Vec<GitChange>> {
-    let root = resolve_in_workspace(workspace, "")?;
-    let text = git_output(&root, &["status", "--porcelain=v1", "-uall"])?;
-    let mut rows = parse_git_status(&text);
-    if !stats || rows.is_empty() {
-        return Ok(rows);
-    }
-    apply_git_stats(&mut rows, &git_numstat(&root));
-    for row in &mut rows {
-        if row.additions == 0 && row.deletions == 0 && row.status == "untracked" {
-            row.additions = count_file_lines(&root.join(&row.path));
-        }
-    }
-    Ok(rows)
+    Ok(0)
 }
 
 pub fn parse_git_branches(text: &str) -> GitBranches {
@@ -228,10 +599,17 @@ pub fn sanitize_git_branch(raw: &str) -> Result<String> {
     if s.is_empty() {
         return Err(Error::Other("branch name is empty".into()));
     }
-    if s.starts_with('-') || s.starts_with('.') || s.ends_with('/') || s.ends_with('.') {
+    if s.eq_ignore_ascii_case("head")
+        || s.eq_ignore_ascii_case("head~")
+        || s.chars().all(|c| c.is_ascii_hexdigit()) && s.len() >= 7
+    {
+        return Err(Error::Other("switch to a branch, not a commit".into()));
+    }
+    if s.starts_with('-') || s.starts_with('.') || s.ends_with('/') || s.ends_with('.') || s.ends_with(".lock")
+    {
         return Err(Error::Other("invalid branch name".into()));
     }
-    if s.contains("..") || s.contains("//") || s.contains("@{") {
+    if s.contains("..") || s.contains("//") || s.contains('@') || s.contains('\\') {
         return Err(Error::Other("invalid branch name".into()));
     }
     if !s
@@ -243,25 +621,22 @@ pub fn sanitize_git_branch(raw: &str) -> Result<String> {
     Ok(s.to_string())
 }
 
-fn git_run(workspace: &Path, args: &[&str]) -> Result<String> {
-    if let Some(text) = crate::remote::git::try_remote(workspace, args)? {
-        return Ok(text);
+pub fn sanitize_commit_message(raw: &str) -> Result<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(Error::Other("commit message is empty".into()));
     }
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(workspace)
-        .output()
-        .map_err(|_| Error::Other("git is not available".into()))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(Error::Other(err.trim().to_string()));
+    if s.chars().any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t')) {
+        return Err(Error::Other("commit message has invalid characters".into()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    if s.len() > 20_000 {
+        return Err(Error::Other("commit message is too long".into()));
+    }
+    Ok(s.to_string())
 }
 
-pub fn git_branches(workspace: &Path) -> Result<GitBranches> {
-    let root = resolve_in_workspace(workspace, "")?;
-    match git_text(&root, &["branch", "--list"])? {
+pub fn git_branches(target: &GitTarget) -> Result<GitBranches> {
+    match git_text(target, &["branch", "--list"])? {
         GitText::NotRepo => Ok(GitBranches {
             current: None,
             branches: Vec::new(),
@@ -271,7 +646,7 @@ pub fn git_branches(workspace: &Path) -> Result<GitBranches> {
             let mut listed = parse_git_branches(&text);
             if listed.current.is_none() {
                 if let Ok(GitText::Output(head)) =
-                    git_text(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
+                    git_text(target, &["rev-parse", "--abbrev-ref", "HEAD"])
                 {
                     let name = head.trim();
                     if !name.is_empty() && name != "HEAD" {
@@ -284,45 +659,367 @@ pub fn git_branches(workspace: &Path) -> Result<GitBranches> {
     }
 }
 
-pub fn git_switch(workspace: &Path, name: &str) -> Result<GitBranches> {
-    let name = sanitize_git_branch(name)?;
-    let root = resolve_in_workspace(workspace, "")?;
-    git_run(&root, &["switch", "--", &name])?;
-    git_branches(workspace)
+pub fn git_summary(target: &GitTarget) -> Result<GitRepoSummary> {
+    let branches = git_branches(target)?;
+    if !branches.repo {
+        return Ok(empty_summary());
+    }
+    let head = git_output(target, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    let head = head.trim();
+    let detached = head.is_empty() || head == "HEAD";
+    let commit = git_output(target, &["rev-parse", "--short", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.starts_with("ERR"));
+    let upstream = git_output(target, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let (ahead, behind) = if upstream.is_some() {
+        parse_ahead_behind(&git_output(
+            target,
+            &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
+        )?)
+    } else {
+        (0, 0)
+    };
+    let rows = git_status_with(target, false)?;
+    Ok(GitRepoSummary {
+        repo: true,
+        current: if detached { None } else { Some(head.to_string()) },
+        detached,
+        commit,
+        upstream,
+        ahead,
+        behind,
+        dirty: rows.len() as u32,
+        staged: rows.iter().filter(|row| row.staged).count() as u32,
+        unstaged: rows.iter().filter(|row| row.unstaged).count() as u32,
+        untracked: rows.iter().filter(|row| row.status == "untracked").count() as u32,
+        conflicts: rows.iter().filter(|row| row.status == "conflict").count() as u32,
+    })
 }
 
-pub fn git_diff(workspace: &Path, rel: &str) -> Result<String> {
-    let root = resolve_in_workspace(workspace, "")?;
-    let path = rel.trim();
-    let mut args = vec!["diff", "--no-color", "--"];
-    if !path.is_empty() {
-        let _ = resolve_in_workspace(workspace, path)?;
+fn empty_summary() -> GitRepoSummary {
+    GitRepoSummary {
+        repo: false,
+        current: None,
+        detached: false,
+        commit: None,
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        dirty: 0,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+        conflicts: 0,
+    }
+}
+
+fn parse_ahead_behind(text: &str) -> (u32, u32) {
+    let mut parts = text.split_whitespace();
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+pub fn git_switch(target: &GitTarget, name: &str) -> Result<GitBranches> {
+    let name = sanitize_git_branch(name)?;
+    let listed = git_branches(target)?;
+    if !listed.repo {
+        return Err(Error::Other("not a git repository".into()));
+    }
+    if !listed.branches.iter().any(|branch| branch == &name) {
+        return Err(Error::Other(format!("branch {name} does not exist")));
+    }
+    git_run(target, &["switch", "--", &name])?;
+    git_branches(target)
+}
+
+pub fn git_create_branch(target: &GitTarget, name: &str, checkout: bool) -> Result<GitBranches> {
+    let name = sanitize_git_branch(name)?;
+    let listed = git_branches(target)?;
+    if !listed.repo {
+        return Err(Error::Other("not a git repository".into()));
+    }
+    if listed.branches.iter().any(|branch| branch == &name) {
+        return Err(Error::Conflict(format!("{name} already exists")));
+    }
+    if checkout {
+        git_run(target, &["switch", "-c", "--", &name])?;
+    } else {
+        git_run(target, &["branch", "--", &name])?;
+    }
+    git_branches(target)
+}
+
+pub fn git_diff(target: &GitTarget, rel: &str) -> Result<String> {
+    let path = safe_repo_path(rel)?;
+    let unstaged = diff_side(target, false, path.as_deref())?;
+    let staged = diff_side(target, true, path.as_deref())?;
+    Ok(join_diff(&staged, &unstaged))
+}
+
+fn diff_side(target: &GitTarget, staged: bool, path: Option<&str>) -> Result<String> {
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-z"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    if let Some(path) = path {
         args.push(path);
     }
-    let unstaged = git_output(&root, &args)?;
-    let mut staged_args = vec!["diff", "--no-color", "--cached", "--"];
-    if !path.is_empty() {
-        staged_args.push(path);
-    }
-    let staged = git_output(&root, &staged_args)?;
+    let raw = git_output(target, &args)?;
+    Ok(nul_diff_to_lines(&raw))
+}
+
+fn join_diff(staged: &str, unstaged: &str) -> String {
     if staged.is_empty() {
-        return Ok(unstaged);
+        return unstaged.to_string();
     }
     if unstaged.is_empty() {
-        return Ok(staged);
+        return staged.to_string();
     }
-    Ok(format!("# staged\n{staged}\n# unstaged\n{unstaged}"))
+    format!("# staged\n{staged}\n# unstaged\n{unstaged}")
+}
+
+/// `git diff -z` separates file headers with NUL so a path cannot be mistaken for a diff line.
+fn nul_diff_to_lines(raw: &str) -> String {
+    if !raw.contains('\0') {
+        return raw.to_string();
+    }
+    raw.replace('\0', "\n")
+}
+
+pub fn safe_repo_path(rel: &str) -> Result<Option<String>> {
+    let path = rel.trim().replace('\\', "/");
+    if path.is_empty() {
+        return Ok(None);
+    }
+    if path.contains('\0') || path.starts_with('/') || path.split('/').any(|part| part == "..") {
+        return Err(Error::Other("path is outside the workspace".into()));
+    }
+    Ok(Some(path.trim_start_matches("./").to_string()))
+}
+
+pub fn git_stage(target: &GitTarget, paths: &[String]) -> Result<Vec<GitChange>> {
+    let args = path_args(paths)?;
+    let mut cmd = vec!["add", "--"];
+    cmd.extend(args.iter().map(String::as_str));
+    git_run(target, &cmd)?;
+    git_status(target)
+}
+
+pub fn git_unstage(target: &GitTarget, paths: &[String]) -> Result<Vec<GitChange>> {
+    let args = path_args(paths)?;
+    let mut cmd = vec!["restore", "--staged", "--"];
+    cmd.extend(args.iter().map(String::as_str));
+    git_run(target, &cmd)?;
+    git_status(target)
+}
+
+pub fn git_discard(target: &GitTarget, paths: &[String]) -> Result<Vec<GitChange>> {
+    let args = path_args(paths)?;
+    let rows = git_status_with(target, false)?;
+    let wanted: Vec<&GitChange> = if args.is_empty() {
+        rows.iter().collect()
+    } else {
+        rows.iter()
+            .filter(|row| args.iter().any(|path| path == &row.path))
+            .collect()
+    };
+    let untracked: Vec<&str> = wanted
+        .iter()
+        .filter(|row| row.status == "untracked")
+        .map(|row| row.path.as_str())
+        .collect();
+    let tracked: Vec<&str> = wanted
+        .iter()
+        .filter(|row| row.status != "untracked")
+        .map(|row| row.path.as_str())
+        .collect();
+    if !tracked.is_empty() {
+        let mut cmd = vec!["restore", "--source=HEAD", "--worktree", "--staged", "--"];
+        cmd.extend(tracked.iter().copied());
+        git_run(target, &cmd)?;
+    }
+    if !untracked.is_empty() {
+        let mut cmd = vec!["clean", "-f", "--"];
+        cmd.extend(untracked.iter().copied());
+        git_run(target, &cmd)?;
+    }
+    git_status(target)
+}
+
+fn path_args(paths: &[String]) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for path in paths {
+        if let Some(clean) = safe_repo_path(path)? {
+            out.push(clean);
+        }
+    }
+    Ok(out)
+}
+
+pub fn git_commit(target: &GitTarget, message: &str) -> Result<String> {
+    let message = sanitize_commit_message(message)?;
+    let rows = git_status_with(target, false)?;
+    if !rows.iter().any(|row| row.staged) {
+        return Err(Error::Other("nothing staged to commit".into()));
+    }
+    if rows.iter().any(|row| row.status == "conflict") {
+        return Err(Error::Other("resolve conflicts before committing".into()));
+    }
+    let identity = git_identity(target)?;
+    if !identity.configured {
+        return Err(Error::Other(
+            "set a git name and email before committing".into(),
+        ));
+    }
+    git_run(target, &["commit", "-m", &message])?;
+    git_output(target, &["rev-parse", "--short", "HEAD"]).map(|s| s.trim().to_string())
+}
+
+pub fn git_identity(target: &GitTarget) -> Result<GitIdentity> {
+    let name = git_config(target, "user.name")?;
+    let email = git_config(target, "user.email")?;
+    Ok(GitIdentity {
+        name: name.clone(),
+        email: email.clone(),
+        configured: !name.is_empty() && !email.is_empty(),
+    })
+}
+
+fn git_config(target: &GitTarget, key: &str) -> Result<String> {
+    match git_text(target, &["config", "--get", key])? {
+        GitText::NotRepo => Ok(String::new()),
+        GitText::Output(text) => Ok(text.trim().to_string()),
+    }
+}
+
+pub fn git_set_identity(target: &GitTarget, name: &str, email: &str) -> Result<GitIdentity> {
+    let name = sanitize_identity(name, "name")?;
+    let email = sanitize_identity(email, "email")?;
+    if !email.contains('@') || email.starts_with('@') || email.ends_with('@') {
+        return Err(Error::Other("email needs an @".into()));
+    }
+    git_run(target, &["config", "--local", "user.name", &name])?;
+    git_run(target, &["config", "--local", "user.email", &email])?;
+    git_identity(target)
+}
+
+fn sanitize_identity(raw: &str, label: &str) -> Result<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(Error::Other(format!("git {label} is empty")));
+    }
+    if s.chars().any(|c| c.is_control() || c == '\n') || s.len() > 200 {
+        return Err(Error::Other(format!("invalid git {label}")));
+    }
+    Ok(s.to_string())
+}
+
+pub fn git_sync(target: &GitTarget, action: &str) -> Result<String> {
+    match action {
+        "fetch" => git_run(target, &["fetch", "--prune"]),
+        "pull" => git_run(target, &["pull", "--ff-only"]),
+        "push" => git_run(target, &["push"]),
+        "publish" => git_run(target, &["push", "-u", "origin", "HEAD"]),
+        other => Err(Error::Other(format!("unknown git sync action: {other}"))),
+    }
+}
+
+pub fn git_stash(target: &GitTarget, action: &str, message: &str) -> Result<String> {
+    match action {
+        "push" => {
+            if message.trim().is_empty() {
+                git_run(target, &["stash", "push", "-u"])
+            } else {
+                let message = sanitize_commit_message(message)?;
+                git_run(target, &["stash", "push", "-u", "-m", &message])
+            }
+        }
+        "pop" => git_run(target, &["stash", "pop"]),
+        "list" => git_run(target, &["stash", "list"]),
+        other => Err(Error::Other(format!("unknown git stash action: {other}"))),
+    }
+}
+
+pub fn git_log(target: &GitTarget, limit: u32) -> Result<Vec<GitCommit>> {
+    let limit = limit.clamp(1, 200);
+    let count = limit.to_string();
+    let text = git_output(
+        target,
+        &[
+            "log",
+            "-n",
+            &count,
+            "--pretty=format:%H%x1f%h%x1f%an%x1f%aI%x1f%s",
+        ],
+    )?;
+    Ok(parse_git_log(&text))
+}
+
+pub fn parse_git_log(text: &str) -> Vec<GitCommit> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(5, '\u{1f}').collect();
+        if parts.len() < 5 {
+            continue;
+        }
+        rows.push(GitCommit {
+            hash: parts[0].to_string(),
+            short: parts[1].to_string(),
+            author: parts[2].to_string(),
+            at: parts[3].to_string(),
+            subject: parts[4].to_string(),
+        });
+    }
+    rows
+}
+
+pub fn git_show(target: &GitTarget, hash: &str) -> Result<String> {
+    let hash = sanitize_revision(hash)?;
+    git_output(target, &["show", "--no-color", "--format=fuller", "--", &hash])
+}
+
+fn sanitize_revision(raw: &str) -> Result<String> {
+    let s = raw.trim();
+    if s.is_empty()
+        || s.starts_with('-')
+        || s.contains("..")
+        || !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/'))
+    {
+        return Err(Error::Other("invalid revision".into()));
+    }
+    Ok(s.to_string())
+}
+
+pub fn git_file_at(target: &GitTarget, rel: &str, revision: &str) -> Result<String> {
+    let path = safe_repo_path(rel)?.ok_or_else(|| Error::Other("path is empty".into()))?;
+    let revision = sanitize_revision(revision)?;
+    let spec = format!("{revision}:{path}");
+    git_output(target, &["show", &spec])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use std::fs;
     use std::process::Command;
 
     fn temp_ws() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    fn local(dir: &Path) -> GitTarget {
+        GitTarget::local(dir).unwrap()
     }
 
     #[test]
@@ -331,11 +1028,40 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].path, "src/a.rs");
         assert_eq!(rows[0].status, "modified");
+        assert!(!rows[0].staged);
+        assert!(rows[0].unstaged);
         assert_eq!(rows[1].status, "untracked");
         assert_eq!(rows[2].status, "added");
         assert!(rows[2].staged);
-        assert_eq!(rows[0].additions, 0);
-        assert_eq!(rows[0].deletions, 0);
+        assert!(!rows[2].unstaged);
+    }
+
+    #[test]
+    fn parse_rename_copy_and_partial_stage() {
+        let rows = parse_git_status("R  old.rs -> src/new.rs\nMM both.rs\nC  a.rs -> b.rs\n");
+        assert_eq!(rows[0].status, "renamed");
+        assert_eq!(rows[0].original.as_deref(), Some("old.rs"));
+        assert_eq!(rows[0].path, "src/new.rs");
+        assert!(rows[0].staged);
+        assert_eq!(rows[1].status, "modified");
+        assert!(rows[1].staged);
+        assert!(rows[1].unstaged);
+        assert_eq!(rows[2].status, "copied");
+        assert_eq!(rows[2].path, "b.rs");
+    }
+
+    #[test]
+    fn parse_quoted_paths() {
+        let rows = parse_git_status("?? \"src/my file.rs\"\nR  \"old file.rs\" -> \"src/new file.rs\"\n");
+        assert_eq!(rows[0].path, "src/my file.rs");
+        assert_eq!(rows[1].original.as_deref(), Some("old file.rs"));
+        assert_eq!(rows[1].path, "src/new file.rs");
+    }
+
+    #[test]
+    fn unquote_git_decodes_octal() {
+        assert_eq!(unquote_git(r#""caf\303\251.rs""#), "café.rs");
+        assert_eq!(unquote_git("plain.rs"), "plain.rs");
     }
 
     #[test]
@@ -346,17 +1072,21 @@ mod tests {
         assert_eq!(stats.get("photo.png"), Some(&(0, 0)));
         assert_eq!(stats.get("src/new.rs"), Some(&(1, 0)));
         assert_eq!(stats.get("old.rs"), None);
+        let brace = parse_git_numstat("1\t0\tsrc/{old.rs => new.rs}\n");
+        assert_eq!(brace.get("src/new.rs"), Some(&(1, 0)));
     }
 
     #[test]
-    fn apply_git_stats_fills_matching_paths() {
-        let mut rows = parse_git_status(" M src/a.rs\n?? new.txt\n");
-        let mut stats = HashMap::new();
-        stats.insert("src/a.rs".into(), (12, 3));
-        apply_git_stats(&mut rows, &stats);
+    fn apply_git_stats_keeps_index_and_worktree_counts() {
+        let mut rows = parse_git_status("MM src/a.rs\n?? new.txt\n");
+        let mut staged = HashMap::new();
+        staged.insert("src/a.rs".into(), (4, 1));
+        let mut unstaged = HashMap::new();
+        unstaged.insert("src/a.rs".into(), (8, 2));
+        apply_git_stats(&mut rows, &staged, &unstaged);
         assert_eq!(rows[0].additions, 12);
         assert_eq!(rows[0].deletions, 3);
-        assert_eq!(rows[1].additions, 0);
+        assert!(rows[0].staged && rows[0].unstaged);
     }
 
     #[test]
@@ -382,7 +1112,7 @@ mod tests {
         git(&["commit", "-m", "init"]);
         fs::write(dir.path().join("README.md"), "hello\nworld\n").unwrap();
         fs::write(dir.path().join("new.txt"), "one\ntwo\nthree\n").unwrap();
-        let rows = git_status(dir.path()).unwrap();
+        let rows = git_status(&local(dir.path())).unwrap();
         let readme = rows.iter().find(|r| r.path == "README.md").unwrap();
         assert_eq!(readme.status, "modified");
         assert_eq!(readme.additions, 1);
@@ -404,11 +1134,11 @@ mod tests {
     #[test]
     fn git_branches_reports_a_missing_repo() {
         let dir = temp_ws();
-        let listed = git_branches(dir.path()).unwrap();
+        let listed = git_branches(&local(dir.path())).unwrap();
         assert!(!listed.repo);
         assert_eq!(listed.current, None);
         assert!(listed.branches.is_empty());
-        assert!(git_status(dir.path()).unwrap().is_empty());
+        assert!(git_status(&local(dir.path())).unwrap().is_empty());
     }
 
     #[test]
@@ -429,42 +1159,86 @@ mod tests {
         assert!(sanitize_git_branch("foo bar").is_err());
         assert!(sanitize_git_branch("foo..bar").is_err());
         assert!(sanitize_git_branch("foo;rm").is_err());
+        assert!(sanitize_git_branch("HEAD").is_err());
+        assert!(sanitize_git_branch("a1b2c3d").is_err());
+        assert!(sanitize_git_branch("deadbeef").is_err());
     }
 
     #[test]
     fn git_switch_rejects_unsafe_name_without_running_git() {
         let dir = temp_ws();
-        let err = git_switch(dir.path(), "foo;rm").unwrap_err();
+        let err = git_switch(&local(dir.path()), "foo;rm").unwrap_err();
         assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn git_switch_refuses_a_commit_hash() {
+        let dir = temp_ws();
+        init_repo(dir.path());
+        let err = git_switch(&local(dir.path()), "aaaaaaaa").unwrap_err();
+        assert!(err.to_string().contains("branch"));
     }
 
     #[test]
     fn git_branches_and_switch_roundtrip() {
         let dir = temp_ws();
-        fs::write(dir.path().join("README.md"), "hi").unwrap();
+        init_repo(dir.path());
+        Command::new("git")
+            .args(["branch", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let listed = git_branches(&local(dir.path())).unwrap();
+        assert_eq!(listed.current.as_deref(), Some("main"));
+        let switched = git_switch(&local(dir.path()), "feature").unwrap();
+        assert_eq!(switched.current.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn stage_commit_and_log() {
+        let dir = temp_ws();
+        init_repo(dir.path());
+        fs::write(dir.path().join("note.txt"), "hello\n").unwrap();
+        let target = local(dir.path());
+        git_stage(&target, &["note.txt".into()]).unwrap();
+        let hash = git_commit(&target, "add note").unwrap();
+        assert!(!hash.is_empty());
+        let log = git_log(&target, 5).unwrap();
+        assert!(log.iter().any(|row| row.subject == "add note"));
+        assert!(git_status(&target).unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_requires_a_message_and_staged_files() {
+        let dir = temp_ws();
+        init_repo(dir.path());
+        let target = local(dir.path());
+        assert!(git_commit(&target, "   ").is_err());
+        assert!(git_commit(&target, "empty").unwrap_err().to_string().contains("nothing staged"));
+    }
+
+    #[test]
+    fn parse_log_records() {
+        let rows = parse_git_log("abc\u{1f}ab\u{1f}Ada\u{1f}2026-01-01T00:00:00Z\u{1f}Hello\n");
+        assert_eq!(rows[0].short, "ab");
+        assert_eq!(rows[0].author, "Ada");
+        assert_eq!(rows[0].subject, "Hello");
+    }
+
+    fn init_repo(path: &Path) {
+        fs::write(path.join("README.md"), "hi").unwrap();
         let git = |args: &[&str]| {
             let out = Command::new("git")
                 .args(args)
-                .current_dir(dir.path())
+                .current_dir(path)
                 .output()
                 .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-b", "main"]);
         git(&["config", "user.email", "dev@example.com"]);
         git(&["config", "user.name", "Dev"]);
         git(&["add", "."]);
         git(&["commit", "-m", "init"]);
-        git(&["branch", "feature"]);
-        let listed = git_branches(dir.path()).unwrap();
-        assert_eq!(listed.current.as_deref(), Some("main"));
-        assert!(listed.branches.contains(&"main".into()));
-        assert!(listed.branches.contains(&"feature".into()));
-        let switched = git_switch(dir.path(), "feature").unwrap();
-        assert_eq!(switched.current.as_deref(), Some("feature"));
     }
 }
