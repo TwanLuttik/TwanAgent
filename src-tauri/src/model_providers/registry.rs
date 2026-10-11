@@ -3,14 +3,18 @@ use std::path::Path;
 use super::grok_cli::{self, DevModel};
 
 /// Which chat protocol owns a model id. Unknown ids stay on xAI.
+/// Specific providers are matched before the xAI fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderId {
     Xai,
     Anthropic,
+    Minimax,
 }
 
 pub fn find(model_id: &str) -> ProviderId {
-    if super::anthropic::provider_for(model_id) == super::anthropic::Provider::Anthropic {
+    if super::minimax::is_minimax_model(model_id) {
+        ProviderId::Minimax
+    } else if super::anthropic::provider_for(model_id) == super::anthropic::Provider::Anthropic {
         ProviderId::Anthropic
     } else {
         ProviderId::Xai
@@ -20,6 +24,7 @@ pub fn find(model_id: &str) -> ProviderId {
 pub fn sign_in_error(id: ProviderId) -> &'static str {
     match id {
         ProviderId::Anthropic => super::anthropic::SIGN_IN_ERROR,
+        ProviderId::Minimax => super::minimax::SIGN_IN_ERROR,
         ProviderId::Xai => "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings.",
     }
 }
@@ -31,12 +36,16 @@ pub fn plan_mode(id: ProviderId) -> bool {
 /// Fallback rows from every provider, with a signed-in provider's live list replacing its fallback.
 pub async fn list_models(data_dir: &Path) -> Vec<DevModel> {
     let mut rows = grok_cli::runtime(data_dir).models;
-    rows.retain(|row| row.provider != super::anthropic::PROVIDER_ANTHROPIC);
+    rows.retain(|row| {
+        row.provider != super::anthropic::PROVIDER_ANTHROPIC
+            && row.provider != super::minimax::PROVIDER_MINIMAX
+    });
     if let Some(auth) = super::anthropic::resolve_claude_auth_fresh().await {
         rows.extend(super::anthropic::available_models(&auth).await);
     } else {
         rows.extend(super::anthropic::claude_models());
     }
+    rows.extend(super::minimax::minimax_models());
     rows
 }
 
@@ -50,8 +59,12 @@ mod tests {
         assert_eq!(find("claude-sonnet-4-6"), ProviderId::Anthropic);
         assert_eq!(find("claude-sonnet-4-5-20250929"), ProviderId::Anthropic);
         assert_eq!(find("sxs-claude-opus-4-6"), ProviderId::Xai);
+        assert_eq!(find("MiniMax-M3"), ProviderId::Minimax);
+        assert_eq!(find("MiniMax-M2.7"), ProviderId::Minimax);
+        assert_eq!(find("sxs-MiniMax-M3"), ProviderId::Xai);
         assert_eq!(find(""), ProviderId::Xai);
         assert!(plan_mode(ProviderId::Xai));
         assert!(!plan_mode(ProviderId::Anthropic));
+        assert!(!plan_mode(ProviderId::Minimax));
     }
 }

@@ -43,6 +43,29 @@ describe("parseAccountUsage", () => {
     assert.equal(formatAccountBalance(null), "");
   });
 
+  it("keeps a MiniMax quota window and a pay-as-you-go balance", () => {
+    const parsed = parseAccountUsage({
+      provider: "minimax",
+      connected: true,
+      label: "MiniMax",
+      windows: [{ id: "general:week", label: "Week", used_percent: 99, resets_at: "2026-07-26T00:00:00.000Z" }],
+    });
+    assert.equal(parsed?.provider, "minimax");
+    assert.equal(parsed?.windows[0].label, "Week");
+    assert.equal(parsed?.windows[0].usedPercent, 99);
+    const balance = parseAccountUsage({
+      provider: "minimax",
+      connected: true,
+      label: "MiniMax",
+      windows: [],
+      balance_cents: 1250,
+      balance_currency: "USD",
+    });
+    assert.equal(balance?.windows.length, 0);
+    assert.equal(balance?.balanceCents, 1250);
+    assert.equal(formatAccountBalance(1250, "USD"), "$12.50");
+  });
+
   it("reports a disconnected account with no windows", () => {
     const parsed = parseAccountUsage({ provider: "anthropic", connected: false, label: "Claude", windows: [] });
     assert.equal(parsed?.connected, false);

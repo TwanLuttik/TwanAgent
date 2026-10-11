@@ -775,9 +775,38 @@ fn overlay_catalog(catalog: DevModel, live: &DevModel) -> DevModel {
     }
 }
 
+fn account_usage_cache_key() -> &'static str {
+    PROVIDER_ANTHROPIC
+}
+
+/// The last snapshot written to the app database. Empty when this provider has never loaded.
+pub fn cached_account_usage(data_dir: &std::path::Path) -> Option<AccountUsage> {
+    let conn = crate::appdb::open(data_dir).ok()?;
+    let raw = crate::appdb::get_account_usage(&conn, account_usage_cache_key()).ok()??;
+    serde_json::from_str(&raw).ok()
+}
+
+fn store_account_usage(data_dir: &std::path::Path, usage: &AccountUsage) {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let Ok(raw) = serde_json::to_string(usage) else {
+        return;
+    };
+    let _ = crate::appdb::set_account_usage(&conn, account_usage_cache_key(), &raw);
+}
+
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_account_usage() -> AccountUsage {
-    account_usage().await
+pub fn dev_account_usage_cached(state: tauri::State<'_, crate::state::AppState>) -> Option<AccountUsage> {
+    cached_account_usage(&state.data_dir)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_account_usage(state: tauri::State<'_, crate::state::AppState>) -> Result<AccountUsage, String> {
+    let data_dir = state.data_dir.clone();
+    let usage = account_usage().await;
+    store_account_usage(&data_dir, &usage);
+    Ok(usage)
 }
 
 pub fn claude_cli_info() -> ClaudeCliInfo {
@@ -800,7 +829,7 @@ pub const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 pub const CLAUDE_ACCOUNT_URL: &str = "https://api.anthropic.com/api/oauth/account";
 
 /// One allowance window on the connected Claude account, such as the 5-hour session.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountUsageWindow {
     pub id: String,
     pub label: String,
@@ -809,7 +838,7 @@ pub struct AccountUsageWindow {
 }
 
 /// Usage of the Claude account this app is signed into. Absent when Claude is not connected.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountUsage {
     pub provider: String,
     pub connected: bool,

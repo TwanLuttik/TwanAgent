@@ -1,12 +1,14 @@
 import { anthropicProfile } from "./anthropic.ts";
+import { minimaxProfile } from "./minimax.ts";
 import type { ProviderId, ProviderProfile } from "./types.ts";
 import { xaiProfile } from "./xai.ts";
 
 export type { ProviderId, ProviderProfile } from "./types.ts";
 export { isClaudeModel } from "./anthropic.ts";
+export { isMinimaxModel } from "./minimax.ts";
 
 /** Specific providers first. xAI is the fallback and must stay last. */
-const PROFILES: ProviderProfile[] = [anthropicProfile, xaiProfile];
+const PROFILES: ProviderProfile[] = [minimaxProfile, anthropicProfile, xaiProfile];
 
 export function providerProfile(modelId: string): ProviderProfile {
   const id = modelId.trim();
@@ -24,10 +26,10 @@ export function contextWindowForProvider(modelId: string, windowFromCatalog?: nu
 
 /** Name used in the system prompt. Empty when the id is not a known provider family. */
 export function agentNameFor(modelId: string): string {
-  const id = modelId.trim().toLowerCase();
+  const id = modelId.trim();
   if (!id) return "";
   const profile = providerProfile(id);
-  if (profile.id === "xai" && !(id.startsWith("grok-") || id.startsWith("grok ") || id.startsWith("grok"))) return "";
+  if (profile.id === "xai" && !id.toLowerCase().startsWith("grok")) return "";
   return profile.agentName;
 }
 

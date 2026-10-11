@@ -95,8 +95,8 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
           <div className="min-w-0">
             <h1 className="m-0 text-[18px] font-semibold tracking-tight">Usage</h1>
             <p className="mt-1 mb-0 max-w-[46ch] text-[12px] leading-relaxed text-muted">
-              New tokens only. A tool round does not count the prompt again. Cost is an xAI and Anthropic list-price
-              estimate, with cached tokens priced as fresh input.
+              New tokens only. A tool round does not count the prompt again. Cost is an xAI, Anthropic, and MiniMax
+              list-price estimate, with cached tokens priced as fresh input.
             </p>
           </div>
           <Segmented
@@ -117,7 +117,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
             label="Est. cost"
             value={formatUsd(cost.usd)}
             detail={costDetail(cost)}
-            title="xAI and Anthropic list prices for the tokens added in this range"
+            title="xAI, Anthropic, and MiniMax list prices for the tokens added in this range"
           />
           <Stat
             label="Completion"
@@ -250,9 +250,10 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
   );
 }
 
-function costDetail(cost: { usd: number; xai: number; anthropic: number; unpricedTokens: number }): string {
+function costDetail(cost: { usd: number; xai: number; anthropic: number; minimax: number; unpricedTokens: number }): string {
   if (cost.usd <= 0 && cost.unpricedTokens <= 0) return "List price";
   const parts = [`xAI ${formatUsd(cost.xai)}`, `Claude ${formatUsd(cost.anthropic)}`];
+  if (cost.minimax > 0) parts.push(`MiniMax ${formatUsd(cost.minimax)}`);
   if (cost.unpricedTokens > 0) parts.push(`${formatTokenCount(cost.unpricedTokens)} unpriced`);
   return parts.join(" · ");
 }

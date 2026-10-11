@@ -7,6 +7,7 @@ mod error;
 
 pub use model_providers::anthropic;
 pub use model_providers::grok_cli;
+pub use model_providers::minimax;
 mod image;
 mod paths;
 mod perf;
@@ -86,11 +87,15 @@ pub fn run() {
             dev::keys::dev_runtime,
             dev::keys::dev_cli_info,
             dev::keys::dev_claude_cli_info,
+            dev::keys::dev_minimax_cli_info,
             dev::keys::dev_set_key,
             dev::keys::dev_clear_key,
             dev::keys::dev_anthropic_key_status,
             dev::keys::dev_set_anthropic_key,
             dev::keys::dev_clear_anthropic_key,
+            dev::keys::dev_minimax_key_status,
+            dev::keys::dev_set_minimax_key,
+            dev::keys::dev_clear_minimax_key,
             dev::commands::dev_projects_root,
             dev::commands::dev_projects_location,
             dev::commands::dev_list_projects,
@@ -177,6 +182,9 @@ pub fn run() {
             appdb::dev_app_get_setting,
             appdb::dev_app_set_setting,
             anthropic::dev_account_usage,
+            anthropic::dev_account_usage_cached,
+            minimax::dev_minimax_account_usage,
+            minimax::dev_minimax_account_usage_cached,
             usage::dev_usage_record,
             usage::dev_usage_list,
             usage::dev_usage_db_info,

@@ -309,6 +309,16 @@ pub async fn dev_chat_start(
     } else {
         None
     };
+    let minimax_auth = if provider == crate::model_providers::registry::ProviderId::Minimax {
+        let Some(auth) = crate::minimax::resolve_minimax_auth_fresh().await else {
+            return Err(Error::Other(
+                crate::model_providers::registry::sign_in_error(provider).into(),
+            ));
+        };
+        Some(auth)
+    } else {
+        None
+    };
     let effort = effort.filter(|s| !s.trim().is_empty());
     let context_window = context_window.filter(|n| *n > 0);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -331,6 +341,17 @@ pub async fn dev_chat_start(
                 messages,
                 model,
                 effort,
+                include_journey,
+                cancel,
+            )
+            .await
+        } else if provider == crate::model_providers::registry::ProviderId::Minimax {
+            stream_minimax(
+                &app2,
+                &sid,
+                minimax_auth.as_ref().expect("minimax auth"),
+                messages,
+                model,
                 include_journey,
                 cancel,
             )
@@ -405,6 +426,52 @@ async fn stream_anthropic(
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(Error::Other(crate::anthropic::http_error_message(
+            status.as_u16(),
+            &text,
+        )));
+    }
+    crate::model_providers::runner::consume_sse(
+        app,
+        stream_id,
+        resp,
+        cancel,
+        |data| crate::anthropic::parse_sse_data(data).into_iter().collect(),
+        |_| None,
+    )
+    .await
+}
+
+async fn stream_minimax(
+    app: &AppHandle,
+    stream_id: &str,
+    auth: &crate::minimax::MinimaxAuth,
+    messages: serde_json::Value,
+    model: String,
+    include_journey: bool,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let body = crate::minimax::to_minimax_body(
+        &messages,
+        &model,
+        &tools_json_for(
+            include_journey,
+            crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Minimax),
+        ),
+    );
+    let resp = http_client()
+        .post(crate::minimax::messages_url(&auth.base_url))
+        .header("x-api-key", &auth.token)
+        .header("content-type", "application/json")
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("MiniMax request failed: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(Error::Other(crate::minimax::http_error_message(
             status.as_u16(),
             &text,
         )));

@@ -35,7 +35,7 @@ export async function pickImage(): Promise<string | null> {
 
 export type KeyStatus = { saved: boolean; env: boolean };
 export type Effort = { id: string; label: string; detail?: string };
-export type ModelProvider = "xai" | "anthropic" | string;
+export type ModelProvider = "xai" | "anthropic" | "minimax" | string;
 
 export type Model = {
   id: string;
@@ -95,6 +95,18 @@ export function claudeCliInfo(): Promise<ClaudeCliInfo> {
   return invoke("dev_claude_cli_info");
 }
 
+export type MinimaxCliInfo = {
+  installed: boolean;
+  path: string;
+  version: string | null;
+  logged_in: boolean;
+  email: string | null;
+};
+
+export function minimaxCliInfo(): Promise<MinimaxCliInfo> {
+  return invoke("dev_minimax_cli_info");
+}
+
 export type ApiAccountUsageWindow = {
   id: string;
   label: string;
@@ -112,6 +124,21 @@ export type ApiAccountUsage = {
 /** Allowance on the signed-in Claude account. Disconnected when Claude is not logged in. */
 export function accountUsage(): Promise<ApiAccountUsage> {
   return invoke("dev_account_usage");
+}
+
+/** The last Claude allowance saved in the app database. Null until one has loaded. */
+export function accountUsageCached(): Promise<ApiAccountUsage | null> {
+  return invoke("dev_account_usage_cached");
+}
+
+/** Token-plan quota, or a pay-as-you-go balance, for the signed-in MiniMax account. */
+export function minimaxAccountUsage(): Promise<ApiAccountUsage> {
+  return invoke("dev_minimax_account_usage");
+}
+
+/** The last MiniMax allowance saved in the app database. Null until one has loaded. */
+export function minimaxAccountUsageCached(): Promise<ApiAccountUsage | null> {
+  return invoke("dev_minimax_account_usage_cached");
 }
 
 export type UsageDbInfo = {
@@ -317,6 +344,18 @@ export function setAnthropicKey(key: string): Promise<KeyStatus> {
 
 export function clearAnthropicKey(): Promise<KeyStatus> {
   return invoke("dev_clear_anthropic_key");
+}
+
+export function minimaxKeyStatus(): Promise<KeyStatus> {
+  return invoke("dev_minimax_key_status");
+}
+
+export function setMinimaxKey(key: string): Promise<KeyStatus> {
+  return invoke("dev_set_minimax_key", { key });
+}
+
+export function clearMinimaxKey(): Promise<KeyStatus> {
+  return invoke("dev_clear_minimax_key");
 }
 
 export function listDir(workspace: string, path = ""): Promise<Entry[]> {

@@ -231,7 +231,29 @@ describe("estimated cost", () => {
     assert.equal(cost.usd, 4 + 3);
     assert.equal(cost.xai, 4);
     assert.equal(cost.anthropic, 3);
+    assert.equal(cost.minimax, 0);
     assert.equal(cost.unpricedTokens, 0);
+  });
+
+  it("leaves MiniMax unpriced until a list rate is stored", () => {
+    const events = [
+      ev({
+        id: 1,
+        conversation_id: "minimax",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "MiniMax-M3",
+        prompt_tokens: 1_000,
+        completion_tokens: 100,
+        total_tokens: 1_100,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    assert.equal(cost.usd, 0);
+    assert.equal(cost.minimax, 0);
+    assert.equal(cost.unpricedTokens, 1_100);
+    assert.equal(formatModelName("MiniMax-M3"), "MiniMax M3");
+    assert.equal(modelColorIndex("MiniMax-M3"), modelColorIndex("minimax-m3"));
   });
 
   it("prices only the new tokens in a tool loop and skips unknown models", () => {

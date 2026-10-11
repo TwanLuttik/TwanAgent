@@ -32,7 +32,7 @@ import {
 import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
 import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
-import type { ClaudeCliInfo, GrokCliInfo, UsageDbInfo } from "../lib/tauri";
+import type { ClaudeCliInfo, GrokCliInfo, MinimaxCliInfo, UsageDbInfo } from "../lib/tauri";
 import { useApp } from "../state/app-state";
 import {
   SPEECH_MODELS,
@@ -52,7 +52,7 @@ import type { SpeechModelStatus } from "../lib/tauri";
 export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "permissions";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
-  { id: "providers", label: "Model Providers", hint: "Grok and Claude", icon: "sparkles" },
+  { id: "providers", label: "Model Providers", hint: "Grok, Claude, and MiniMax", icon: "sparkles" },
   { id: "voice", label: "Voice", hint: "Dictation model", icon: "mic" },
   { id: "permissions", label: "Permissions", hint: "Folders and tools", icon: "lock" },
   { id: "storage", label: "Storage", hint: "Usage database", icon: "externaldrive" },
@@ -110,6 +110,10 @@ export function SettingsView({
   const [savingAnthropic, setSavingAnthropic] = useState(false);
   const [cli, setCli] = useState<GrokCliInfo | null>(null);
   const [claudeCli, setClaudeCli] = useState<ClaudeCliInfo | null>(null);
+  const [minimaxKey, setMinimaxKey] = useState("");
+  const [minimaxStatus, setMinimaxStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
+  const [savingMinimax, setSavingMinimax] = useState(false);
+  const [minimaxCli, setMinimaxCli] = useState<MinimaxCliInfo | null>(null);
   const [showEmail, setShowEmail] = useState(false);
   const [showClaudeEmail, setShowClaudeEmail] = useState(false);
   const [db, setDb] = useState<UsageDbInfo | null>(null);
@@ -160,6 +164,18 @@ export function SettingsView({
       .claudeCliInfo()
       .then((info) => {
         if (!gone) setClaudeCli(info);
+      })
+      .catch(() => undefined);
+    void api
+      .minimaxKeyStatus()
+      .then((s) => {
+        if (!gone) setMinimaxStatus(s);
+      })
+      .catch(() => undefined);
+    void api
+      .minimaxCliInfo()
+      .then((info) => {
+        if (!gone) setMinimaxCli(info);
       })
       .catch(() => undefined);
     void api
@@ -444,6 +460,50 @@ export function SettingsView({
                       })
                       .catch((e) => setFlash({ kind: "err", text: String(e) }))
                       .finally(() => setSavingAnthropic(false));
+                  }}
+                />
+              </ProviderBlock>
+              <ProviderBlock
+                logo="logo.minimax"
+                markClass="bg-[#e21680] text-white"
+                title="MiniMax"
+                text="MiniMax models. The mmx login is used when no API key is saved."
+                ready={Boolean(minimaxCli?.logged_in || minimaxStatus?.saved || minimaxStatus?.env)}
+              >
+                <CliStatus cli={minimaxCli} reveal={false} onToggleReveal={() => undefined} />
+                <KeyField
+                  label="MiniMax API key"
+                  value={minimaxKey}
+                  onChange={setMinimaxKey}
+                  placeholder={minimaxStatus?.saved ? "Key saved — paste to replace" : "sk-…"}
+                  status={minimaxStatus}
+                  envName="MINIMAX_API_KEY"
+                  saving={savingMinimax}
+                  onClear={() => {
+                    setSavingMinimax(true);
+                    void api
+                      .clearMinimaxKey()
+                      .then((s) => {
+                        setMinimaxStatus(s);
+                        setMinimaxKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Removed the saved MiniMax key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingMinimax(false));
+                  }}
+                  onSave={() => {
+                    setSavingMinimax(true);
+                    void api
+                      .setMinimaxKey(minimaxKey.trim())
+                      .then((s) => {
+                        setMinimaxStatus(s);
+                        setMinimaxKey("");
+                        onKeyChange?.();
+                        setFlash({ kind: "ok", text: "Saved the MiniMax API key." });
+                      })
+                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                      .finally(() => setSavingMinimax(false));
                   }}
                 />
               </ProviderBlock>

@@ -29,7 +29,7 @@ pub struct DevModel {
     /// Selectable sizes from the CLI catalog. Empty when the model has a single window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_windows: Vec<u64>,
-    /// `xai` or `anthropic`. Older callers that omit it are Grok.
+    /// `xai`, `anthropic`, or `minimax`. Older callers that omit it are Grok.
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Short capability ids such as `vision` and `thinking`. Empty for Grok.

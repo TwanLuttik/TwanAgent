@@ -18,7 +18,7 @@ import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../l
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
-import { groupModelFamilies, sharedModelCapabilities } from "../lib/model-family";
+import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "../lib/model-family";
 import { providerProfile, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
@@ -106,10 +106,7 @@ export function Composer({
   onDictate?: (blob: Blob, mime: string) => Promise<((draft: string, start: number, end: number) => { text: string; cursor: number }) | null>;
   onDictateError?: (message: string) => void;
 }) {
-  const ordered = [
-    ...models.filter((row) => row.provider !== "anthropic"),
-    ...models.filter((row) => row.provider === "anthropic"),
-  ];
+  const ordered = orderModels(models);
   const selected = ordered.find((m) => m.id === model) ?? ordered[0];
   const efforts = selected?.efforts ?? [];
   const effortLabel = efforts.find((e) => e.id === effort)?.label ?? "Thinking";
@@ -1149,10 +1146,29 @@ const MODEL_MENU_EASE = [0.22, 1, 0.36, 1] as const;
 const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
   { id: "xai", label: "Grok", icon: "logo.grok" },
   { id: "anthropic", label: "Claude", icon: "logo.claude" },
+  { id: "minimax", label: "MiniMax", icon: "logo.minimax" },
 ];
 
+const PROVIDER_ORDER: ProviderId[] = ["xai", "minimax", "anthropic"];
+
+function orderModels(models: Model[]): Model[] {
+  return [...models].sort((a, b) => {
+    const left = PROVIDER_ORDER.indexOf(modelProvider(a));
+    const right = PROVIDER_ORDER.indexOf(modelProvider(b));
+    return (left < 0 ? PROVIDER_ORDER.length : left) - (right < 0 ? PROVIDER_ORDER.length : right);
+  });
+}
+
 function modelProvider(model: Model): ProviderId {
-  return model.provider === "anthropic" || model.provider === "xai" ? model.provider : providerProfile(model.id).id;
+  if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax") return model.provider;
+  return providerProfile(model.id).id;
+}
+
+function providerIconClass(id: ProviderId, on: boolean): string {
+  if (!on) return "text-muted hover:bg-wash hover:text-ink";
+  if (id === "anthropic") return "bg-wash-strong text-[#d97757]";
+  if (id === "minimax") return "bg-wash-strong text-[#e21680]";
+  return "bg-wash-strong text-ink";
 }
 
 function ModelSelect({
@@ -1174,6 +1190,7 @@ function ModelSelect({
   const [menuAbove, setMenuAbove] = useState(true);
   const selected = models.find((row) => row.id === value);
   const providers = MODEL_PROVIDERS.filter((row) => models.some((model) => modelProvider(model) === row.id));
+  const [providerTip, setProviderTip] = useState<{ label: string; top: number; left: number } | null>(null);
   const shown = focus ? models.filter((model) => modelProvider(model) === focus) : models;
   const families = groupModelFamilies(shown);
 
@@ -1241,21 +1258,39 @@ function ModelSelect({
                     key={row.id}
                     type="button"
                     aria-pressed={on}
-                    title={on ? `Showing ${row.label}` : `Show ${row.label}`}
+                    aria-label={row.label}
                     onClick={() => setFocus((current) => (current === row.id ? null : row.id))}
-                    className={`flex size-7 items-center justify-center rounded-md transition-colors duration-150 ${
-                      on
-                        ? row.id === "anthropic"
-                          ? "bg-wash-strong text-[#d97757]"
-                          : "bg-wash-strong text-ink"
-                        : "text-muted hover:bg-wash hover:text-ink"
-                    }`}
+                    onMouseEnter={(event) => {
+                      const box = event.currentTarget.getBoundingClientRect();
+                      setProviderTip({ label: row.label, top: box.top + box.height / 2, left: box.right + 8 });
+                    }}
+                    onMouseLeave={() => setProviderTip(null)}
+                    className={`flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${providerIconClass(row.id, on)}`}
                   >
                     <Symbol name={row.icon} className="size-3.5" />
                   </button>
                 );
               })}
             </div>
+            {createPortal(
+              <AnimatePresence>
+                {providerTip ? (
+                  <motion.span
+                    key={providerTip.label}
+                    role="tooltip"
+                    initial={{ opacity: 0, x: -4 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -4 }}
+                    transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+                    style={{ top: providerTip.top, left: providerTip.left }}
+                    className="pointer-events-none fixed z-50 -translate-y-1/2 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink shadow-card"
+                  >
+                    {providerTip.label}
+                  </motion.span>
+                ) : null}
+              </AnimatePresence>,
+              document.body,
+            )}
             <div className="min-w-0 flex-1 overflow-auto py-1">
               <AnimatePresence initial={false} mode="popLayout">
                 {families.map((family) => {
@@ -1282,6 +1317,7 @@ function ModelSelect({
                       {family.models.map((row) => {
                         const current = row.id === value;
                         const context = contextWindowLabel(row.context_window ?? 0);
+                        const label = versions ? modelFamilyName(row.name).version || row.name : row.name;
                         return (
                           <button
                             key={row.id}
@@ -1293,12 +1329,12 @@ function ModelSelect({
                               onChange(row.id);
                               setOpen(false);
                             }}
-                            className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                            className={`flex h-7 w-full cursor-pointer items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
                               versions ? "pr-2.5 pl-6" : "px-2.5"
                             } ${current ? "font-medium text-ink" : "text-ink/80"}`}
                           >
                             <ModelIcon model={row} className="size-3.5" />
-                            <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                            <span className="min-w-0 flex-1 truncate">{label}</span>
                             {context ? (
                               <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
                                 {context} ctx
@@ -1387,13 +1423,10 @@ function CapabilityIcons({ ids, faded = false }: { ids?: string[] | null; faded?
 }
 
 function ModelIcon({ model, className }: { model: Model; className?: string }) {
-  const claude = modelProvider(model) === "anthropic";
-  return (
-    <Symbol
-      name={claude ? "logo.claude" : "logo.grok"}
-      className={`${className ?? "size-3.5"} shrink-0 ${claude ? "text-[#d97757]" : "text-current"}`}
-    />
-  );
+  const id = modelProvider(model);
+  const symbol = id === "anthropic" ? "logo.claude" : id === "minimax" ? "logo.minimax" : "logo.grok";
+  const color = id === "anthropic" ? "text-[#d97757]" : id === "minimax" ? "text-[#e21680]" : "text-current";
+  return <Symbol name={symbol} className={`${className ?? "size-3.5"} shrink-0 ${color}`} />;
 }
 
 function ChipSelect({

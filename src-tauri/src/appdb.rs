@@ -10,7 +10,7 @@ use crate::dev::{expand_folder_path, path_string, FolderSuggestion};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const DB_FILE: &str = "app.db";
 const LEGACY_IMPORTED_KEY: &str = "projects.legacy_imported";
 
@@ -42,6 +42,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS account_usage (
+            provider TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         ",
     )?;
@@ -274,6 +279,34 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     .map_err(Error::from)
 }
 
+/// Last account-usage snapshot for a provider. The sidebar paints this before the network refresh.
+pub fn get_account_usage(conn: &Connection, provider: &str) -> Result<Option<String>> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT payload FROM account_usage WHERE provider = ?1",
+        [provider],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+pub fn set_account_usage(conn: &Connection, provider: &str, payload: &str) -> Result<()> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(Error::Other("account usage provider is empty".into()));
+    }
+    conn.execute(
+        "INSERT INTO account_usage (provider, payload, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(provider) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+        params![provider, payload, now_iso()],
+    )?;
+    Ok(())
+}
+
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     let key = key.trim();
     if key.is_empty() {
@@ -435,5 +468,24 @@ mod tests {
         );
         assert_eq!(list_settings(&conn).unwrap().len(), 1);
         assert!(set_setting(&conn, "  ", "x").is_err());
+    }
+
+    #[test]
+    fn account_usage_cache_roundtrip() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        assert!(get_account_usage(&conn, "anthropic").unwrap().is_none());
+        set_account_usage(&conn, "anthropic", r#"{"connected":true}"#).unwrap();
+        set_account_usage(&conn, "anthropic", r#"{"connected":false}"#).unwrap();
+        set_account_usage(&conn, "minimax", r#"{"connected":true}"#).unwrap();
+        assert_eq!(
+            get_account_usage(&conn, "anthropic").unwrap().as_deref(),
+            Some(r#"{"connected":false}"#)
+        );
+        assert_eq!(
+            get_account_usage(&conn, "minimax").unwrap().as_deref(),
+            Some(r#"{"connected":true}"#)
+        );
+        assert!(set_account_usage(&conn, "  ", "{}").is_err());
     }
 }

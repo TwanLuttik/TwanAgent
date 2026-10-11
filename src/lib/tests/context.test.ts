@@ -68,7 +68,9 @@ describe("contextWindowForModel", () => {
     assert.equal(contextWindowForModel("unknown-model"), 500000);
     assert.equal(contextWindowForModel("claude-sonnet-4-6"), 200_000);
     assert.equal(contextWindowForModel("claude-opus-4-8", 180_000), 180_000);
-    assert.equal(contextWindowForModel("claude-opus-4-8-latest"), 500_000);
+    assert.equal(contextWindowForModel("claude-opus-4-8-latest"), 200_000);
+    assert.equal(contextWindowForModel("MiniMax-M3"), 512_000);
+    assert.equal(contextWindowForModel("MiniMax-M2.7", 200_000), 200_000);
   });
 });
 

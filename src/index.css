@@ -317,6 +317,10 @@ html[data-theme-mode="light"] .model-mark-xai:hover {
   color: #d97757;
 }
 
+.model-mark-minimax:hover {
+  color: #e21680;
+}
+
 .model-tip {
   background: #c8c8ce;
   color: #1c1c1e;

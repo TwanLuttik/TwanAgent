@@ -6,8 +6,8 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
-import { projectHasArchived, visibleConversations, visibleJourneys } from "../../lib/all-projects";
-import { conversationActivityLabel, folderName, projectKey, type ChatMessage } from "../../lib/core";
+import { visibleConversations, visibleJourneys } from "../../lib/all-projects";
+import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { projectGitKey, projectGitLabel, type ProjectGit } from "../../lib/project-git";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
@@ -87,7 +87,6 @@ export function AppSidebar() {
           setGitByProject={setGitByProject}
           todoByChat={todoByChat}
           setTodoByChat={setTodoByChat}
-          openFolder={openFolder}
           openSettings={openSettings}
           openUsage={openUsage}
           usageTick={usageTick}
@@ -161,7 +160,6 @@ function ProjectsNav({
   setGitByProject,
   todoByChat,
   setTodoByChat,
-  openFolder,
   openSettings,
   openUsage,
   usageTick,
@@ -174,7 +172,6 @@ function ProjectsNav({
   setGitByProject: (next: Record<string, ProjectGit> | ((prev: Record<string, ProjectGit>) => Record<string, ProjectGit>)) => void;
   todoByChat: Record<string, TodoBadge>;
   setTodoByChat: (next: Record<string, TodoBadge> | ((prev: Record<string, TodoBadge>) => Record<string, TodoBadge>)) => void;
-  openFolder: () => void;
   openSettings: () => void;
   openUsage: () => void;
   usageTick: number;
@@ -183,7 +180,6 @@ function ProjectsNav({
     activeId,
     allProjectGroups,
     collapsedProjects,
-    conversations,
     deleteProjectFromSidebar,
     legacyProjectsRoot,
     messages,
@@ -191,7 +187,6 @@ function ProjectsNav({
     openProjectSettings,
     projectSettings,
     projectsRoot,
-    setProjectMenu,
     showSettings,
     runningTurns,
     showUsage,
@@ -201,8 +196,6 @@ function ProjectsNav({
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
-  const currentArchiveOpen = Boolean(workspace && archiveOpen[projectKey(workspace)]);
-  const currentHasArchived = projectHasArchived(conversations);
   const gitPaths = allProjectGroups.map((group: { path: string }) => group.path).join("\n");
   useEffect(() => {
     const paths = gitPaths.split("\n").filter(Boolean);
@@ -351,57 +344,6 @@ function ProjectsNav({
         <p className="px-2 pb-0.5 text-[11px] tabular-nums text-muted/55" title={`TwanAgent ${__APP_VERSION_LABEL__}`}>
           {__APP_VERSION_LABEL__}
         </p>
-        <button
-          type="button"
-          onClick={openFolder}
-          onContextMenu={(ev) => {
-            if (!workspace) return;
-            ev.preventDefault();
-            ev.stopPropagation();
-            setProjectMenu({
-              x: ev.clientX,
-              y: ev.clientY,
-              path: workspace,
-              name: allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace),
-            });
-          }}
-          className="flex w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] text-ink/90 hover:bg-wash"
-          title={workspace || "Open folder"}
-        >
-          <Symbol name="folder.fill" className="size-4 text-accent" />
-          <span className="min-w-0 flex-1 truncate">
-            {workspace
-              ? allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace)
-              : "Open folder"}
-          </span>
-          {currentHasArchived ? (
-            <span
-              role="button"
-              tabIndex={0}
-              aria-label={currentArchiveOpen ? "Hide archived chats" : "Show archived chats"}
-              aria-pressed={currentArchiveOpen}
-              title={currentArchiveOpen ? "Hide archive" : "Archived chats"}
-              onClick={(ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (workspace) toggleArchive(workspace);
-              }}
-              onKeyDown={(ev) => {
-                if (ev.key !== "Enter" && ev.key !== " ") return;
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (workspace) toggleArchive(workspace);
-              }}
-              className={`flex size-6 shrink-0 items-center justify-center rounded ${
-                currentArchiveOpen
-                  ? "bg-accent/15 text-accent"
-                  : "text-muted hover:bg-wash-strong hover:text-ink"
-              }`}
-            >
-              <Symbol name="archivebox" className="size-3.5" />
-            </span>
-          ) : null}
-        </button>
         <button
           type="button"
           onClick={openUsage}

@@ -730,15 +730,15 @@ const ConversationCard = memo(function ConversationCard({
           ) : null}
         </span>
       </button>
-      <span className="flex shrink-0 items-center transition-transform duration-150 ease-out group-hover:-translate-x-1">
+      <span className="flex shrink-0 items-center transition-transform duration-150 ease-out group-hover:-translate-x-0.5">
         {row.kind === "terminal" ? (
-          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
+          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted group-hover:mr-0.5" />
         ) : (
           <ModelMark model={row.model} />
         )}
         {running ? (
           <span
-            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent group-hover:mr-1"
             aria-label={preview || "Loading"}
           />
         ) : null}
@@ -746,7 +746,7 @@ const ConversationCard = memo(function ConversationCard({
       <span
         className={`relative flex h-4 shrink-0 items-center justify-end overflow-hidden transition-[width,margin] duration-150 ease-out ${
           onDelete && !overlay && !placeholder
-            ? "mr-1 w-0 group-hover:mr-1.5 group-hover:w-6"
+            ? "mr-1 w-0 group-hover:mr-1 group-hover:w-5"
             : age
               ? "mr-1.5 w-6"
               : "w-0"
@@ -936,15 +936,14 @@ function TodoMark({ badge }: { badge: TodoBadge }) {
 const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) {
   const id = model?.trim() ?? "";
   if (!id) return null;
-  const claude = providerProfile(id).id === "anthropic";
+  const profile = providerProfile(id);
   const name = formatModelName(id);
+  const mark = profile.id === "anthropic" ? "model-mark-claude" : profile.id === "minimax" ? "model-mark-minimax" : "model-mark-xai";
   return (
     <span
-      className={`model-mark group/model relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted ${
-        claude ? "model-mark-claude" : "model-mark-xai"
-      }`}
+      className={`model-mark group/model relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted transition-[margin] duration-150 ease-out group-hover:mr-0.5 ${mark}`}
     >
-      <Symbol name={claude ? "logo.claude" : "logo.grok"} className="size-3" />
+      <Symbol name={profile.symbol} className="size-3" />
       <span
         role="tooltip"
         className="model-tip pointer-events-none absolute top-1/2 right-full z-30 mr-1.5 -translate-y-1/2 rounded-md border px-1.5 py-0.5 text-[11px] whitespace-nowrap opacity-0 shadow-card transition-opacity duration-150 group-hover/model:opacity-100"

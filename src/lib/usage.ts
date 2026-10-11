@@ -178,6 +178,10 @@ const MODEL_NAMES: Record<string, string> = {
   "claude-sonnet-4-6": "Claude Sonnet 4.6",
   "claude-sonnet-4-5": "Claude Sonnet 4.5",
   "claude-haiku-4-5": "Claude Haiku 4.5",
+  "minimax-m3": "MiniMax M3",
+  "minimax-m3.1-flash-preview": "MiniMax M3.1 Flash",
+  "minimax-m2.7": "MiniMax M2.7",
+  "minimax-m2.7-highspeed": "MiniMax M2.7 Highspeed",
 };
 
 /** Short name for a usage row. Unknown ids stay as stored, including an empty model. */
@@ -196,6 +200,8 @@ export function modelColorIndex(model: string): number {
   if (id.startsWith("claude-sonnet")) return 5;
   if (id.startsWith("claude-haiku")) return 3;
   if (id.startsWith("claude")) return 5;
+  if (id.startsWith("minimax-m3")) return 2;
+  if (id.startsWith("minimax")) return 6;
   if (id.includes("grok-4.7") || id.includes("grok-4.6")) return 0;
   if (id.startsWith("grok-4.5") || id.startsWith("grok-4.3")) return 1;
   if (id.startsWith("grok-4")) return 2;
@@ -247,6 +253,8 @@ export type UsageCost = {
   xai: number;
   /** Priced tokens from Claude models. */
   anthropic: number;
+  /** Priced tokens from MiniMax models. */
+  minimax: number;
   /** Tokens whose model has no list price, so they are left out of the estimate. */
   unpricedTokens: number;
 };
@@ -265,6 +273,7 @@ export function estimateUsageCost(
   let usd = 0;
   let xai = 0;
   let anthropic = 0;
+  let minimax = 0;
   let unpricedTokens = 0;
   for (const { ev, atMs, delta } of eachUsageDelta(events, (row, t) => {
     if (t < startMs || t > nowMs) return false;
@@ -278,10 +287,12 @@ export function estimateUsageCost(
       continue;
     }
     usd += cost;
-    if (providerFor(ev.model) === "anthropic") anthropic += cost;
+    const provider = providerFor(ev.model);
+    if (provider === "anthropic") anthropic += cost;
+    else if (provider === "minimax") minimax += cost;
     else xai += cost;
   }
-  return { usd, xai, anthropic, unpricedTokens };
+  return { usd, xai, anthropic, minimax, unpricedTokens };
 }
 
 function eachUsageDelta(

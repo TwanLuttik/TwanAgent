@@ -9,6 +9,7 @@ const RELEASE_SERVICE: &str = "app.twanagent.desktop";
 const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
 const ANTHROPIC_ACCOUNT: &str = "anthropic";
+const MINIMAX_ACCOUNT: &str = "minimax";
 
 fn ssh_entry(account: &str) -> std::result::Result<Entry, String> {
     Entry::new(keychain_service(), account).map_err(|e| e.to_string())
@@ -390,6 +391,51 @@ pub fn resolve_anthropic_key_on_disk() -> Option<String> {
     resolve_anthropic_key(get_anthropic_key(), std::env::var("ANTHROPIC_API_KEY").ok())
 }
 
+/// MiniMax key. Same keychain service, its own account. Never reads `secrets.json`.
+pub fn set_minimax_key(key: &str) -> Result<()> {
+    set_minimax_key_in(key, &SystemKeychain)
+}
+
+pub fn set_minimax_key_in(key: &str, store: &dyn SecretStore) -> Result<()> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return delete_minimax_key_in(store);
+    }
+    store
+        .set_account(MINIMAX_ACCOUNT, trimmed)
+        .map_err(|e| Error::Keychain(format!("could not save key to keychain: {e}")))
+}
+
+pub fn get_minimax_key() -> Option<String> {
+    get_minimax_key_in(&SystemKeychain)
+}
+
+pub fn get_minimax_key_in(store: &dyn SecretStore) -> Option<String> {
+    store
+        .get_account(MINIMAX_ACCOUNT)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn delete_minimax_key() -> Result<()> {
+    delete_minimax_key_in(&SystemKeychain)
+}
+
+pub fn delete_minimax_key_in(store: &dyn SecretStore) -> Result<()> {
+    store.delete_account(MINIMAX_ACCOUNT);
+    Ok(())
+}
+
+pub fn resolve_minimax_key(saved: Option<String>, env: Option<String>) -> Option<String> {
+    resolve_xai_key(saved, env)
+}
+
+pub fn resolve_minimax_key_on_disk() -> Option<String> {
+    resolve_minimax_key(get_minimax_key(), std::env::var("MINIMAX_API_KEY").ok())
+}
+
 #[cfg(test)]
 mod xai_key_tests {
     use super::*;
@@ -447,6 +493,24 @@ mod xai_key_tests {
         assert_eq!(get_xai_key_in(std::path::Path::new("/tmp/unused"), &store).as_deref(), Some("xai-secret"));
         delete_anthropic_key_in(&store).unwrap();
         assert_eq!(get_anthropic_key_in(&store), None);
+        assert_eq!(get_xai_key_in(std::path::Path::new("/tmp/unused"), &store).as_deref(), Some("xai-secret"));
+    }
+
+    #[test]
+    fn minimax_key_does_not_read_the_other_keys() {
+        let store = MemStore::default();
+        set_xai_key_in(std::path::Path::new("/tmp/unused"), "xai-secret", &store).unwrap();
+        set_anthropic_key_in("anthropic-secret", &store).unwrap();
+        assert_eq!(get_minimax_key_in(&store), None);
+        set_minimax_key_in("minimax-secret", &store).unwrap();
+        assert_eq!(get_minimax_key_in(&store).as_deref(), Some("minimax-secret"));
+        assert_eq!(get_anthropic_key_in(&store).as_deref(), Some("anthropic-secret"));
+        assert_eq!(
+            resolve_minimax_key(None, Some(" env-key ".into())).as_deref(),
+            Some("env-key")
+        );
+        delete_minimax_key_in(&store).unwrap();
+        assert_eq!(get_minimax_key_in(&store), None);
         assert_eq!(get_xai_key_in(std::path::Path::new("/tmp/unused"), &store).as_deref(), Some("xai-secret"));
     }
 

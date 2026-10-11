@@ -13,6 +13,11 @@ describe("modelFamilyName", () => {
     assert.deepEqual(modelFamilyName("Claude 3 Haiku"), { family: "Claude 3 Haiku", version: "" });
     assert.deepEqual(modelFamilyName("Grok"), { family: "Grok", version: "" });
   });
+
+  it("keeps every MiniMax line under one family", () => {
+    assert.deepEqual(modelFamilyName("MiniMax M3"), { family: "MiniMax", version: "M3" });
+    assert.deepEqual(modelFamilyName("MiniMax M2.7 Highspeed"), { family: "MiniMax", version: "M2.7 Highspeed" });
+  });
 });
 
 describe("sharedModelCapabilities", () => {
@@ -50,6 +55,18 @@ describe("groupModelFamilies", () => {
         ["Claude Opus", ["claude-opus-4-8", "claude-opus-4-7"]],
         ["Claude Haiku", ["claude-haiku-4-5"]],
       ],
+    );
+  });
+
+  it("nests MiniMax models under one header so they indent with the other providers", () => {
+    const groups = groupModelFamilies([
+      { id: "MiniMax-M3", name: "MiniMax M3" },
+      { id: "MiniMax-M3.1-Flash-Preview", name: "MiniMax M3.1 Flash" },
+      { id: "MiniMax-M2.7", name: "MiniMax M2.7" },
+    ]);
+    assert.deepEqual(
+      groups.map((group) => [group.label, group.models.map((model) => model.id)]),
+      [["MiniMax", ["MiniMax-M3", "MiniMax-M3.1-Flash-Preview", "MiniMax-M2.7"]]],
     );
   });
 });

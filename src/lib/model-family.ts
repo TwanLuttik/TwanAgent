@@ -12,9 +12,12 @@ export type ModelFamily<T extends ModelFamilyInput> = {
 /**
  * "Claude Opus 4.8" and "Claude Opus 4.7" share a family. One model stays alone.
  * The version is the trailing number, so "Claude 3 Haiku" is its own name.
+ * "MiniMax M3" and "MiniMax M2.7 Highspeed" share MiniMax even when the rest is not a version.
  */
 export function modelFamilyName(name: string): { family: string; version: string } {
   const trimmed = name.trim();
+  const brand = trimmed.match(/^(MiniMax)(?:\s+)(.+)$/i);
+  if (brand) return { family: "MiniMax", version: brand[2] };
   const match = trimmed.match(/^(.*?)(?:\s+)(\d+(?:\.\d+)*)$/);
   const family = (match?.[1] ?? trimmed).trim();
   return { family: family || trimmed, version: match?.[2] ?? "" };
