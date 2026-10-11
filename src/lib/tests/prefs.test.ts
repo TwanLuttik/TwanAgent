@@ -16,6 +16,7 @@ import {
   loadWorkspace,
   loadPerfOverlay,
   loadSpaceCorner,
+  loadSpaceCornerImage,
   loadSpaceCornerScene,
   loadGitChangesView,
   loadMarkdownOpenMode,
@@ -27,7 +28,12 @@ import {
   removeRecentWorkspace,
   rewriteStoredProjectPaths,
   saveCollapsedProjects,
+  flushComposerDrafts,
+  loadComposerPastes,
   saveComposerDraft,
+  saveComposerPastes,
+  scheduleComposerDraft,
+  scheduleComposerPastes,
   saveConversation,
   saveWorkspace,
   saveMarkdownOpenMode,
@@ -36,6 +42,7 @@ import {
   setFileHoverCard,
   setPerfOverlay,
   setSpaceCorner,
+  setSpaceCornerImage,
   setSpaceCornerScene,
 } from "../prefs.ts";
 
@@ -70,6 +77,7 @@ describe("space corner", () => {
   it("defaults the picture on and the scene off", () => {
     assert.equal(loadSpaceCorner(), true);
     assert.equal(loadSpaceCornerScene(), "");
+    assert.equal(loadSpaceCornerImage(), null);
   });
 
   it("saves the picture toggle and the selected scene", () => {
@@ -79,6 +87,34 @@ describe("space corner", () => {
     assert.equal(loadSpaceCornerScene(), "aurora-fjord");
     setSpaceCornerScene("");
     assert.equal(loadSpaceCornerScene(), "");
+  });
+
+  it("saves the copied corner image and clears it", () => {
+    setSpaceCornerImage({
+      path: "/data/space-corner/image.png",
+      name: "corner.png",
+      width: 1600,
+      height: 900,
+    });
+    assert.deepEqual(loadSpaceCornerImage(), {
+      path: "/data/space-corner/image.png",
+      name: "corner.png",
+      width: 1600,
+      height: 900,
+    });
+    setSpaceCornerImage(null);
+    assert.equal(loadSpaceCornerImage(), null);
+  });
+
+  it("keeps an older saved image that has no size yet", () => {
+    localStorage.setItem("twanagent.spaceCornerImage", "/data/space-corner/image.png");
+    localStorage.setItem("twanagent.spaceCornerImageName", "corner.png");
+    assert.deepEqual(loadSpaceCornerImage(), {
+      path: "/data/space-corner/image.png",
+      name: "corner.png",
+      width: 0,
+      height: 0,
+    });
   });
 });
 
@@ -232,17 +268,73 @@ describe("all projects sidebar", () => {
 describe("composer drafts", () => {
   beforeEach(() => {
     mockStorage();
+    flushComposerDrafts();
   });
 
   it("keeps each conversation's prompt after a reload", () => {
     saveComposerDraft("chat-a", "finish the sidebar");
     saveComposerDraft("chat-b", "check the terminal");
+    flushComposerDrafts();
     assert.deepEqual(loadComposerDrafts(), {
       "chat-a": "finish the sidebar",
       "chat-b": "check the terminal",
     });
     saveComposerDraft("chat-a", "");
+    flushComposerDrafts();
     assert.deepEqual(loadComposerDrafts(), { "chat-b": "check the terminal" });
+    assert.equal(localStorage.getItem("twanagent.drafts"), JSON.stringify({ "chat-b": "check the terminal" }));
+  });
+
+  it("coalesces rapid saves and serves the pending value before flush", () => {
+    let writes = 0;
+    const store = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          if (key === "twanagent.drafts") writes += 1;
+          store.set(key, value);
+        },
+        removeItem: (key: string) => {
+          store.delete(key);
+        },
+      },
+      configurable: true,
+    });
+    saveComposerDraft("chat-a", "a");
+    saveComposerDraft("chat-a", "ab");
+    saveComposerDraft("chat-b", "other");
+    assert.equal(writes, 0);
+    assert.deepEqual(loadComposerDrafts(), { "chat-a": "ab", "chat-b": "other" });
+    flushComposerDrafts();
+    assert.equal(writes, 1);
+    assert.equal(localStorage.getItem("twanagent.drafts"), JSON.stringify({ "chat-a": "ab", "chat-b": "other" }));
+    saveComposerDraft("chat-a", "");
+    assert.deepEqual(loadComposerDrafts(), { "chat-b": "other" });
+    flushComposerDrafts();
+    assert.equal(localStorage.getItem("twanagent.drafts"), JSON.stringify({ "chat-b": "other" }));
+  });
+
+  it("schedules the latest draft and pastes, then drops them when emptied", () => {
+    scheduleComposerDraft("chat-a", "first");
+    scheduleComposerDraft("chat-a", "latest", 200);
+    scheduleComposerPastes("chat-a", [{ id: "p1", text: "snippet" }]);
+    assert.deepEqual(loadComposerDrafts(), { "chat-a": "latest" });
+    assert.deepEqual(loadComposerPastes(), { "chat-a": [{ id: "p1", text: "snippet" }] });
+    assert.equal(localStorage.getItem("twanagent.drafts"), null);
+    flushComposerDrafts();
+    assert.equal(
+      localStorage.getItem("twanagent.drafts"),
+      JSON.stringify({ "chat-a": "latest" }),
+    );
+    assert.equal(
+      localStorage.getItem("twanagent.pastes"),
+      JSON.stringify({ "chat-a": [{ id: "p1", text: "snippet" }] }),
+    );
+    saveComposerPastes("chat-a", []);
+    flushComposerDrafts();
+    assert.deepEqual(loadComposerPastes(), {});
+    assert.equal(localStorage.getItem("twanagent.pastes"), "{}");
   });
 });
 

@@ -17,13 +17,16 @@ import {
   loadMarkdownOpenMode,
   loadPerfOverlay,
   loadSpaceCorner,
+  loadSpaceCornerImage,
   loadSpaceCornerScene,
   saveMarkdownOpenMode,
   setExpandEdits,
   setFileHoverCard,
   setPerfOverlay,
   setSpaceCorner,
+  setSpaceCornerImage,
   setSpaceCornerScene,
+  type SpaceCornerImage,
   type MarkdownOpenMode,
 } from "../lib/prefs";
 import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
@@ -93,6 +96,8 @@ export function SettingsView({
     return isSceneId(stored) ? stored : DEFAULT_SCENE;
   });
   const [spaceVideo, setSpaceVideo] = useState(() => isSceneId(loadSpaceCornerScene()));
+  const [spaceImage, setSpaceImage] = useState<SpaceCornerImage | null>(() => loadSpaceCornerImage());
+  const [pickingImage, setPickingImage] = useState(false);
   const [fileHoverCard, setFileHoverCardOn] = useState(() => loadFileHoverCard());
   const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
@@ -190,6 +195,65 @@ export function SettingsView({
                   setSpaceCorner(next);
                 }}
               />
+              <div className="grid gap-1.5">
+                <span className="block text-[13px] font-medium text-ink">Picture</span>
+                <span className="text-[12px] leading-relaxed text-muted">
+                  {spaceImage
+                    ? `${spaceImage.name} is saved in the TwanAgent folder, so it stays if you delete the original.`
+                    : "Uses the built-in picture. A chosen image is copied into the TwanAgent folder."}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    disabled={pickingImage}
+                    onClick={() => {
+                      setPickingImage(true);
+                      void api
+                        .pickImage()
+                        .then(async (path) => {
+                          if (!path) return;
+                          const saved = await api.setSpaceCornerImage(path);
+                          const next = {
+                            path: saved.path,
+                            name: saved.name,
+                            width: saved.width,
+                            height: saved.height,
+                          };
+                          setSpaceImage(next);
+                          setSpaceCornerImage(next);
+                          if (!spaceArt) {
+                            setSpaceArt(true);
+                            setSpaceCorner(true);
+                          }
+                          if (spaceVideo) {
+                            setSpaceVideo(false);
+                            setSpaceCornerScene("");
+                          }
+                          setFlash({ kind: "ok", text: `Using ${saved.name} in the corner.` });
+                        })
+                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                        .finally(() => setPickingImage(false));
+                    }}
+                  >
+                    {pickingImage ? "Choosing…" : spaceImage ? "Change image" : "Choose image"}
+                  </Button>
+                  {spaceImage ? (
+                    <Button
+                      onClick={() => {
+                        void api
+                          .clearSpaceCornerImage()
+                          .then(() => {
+                            setSpaceImage(null);
+                            setSpaceCornerImage(null);
+                            setFlash({ kind: "ok", text: "Using the built-in picture." });
+                          })
+                          .catch((e) => setFlash({ kind: "err", text: String(e) }));
+                      }}
+                    >
+                      Use default
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
               <Toggle
                 title="Video"
                 text="Play an animated ascii scene from ascii.rest instead of the picture."

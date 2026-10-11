@@ -7,6 +7,9 @@ export const PREFS_EVENT = "twanagent-prefs";
 
 const SPACE_CORNER_KEY = "twanagent.spaceCorner";
 const SPACE_CORNER_SCENE_KEY = "twanagent.spaceCornerScene";
+const SPACE_CORNER_IMAGE_KEY = "twanagent.spaceCornerImage";
+const SPACE_CORNER_IMAGE_NAME_KEY = "twanagent.spaceCornerImageName";
+const SPACE_CORNER_IMAGE_SIZE_KEY = "twanagent.spaceCornerImageSize";
 
 export function loadSpaceCorner(): boolean {
   const raw = localStorage.getItem(SPACE_CORNER_KEY);
@@ -30,6 +33,47 @@ export function loadSpaceCornerScene(): string {
 export function setSpaceCornerScene(id: string): void {
   if (id) localStorage.setItem(SPACE_CORNER_SCENE_KEY, id);
   else localStorage.removeItem(SPACE_CORNER_SCENE_KEY);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
+export type SpaceCornerImage = { path: string; name: string; width: number; height: number };
+
+function positiveSize(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+export function loadSpaceCornerImage(): SpaceCornerImage | null {
+  const path = localStorage.getItem(SPACE_CORNER_IMAGE_KEY)?.trim() ?? "";
+  if (!path) return null;
+  const name = localStorage.getItem(SPACE_CORNER_IMAGE_NAME_KEY)?.trim() || "Image";
+  let width = 0;
+  let height = 0;
+  try {
+    const raw = JSON.parse(localStorage.getItem(SPACE_CORNER_IMAGE_SIZE_KEY) ?? "");
+    if (raw && typeof raw === "object") {
+      width = positiveSize((raw as { width?: unknown }).width);
+      height = positiveSize((raw as { height?: unknown }).height);
+    }
+  } catch {
+    /* a missing size just keeps the default box until the image loads */
+  }
+  return { path, name, width, height };
+}
+
+export function setSpaceCornerImage(image: SpaceCornerImage | null): void {
+  if (image?.path) {
+    localStorage.setItem(SPACE_CORNER_IMAGE_KEY, image.path);
+    localStorage.setItem(SPACE_CORNER_IMAGE_NAME_KEY, image.name || "Image");
+    const width = positiveSize(image.width);
+    const height = positiveSize(image.height);
+    if (width && height) localStorage.setItem(SPACE_CORNER_IMAGE_SIZE_KEY, JSON.stringify({ width, height }));
+    else localStorage.removeItem(SPACE_CORNER_IMAGE_SIZE_KEY);
+  } else {
+    localStorage.removeItem(SPACE_CORNER_IMAGE_KEY);
+    localStorage.removeItem(SPACE_CORNER_IMAGE_NAME_KEY);
+    localStorage.removeItem(SPACE_CORNER_IMAGE_SIZE_KEY);
+  }
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 

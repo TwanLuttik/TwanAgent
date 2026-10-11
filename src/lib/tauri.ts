@@ -20,6 +20,19 @@ export async function pickDir(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
+const IMAGE_FILTERS = [
+  { name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "jfif"] },
+];
+
+export async function pickImage(): Promise<string | null> {
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    filters: IMAGE_FILTERS,
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
 export type KeyStatus = { saved: boolean; env: boolean };
 export type Effort = { id: string; label: string; detail?: string };
 export type ModelProvider = "xai" | "anthropic" | string;
@@ -220,6 +233,10 @@ export function addProject(path: string): Promise<FolderSuggestion> {
 
 export function removeProject(path: string): Promise<boolean> {
   return invoke("dev_app_remove_project", { path });
+}
+
+export function reorderProjects(paths: string[]): Promise<FolderSuggestion[]> {
+  return invoke("dev_app_reorder_projects", { paths });
 }
 
 export function getAppSetting(key: string): Promise<string | null> {
@@ -699,6 +716,18 @@ export function prepareImagePath(
 
 export function imageDataUrl(path: string): Promise<string> {
   return invoke("dev_image_data_url", { path });
+}
+
+export function setSpaceCornerImage(path: string): Promise<PreparedImage> {
+  return invoke("dev_set_space_corner_image", { path });
+}
+
+export function spaceCornerImage(): Promise<PreparedImage | null> {
+  return invoke("dev_space_corner_image");
+}
+
+export function clearSpaceCornerImage(): Promise<void> {
+  return invoke("dev_clear_space_corner_image");
 }
 
 export type SpeechModelStatus = "missing" | "partial" | "ready";

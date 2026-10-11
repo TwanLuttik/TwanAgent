@@ -69,6 +69,11 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(&attachments, true);
+            let space_corner = state.data_dir.join(image::SPACE_CORNER_DIR);
+            std::fs::create_dir_all(&space_corner)?;
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(&space_corner, true);
             app.manage(state);
             Ok(())
         })
@@ -176,6 +181,9 @@ pub fn run() {
             image::dev_prepare_image,
             image::dev_prepare_image_path,
             image::dev_image_data_url,
+            image::dev_set_space_corner_image,
+            image::dev_space_corner_image,
+            image::dev_clear_space_corner_image,
             speech::dev_microphone_info,
             speech::dev_microphone_ready,
             speech::dev_speech_models,

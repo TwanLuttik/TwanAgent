@@ -180,7 +180,7 @@ html[data-space-corner="off"] .sidebar-space {
   height: 26rem;
   background-position: top left;
   background-repeat: no-repeat;
-  background-size: 360px 26rem;
+  background-size: 100% 100%;
   opacity: 0.48;
 }
 

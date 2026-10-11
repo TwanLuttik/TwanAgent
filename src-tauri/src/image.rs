@@ -29,6 +29,141 @@ pub fn attachments_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("attachments")
 }
 
+pub const SPACE_CORNER_DIR: &str = "space-corner";
+pub const SPACE_CORNER_FILE: &str = "image";
+
+pub fn space_corner_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(SPACE_CORNER_DIR)
+}
+
+fn is_image_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".jfif")
+}
+
+const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Copy a user-picked picture into the app data folder so the corner keeps working
+/// after the original file is moved or deleted.
+pub fn copy_space_corner_image(data_dir: &Path, source: &str) -> Result<PreparedImage> {
+    let path = PathBuf::from(source.trim());
+    let name = display_name(source);
+    if !is_image_name(&name) {
+        return Err(Error::Other("This file isn’t a supported image.".into()));
+    }
+    let meta = fs::metadata(&path).map_err(|_| Error::Other("image file not found".into()))?;
+    if !meta.is_file() {
+        return Err(Error::Other("image file not found".into()));
+    }
+    if meta.len() > MAX_SOURCE_BYTES {
+        return Err(Error::Other("image is too large".into()));
+    }
+    let bytes = fs::read(&path)?;
+    if bytes.is_empty() {
+        return Err(Error::Other("image is empty".into()));
+    }
+    let reader = ImageReader::new(Cursor::new(bytes.as_slice()))
+        .with_guessed_format()
+        .map_err(|e| Error::Other(format!("Couldn’t read image: {e}")))?;
+    let format = reader.format();
+    let img = reader
+        .decode()
+        .map_err(|_| Error::Other("This image format isn’t supported.".into()))?;
+    let (width, height) = img.dimensions();
+    if width == 0 || height == 0 {
+        return Err(Error::Other("image has no pixels".into()));
+    }
+    let (ext, mime) = passthrough_format(format).unwrap_or(("png", "image/png"));
+    let dir = space_corner_dir(data_dir);
+    fs::create_dir_all(&dir)?;
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    let stored = dir.join(format!("{SPACE_CORNER_FILE}.{ext}"));
+    fs::write(&stored, &bytes)?;
+    Ok(PreparedImage {
+        id: SPACE_CORNER_FILE.into(),
+        path: stored.to_string_lossy().replace('\\', "/"),
+        name,
+        mime: mime.into(),
+        width,
+        height,
+        resized: false,
+    })
+}
+
+/// The copied corner picture, if one is still in the data folder.
+pub fn space_corner_image(data_dir: &Path) -> Result<Option<PreparedImage>> {
+    let dir = space_corner_dir(data_dir);
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut found: Option<PathBuf> = None;
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if !entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !name.starts_with(SPACE_CORNER_FILE) || !is_image_name(&name) {
+            continue;
+        }
+        found = Some(path);
+        break;
+    }
+    let Some(path) = found else {
+        return Ok(None);
+    };
+    let bytes = fs::read(&path)?;
+    let reader = ImageReader::new(Cursor::new(bytes.as_slice()))
+        .with_guessed_format()
+        .map_err(|e| Error::Other(format!("Couldn’t read image: {e}")))?;
+    let format = reader.format();
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| Error::Other("This image format isn’t supported.".into()))?;
+    let mime = passthrough_format(format)
+        .map(|(_, mime)| mime)
+        .unwrap_or_else(|| mime_from_path(&path));
+    Ok(Some(PreparedImage {
+        id: SPACE_CORNER_FILE.into(),
+        path: path.to_string_lossy().replace('\\', "/"),
+        name: display_name(&path.to_string_lossy()),
+        mime: mime.into(),
+        width,
+        height,
+        resized: false,
+    }))
+}
+
+pub fn clear_space_corner_image(data_dir: &Path) -> Result<()> {
+    let dir = space_corner_dir(data_dir);
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
 pub fn needs_resize(width: u32, height: u32) -> bool {
     width.max(height) > MAX_EDGE
 }
@@ -161,19 +296,6 @@ pub fn prepare_image(
     })
 }
 
-fn is_image_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".webp")
-        || lower.ends_with(".bmp")
-        || lower.ends_with(".jfif")
-}
-
-const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
-
 pub fn prepare_image_from_path(
     data_dir: &Path,
     source: &str,
@@ -264,6 +386,25 @@ pub fn dev_image_data_url(state: State<'_, AppState>, path: String) -> Result<St
     image_data_url(&state.data_dir, &path)
 }
 
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_set_space_corner_image(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<PreparedImage> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || copy_space_corner_image(&data_dir, &path)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_space_corner_image(state: State<'_, AppState>) -> Result<Option<PreparedImage>> {
+    space_corner_image(&state.data_dir)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_clear_space_corner_image(state: State<'_, AppState>) -> Result<()> {
+    clear_space_corner_image(&state.data_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +477,48 @@ mod tests {
     fn rejects_empty_bytes() {
         let dir = tempdir().unwrap();
         assert!(prepare_image(dir.path(), &[], "a.png", None).is_err());
+    }
+
+    #[test]
+    fn copies_the_corner_image_into_app_data() {
+        let dir = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("corner.png");
+        fs::write(&src, png_bytes(24, 18, 255)).unwrap();
+        let out = copy_space_corner_image(dir.path(), src.to_str().unwrap()).unwrap();
+        assert_eq!(out.name, "corner.png");
+        assert_eq!(out.width, 24);
+        assert_eq!(out.height, 18);
+        assert!(out.path.contains("/space-corner/image.png"));
+        assert!(Path::new(&out.path).exists());
+        fs::remove_file(&src).unwrap();
+        let kept = space_corner_image(dir.path()).unwrap().unwrap();
+        assert_eq!(kept.path, out.path);
+        assert!(Path::new(&kept.path).exists());
+    }
+
+    #[test]
+    fn replacing_the_corner_image_drops_the_old_copy() {
+        let dir = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let png = src_dir.path().join("a.png");
+        fs::write(&png, png_bytes(8, 8, 255)).unwrap();
+        copy_space_corner_image(dir.path(), png.to_str().unwrap()).unwrap();
+        let jpg_bytes = {
+            let img = image::RgbImage::from_pixel(6, 4, image::Rgb([1, 2, 3]));
+            let mut buf = Cursor::new(Vec::new());
+            DynamicImage::ImageRgb8(img)
+                .write_to(&mut buf, ImageFormat::Jpeg)
+                .unwrap();
+            buf.into_inner()
+        };
+        let jpg = src_dir.path().join("b.jpg");
+        fs::write(&jpg, jpg_bytes).unwrap();
+        let next = copy_space_corner_image(dir.path(), jpg.to_str().unwrap()).unwrap();
+        assert!(next.path.ends_with("/space-corner/image.jpg"));
+        assert!(!dir.path().join("space-corner/image.png").exists());
+        clear_space_corner_image(dir.path()).unwrap();
+        assert!(space_corner_image(dir.path()).unwrap().is_none());
     }
 
     #[test]
