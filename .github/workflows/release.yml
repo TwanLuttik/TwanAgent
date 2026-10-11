@@ -84,4 +84,4 @@ jobs:
             An ad-hoc signed build still needs to be allowed once in System Settings, Privacy & Security. A Developer ID signature and notarization need the Apple secrets listed in the workflow file.
           releaseDraft: true
           prerelease: false
-          args: --target universal-apple-darwin --bundles app
+          args: --target universal-apple-darwin --bundles app --skip-stapling
