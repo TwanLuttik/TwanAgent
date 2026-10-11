@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
 
 use super::event::{
-    apply_thinking, apply_tool, finished_thinking, finished_tools, merge_usage, usage_event, StreamPiece,
+    apply_thinking, apply_tool, finished_thinking, finished_tools, merge_usage, StreamPiece,
     ThinkingAccum, ToolAccum,
 };
 use crate::dev::types::{DevChatEvent, DevChatUsage};
@@ -117,6 +117,8 @@ impl<'a> StreamSession<'a> {
             StreamPiece::Usage {
                 prompt_tokens,
                 completion_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
             } => {
                 let (prompt_tokens, completion_tokens) = merge_usage(
                     self.last_usage
@@ -125,7 +127,23 @@ impl<'a> StreamSession<'a> {
                     prompt_tokens,
                     completion_tokens,
                 );
-                let usage = usage_event(prompt_tokens, completion_tokens);
+                let usage = super::event::usage_event_with_cache(
+                    prompt_tokens,
+                    completion_tokens,
+                    if cache_read_tokens == u64::MAX {
+                        self.last_usage.as_ref().map(|row| row.cache_read_tokens).unwrap_or(0)
+                    } else {
+                        cache_read_tokens
+                    },
+                    if cache_creation_tokens == u64::MAX {
+                        self.last_usage
+                            .as_ref()
+                            .map(|row| row.cache_creation_tokens)
+                            .unwrap_or(0)
+                    } else {
+                        cache_creation_tokens
+                    },
+                );
                 let first = self.last_usage.is_none();
                 self.last_usage = Some(usage.clone());
                 if first {

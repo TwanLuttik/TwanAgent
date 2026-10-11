@@ -4,7 +4,8 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { shellSessionId } from "../lib/shell-sessions";
 import { shellSessions } from "../lib/shell-terminal";
-import { attachXtermInput } from "../lib/term-io";
+import { attachTerminalLinks, attachXtermInput } from "../lib/term-io";
+import { openUrl } from "../lib/tauri";
 
 export function Terminal({
   workspace,
@@ -58,6 +59,7 @@ export function Terminal({
       (data) => shellSessions.write(id, data),
       (data) => shellSessions.writeBytes(id, data),
     );
+    const detachLinks = attachTerminalLinks(term, (url) => void openUrl(url));
     term.onResize(({ cols, rows }) => {
       if (!paneIsShown(el)) return;
       shellSessions.resize(id, cols, rows);
@@ -90,6 +92,7 @@ export function Terminal({
       if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
       unsub();
+      detachLinks();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

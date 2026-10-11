@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  attachTerminalLinks,
   attachXtermInput,
   binaryStringToBytes,
   dragSelectsTerminalText,
   pointerMovedPast,
   terminalKeyReachesPty,
+  terminalLinkModifierDown,
+  terminalLinksInRows,
   terminalWheelLines,
+  type TerminalLinkRow,
 } from "../term-io.ts";
 
 describe("binaryStringToBytes", () => {
@@ -66,6 +70,195 @@ describe("terminalWheelLines", () => {
   it("speeds up while alt is held and treats line-mode deltas as lines", () => {
     assert.equal(terminalWheelLines({ deltaY: 40, altKey: true }), 5);
     assert.equal(terminalWheelLines({ deltaY: 3, deltaMode: 1 }), 3);
+  });
+});
+
+function rows(lines: string[], wrappedFrom = 1): TerminalLinkRow[] {
+  return lines.map((text, index) => ({ y: index + 1, text, wrapped: index >= wrappedFrom }));
+}
+
+describe("terminalLinksInRows", () => {
+  it("finds http and https links and drops the trailing punctuation", () => {
+    const found = terminalLinksInRows(
+      rows(["see https://example.com/a, and http://localhost:1430/x."], 99),
+      0,
+      80,
+    );
+    assert.deepEqual(
+      found.map((link) => link.text),
+      ["https://example.com/a", "http://localhost:1430/x"],
+    );
+    assert.equal(found[0]?.startX, 5);
+    assert.equal(found[0]?.endX, 25);
+    assert.equal(found[1]?.startY, 1);
+  });
+
+  it("joins a url the terminal wrapped onto the next row", () => {
+    const found = terminalLinksInRows(rows(["see https://exam", "ple.com/docs"]), 1, 16);
+    assert.equal(found.length, 1);
+    assert.equal(found[0]?.text, "https://example.com/docs");
+    assert.deepEqual(
+      [found[0]?.startX, found[0]?.startY, found[0]?.endX, found[0]?.endY],
+      [5, 1, 12, 2],
+    );
+  });
+
+  it("ignores anything that is not an http link", () => {
+    assert.deepEqual(terminalLinksInRows(rows(["file:///tmp/a javascript:alert(1) www.example.com"], 99), 0, 80), []);
+  });
+});
+
+describe("terminalLinkModifierDown", () => {
+  it("uses command on mac and ctrl elsewhere", () => {
+    assert.equal(terminalLinkModifierDown({ metaKey: true, ctrlKey: false }, true), true);
+    assert.equal(terminalLinkModifierDown({ metaKey: false, ctrlKey: true }, true), false);
+    assert.equal(terminalLinkModifierDown({ metaKey: false, ctrlKey: true }, false), true);
+    assert.equal(terminalLinkModifierDown({ metaKey: true, ctrlKey: false }, false), false);
+  });
+});
+
+describe("attachTerminalLinks", () => {
+  type Link = {
+    text: string;
+    decorations: { underline: boolean; pointerCursor: boolean };
+    activate: (event: MouseEvent, text: string) => void;
+    hover: (event: MouseEvent, text: string) => void;
+    leave: (event: MouseEvent, text: string) => void;
+  };
+
+  function setup(line: string, screen: { dispatchEvent: (event: MouseEvent) => boolean } | null = null) {
+    const opened: string[] = [];
+    const keys = new Map<string, (event: Event) => void[]>();
+    const elementHandlers = new Map<string, (event: Event) => void>();
+    let last: Link[] | undefined;
+    const target = {
+      addEventListener(type: string, fn: (event: Event) => void) {
+        keys.set(type, [...(keys.get(type) ?? []), fn]);
+      },
+      removeEventListener(type: string, fn: (event: Event) => void) {
+        keys.set(type, (keys.get(type) ?? []).filter((item) => item !== fn));
+      },
+    };
+    const element = {
+      addEventListener(type: string, fn: (event: Event) => void) {
+        elementHandlers.set(type, fn);
+      },
+      removeEventListener(type: string) {
+        elementHandlers.delete(type);
+      },
+      querySelector() {
+        return screen;
+      },
+      ownerDocument: screen
+        ? {
+            defaultView: {
+              MouseEvent: class extends Event {
+                clientX: number;
+                clientY: number;
+                constructor(type: string, init: MouseEventInit = {}) {
+                  super(type);
+                  this.clientX = init.clientX ?? 0;
+                  this.clientY = init.clientY ?? 0;
+                }
+              },
+            },
+          }
+        : undefined,
+    };
+    const stop = attachTerminalLinks(
+      {
+        element: element as unknown as HTMLElement,
+        cols: 80,
+        buffer: {
+          active: {
+            viewportY: 0,
+            length: 1,
+            getLine: () => ({ isWrapped: false, translateToString: () => line }),
+          },
+        },
+        registerLinkProvider(provider) {
+          provider.provideLinks(1, (links) => {
+            last = links as unknown as Link[];
+          });
+          return { dispose() {} };
+        },
+        onData() {},
+        onBinary() {},
+      },
+      (url) => opened.push(url),
+      target,
+    );
+    const fire = (type: string, event: Event) => {
+      for (const fn of keys.get(type) ?? []) fn(event);
+    };
+    return { opened, fire, elementHandlers, link: () => last?.[0], stop };
+  }
+
+  it("underlines and opens only while command is held", () => {
+    const { opened, fire, link } = setup("see https://example.com/a");
+    const item = link();
+    assert.ok(item);
+    assert.equal(item.decorations.underline, false);
+    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+    assert.equal(item.decorations.underline, false);
+    assert.equal(item.decorations.pointerCursor, false);
+    item.activate({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+    assert.deepEqual(opened, []);
+
+    const commandDown = {
+      type: "keydown",
+      key: "Meta",
+      metaKey: true,
+      ctrlKey: false,
+      getModifierState: () => true,
+    } as unknown as KeyboardEvent;
+    fire("keydown", commandDown);
+    assert.equal(item.decorations.underline, true);
+    assert.equal(item.decorations.pointerCursor, true);
+    item.activate({ metaKey: true, ctrlKey: false } as MouseEvent, item.text);
+    assert.deepEqual(opened, ["https://example.com/a"]);
+
+    fire("keyup", { type: "keyup", key: "Meta", metaKey: false, ctrlKey: false } as KeyboardEvent);
+    assert.equal(item.decorations.underline, false);
+    item.leave({} as MouseEvent, item.text);
+    fire("keydown", commandDown);
+    assert.equal(item.decorations.underline, false);
+  });
+
+  it("underlines a link the pointer was already on when command goes down", () => {
+    const seen: { x: number; y: number }[] = [];
+    const screen = {
+      dispatchEvent(event: MouseEvent) {
+        seen.push({ x: event.clientX, y: event.clientY });
+        return true;
+      },
+    };
+    const { fire, elementHandlers, link } = setup("see https://example.com/a", screen);
+    elementHandlers.get("mousemove")?.({ clientX: 40, clientY: 12, metaKey: false, ctrlKey: false } as MouseEvent);
+    fire("keydown", {
+      type: "keydown",
+      key: "Meta",
+      metaKey: true,
+      ctrlKey: false,
+      getModifierState: () => true,
+    } as unknown as KeyboardEvent);
+    assert.deepEqual(seen.map((point) => point.x), [41, 40]);
+    const item = link();
+    assert.ok(item);
+    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+    assert.equal(item.decorations.underline, true);
+    assert.equal(item.decorations.pointerCursor, true);
+  });
+
+  it("notices command that was already held when the pointer moves onto the link", () => {
+    const { elementHandlers, link } = setup("see https://example.com/a");
+    const item = link();
+    assert.ok(item);
+    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+    assert.equal(item.decorations.underline, false);
+    elementHandlers.get("mousemove")?.({ metaKey: true, ctrlKey: false } as MouseEvent);
+    assert.equal(item.decorations.underline, true);
+    assert.equal(item.decorations.pointerCursor, true);
   });
 });
 

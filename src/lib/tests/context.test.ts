@@ -53,6 +53,41 @@ describe("parseChatUsage", () => {
       { promptTokens: 136, completionTokens: 600, totalTokens: 736 },
     );
   });
+
+  it("adds Claude cache tokens that are left out of input_tokens", () => {
+    assert.deepEqual(
+      parseChatUsage({
+        input_tokens: 1_200,
+        cache_read_input_tokens: 180_000,
+        cache_creation_input_tokens: 4_000,
+        output_tokens: 900,
+      }),
+      {
+        promptTokens: 185_200,
+        completionTokens: 900,
+        totalTokens: 186_100,
+        cacheReadTokens: 180_000,
+        cacheCreationTokens: 4_000,
+      },
+    );
+  });
+
+  it("does not add xAI cached tokens that are already inside prompt_tokens", () => {
+    assert.deepEqual(
+      parseChatUsage({
+        prompt_tokens: 24100,
+        completion_tokens: 800,
+        total_tokens: 24900,
+        prompt_tokens_details: { cached_tokens: 20000 },
+      }),
+      {
+        promptTokens: 24100,
+        completionTokens: 800,
+        totalTokens: 24900,
+        cacheReadTokens: 20000,
+      },
+    );
+  });
 });
 
 describe("contextWindowForModel", () => {
@@ -108,11 +143,11 @@ describe("formatTokenCount", () => {
 });
 
 describe("context usage snapshot", () => {
-  it("builds a percent label from the last request total and the model window", () => {
+  it("builds a percent label from the prompt and the chosen window", () => {
     const usage = parseChatUsage({ prompt_tokens: 24100, completion_tokens: 10, total_tokens: 24110 })!;
     const snap = contextUsageSnapshot(usage, 500000);
     assert.equal(snap.percent, 5);
-    assert.equal(snap.used, 24110);
+    assert.equal(snap.used, 24100);
     assert.equal(snap.window, 500000);
     assert.equal(snap.tone, "ok");
     assert.equal(formatContextUsage(usage, 500000), "5% · 24k / 500k");

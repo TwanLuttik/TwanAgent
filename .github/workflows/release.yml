@@ -82,6 +82,6 @@ jobs:
             macOS only. Download `TwanAgent.app.tar.gz`, unpack it, and move TwanAgent to Applications.
 
             An ad-hoc signed build still needs to be allowed once in System Settings, Privacy & Security. A Developer ID signature and notarization need the Apple secrets listed in the workflow file.
-          releaseDraft: true
-          prerelease: false
+          releaseDraft: false
+          prerelease: true
           args: --target universal-apple-darwin --bundles app --skip-stapling

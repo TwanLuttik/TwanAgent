@@ -21,9 +21,12 @@ pub enum StreamPiece {
     Delta(String),
     Reasoning(String),
     /// `u64::MAX` means "keep the previous count" for that side.
+    /// Cache counts are already folded into `prompt_tokens`.
     Usage {
         prompt_tokens: u64,
         completion_tokens: u64,
+        cache_read_tokens: u64,
+        cache_creation_tokens: u64,
     },
     ToolStart {
         index: u32,
@@ -220,9 +223,21 @@ pub fn finished_thinking(blocks: &ThinkingAccum) -> Vec<ThinkingBlock> {
 }
 
 pub fn usage_event(prompt_tokens: u64, completion_tokens: u64) -> DevChatUsage {
+    usage_event_with_cache(prompt_tokens, completion_tokens, 0, 0)
+}
+
+/// `prompt_tokens` is the whole prompt the next call has to fit, cache included.
+pub fn usage_event_with_cache(
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+) -> DevChatUsage {
     DevChatUsage {
         prompt_tokens,
         completion_tokens,
         total_tokens: prompt_tokens.saturating_add(completion_tokens),
+        cache_read_tokens,
+        cache_creation_tokens,
     }
 }

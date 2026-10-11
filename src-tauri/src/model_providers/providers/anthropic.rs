@@ -1661,17 +1661,32 @@ pub fn parse_sse_data(data: &str) -> Option<StreamPiece> {
     }
 }
 
+fn usage_count(usage: &serde_json::Value, key: &str) -> Option<u64> {
+    usage.get(key).and_then(|v| v.as_u64())
+}
+
 fn usage_piece(usage: Option<&serde_json::Value>) -> Option<SsePiece> {
     let usage = usage?;
-    let prompt = usage.get("input_tokens").and_then(|v| v.as_u64());
-    let completion = usage.get("output_tokens").and_then(|v| v.as_u64());
-    // message_delta often carries only output_tokens. None means "keep the previous count".
-    if prompt.is_none() && completion.is_none() {
+    let fresh = usage_count(usage, "input_tokens");
+    let completion = usage_count(usage, "output_tokens");
+    let cache_read = usage_count(usage, "cache_read_input_tokens");
+    let cache_creation = usage_count(usage, "cache_creation_input_tokens");
+    // message_delta often carries only output_tokens. MAX means "keep the previous count".
+    if fresh.is_none() && completion.is_none() && cache_read.is_none() && cache_creation.is_none() {
         return None;
     }
+    // Cached reads and writes still occupy the window. Anthropic leaves them out of input_tokens.
+    let prompt_tokens = match fresh {
+        Some(fresh) => fresh
+            .saturating_add(cache_read.unwrap_or(0))
+            .saturating_add(cache_creation.unwrap_or(0)),
+        None => u64::MAX,
+    };
     Some(StreamPiece::Usage {
-        prompt_tokens: prompt.unwrap_or(u64::MAX),
+        prompt_tokens,
         completion_tokens: completion.unwrap_or(u64::MAX),
+        cache_read_tokens: cache_read.unwrap_or(u64::MAX),
+        cache_creation_tokens: cache_creation.unwrap_or(u64::MAX),
     })
 }
 
@@ -2222,7 +2237,11 @@ mod tests {
             match piece {
                 SsePiece::Delta(text) => deltas.push(text),
                 SsePiece::Reasoning(text) => thoughts.push(text),
-                SsePiece::Usage { prompt_tokens, completion_tokens } => {
+                SsePiece::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    ..
+                } => {
                     usages.push((prompt_tokens, completion_tokens));
                 }
                 SsePiece::Stop => stopped = true,

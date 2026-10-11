@@ -324,18 +324,23 @@ html[data-theme-mode="dark"] .usage-swatch-7 {
   transition: color 150ms ease;
 }
 
+/* Provider color shows when the conversation row is hovered, not only the icon. */
+.group\/chat:hover .model-mark-xai,
 .model-mark-xai:hover {
   color: #fff;
 }
 
+html[data-theme-mode="light"] .group\/chat:hover .model-mark-xai,
 html[data-theme-mode="light"] .model-mark-xai:hover {
   color: #1c1c1e;
 }
 
+.group\/chat:hover .model-mark-claude,
 .model-mark-claude:hover {
   color: #d97757;
 }
 
+.group\/chat:hover .model-mark-minimax,
 .model-mark-minimax:hover {
   color: #e21680;
 }
@@ -345,11 +350,13 @@ html[data-theme-mode="light"] .model-mark-xai:hover {
   display: none;
 }
 .group\/minimax:hover .minimax-plain,
+.group\/chat:hover .model-mark .minimax-plain,
 .group:hover .model-mark .minimax-plain,
 .group\/minimax[data-colored] .minimax-plain {
   display: none;
 }
 .group\/minimax:hover .minimax-color,
+.group\/chat:hover .model-mark .minimax-color,
 .group:hover .model-mark .minimax-color,
 .group\/minimax[data-colored] .minimax-color {
   display: block;
@@ -396,9 +403,15 @@ html[data-theme-mode="light"] .model-tip {
   pointer-events: none;
 }
 
-/* Mouse tracking turns the cursor into a pointer. Keep the text cursor so dragging reads as selection. */
+/* Mouse tracking turns the cursor into a pointer. Keep the text cursor so dragging reads as selection.
+   Command-hover (Ctrl elsewhere) on a link adds xterm-cursor-pointer, which has to win over that. */
 .term .xterm.enable-mouse-events {
   cursor: text;
+}
+
+.term .xterm.xterm-cursor-pointer,
+.term .xterm.xterm-cursor-pointer.enable-mouse-events {
+  cursor: pointer;
 }
 
 .term .xterm-screen {

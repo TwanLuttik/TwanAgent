@@ -477,7 +477,7 @@ const SortableRow = memo(function SortableRow({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`group relative ${item.kind === "chat" ? "touch-none" : ""}`}
+      className={`relative ${item.kind === "chat" ? "group/chat touch-none" : "group"}`}
       role="listitem"
       {...drag}
       onContextMenu={(ev) => {
@@ -703,7 +703,7 @@ const ConversationCard = memo(function ConversationCard({
   const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group relative flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
+      className={`group/chat relative flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
@@ -756,7 +756,7 @@ const ConversationCard = memo(function ConversationCard({
           type="button"
           aria-label="Delete conversation"
           onClick={() => onDelete?.(rowId)}
-          className="flex w-0 shrink-0 items-center justify-center overflow-hidden text-muted opacity-0 transition-all duration-150 ease-out group-hover:mr-1 group-hover:w-4 group-hover:opacity-100 hover:text-ink"
+          className="flex w-0 shrink-0 items-center justify-center overflow-hidden text-muted opacity-0 transition-all duration-150 ease-out group-hover/chat:mr-1 group-hover/chat:w-4 group-hover/chat:opacity-100 hover:text-ink"
         >
           <Symbol name="xmark" className="size-2.5 shrink-0" />
         </button>

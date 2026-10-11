@@ -630,6 +630,8 @@ fn parse_xai_data(
         pieces.push(StreamPiece::Usage {
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
         });
     }
     let Some(choice) = json.get("choices").and_then(|c| c.get(0)) else {
@@ -799,10 +801,17 @@ fn fallback_done_text(emitted_text: bool, fallback: &str) -> Option<String> {
 
 fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
     let usage = json.get("usage")?;
-    let prompt_tokens = usage
+    let reported_prompt = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
         .and_then(|v| v.as_u64())?;
+    let cached = usage
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    // xAI already counts cached tokens inside prompt_tokens. Keep the breakdown anyway.
+    let prompt_tokens = reported_prompt;
     let mut completion_tokens = usage
         .get("completion_tokens")
         .or_else(|| usage.get("output_tokens"))
@@ -831,6 +840,8 @@ fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cache_read_tokens: cached,
+        cache_creation_tokens: 0,
     })
 }
 
@@ -854,6 +865,8 @@ mod tests {
                 prompt_tokens: 24100,
                 completion_tokens: 800,
                 total_tokens: 24900,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })
         );
     }
@@ -874,6 +887,8 @@ mod tests {
                 prompt_tokens: 136,
                 completion_tokens: 600,
                 total_tokens: 736,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })
         );
     }

@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type React
 import { ChatMarkdown } from "./ChatMarkdown";
 import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
-import { ToolTrail } from "./ToolTrail";
+import { forgetSeenToolSignature, ToolTrail } from "./ToolTrail";
 import { chatTurnSlice, hasOlderTurns, revealOlderTurns } from "../lib/chat-window";
 import {
   splitLiveTranscript,
@@ -184,6 +184,7 @@ export function ChatTranscript({
   const [revealed, setRevealed] = useState(0);
   const chatRef = useRef(conversationId);
   if (chatRef.current !== conversationId) {
+    forgetSeenToolSignature(chatRef.current);
     chatRef.current = conversationId;
     if (revealed !== 0) setRevealed(0);
   }
@@ -209,9 +210,11 @@ export function ChatTranscript({
         </div>
       ) : null}
       {visibleSettled.map((turn, i) => (
-        <SettledTurn key={settledFrom + i} turn={turn} mentionFiles={mentionFiles} />
+        <SettledTurn key={settledFrom + i} turn={turn} mentionFiles={mentionFiles} conversationId={conversationId} />
       ))}
-      {showTail ? <LiveTail items={split.tail} busy={busy} mentionFiles={mentionFiles} /> : null}
+      {showTail ? (
+        <LiveTail items={split.tail} busy={busy} mentionFiles={mentionFiles} conversationId={conversationId} />
+      ) : null}
     </>
   );
 }
@@ -219,21 +222,25 @@ export function ChatTranscript({
 const SettledTurn = memo(function SettledTurn({
   turn,
   mentionFiles,
+  conversationId,
 }: {
   turn: TranscriptTurn;
   mentionFiles?: MentionFile[];
+  conversationId?: string;
 }) {
-  return <TranscriptTurn turn={turn} mentionFiles={mentionFiles} />;
+  return <TranscriptTurn turn={turn} mentionFiles={mentionFiles} conversationId={conversationId} />;
 });
 
 function LiveTail({
   items,
   busy,
   mentionFiles,
+  conversationId,
 }: {
   items: TranscriptItem[];
   busy: boolean;
   mentionFiles?: MentionFile[];
+  conversationId?: string;
 }) {
   const head = items[0];
   const hasUser = head?.kind === "user";
@@ -243,7 +250,9 @@ function LiveTail({
   };
   const last = items[items.length - 1];
   const liveIndex = busy && last?.kind === "tools" ? items.length - 1 : -1;
-  return <TranscriptTurn turn={turn} liveIndex={liveIndex} mentionFiles={mentionFiles} />;
+  return (
+    <TranscriptTurn turn={turn} liveIndex={liveIndex} mentionFiles={mentionFiles} conversationId={conversationId} />
+  );
 }
 
 export function PendingUserMessage({
@@ -355,11 +364,13 @@ function TranscriptTurn({
   turn,
   liveIndex = -1,
   mentionFiles,
+  conversationId,
 }: {
   turn: TranscriptTurn;
   /** Index of the streaming tool row, or -1 when nothing in this turn is live. */
   liveIndex?: number;
   mentionFiles?: MentionFile[];
+  conversationId?: string;
 }) {
   const userOffset = turn.user ? 1 : 0;
   return (
@@ -394,6 +405,7 @@ function TranscriptTurn({
               details={item.details}
               commands={item.commands}
               live={liveIndex === index}
+              conversationId={conversationId}
             />
           );
         }

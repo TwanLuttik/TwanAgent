@@ -3,13 +3,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { clearCommandRun, type CommandRun } from "../lib/command-run";
-import { stopCommand } from "../lib/tauri";
+import { attachTerminalLinks } from "../lib/term-io";
+import { openUrl, stopCommand } from "../lib/tauri";
 import { formatElapsed } from "../lib/relative-time";
 import { Symbol } from "./Symbol";
 import { paneIsShown, xtermTheme } from "./Terminal";
 
 export function CommandRunPill({ run }: { run: CommandRun }) {
-  const [open, setOpen] = useState(true);
+  // A new command arrives closed. The bar is enough until the user asks for the output.
+  const [open, setOpen] = useState(false);
   const title = run.label || run.command;
 
   return (
@@ -88,6 +90,7 @@ function CommandTerminal({ run, open }: { run: CommandRun; open: boolean }) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(el);
+    const detachLinks = attachTerminalLinks(term, (url) => void openUrl(url));
     termRef.current = term;
     fitRef.current = fit;
     const initial = outputRef.current;
@@ -107,6 +110,7 @@ function CommandTerminal({ run, open }: { run: CommandRun; open: boolean }) {
     return () => {
       if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
+      detachLinks();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

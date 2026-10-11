@@ -160,6 +160,15 @@ pub struct DevChatUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// Claude and MiniMax cache reads and writes. Already inside `prompt_tokens`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_read_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_creation_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize)]

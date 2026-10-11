@@ -1,14 +1,18 @@
 import { contextWindowForProvider } from "./provider.ts";
 
 export type ChatUsage = {
+  /** Whole prompt the next call has to fit, including cached reads and writes. */
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 };
 
 export type UsageTone = "ok" | "warn" | "high";
 
 export type ContextUsageSnapshot = {
+  /** Prompt tokens the next call has to fit. This is what compaction compares. */
   used: number;
   window: number;
   percent: number;
@@ -37,13 +41,28 @@ export function normalizeChatUsage(promptTokens: number, completionTokens: numbe
 export function parseChatUsage(raw: unknown): ChatUsage | null {
   if (!raw || typeof raw !== "object") return null;
   const rec = raw as Record<string, unknown>;
-  const promptTokens = asCount(rec.prompt_tokens ?? rec.promptTokens ?? rec.input_tokens);
-  if (promptTokens == null) return null;
+  const reported = asCount(rec.prompt_tokens ?? rec.promptTokens ?? rec.input_tokens);
+  if (reported == null) return null;
   let completionTokens = asCount(rec.completion_tokens ?? rec.completionTokens ?? rec.output_tokens) ?? 0;
   const reasoning = detailsCount(rec.completion_tokens_details ?? rec.completionTokensDetails, "reasoning_tokens");
   if (reasoning > 0 && completionTokens < reasoning) completionTokens += reasoning;
+  const cacheReadTokens =
+    asCount(rec.cache_read_tokens ?? rec.cacheReadTokens ?? rec.cache_read_input_tokens) ??
+    detailsCount(rec.prompt_tokens_details ?? rec.promptTokensDetails, "cached_tokens");
+  const cacheCreationTokens =
+    asCount(rec.cache_creation_tokens ?? rec.cacheCreationTokens ?? rec.cache_creation_input_tokens) ?? 0;
+  // Claude and MiniMax leave cache out of input_tokens. xAI already includes it in prompt_tokens.
+  const promptAlreadyIncludesCache = rec.prompt_tokens != null || rec.promptTokens != null;
+  const promptTokens = promptAlreadyIncludesCache
+    ? reported
+    : reported + cacheReadTokens + cacheCreationTokens;
   const totalTokens = asCount(rec.total_tokens ?? rec.totalTokens) ?? promptTokens + completionTokens;
-  return normalizeChatUsage(promptTokens, completionTokens, totalTokens);
+  const usage = normalizeChatUsage(promptTokens, completionTokens, totalTokens);
+  return {
+    ...usage,
+    ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens > 0 ? { cacheCreationTokens } : {}),
+  };
 }
 
 export function contextWindowForModel(modelId: string, windowFromCatalog?: number | null): number {
@@ -128,7 +147,7 @@ export function formatTokenCount(n: number): string {
 
 export function contextUsageSnapshot(usage: ChatUsage, windowSize: number): ContextUsageSnapshot {
   const window = windowSize > 0 ? windowSize : 500_000;
-  const used = usage.totalTokens > 0 ? usage.totalTokens : usage.promptTokens + usage.completionTokens;
+  const used = usage.promptTokens;
   const percent = contextUsedPercent(used, window);
   return { used, window, percent, tone: contextUsageTone(percent) };
 }
@@ -142,11 +161,15 @@ export function usageToWire(usage: ChatUsage): {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
 } {
   return {
     prompt_tokens: usage.promptTokens,
     completion_tokens: usage.completionTokens,
     total_tokens: usage.totalTokens,
+    ...(usage.cacheReadTokens ? { cache_read_tokens: usage.cacheReadTokens } : {}),
+    ...(usage.cacheCreationTokens ? { cache_creation_tokens: usage.cacheCreationTokens } : {}),
   };
 }
 
@@ -173,6 +196,8 @@ export function sameChatUsage(a: ChatUsage | undefined, b: ChatUsage): boolean {
   return (
     a?.promptTokens === b.promptTokens &&
     a?.completionTokens === b.completionTokens &&
-    a?.totalTokens === b.totalTokens
+    a?.totalTokens === b.totalTokens &&
+    (a?.cacheReadTokens ?? 0) === (b.cacheReadTokens ?? 0) &&
+    (a?.cacheCreationTokens ?? 0) === (b.cacheCreationTokens ?? 0)
   );
 }

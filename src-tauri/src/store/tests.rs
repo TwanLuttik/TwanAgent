@@ -85,6 +85,8 @@ fn save_without_usage_keeps_stored_context_usage() {
         prompt_tokens: 138000,
         completion_tokens: 20,
         total_tokens: 138020,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
     });
     save_conversation(&conn, &row).unwrap();
     row.context_usage = None;

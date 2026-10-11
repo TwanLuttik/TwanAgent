@@ -482,6 +482,8 @@ mod tests {
                 prompt_tokens: 24100,
                 completion_tokens: 800,
                 total_tokens: 24900,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             }),
             compaction: None,
             journey_id: None,
@@ -504,6 +506,8 @@ mod tests {
                 prompt_tokens: 24100,
                 completion_tokens: 800,
                 total_tokens: 24900,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })
         );
     }

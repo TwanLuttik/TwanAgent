@@ -7,41 +7,65 @@ import {
 } from "../lib/core";
 import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
 import { compactDiffRows, lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
+import { toolRevealNextAt, toolRevealSteps, toolRowsAlreadyShown } from "../lib/tool-reveal";
 import { FileIcon } from "./FileIcon";
 import { useWorkspaceFileLinks } from "./ChatMarkdown";
 
 const PEEK_DELAY = 220;
 const PEEK_LINES = 6;
 const PEEK_EASE = [0.22, 1, 0.36, 1] as const;
-const ROW_STAGGER_MS = 200;
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
+
+/**
+ * Folded-row labels already painted, keyed by conversation. A live trail
+ * remounts when text lands between tool batches, so this survives that remount.
+ * Missing until the first paint, which is how selecting a running chat stays still.
+ */
+const seenToolSignatures = new Map<string, string>();
+
+export function resetSeenToolSignatures(): void {
+  seenToolSignatures.clear();
+}
+
+/** Drop one chat so the next time it opens, its current rows do not animate in. */
+export function forgetSeenToolSignature(conversationId: string): void {
+  if (conversationId) seenToolSignatures.delete(conversationId);
+}
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/** Reveal rows one at a time. A burst waits 200ms between rows; a row that arrives on its own does not. */
-function useStaggeredCount(total: number, signature: string): number {
-  const [shown, setShown] = useState(0);
-  const shownRef = useRef(0);
-  const queuedRef = useRef(0);
+/**
+ * Reveal rows one at a time. A burst waits 200ms between rows; a row that arrives on its own does not.
+ * Rows already present on mount render immediately. Only rows that arrive while this trail is open stagger in.
+ */
+function useStaggeredCount(total: number, signature: string, seen: number): number {
+  const [shown, setShown] = useState(seen);
+  const shownRef = useRef(seen);
+  const queuedRef = useRef(seen);
   const nextAt = useRef(0);
   const signatureRef = useRef(signature);
   const timers = useRef<number[]>([]);
 
   useEffect(() => {
     const previous = signatureRef.current;
+    const previousCount = previous ? previous.split("\n").length : 0;
+    // A folded row keeps its slot when its label changes, like "Read 1 file" becoming "Read 2 files".
     const appended =
       total >= queuedRef.current &&
-      (signature === previous || (previous.length > 0 && signature.startsWith(`${previous}\n`)));
+      (signature === previous ||
+        (previous.length > 0 && signature.startsWith(`${previous}\n`)) ||
+        (previousCount > 0 && total === previousCount));
     signatureRef.current = signature;
     if (!appended) {
       for (const id of timers.current) window.clearTimeout(id);
       timers.current = [];
-      queuedRef.current = 0;
-      shownRef.current = 0;
+      queuedRef.current = total;
+      shownRef.current = total;
       nextAt.current = 0;
-      setShown(0);
+      setShown(total);
+      return;
     }
     if (total <= queuedRef.current) return;
     if (prefersReducedMotion()) {
@@ -52,20 +76,18 @@ function useStaggeredCount(total: number, signature: string): number {
       return;
     }
     const now = performance.now();
-    let at = nextAt.current > now ? nextAt.current : now;
     const from = queuedRef.current;
+    const steps = toolRevealSteps(total, from, now, nextAt.current);
     queuedRef.current = total;
-    for (let i = from; i < total; i++) {
-      const delay = at - now;
+    nextAt.current = toolRevealNextAt(total, from, now, nextAt.current);
+    for (const step of steps) {
       const timer = window.setTimeout(() => {
-        shownRef.current = Math.max(shownRef.current, i + 1);
+        shownRef.current = Math.max(shownRef.current, step.index + 1);
         setShown(shownRef.current);
-      }, delay);
+      }, step.delay);
       timers.current.push(timer);
-      at += ROW_STAGGER_MS;
     }
-    nextAt.current = at;
-  }, [total, signature]);
+  }, [total, signature, seen]);
 
   useEffect(
     () => () => {
@@ -83,35 +105,50 @@ export function ToolTrail({
   details = [],
   commands = [],
   live,
+  conversationId = "",
 }: {
   labels: string[];
   files?: ToolFileChange[];
   details?: (ToolFileChange | null)[];
   commands?: string[];
   live: boolean;
+  /** Scopes the "already shown" rows to this chat, so switching chats starts fresh. */
+  conversationId?: string;
 }) {
   const rows = foldToolTrailRows(labels, details, commands);
+  const signature = rows.map((row) => row.label).join("\n");
   if (rows.length === 0) return null;
-  if (!live) return <ToolTrailRows rows={rows} files={files} />;
-  return <LiveToolTrail rows={rows} files={files} signature={labels.join("\n")} />;
+  if (!live) {
+    if (signature) seenToolSignatures.set(conversationId, signature);
+    return <ToolTrailRows rows={rows} files={files} />;
+  }
+  return <LiveToolTrail rows={rows} files={files} signature={signature} conversationId={conversationId} />;
 }
 
 function LiveToolTrail({
   rows,
   files,
   signature,
+  conversationId,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
   files: ToolFileChange[];
   signature: string;
+  conversationId: string;
 }) {
-  const shown = useStaggeredCount(rows.length, signature);
+  // Read before this paint records itself, so a remount can tell new rows from ones already shown.
+  const [settledOnMount] = useState(() => toolRowsAlreadyShown(signature, seenToolSignatures.get(conversationId) ?? ""));
+  const shown = useStaggeredCount(rows.length, signature, settledOnMount);
   const visible = rows.slice(0, shown);
+  useEffect(() => {
+    seenToolSignatures.set(conversationId, signature);
+  }, [conversationId, signature]);
   return (
     <ToolTrailRows
       rows={visible}
       files={shown > 0 ? files : []}
       spinningLast
+      animateFrom={settledOnMount}
     />
   );
 }
@@ -120,10 +157,13 @@ function ToolTrailRows({
   rows,
   files,
   spinningLast = false,
+  animateFrom = rows.length,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
   files: ToolFileChange[];
   spinningLast?: boolean;
+  /** First row index that should fade in. Earlier rows render in place. */
+  animateFrom?: number;
 }) {
   return (
     <div className="mb-3" aria-label="Tool activity">
@@ -131,7 +171,7 @@ function ToolTrailRows({
         {rows.map((row, i) => (
           <motion.div
             key={`${row.label}-${i}`}
-            initial={spinningLast ? { opacity: 0, y: 6 } : false}
+            initial={i >= animateFrom ? { opacity: 0, y: 6 } : false}
             animate={{ opacity: 1, y: 0 }}
             transition={REVEAL}
           >

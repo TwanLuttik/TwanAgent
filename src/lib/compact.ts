@@ -68,6 +68,13 @@ export function shouldAutoCompact(promptTokens: number, windowSize: number): boo
   return promptTokens >= compactionThreshold(windowSize);
 }
 
+/** The chosen window is full. Another model call would only make it larger. */
+export function promptExceedsWindow(promptTokens: number, windowSize: number): boolean {
+  if (!Number.isFinite(windowSize) || windowSize <= 0) return false;
+  if (!Number.isFinite(promptTokens) || promptTokens <= 0) return false;
+  return promptTokens >= windowSize;
+}
+
 export function isContextLengthError(error: string): boolean {
   const text = error.toLowerCase();
   if (!text || text.includes("stopped")) return false;

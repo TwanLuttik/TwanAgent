@@ -3,7 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { emptyGrokPlan, grokPlanFromPayload, planIsVisible, planOpenByDefault, type GrokPlan } from "../lib/plan";
-import { attachXtermInput } from "../lib/term-io";
+import { attachTerminalLinks, attachXtermInput } from "../lib/term-io";
 import { terminalSessions } from "../lib/terminal-sessions";
 import type { TerminalSession } from "../lib/terminal-chat";
 import * as api from "../lib/tauri";
@@ -105,6 +105,7 @@ export function GrokTerminal({
         if (live?.ptyId) void api.ptyWriteBytes(live.ptyId, data);
       },
     );
+    const detachLinks = attachTerminalLinks(term, (url) => void api.openUrl(url));
     term.onResize(({ cols, rows }) => {
       if (!paneIsShown(el)) return;
       const live = terminalSessions.get(conversationId);
@@ -140,6 +141,7 @@ export function GrokTerminal({
       if (frame) cancelAnimationFrame(frame);
       ro.disconnect();
       unsub();
+      detachLinks();
       terminalSessions.detach(conversationId);
       term.dispose();
       termRef.current = null;

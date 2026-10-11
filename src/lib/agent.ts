@@ -26,6 +26,7 @@ import {
   insertCompactionEvent,
   isContextLengthError,
   messagesForContext,
+  promptExceedsWindow,
   readCompactionState,
   shouldAutoCompact,
   splitForCompaction,
@@ -311,7 +312,7 @@ export type TurnOpts = {
   onRefresh?: () => void;
   onSubagent?: (event: SubagentEvent) => void;
   onUsage?: (usage: ChatUsage) => void;
-  /** Last prompt size for this conversation. Used for the CLI's 80% auto-compact. */
+  /** Last prompt size for this conversation, cache included. Used for the 80% auto-compact. */
   priorPromptTokens?: number;
   /** Summary already stored for this conversation. The visible transcript is not rewritten. */
   compaction?: CompactionState | null;
@@ -372,17 +373,22 @@ function signedThinking(blocks: api.ApiThinkingBlock[] | null | undefined): Thin
   return out;
 }
 
+const CONTEXT_LIMIT_MESSAGE =
+  "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
+
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
   let transcript = opts.messages;
   let compaction = opts.compaction ?? null;
-  if (
-    opts.allowSpawn !== false &&
-    shouldAutoCompact(opts.priorPromptTokens ?? 0, opts.contextWindow ?? 0)
-  ) {
+  let promptTokens = opts.priorPromptTokens ?? 0;
+  if (opts.allowSpawn !== false && shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)) {
     const next = await compactContext(transcript, compaction, opts);
     if (next) {
       compaction = next;
       opts.onCompact?.(next);
+      // The summary replaces the old prompt. The next call measures the new size.
+      promptTokens = 0;
+    } else if (promptExceedsWindow(promptTokens, opts.contextWindow ?? 0)) {
+      return stopForContextLimit(transcript, opts);
     }
   }
   let compactedAfterOverflow = false;
@@ -394,6 +400,19 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onUpdate?.(transcript);
     }
     if (opts.signal.aborted) return transcript;
+    if (
+      opts.allowSpawn !== false &&
+      shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)
+    ) {
+      const next = await compactContext(transcript, compaction, opts);
+      if (next && next.through !== compaction?.through) {
+        compaction = next;
+        opts.onCompact?.(next);
+        promptTokens = 0;
+      } else if (promptExceedsWindow(promptTokens, opts.contextWindow ?? 0)) {
+        return stopForContextLimit(transcript, opts);
+      }
+    }
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
     const planLine = opts.plan?.enabled ? planModeLine(opts.plan) : "";
@@ -456,7 +475,10 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onUpdate?.(transcript);
       return transcript;
     }
-    if (result.usage) opts.onUsage?.(result.usage);
+    if (result.usage) {
+      promptTokens = result.usage.promptTokens;
+      opts.onUsage?.(result.usage);
+    }
     transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls, result.thinking)];
     opts.onUpdate?.(transcript);
     if (!result.toolCalls.length) return transcript;
@@ -522,6 +544,13 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     transcript = [...transcript, ...toolMsgs];
     opts.onUpdate?.(transcript);
   }
+}
+
+function stopForContextLimit(transcript: ChatMessage[], opts: TurnOpts): ChatMessage[] {
+  opts.onError(CONTEXT_LIMIT_MESSAGE);
+  const next = [...transcript, turnFailureMessage(CONTEXT_LIMIT_MESSAGE)];
+  opts.onUpdate?.(next);
+  return next;
 }
 
 async function compactContext(

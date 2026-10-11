@@ -13,6 +13,7 @@ import {
   compactionThreshold,
   isCompactionSummary,
   isContextLengthError,
+  promptExceedsWindow,
   readCompactionState,
   renderCompactionTranscript,
   shouldAutoCompact,
@@ -49,6 +50,12 @@ describe("shouldAutoCompact", () => {
     assert.equal(shouldAutoCompact(204_799, 256_000), false);
     assert.equal(shouldAutoCompact(0, 256_000), false);
     assert.equal(shouldAutoCompact(10, 0), false);
+  });
+
+  it("treats the chosen window as a hard stop", () => {
+    assert.equal(promptExceedsWindow(256_000, 256_000), true);
+    assert.equal(promptExceedsWindow(255_999, 256_000), false);
+    assert.equal(promptExceedsWindow(300_000, 0), false);
   });
 });
 
