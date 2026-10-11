@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./index.css";
+import { startAccountUsage } from "./lib/account-usage-store";
 import { installDocumentScrollLock } from "./lib/document-scroll";
 import { installOverlayScroll } from "./lib/overlay-scroll";
 import { applyFileHoverCard, applySpaceCorner, loadFileHoverCard, loadSpaceCorner } from "./lib/prefs";
@@ -10,6 +11,9 @@ import { getAppSetting, microphoneInfo, setAppSetting } from "./lib/tauri";
 import { AppProvider } from "./state/app-state";
 
 applyTheme(loadTheme());
+// Allowance checks start before the first paint and keep running while settings
+// covers the sidebar. The row only reads the latest snapshot.
+startAccountUsage();
 void microphoneInfo().catch(() => undefined);
 void getAppSetting(THEME_SETTING_KEY)
   .then((stored) => {

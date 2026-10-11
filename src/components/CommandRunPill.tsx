@@ -51,10 +51,7 @@ export function CommandRunPill({ run }: { run: CommandRun }) {
   );
 }
 
-/**
- * The clock ticks every second. The first reading is the real elapsed time,
- * so a panel that opens after the two-second wait starts at 2s, not 0s.
- */
+/** The clock ticks every second while a backgrounded command is still running. */
 const Elapsed = memo(function Elapsed({ startedAt, running }: { startedAt: number; running: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   useLayoutEffect(() => {

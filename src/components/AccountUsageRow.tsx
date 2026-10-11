@@ -1,13 +1,10 @@
-import { useEffect, useRef, useState } from "react";
 import {
-  accountUsageIsFresh,
   formatAccountBalance,
   formatAccountReset,
   formatAccountUsed,
-  parseAccountUsage,
   type AccountUsage,
 } from "../lib/account-usage";
-import * as api from "../lib/tauri";
+import { refreshAccountUsage, useAccountUsage } from "../lib/account-usage-store";
 import { Symbol } from "./Symbol";
 
 function AccountBalance({ usage }: { usage: AccountUsage }) {
@@ -29,9 +26,7 @@ function AccountBalance({ usage }: { usage: AccountUsage }) {
 }
 
 const ACCOUNT_ROWS: {
-  id: string;
-  loadCached: () => Promise<api.ApiAccountUsage | null>;
-  load: () => Promise<api.ApiAccountUsage>;
+  id: "anthropic" | "minimax";
   logo: string;
   logoClass: string;
   barClass: string;
@@ -41,8 +36,6 @@ const ACCOUNT_ROWS: {
 }[] = [
   {
     id: "anthropic",
-    loadCached: api.accountUsageCached,
-    load: api.accountUsage,
     logo: "logo.claude",
     logoClass: "text-[#d97757]",
     barClass: "bg-[#d97757]",
@@ -50,8 +43,6 @@ const ACCOUNT_ROWS: {
   },
   {
     id: "minimax",
-    loadCached: api.minimaxAccountUsageCached,
-    load: api.minimaxAccountUsage,
     logo: "logo.minimax",
     logoClass: "text-[#e21680]",
     barClass: "bg-[#e21680]",
@@ -62,88 +53,32 @@ const ACCOUNT_ROWS: {
 
 /** Claude and MiniMax account allowance, shown under the sidebar Usage button. */
 export function AccountUsageRow({ refresh = 0 }: { refresh?: number }) {
+  refreshAccountUsage(refresh);
   return (
     <>
       {ACCOUNT_ROWS.map((row) => (
-        <ProviderAccountUsage key={row.id} refresh={refresh} remaining={false} {...row} />
+        <ProviderAccountUsage key={row.id} {...row} />
       ))}
     </>
   );
 }
 
 function ProviderAccountUsage({
-  refresh,
-  loadCached,
-  load,
+  id,
   logo,
   logoClass,
   barClass,
   fallback,
-  remaining,
+  remaining = false,
 }: {
-  refresh: number;
-  loadCached: () => Promise<api.ApiAccountUsage | null>;
-  load: () => Promise<api.ApiAccountUsage>;
+  id: "anthropic" | "minimax";
   logo: string;
   logoClass: string;
   barClass: string;
   fallback: string;
-  remaining: boolean;
+  remaining?: boolean;
 }) {
-  const [usage, setUsage] = useState<AccountUsage | null>(null);
-  const [loading, setLoading] = useState(true);
-  const usageRef = useRef<AccountUsage | null>(null);
-  usageRef.current = usage;
-  const loadRef = useRef(load);
-  const loadCachedRef = useRef(loadCached);
-  loadRef.current = load;
-  loadCachedRef.current = loadCached;
-
-  useEffect(() => {
-    let gone = false;
-    setLoading(true);
-    void loadCachedRef.current()
-      .then((row) => {
-        if (gone || !row || usageRef.current?.connected) return;
-        const cached = parseAccountUsage(row);
-        // A stale cache is not painted. The live fetch below replaces it.
-        if (cached?.connected && accountUsageIsFresh(cached)) setUsage(cached);
-      })
-      .catch(() => undefined);
-    function reload() {
-      if (document.visibilityState === "hidden") return;
-      if (!gone) setLoading(true);
-      void loadRef.current()
-        .then((row) => {
-          if (gone) return;
-          const next = parseAccountUsage(row);
-          const previous = usageRef.current;
-          // One failed poll must not hide an account we already showed.
-          if (next && !next.connected && previous?.connected) {
-            setLoading(false);
-            return;
-          }
-          setUsage(next);
-          setLoading(false);
-        })
-        .catch(() => {
-          if (!gone) setLoading(false);
-        });
-    }
-    reload();
-    const poll = window.setInterval(reload, 60_000);
-    function onVisible() {
-      if (document.visibilityState === "visible") reload();
-    }
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      gone = true;
-      window.clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-    // `refresh` is the only trigger. The loaders are read through refs so a new
-    // function identity does not restart the poll.
-  }, [refresh]);
+  const { usage, loading } = useAccountUsage(id);
 
   if (!usage?.connected) {
     if (!loading) return null;

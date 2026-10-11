@@ -5,7 +5,6 @@ import {
   clearCommandRun,
   clearCommandRunsForChat,
   commandDetaches,
-  COMMAND_VISIBLE_AFTER_MS,
   commandRunForChat,
   commandRunVisible,
   finishCommandRun,
@@ -19,7 +18,7 @@ import {
 afterEach(() => resetCommandRunsForTests());
 
 describe("command runs", () => {
-  it("waits two seconds before a running command is shown", () => {
+  it("shows only a command the agent left running", () => {
     const started = 1_000;
     const run = {
       id: "a",
@@ -32,8 +31,8 @@ describe("command runs", () => {
       exitCode: null,
       startedAt: started,
     };
-    assert.equal(commandRunVisible(run, started + COMMAND_VISIBLE_AFTER_MS - 1), false);
-    assert.equal(commandRunVisible(run, started + COMMAND_VISIBLE_AFTER_MS), true);
+    assert.equal(commandRunVisible(run, started), false);
+    assert.equal(commandRunVisible(run, started + 10_000), false);
     assert.equal(commandRunVisible({ ...run, running: false }, started + 10_000), false);
     assert.equal(commandRunVisible({ ...run, background: true }, started), true);
     assert.equal(commandRunVisible(null), false);
@@ -44,10 +43,10 @@ describe("command runs", () => {
     startCommandRun({ id: "b", chatId: "other", command: "pwd", label: "Run pwd" });
     appendCommandOutput("a", "hello\n");
     appendCommandOutput("a", "world");
-    const mine = commandRunForChat("chat");
-    assert.equal(mine?.command, "npm test");
-    assert.equal(mine?.output, "hello\nworld");
-    assert.equal(mine?.running, true);
+    assert.equal(commandRunForChat("chat"), null);
+    const stored = getCommandRuns().find((row) => row.id === "a");
+    assert.equal(stored?.output, "hello\nworld");
+    assert.equal(stored?.running, true);
     assert.equal(getCommandRuns().length, 2);
   });
 
@@ -76,10 +75,12 @@ describe("command runs", () => {
     finishCommandRun("a", 0);
     finishCommandRun("a", 1);
     assert.equal(notices, 2);
-    assert.equal(commandRunForChat("chat")?.running, false);
-    assert.equal(commandRunForChat("chat")?.exitCode, 0);
-    clearCommandRun("a");
+    const finished = getCommandRuns().find((row) => row.id === "a");
+    assert.equal(finished?.running, false);
+    assert.equal(finished?.exitCode, 0);
     assert.equal(commandRunForChat("chat"), null);
+    clearCommandRun("a");
+    assert.equal(getCommandRuns().find((row) => row.id === "a"), undefined);
     stop();
     startCommandRun({ id: "c", chatId: "chat", command: "ls", label: "Run ls" });
     assert.equal(notices, 3);
@@ -95,23 +96,31 @@ describe("command runs", () => {
     const kept = commandRunForChat("chat");
     assert.equal(kept?.running, true);
     assert.equal(kept?.background, true);
-    assert.match(kept?.output ?? "", /still running in the background/);
+    assert.equal(kept?.output, "ready\n");
     startCommandRun({ id: "b", chatId: "chat", command: "swift test", label: "Run tests" });
     assert.equal(commandRunForChat("chat")?.id, "a");
     settleCommandRun("b", "ok");
     assert.equal(commandRunForChat("chat")?.id, "a");
   });
 
-  it("keeps a shown server up while a later check starts and finishes", () => {
-    const started = Date.now() - COMMAND_VISIBLE_AFTER_MS - 100;
+  it("keeps a backgrounded server up while a later foreground check runs", () => {
     startCommandRun({ id: "server", chatId: "chat", command: "swift run &", label: "Run server" });
-    const server = commandRunForChat("chat");
-    assert.ok(server);
-    server.startedAt = started;
+    assert.equal(commandRunForChat("chat")?.id, "server");
     startCommandRun({ id: "check", chatId: "chat", command: "curl localhost", label: "Run check" });
     assert.equal(commandRunForChat("chat")?.id, "server");
     settleCommandRun("check", "ok");
     assert.equal(commandRunForChat("chat")?.id, "server");
+  });
+
+  it("never shows a foreground command, even one that runs for a long time", () => {
+    startCommandRun({ id: "build", chatId: "chat", command: "npm test", label: "Run tests" });
+    const build = getCommandRuns().find((row) => row.id === "build");
+    assert.ok(build);
+    build.startedAt = Date.now() - 30_000;
+    assert.equal(commandRunForChat("chat"), null);
+    settleCommandRun("build", "ok");
+    assert.equal(commandRunForChat("chat"), null);
+    assert.equal(getCommandRuns().find((row) => row.id === "build"), undefined);
   });
 
   it("drops every run for one chat", () => {
@@ -119,6 +128,7 @@ describe("command runs", () => {
     startCommandRun({ id: "b", chatId: "other", command: "pwd", label: "Run pwd" });
     clearCommandRunsForChat("chat");
     assert.equal(commandRunForChat("chat"), null);
-    assert.equal(commandRunForChat("other")?.id, "b");
+    assert.equal(commandRunForChat("other"), null);
+    assert.equal(getCommandRuns().find((row) => row.id === "b")?.command, "pwd");
   });
 });

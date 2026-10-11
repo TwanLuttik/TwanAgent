@@ -75,9 +75,10 @@ export function AppSidebar() {
           </button>
         ) : null}
       </div>
-      {showSettings ? (
-        <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} />
-      ) : (
+      {showSettings ? <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} /> : null}
+      {/* Stay mounted while settings covers it. Unmounting restarts the account
+          usage poll and rebuilds the project list, which is the pause on Escape. */}
+      <div className="flex min-h-0 flex-1 flex-col" style={showSettings ? { display: "none" } : undefined}>
         <ProjectsNav
           usageHover={usageHover}
           setUsageHover={setUsageHover}
@@ -91,7 +92,7 @@ export function AppSidebar() {
           openUsage={openUsage}
           usageTick={usageTick}
         />
-      )}
+      </div>
     </aside>
   );
 }

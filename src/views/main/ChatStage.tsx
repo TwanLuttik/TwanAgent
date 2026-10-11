@@ -75,6 +75,8 @@ export function ChatStage() {
     workspace,
   } = useMain();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
+  const [settingsAlive, setSettingsAlive] = useState(showSettings);
+  if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
   const [paneWorkspace, setPaneWorkspace] = useState(workspace);
   useEffect(() => {
@@ -103,31 +105,48 @@ export function ChatStage() {
       </div>
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {showSettings ? (
-            <SettingsView
-              embedded
-              tab={settingsTab}
-              onTab={setSettingsTab}
-              permission={permission}
-              onPermission={pickPermission}
-              speechModel={speechModel}
-              speechModels={speechModels}
-              speechProgress={speechProgress}
-              speechDownloading={speechDownloading}
-              onSpeechModel={pickSpeechModel}
-              onSpeechDownload={downloadSpeech}
-              onKeyChange={reloadRuntime}
-              onClose={folderOpen ? undefined : closeSettings}
-            />
-          ) : projectSettings ? (
+          {/* Settings stays mounted after the first open. Escape only hides it,
+              so closing does not tear the page down or restart its checks. */}
+          {showSettings || settingsAlive ? (
+            <div
+              className="flex min-h-0 min-w-0 flex-1 flex-col"
+              style={showSettings ? undefined : { display: "none" }}
+            >
+              <SettingsView
+                embedded
+                active={showSettings}
+                tab={settingsTab}
+                onTab={setSettingsTab}
+                permission={permission}
+                onPermission={pickPermission}
+                speechModel={speechModel}
+                speechModels={speechModels}
+                speechProgress={speechProgress}
+                speechDownloading={speechDownloading}
+                onSpeechModel={pickSpeechModel}
+                onSpeechDownload={downloadSpeech}
+                onKeyChange={reloadRuntime}
+                onClose={folderOpen || !showSettings ? undefined : closeSettings}
+              />
+            </div>
+          ) : null}
+          {projectSettings && !showSettings ? (
             <ProjectSettingsView
               name={projectSettings.name}
               path={projectSettings.path}
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
-          ) : showUsage ? (
+          ) : null}
+          {showUsage && !showSettings && !projectSettings ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
-          ) : editor.focus === "file" && editor.activePath && opened ? (
+          ) : null}
+          {/* Chat and the file editor stay mounted under settings. Closing with
+              Escape only hides the page, so it does not have to rebuild them. */}
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            style={fullPage ? { display: "none" } : undefined}
+          >
+          {editor.focus === "file" && editor.activePath && opened ? (
             <Editor
               workspace={workspace}
               path={editor.activePath}
@@ -168,6 +187,7 @@ export function ChatStage() {
           ) : (
             <ChatColumn key={workspace || "none"} />
           )}
+          </div>
         </div>
         {paneWorkspace && !fullPage ? (
           <Workspace

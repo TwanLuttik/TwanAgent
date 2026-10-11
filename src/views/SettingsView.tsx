@@ -32,7 +32,12 @@ import {
 import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
 import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
-import type { ClaudeCliInfo, GrokCliInfo, MinimaxCliInfo, UsageDbInfo } from "../lib/tauri";
+import {
+  setProviderDb,
+  setProviderFolders,
+  setProviderKeyStatus,
+  useProviderStatus,
+} from "../lib/provider-status";
 import { useApp } from "../state/app-state";
 import {
   SPEECH_MODELS,
@@ -61,6 +66,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon
 
 export function SettingsView({
   embedded = false,
+  active = true,
   tab: tabProp,
   onTab,
   permission: permissionProp,
@@ -75,6 +81,8 @@ export function SettingsView({
   onClose,
 }: {
   embedded?: boolean;
+  /** False while the page is kept mounted but hidden. Escape is ignored then. */
+  active?: boolean;
   tab?: SettingsTab;
   onTab?: (tab: SettingsTab) => void;
   permission?: PermissionMode;
@@ -89,6 +97,7 @@ export function SettingsView({
   onClose?: () => void;
 } = {}) {
   const { setFlash } = useApp();
+  const providerStatus = useProviderStatus();
   const [theme, setThemeSel] = useState<ThemeSelection>(() => loadTheme());
   const [spaceArt, setSpaceArt] = useState(() => loadSpaceCorner());
   const [spaceScene, setSpaceScene] = useState<SceneId>(() => {
@@ -103,24 +112,24 @@ export function SettingsView({
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const [xaiKey, setXaiKey] = useState("");
-  const [keyStatus, setKeyStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
+  const keyStatus = providerStatus.xai;
   const [savingKey, setSavingKey] = useState(false);
   const [anthropicKey, setAnthropicKey] = useState("");
-  const [anthropicStatus, setAnthropicStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
+  const anthropicStatus = providerStatus.anthropic;
   const [savingAnthropic, setSavingAnthropic] = useState(false);
-  const [cli, setCli] = useState<GrokCliInfo | null>(null);
-  const [claudeCli, setClaudeCli] = useState<ClaudeCliInfo | null>(null);
+  const cli = providerStatus.grokCli;
+  const claudeCli = providerStatus.claudeCli;
   const [minimaxKey, setMinimaxKey] = useState("");
-  const [minimaxStatus, setMinimaxStatus] = useState<{ saved: boolean; env: boolean } | null>(null);
+  const minimaxStatus = providerStatus.minimax;
   const [savingMinimax, setSavingMinimax] = useState(false);
-  const [minimaxCli, setMinimaxCli] = useState<MinimaxCliInfo | null>(null);
+  const minimaxCli = providerStatus.minimaxCli;
   const [showEmail, setShowEmail] = useState(false);
   const [showClaudeEmail, setShowClaudeEmail] = useState(false);
-  const [db, setDb] = useState<UsageDbInfo | null>(null);
+  const db = providerStatus.db;
   const [resettingDb, setResettingDb] = useState(false);
   const [openingDb, setOpeningDb] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [folders, setFolders] = useState<string[]>([]);
+  const folders = providerStatus.folders;
   const [addingFolder, setAddingFolder] = useState(false);
   const [permissionLocal, setPermissionLocal] = useState<PermissionMode>(() => parsePermissionMode(permissionProp));
   const permission = permissionProp ?? permissionLocal;
@@ -132,68 +141,13 @@ export function SettingsView({
     if (!onClose) return;
     const close = onClose;
     function onKey(ev: KeyboardEvent) {
-      if (ev.key !== "Escape" || voicePicker) return;
+      if (!active || ev.key !== "Escape" || voicePicker) return;
       ev.preventDefault();
       close();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, voicePicker]);
-
-  useEffect(() => {
-    let gone = false;
-    void api
-      .keyStatus()
-      .then((s) => {
-        if (!gone) setKeyStatus(s);
-      })
-      .catch(() => undefined);
-    void api
-      .anthropicKeyStatus()
-      .then((s) => {
-        if (!gone) setAnthropicStatus(s);
-      })
-      .catch(() => undefined);
-    void api
-      .cliInfo()
-      .then((info) => {
-        if (!gone) setCli(info);
-      })
-      .catch(() => undefined);
-    void api
-      .claudeCliInfo()
-      .then((info) => {
-        if (!gone) setClaudeCli(info);
-      })
-      .catch(() => undefined);
-    void api
-      .minimaxKeyStatus()
-      .then((s) => {
-        if (!gone) setMinimaxStatus(s);
-      })
-      .catch(() => undefined);
-    void api
-      .minimaxCliInfo()
-      .then((info) => {
-        if (!gone) setMinimaxCli(info);
-      })
-      .catch(() => undefined);
-    void api
-      .usageDbInfo()
-      .then((info) => {
-        if (!gone) setDb(info);
-      })
-      .catch(() => undefined);
-    void api
-      .openedWorkspaces()
-      .then((rows) => {
-        if (!gone) setFolders(rows);
-      })
-      .catch(() => undefined);
-    return () => {
-      gone = true;
-    };
-  }, []);
+  }, [active, onClose, voicePicker]);
 
   const body = (
     <div className="flex min-h-0 flex-1">
@@ -392,7 +346,7 @@ export function SettingsView({
                     void api
                       .clearKey()
                       .then((s) => {
-                        setKeyStatus(s);
+                        setProviderKeyStatus("xai", s);
                         setXaiKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Removed the saved xAI key." });
@@ -405,7 +359,7 @@ export function SettingsView({
                     void api
                       .setKey(xaiKey.trim())
                       .then((s) => {
-                        setKeyStatus(s);
+                        setProviderKeyStatus("xai", s);
                         setXaiKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Saved the xAI API key." });
@@ -440,7 +394,7 @@ export function SettingsView({
                     void api
                       .clearAnthropicKey()
                       .then((s) => {
-                        setAnthropicStatus(s);
+                        setProviderKeyStatus("anthropic", s);
                         setAnthropicKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Removed the saved Anthropic key." });
@@ -453,7 +407,7 @@ export function SettingsView({
                     void api
                       .setAnthropicKey(anthropicKey.trim())
                       .then((s) => {
-                        setAnthropicStatus(s);
+                        setProviderKeyStatus("anthropic", s);
                         setAnthropicKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Saved the Anthropic API key." });
@@ -484,7 +438,7 @@ export function SettingsView({
                     void api
                       .clearMinimaxKey()
                       .then((s) => {
-                        setMinimaxStatus(s);
+                        setProviderKeyStatus("minimax", s);
                         setMinimaxKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Removed the saved MiniMax key." });
@@ -497,7 +451,7 @@ export function SettingsView({
                     void api
                       .setMinimaxKey(minimaxKey.trim())
                       .then((s) => {
-                        setMinimaxStatus(s);
+                        setProviderKeyStatus("minimax", s);
                         setMinimaxKey("");
                         onKeyChange?.();
                         setFlash({ kind: "ok", text: "Saved the MiniMax API key." });
@@ -569,7 +523,7 @@ export function SettingsView({
                         void api
                           .usageDbReset()
                           .then((info) => {
-                            setDb(info);
+                            setProviderDb(info);
                             setConfirmReset(false);
                             setFlash({ kind: "ok", text: "Reset the usage database." });
                           })
@@ -646,7 +600,7 @@ export function SettingsView({
                       .then(async (path) => {
                         if (!path) return;
                         const opened = await api.openFolder(path);
-                        setFolders((rows) => (rows.includes(opened) ? rows : [...rows, opened].sort()));
+                        setProviderFolders(folders.includes(opened) ? folders : [...folders, opened].sort());
                         setFlash({ kind: "ok", text: `Allowed ${folderName(opened)}.` });
                       })
                       .catch((e) => setFlash({ kind: "err", text: String(e) }))
@@ -673,7 +627,7 @@ export function SettingsView({
                           void api
                             .forgetWorkspace(path)
                             .then(() => {
-                              setFolders((rows) => rows.filter((row) => row !== path));
+                              setProviderFolders(folders.filter((row) => row !== path));
                               setFlash({ kind: "ok", text: `Removed access to ${folderName(path)}.` });
                             })
                             .catch((e) => setFlash({ kind: "err", text: String(e) }));

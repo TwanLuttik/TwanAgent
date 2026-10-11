@@ -22,7 +22,7 @@ import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "..
 import { providerProfile, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
-import { COMMAND_VISIBLE_AFTER_MS, commandRunVisible, useCommandRun } from "../lib/command-run";
+import { commandRunVisible, useCommandRun } from "../lib/command-run";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Effort, Model } from "../lib/tauri";
 import { CommandRunPill } from "./CommandRunPill";
@@ -150,15 +150,7 @@ export function Composer({
   const canSend = canSendPrompt(expandPasteTokens(draft, pastes), images) && ready;
   const showUsage = Boolean(usage && usageWindow);
   const commandRun = useCommandRun(commandChatId ?? "");
-  const [commandNow, setCommandNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!commandRun?.running || commandRun.background) return;
-    const wait = commandRun.startedAt + COMMAND_VISIBLE_AFTER_MS - Date.now();
-    if (wait <= 0) return;
-    const timer = window.setTimeout(() => setCommandNow(Date.now()), wait);
-    return () => window.clearTimeout(timer);
-  }, [commandRun?.id, commandRun?.running, commandRun?.background, commandRun?.startedAt]);
-  const showCommand = commandRunVisible(commandRun, commandNow);
+  const showCommand = commandRunVisible(commandRun);
 
   function stopMic() {
     recordStream.current?.getTracks().forEach((track) => track.stop());

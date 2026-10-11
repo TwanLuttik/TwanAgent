@@ -38,6 +38,8 @@ import {
   saveWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
+import { startAccountUsage } from "../lib/account-usage-store";
+import { startProviderStatus } from "../lib/provider-status";
 import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
@@ -429,6 +431,10 @@ export function MainView() {
 
   useEffect(() => {
     reloadRuntime();
+    // Provider, storage, folder, and account allowance checks start with the app.
+    // Opening settings only reads them, and closing settings does not cancel them.
+    startProviderStatus();
+    startAccountUsage();
   }, [reloadRuntime]);
 
   const refreshSpeech = useCallback(() => {

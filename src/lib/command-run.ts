@@ -54,8 +54,6 @@ export function commandDetaches(command: string): boolean {
 }
 
 const OUTPUT_CAP = 80_000;
-/** A build or server is still going. A quick command finishes before this and never opens. */
-export const COMMAND_VISIBLE_AFTER_MS = 2_000;
 const runs = new Map<string, CommandRun>();
 const listeners = new Set<() => void>();
 let snapshot: CommandRun[] = [];
@@ -69,17 +67,20 @@ export function getCommandRuns(): CommandRun[] {
   return snapshot;
 }
 
-/** Shown once a command has been running for two seconds, or once it is known to stay up. */
-export function commandRunVisible(run: CommandRun | null, now = Date.now()): boolean {
+/**
+ * Only a command the agent left running stays above the input, the way the
+ * Grok CLI parks `cmd &`. A foreground command, however long it takes, stays
+ * in the transcript and never opens the floating terminal.
+ */
+export function commandRunVisible(run: CommandRun | null, _now = Date.now()): boolean {
   if (!run) return false;
-  if (run.background) return true;
-  return run.running && now - run.startedAt >= COMMAND_VISIBLE_AFTER_MS;
+  return run.background;
 }
 
 /**
- * The command the terminal should stay on. A server that is already up wins
- * over a later check, so the panel does not close and open again for the
- * same process. A command that is still in its first moments can take over.
+ * The backgrounded command the terminal should stay on. A server that is
+ * already up wins over a later check, so the panel does not close and open
+ * again for the same process. Foreground commands are not shown.
  */
 export function commandRunForChat(
   chatId: string,
@@ -87,17 +88,12 @@ export function commandRunForChat(
   now = Date.now(),
 ): CommandRun | null {
   if (!chatId) return null;
-  let shown: CommandRun | null = null;
-  let running: CommandRun | null = null;
-  let latest: CommandRun | null = null;
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
     if (row?.chatId !== chatId) continue;
-    latest ??= row;
-    if (commandRunVisible(row, now)) shown ??= row;
-    if (row.running) running ??= row;
+    if (commandRunVisible(row, now)) return row;
   }
-  return shown ?? running ?? latest;
+  return null;
 }
 
 export function startCommandRun(
