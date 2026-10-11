@@ -3,6 +3,7 @@ import { AllProjectsList } from "../../components/AllProjectsList";
 import { ConversationList } from "../../components/ConversationList";
 import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
+import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
 import { projectHasArchived, visibleConversations, visibleJourneys } from "../../lib/all-projects";
@@ -414,6 +415,7 @@ function ProjectsNav({
           <span>Usage</span>
           <UsageTeaser refresh={usageTick} hover={usageHover} />
         </button>
+        <AccountUsageRow refresh={usageTick} />
         <button
           type="button"
           title={isMacOS() ? "Settings ⌘," : "Settings Ctrl+,"}

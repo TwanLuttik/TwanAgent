@@ -95,6 +95,25 @@ export function claudeCliInfo(): Promise<ClaudeCliInfo> {
   return invoke("dev_claude_cli_info");
 }
 
+export type ApiAccountUsageWindow = {
+  id: string;
+  label: string;
+  used_percent: number;
+  resets_at?: string | null;
+};
+
+export type ApiAccountUsage = {
+  provider: string;
+  connected: boolean;
+  label: string;
+  windows: ApiAccountUsageWindow[];
+};
+
+/** Allowance on the signed-in Claude account. Disconnected when Claude is not logged in. */
+export function accountUsage(): Promise<ApiAccountUsage> {
+  return invoke("dev_account_usage");
+}
+
 export type UsageDbInfo = {
   path: string;
   bytes: number;

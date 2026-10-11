@@ -176,6 +176,7 @@ pub fn run() {
             appdb::dev_app_remove_project,
             appdb::dev_app_get_setting,
             appdb::dev_app_set_setting,
+            anthropic::dev_account_usage,
             usage::dev_usage_record,
             usage::dev_usage_list,
             usage::dev_usage_db_info,
