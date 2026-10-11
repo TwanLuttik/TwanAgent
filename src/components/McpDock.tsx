@@ -30,7 +30,7 @@ export function McpDock({
           return (
             <div
               key={server.sources.join("|") + server.name}
-              className="flex items-start gap-2.5 rounded-xl px-1.5 py-1.5 hover:bg-wash"
+              className="flex items-center gap-2.5 rounded-xl px-1.5 py-1.5 hover:bg-wash"
             >
               <EnableSwitch
                 on={server.enabled}
@@ -38,15 +38,15 @@ export function McpDock({
                 label={`Enable ${server.name}`}
                 onClick={() => onToggle(server, !server.enabled)}
               />
-              <div className="min-w-0 flex-1 pt-px">
-                <div className="truncate text-[13px] font-medium text-ink">{server.name}</div>
-                <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted/75">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] leading-5 font-medium text-ink">{server.name}</div>
+                <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 whitespace-nowrap text-muted/75">
                   <span className="shrink-0">{server.transport === "http" ? "HTTP" : "Local"}</span>
                   {server.transport === "http" ? <AuthStatus authed={server.authed} /> : null}
                   <span className="min-w-0 truncate">{server.sources.join(" · ")}</span>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-1 pt-0.5">
+              <div className="flex shrink-0 items-center gap-1">
                 {server.transport === "http" && !server.authed ? (
                   <Button
                     size="sm"
@@ -111,7 +111,7 @@ function EnableSwitch({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      className={`relative mt-0.5 h-[18px] w-8 shrink-0 rounded-full transition-colors disabled:opacity-45 ${
+      className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors disabled:opacity-45 ${
         on ? "bg-accent" : "bg-inset"
       }`}
     >

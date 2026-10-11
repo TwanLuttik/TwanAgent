@@ -3,6 +3,7 @@ import { ChromeTab, ChromeTabStrip } from "../../components/ChromeTabs";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS } from "../../components/WindowButtons";
 import type { EditorState } from "../../lib/editor";
+import { chatHasRunningTurn, type RunningTurn } from "../../lib/turn";
 import type { ConversationKind } from "../../lib/terminal-chat";
 
 export function NewChatMenu({
@@ -85,13 +86,15 @@ export function CenterTabs({
   editor,
   chats,
   activeChatId,
+  runningTurns,
   onChat,
   onCloseChat,
   onCode,
 }: {
   editor: EditorState;
-  chats: { id: string; title: string; kind: ConversationKind }[];
+  chats: { id: string; title: string; kind: ConversationKind; running?: boolean }[];
   activeChatId: string;
+  runningTurns?: Readonly<Record<string, RunningTurn>>;
   onChat: (id: string) => void;
   onCloseChat: (id: string) => void;
   onCode: () => void;
@@ -102,12 +105,14 @@ export function CenterTabs({
     <ChromeTabStrip>
       {chats.map((chat) => {
         const terminal = chat.kind === "terminal";
+        const running = chat.running ?? chatHasRunningTurn(runningTurns, chat.id);
         return (
           <ChromeTab
             key={chat.id}
             selected={chatOn && chat.id === activeChatId}
             label={chat.title || (terminal ? "Terminal" : "Chat")}
             icon={<Symbol name={terminal ? "terminal.fill" : "bubble.left.fill"} className="size-3.5 shrink-0" />}
+            running={running}
             onClick={() => onChat(chat.id)}
             onClose={() => onCloseChat(chat.id)}
           />

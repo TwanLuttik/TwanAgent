@@ -177,6 +177,17 @@ pub struct DevChatEvent {
     pub thinking: Option<Vec<crate::model_providers::ThinkingBlock>>,
 }
 
+/// One chunk of a shell command the agent is running now.
+#[derive(Debug, Clone, Serialize)]
+pub struct DevCommandEvent {
+    pub stream_id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
 /// One website found while a web search is still running.
 #[derive(Debug, Clone, Serialize)]
 pub struct DevWebSearchEvent {

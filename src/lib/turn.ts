@@ -416,34 +416,24 @@ export function skipToolIfAborted(signal: AbortSignal): string | null {
   return signal.aborted ? SKIPPED_STOPPED : null;
 }
 
-export type RestoredPrompt = {
-  messages: ChatMessage[];
-  text: string;
-  images: ChatImage[];
-};
-
 /**
- * Pull the latest user message back out of a stopped turn so it can be edited.
- * Assistant text, tool calls, and earlier turns stay. Nothing is restored when
- * the transcript has no user message.
+ * Keep a reply that was still streaming when the turn stopped.
+ * The user message stays put. Text already saved by a finished model round
+ * is not added again. An empty buffer leaves the transcript unchanged.
  */
-export function restoreStoppedPrompt(messages: ChatMessage[]): RestoredPrompt | null {
-  let index = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "user") {
-      index = i;
-      break;
-    }
-  }
-  if (index < 0) return null;
-  const message = messages[index];
-  if (!message) return null;
-  const text = String(message.content ?? "");
-  const images = (message.images ?? []).map(({ dataUrl: _dataUrl, ...image }) => image);
-  if (!text.trim() && images.length === 0) return null;
-  return {
-    messages: messages.slice(0, index),
-    text,
-    images,
-  };
+export function commitPartialReply(
+  messages: ChatMessage[],
+  partial: { text?: string | null; reasoning?: string | null },
+): ChatMessage[] {
+  const text = partial.text ?? "";
+  const reasoning = String(partial.reasoning ?? "").trim();
+  if (!text.trim() && !reasoning) return messages;
+  return [
+    ...messages,
+    {
+      role: "assistant",
+      content: text,
+      ...(reasoning ? { reasoning } : {}),
+    },
+  ];
 }

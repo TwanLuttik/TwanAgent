@@ -18,6 +18,8 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     draft,
     draftPastes,
     mentionFiles,
+    allProjectGroups,
+    applyWorkspace,
     effort,
     messages,
     model,
@@ -78,6 +80,8 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
         providerReady ? (landing ? ask : message) : landing ? `${signIn} to start` : `${signIn} to continue`
       }
       workspace={workspace}
+      projects={allProjectGroups}
+      onOpenProject={(path) => applyWorkspace(path)}
       onOpenFolder={openFolder}
       models={models}
       model={model}
@@ -112,6 +116,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       }
       onAddImages={(files) => void addPromptImages(files)}
       todos={todos}
+      commandChatId={landing ? "" : activeId}
     />
   );
 });

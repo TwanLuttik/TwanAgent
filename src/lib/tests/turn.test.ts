@@ -26,7 +26,7 @@ import {
   foregroundRunningId,
   runningTurnStartedAt,
   shouldQueueForChat,
-  restoreStoppedPrompt,
+  commitPartialReply,
   takeNextPending,
   updatePending,
   turnAppliesToChat,
@@ -211,45 +211,31 @@ describe("unseen finished chats", () => {
   });
 });
 
-describe("restoreStoppedPrompt", () => {
-  const image = {
-    id: "img-1",
-    path: "/tmp/a.jpg",
-    name: "a.jpg",
-    mime: "image/jpeg",
-    width: 10,
-    height: 10,
-    resized: false,
-    dataUrl: "data:image/jpeg;base64,abc",
-  };
+describe("commitPartialReply", () => {
+  const history = [
+    { role: "user" as const, content: "fix the login" },
+    { role: "assistant" as const, content: "Done earlier." },
+    { role: "user" as const, content: "now the header" },
+  ];
 
-  it("returns the last user message and drops the unfinished reply", () => {
-    const restored = restoreStoppedPrompt([
-      { role: "user", content: "older" },
-      { role: "assistant", content: "done" },
-      { role: "user", content: "fix the login", images: [image] },
-      { role: "assistant", content: "Looking…" },
-    ]);
-    assert.equal(restored?.text, "fix the login");
-    assert.equal(restored?.images.length, 1);
-    assert.equal(restored?.images[0]?.path, "/tmp/a.jpg");
-    assert.equal("dataUrl" in (restored?.images[0] ?? {}), false);
-    assert.deepEqual(
-      restored?.messages.map((message) => message.content),
-      ["older", "done"],
-    );
+  it("keeps the sent message and saves the reply that was still streaming", () => {
+    const next = commitPartialReply(history, { text: "Looking at the header", reasoning: "Check the nav" });
+    assert.equal(next[2]?.content, "now the header");
+    assert.equal(next[3]?.role, "assistant");
+    assert.equal(next[3]?.content, "Looking at the header");
+    assert.equal(next[3]?.reasoning, "Check the nav");
+    assert.equal(next.length, 4);
   });
 
-  it("keeps an image-only prompt", () => {
-    const restored = restoreStoppedPrompt([{ role: "user", content: "  ", images: [image] }]);
-    assert.equal(restored?.text, "  ");
-    assert.equal(restored?.images.length, 1);
-    assert.deepEqual(restored?.messages, []);
+  it("saves reasoning when the answer text has not started", () => {
+    const next = commitPartialReply(history, { text: "", reasoning: "Still thinking" });
+    assert.equal(next[3]?.content, "");
+    assert.equal(next[3]?.reasoning, "Still thinking");
   });
 
-  it("does nothing when the transcript has no user message", () => {
-    assert.equal(restoreStoppedPrompt([]), null);
-    assert.equal(restoreStoppedPrompt([{ role: "assistant", content: "hello" }]), null);
+  it("leaves the transcript alone when nothing was received yet", () => {
+    assert.equal(commitPartialReply(history, { text: "", reasoning: "" }), history);
+    assert.equal(commitPartialReply(history, { text: "   ", reasoning: "  " }), history);
   });
 });
 

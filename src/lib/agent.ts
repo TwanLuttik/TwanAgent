@@ -41,6 +41,11 @@ import {
   turnFailureMessage,
 } from "./turn.ts";
 import {
+  appendCommandOutput,
+  settleCommandRun,
+  startCommandRun,
+} from "./command-run.ts";
+import {
   childCanUseTool,
   emptySubagent,
   parseSpawnArgs,
@@ -79,6 +84,7 @@ export async function executeTool(
   journeyId?: string,
   onProgress?: ToolProgress,
   plan?: PlanToolIO,
+  commandChatId?: string,
 ): Promise<string> {
   const skipped = signal ? skipToolIfAborted(signal) : null;
   if (skipped) return skipped;
@@ -150,7 +156,14 @@ export async function executeTool(
         return `Committed ${hash}`;
       }
       case "run_command":
-        return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
+        return runOrSkip(
+          workspace,
+          String(args.command ?? ""),
+          String(args.description ?? ""),
+          confirmShell,
+          commandChatId,
+          signal,
+        );
       case "web_search":
         return runWebSearch(call.arguments || "{}", signal, onProgress);
       case "todo_write": {
@@ -240,11 +253,38 @@ async function runWebSearch(
 async function runOrSkip(
   workspace: string,
   command: string,
+  description: string,
   confirmShell: (command: string) => Promise<boolean>,
+  chatId?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const ok = await confirmShell(command);
   if (!ok) return "User skipped this command.";
-  return api.runCommand(workspace, command);
+  if (signal?.aborted) return "Skipped: stopped.";
+  const streamId = crypto.randomUUID();
+  const label = description.trim().replace(/\s+/g, " ").replace(/^run\s+/i, "");
+  if (chatId) {
+    startCommandRun({
+      id: streamId,
+      chatId,
+      command,
+      label: label ? `Run ${label}` : command.trim() ? `Run ${command.trim()}` : "Run command",
+    });
+  }
+  let unlisten: (() => void) | undefined;
+  try {
+    if (chatId) {
+      unlisten = await api.onCommand((ev) => {
+        if (ev.stream_id !== streamId || ev.kind !== "data" || !ev.text) return;
+        appendCommandOutput(streamId, ev.text);
+      });
+    }
+    const result = await api.runCommand(workspace, command, streamId);
+    if (chatId) settleCommandRun(streamId, result);
+    return result;
+  } finally {
+    unlisten?.();
+  }
 }
 
 export type TurnOpts = {
@@ -283,10 +323,23 @@ export type TurnOpts = {
   mcpServers?: DetectedMcpServer[];
   skills?: DetectedSkill[];
   remote?: RemoteWorkspace | null;
+  /** Chat that owns this turn. Shell output is shown there while the command runs. */
+  conversationId?: string;
 };
 
 function planModeLine(plan: PlanToolIO): string {
   return planModeSystemLine(plan.getState(), `~/.grok/sessions/<workspace>/${plan.sessionId}/plan.md`);
+}
+
+/** Keep the answer that had already arrived when the user stopped the turn. */
+function stoppedTranscript(
+  transcript: ChatMessage[],
+  result: { text: string; reasoning: string; thinking: ThinkingBlock[] },
+): ChatMessage[] {
+  const text = result.text;
+  const thought = result.reasoning.trim();
+  if (!text.trim() && !thought && !result.thinking.length) return transcript;
+  return [...transcript, assistantMessage(text, thought, [], result.thinking)];
 }
 
 function assistantMessage(
@@ -376,7 +429,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.onUpdate?.(transcript);
         return transcript;
       }
-      return transcript;
+      return stoppedTranscript(transcript, result);
     }
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
@@ -395,7 +448,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
           opts.onUpdate?.(transcript);
           return transcript;
         }
-        return transcript;
+        return stoppedTranscript(transcript, result);
       }
     }
     if (isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim()) {
@@ -445,6 +498,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
             opts.journeyId,
             (detail) => opts.onToolProgress?.(call.id, detail),
             opts.plan,
+            opts.conversationId,
           )) || UNFINISHED_TOOL;
       } catch (err) {
         contents[i] = `Error: ${String(err)}`;
@@ -556,6 +610,7 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
       signal: opts.signal,
       mcpServers: opts.mcpServers,
       skills: opts.skills,
+      conversationId: opts.conversationId,
     });
     const summary = summarizeSubagent(done);
     if (opts.signal.aborted) {

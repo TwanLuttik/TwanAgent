@@ -64,10 +64,10 @@ textarea {
   height: 32px;
   min-width: 5.5rem;
   flex-shrink: 0;
-  align-items: center;
-  padding: 0 12px;
+  align-items: stretch;
   font-size: 12px;
   line-height: 1;
+  cursor: pointer;
 }
 
 .chrome-tab + .chrome-tab {
@@ -90,11 +90,18 @@ textarea {
   border-bottom: none;
   border-radius: 10px 10px 0 0;
   background: var(--color-canvas);
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
 }
 
 .chrome-tab-face-off {
   background: color-mix(in srgb, var(--color-canvas) 42%, transparent);
   border-color: color-mix(in srgb, var(--color-line) 18%, transparent);
+}
+
+.chrome-tab-off {
+  transition: color 150ms ease;
 }
 
 .chrome-tab-off:hover {
@@ -106,29 +113,41 @@ textarea {
   border-color: color-mix(in srgb, var(--color-line) 28%, transparent);
 }
 
-.chrome-tab-inner {
+.chrome-tab-hit {
   position: relative;
   z-index: 1;
   display: flex;
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 6px;
   border: 0;
   background: transparent;
-  padding: 0;
+  padding: 0 12px;
   color: inherit;
   font: inherit;
   text-align: left;
+  cursor: pointer;
 }
 
-.chrome-tab-closable {
-  padding-right: 4px;
+.chrome-tab-inner {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.chrome-tab-closable .chrome-tab-hit {
+  padding-right: 22px;
 }
 
 .chrome-tab-close {
-  position: relative;
-  z-index: 1;
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  transform: translateY(-50%);
   display: flex;
   width: 16px;
   height: 16px;
@@ -369,6 +388,14 @@ html[data-theme-mode="light"] .model-tip {
 
 .term .xterm-screen {
   pointer-events: auto;
+}
+
+/* Fixed box. `.term { height: 100% }` would follow the opening row and grow forever. */
+.command-term.term {
+  height: 9rem;
+  min-height: 9rem;
+  max-height: 9rem;
+  overflow: hidden;
 }
 
 * {

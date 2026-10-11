@@ -16,7 +16,7 @@ export type MainModel = {
   applyWorkspace: MainFn;
   beginPendingEdit: MainFn;
   busy: any;
-  chatTabs: { id: string; title: string; kind: "chat" | "terminal" }[];
+  chatTabs: { id: string; title: string; kind: "chat" | "terminal"; running: boolean }[];
   closeChatTab: MainFn;
   closeFileTab: MainFn;
   closePendingEdit: MainFn;

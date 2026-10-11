@@ -1,8 +1,7 @@
 use std::path::Path;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
-use super::cmd::run_command;
 use super::files::{
     create_dir, delete_paths, edit_file, existing_files, file_preview, list_dir, move_path,
     read_file, rename_path, resolve_file, tree_snapshot, write_file,
@@ -821,18 +820,45 @@ pub fn dev_open_url(url: String) -> Result<()> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn dev_stop_command(id: String) -> Result<()> {
+    super::cmd::stop_command(&id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn dev_run_command(
+    app: AppHandle,
     state: State<'_, AppState>,
     workspace: String,
     command: String,
+    stream_id: Option<String>,
 ) -> Result<String> {
     let root = state.require_workspace(&workspace)?;
     let remote = crate::remote::project_for_workspace(&state, &root)?;
     let data_dir = state.data_dir.clone();
     let pool = state.ssh_pool.clone();
+    let stream = stream_id.unwrap_or_default();
     off_main(move || {
+        let emit = |kind: &str, text: Option<String>, exit_code: Option<i32>| {
+            if stream.is_empty() {
+                return;
+            }
+            let _ = app.emit(
+                "dev-command",
+                super::types::DevCommandEvent {
+                    stream_id: stream.clone(),
+                    kind: kind.into(),
+                    text,
+                    exit_code,
+                },
+            );
+        };
+        emit("start", None, None);
         let Some(project) = remote else {
-            return run_command(&root, &command);
+            let text = super::cmd::run_command_streaming(&root, &command, &stream, |chunk| {
+                emit("data", Some(chunk.to_string()), None);
+            })?;
+            emit("exit", None, None);
+            return Ok(text);
         };
         let conn = crate::appdb::open(&data_dir)?;
         let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
@@ -847,6 +873,10 @@ pub async fn dev_run_command(
             Some((&machine, &project, secret.as_deref())),
             pool.as_ref(),
         )?;
+        if !out.text.is_empty() && out.text != "(no output)" {
+            emit("data", Some(out.text.clone()), None);
+        }
+        emit("exit", None, out.exit_code);
         Ok(out.text)
     })
     .await

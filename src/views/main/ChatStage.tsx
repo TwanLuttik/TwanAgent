@@ -7,9 +7,8 @@ import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
-import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
+import { conversationActivityLabel } from "../../lib/core";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
-import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
 import { providerProfile } from "../../lib/provider";
 import {
   editorFileView,
@@ -20,7 +19,7 @@ import {
   selectEditorTab,
   setEditorMarkdownView,
 } from "../../lib/editor";
-import { permissionLabel, shellApprovalLabel } from "../../lib/permission";
+import { shellApprovalLabel } from "../../lib/permission";
 import { PlanApproval } from "../../components/PlanApproval";
 import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/turn";
@@ -70,6 +69,7 @@ export function ChatStage() {
     bumpFiles,
     chatTabs,
     closeChatTab,
+    runningTurns,
     showSettings,
     showUsage,
     workspace,
@@ -89,6 +89,7 @@ export function ChatStage() {
             editor={editor}
             chats={chatTabs}
             activeChatId={activeId}
+            runningTurns={runningTurns}
             onChat={(id) => {
               setEditor((prev: typeof editor) => selectChatTab(prev));
               if (id !== activeId) void openChat(id);
@@ -190,11 +191,9 @@ function ChatColumn() {
     closePendingEdit,
     composerDockRef,
     composerPad,
-    contextWindow,
     editingPending,
     editMcpServer,
     editSkill,
-    effort,
     expandedAgents,
     fileDrag,
     holdScrollForOlder,
@@ -203,11 +202,9 @@ function ChatColumn() {
     mentionFiles,
     messages,
     model,
-    models,
     openingId,
     pendingPlan,
     pendingShell,
-    permission,
     remoteWorkspace,
     queued,
     reauthMcpServer,
@@ -223,9 +220,7 @@ function ChatColumn() {
     toggleSkill,
     turnStartedAt,
     workspace,
-    allProjectGroups,
   } = useMain();
-  const current = models.find((row: { id: string; name: string; context_windows?: number[]; context_window?: number; efforts: { id: string; label: string }[] }) => row.id === model);
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
   const transcriptPending = Boolean(openingId) && openingId === activeId;
   const centeredWithoutStream =
@@ -260,23 +255,6 @@ function ChatColumn() {
         {fileDrag ? <DropImagesHint /> : null}
         <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]">
           <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
-            <div className="mb-5">
-              <div className="truncate text-[15px] font-semibold">
-                {workspace
-                  ? allProjectGroups.find((group: { path: string; name: string }) => projectKey(group.path) === projectKey(workspace))?.name || folderName(workspace)
-                  : "TwanAgent"}
-              </div>
-              <div className="truncate text-[12px] text-muted">
-                {current?.name ?? "Grok"}
-                {contextWindow > 0 &&
-                contextWindowChoices(current?.context_windows, current?.context_window).includes(contextWindow)
-                  ? ` · ${contextWindowLabel(contextWindow)}`
-                  : ""}
-                {effort ? ` · ${current?.efforts.find((row: { id: string }) => row.id === effort)?.label ?? effort}` : ""}
-                {` · ${permissionLabel(permission)}`}
-                {workspace ? ` · ${workspace}` : ""}
-              </div>
-            </div>
             <LiveTranscript
               messages={messages}
               model={model}
@@ -292,24 +270,24 @@ function ChatColumn() {
               startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
             />
             {pendingShell && (
-              <div className="mb-4 rounded-md border border-line bg-panel px-3 py-2.5">
-                <div className="text-[12px] font-medium">
+              <div className="mb-4">
+                <div className="text-[13px] text-ink">
                   {shellApprovalLabel(pendingShell.command, remoteWorkspace?.machineName)}
                 </div>
-                <pre className="mt-1 mb-2 overflow-auto rounded bg-canvas px-2 py-1.5 font-mono text-[12px]">
+                <pre className="mt-1.5 mb-2.5 overflow-auto font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-all text-muted">
                   {pendingShell.command}
                 </pre>
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   <button
                     type="button"
-                    className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent"
+                    className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover"
                     onClick={() => answerShell(true)}
                   >
                     Approve
                   </button>
                   <button
                     type="button"
-                    className="rounded-md border border-line px-2.5 py-1 text-[12px]"
+                    className="rounded-md px-2.5 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink"
                     onClick={() => answerShell(false)}
                   >
                     Skip

@@ -41,7 +41,7 @@ import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "
 import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
-import { clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { chatHasRunningTurn, clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -1162,6 +1162,7 @@ export function MainView() {
       id,
       title: row?.title?.trim() || "Chat",
       kind: row?.kind === "terminal" ? ("terminal" as const) : ("chat" as const),
+      running: chatHasRunningTurn(runningTurns, id),
     };
   });
 

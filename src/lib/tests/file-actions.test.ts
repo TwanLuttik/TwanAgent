@@ -7,6 +7,7 @@ import {
   nextFolderName,
   topLevelPaths,
   validEntryName,
+  validNewFileName,
   type FileNode,
 } from "../file-actions.ts";
 
@@ -57,5 +58,10 @@ describe("file selection rules", () => {
     assert.equal(validEntryName("notes.md"), true);
     assert.equal(validEntryName("a/b"), false);
     assert.equal(validEntryName(".."), false);
+    assert.equal(validNewFileName("notes.md"), true);
+    assert.equal(validNewFileName(".env"), true);
+    assert.equal(validNewFileName("readme"), false);
+    assert.equal(validNewFileName("notes."), false);
+    assert.equal(validNewFileName("a/b.ts"), false);
   });
 });

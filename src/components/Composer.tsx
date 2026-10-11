@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { folderName, type ChatImage } from "../lib/core";
+import { filterProjectRows, folderName, projectKey, type ChatImage, type ProjectRow } from "../lib/core";
 import { applyMention, draftMentionSpans, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/mention";
 import {
   expandPasteTokens,
@@ -22,8 +22,10 @@ import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "..
 import { providerProfile, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
+import { COMMAND_VISIBLE_AFTER_MS, commandRunVisible, useCommandRun } from "../lib/command-run";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Effort, Model } from "../lib/tauri";
+import { CommandRunPill } from "./CommandRunPill";
 import { ContextUsageChip } from "./ContextUsageChip";
 import { FileIcon } from "./FileIcon";
 import { PromptImages } from "./PromptImages";
@@ -45,6 +47,8 @@ export function Composer({
   ready,
   placeholder,
   workspace,
+  projects = [],
+  onOpenProject,
   onOpenFolder,
   models,
   model,
@@ -70,6 +74,7 @@ export function Composer({
   todos = [],
   onDictate,
   onDictateError,
+  commandChatId = "",
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -79,6 +84,9 @@ export function Composer({
   ready: boolean;
   placeholder: string;
   workspace: string;
+  /** Known projects. When present, the folder chip opens this list instead of the new-project dialog. */
+  projects?: ProjectRow[];
+  onOpenProject?: (path: string) => void;
   onOpenFolder: () => void;
   models: Model[];
   model: string;
@@ -105,6 +113,8 @@ export function Composer({
   todos?: AgentTodo[];
   onDictate?: (blob: Blob, mime: string) => Promise<((draft: string, start: number, end: number) => { text: string; cursor: number }) | null>;
   onDictateError?: (message: string) => void;
+  /** Chat whose running command is pinned above this input. Empty hides it. */
+  commandChatId?: string;
 }) {
   const ordered = orderModels(models);
   const selected = ordered.find((m) => m.id === model) ?? ordered[0];
@@ -139,6 +149,16 @@ export function Composer({
   const mentionRows = mention ? filterMentionFiles(mentionFiles, mention.query) : [];
   const canSend = canSendPrompt(expandPasteTokens(draft, pastes), images) && ready;
   const showUsage = Boolean(usage && usageWindow);
+  const commandRun = useCommandRun(commandChatId ?? "");
+  const [commandNow, setCommandNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!commandRun?.running || commandRun.background) return;
+    const wait = commandRun.startedAt + COMMAND_VISIBLE_AFTER_MS - Date.now();
+    if (wait <= 0) return;
+    const timer = window.setTimeout(() => setCommandNow(Date.now()), wait);
+    return () => window.clearTimeout(timer);
+  }, [commandRun?.id, commandRun?.running, commandRun?.background, commandRun?.startedAt]);
+  const showCommand = commandRunVisible(commandRun, commandNow);
 
   function stopMic() {
     recordStream.current?.getTracks().forEach((track) => track.stop());
@@ -432,9 +452,16 @@ export function Composer({
   }
 
   return (
-    <form ref={box} onSubmit={submit} className="w-full">
+    <form ref={box} onSubmit={submit} className="relative w-full">
+      {commandRun && showCommand ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 pb-1.5">
+          <div className="pointer-events-auto">
+            <CommandRunPill run={commandRun} />
+          </div>
+        </div>
+      ) : null}
       <div
-        className={`relative border bg-panel focus-within:border-accent/30 ${
+        className={`relative border bg-panel transition-colors duration-200 ease-out focus-within:border-accent/30 ${
           dragOver ? "border-accent/55" : "border-line/35"
         } ${compact ? "rounded-2xl" : "rounded-[22px] shadow-card"}`}
         onDragEnter={onDragOver}
@@ -585,15 +612,12 @@ export function Composer({
             onPick={pickMic}
             onClose={() => setMicMenu(false)}
           />
-          <button
-            type="button"
-            onClick={onOpenFolder}
-            title={workspace || "Open folder"}
-            className="flex max-w-[38%] items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted hover:bg-wash hover:text-ink"
-          >
-            <Symbol name="folder.fill" className="size-3 text-accent" />
-            <span className="truncate">{workspace ? folderName(workspace) : "Folder"}</span>
-          </button>
+          <ProjectSelect
+            workspace={workspace}
+            projects={projects}
+            onOpen={onOpenProject ?? (() => onOpenFolder())}
+            onNew={onOpenFolder}
+          />
           {busy && onStop ? (
             <button
               type="button"
@@ -1159,6 +1183,19 @@ function orderModels(models: Model[]): Model[] {
   });
 }
 
+function filterModels(models: Model[], query: string): Model[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return models;
+  return models.filter((model) => {
+    const family = modelFamilyName(model.name).family.toLowerCase();
+    return (
+      model.name.toLowerCase().includes(needle) ||
+      model.id.toLowerCase().includes(needle) ||
+      family.includes(needle)
+    );
+  });
+}
+
 function modelProvider(model: Model): ProviderId {
   if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax") return model.provider;
   return providerProfile(model.id).id;
@@ -1185,13 +1222,17 @@ function ModelSelect({
     const current = models.find((row) => row.id === value);
     return current ? modelProvider(current) : null;
   });
+  const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
+  const search = useRef<HTMLInputElement>(null);
   const [menuAbove, setMenuAbove] = useState(true);
   const selected = models.find((row) => row.id === value);
   const providers = MODEL_PROVIDERS.filter((row) => models.some((model) => modelProvider(model) === row.id));
   const [providerTip, setProviderTip] = useState<{ label: string; top: number; left: number } | null>(null);
-  const shown = focus ? models.filter((model) => modelProvider(model) === focus) : models;
+  const needle = query.trim();
+  const scoped = focus ? models.filter((model) => modelProvider(model) === focus) : models;
+  const shown = filterModels(scoped, needle);
   const families = groupModelFamilies(shown);
 
   useLayoutEffect(() => {
@@ -1211,7 +1252,9 @@ function ModelSelect({
     }
     document.addEventListener("mousedown", onDoc);
     window.addEventListener("keydown", onKey);
+    const focusSearch = window.setTimeout(() => search.current?.focus(), 0);
     return () => {
+      window.clearTimeout(focusSearch);
       document.removeEventListener("mousedown", onDoc);
       window.removeEventListener("keydown", onKey);
     };
@@ -1226,7 +1269,10 @@ function ModelSelect({
         aria-expanded={open}
         onClick={() => {
           setOpen((current) => {
-            if (!current && selected) setFocus(modelProvider(selected));
+            if (!current) {
+              if (selected) setFocus(modelProvider(selected));
+              setQuery("");
+            }
             return !current;
           });
         }}
@@ -1291,7 +1337,28 @@ function ModelSelect({
               </AnimatePresence>,
               document.body,
             )}
-            <div className="min-w-0 flex-1 overflow-auto py-1">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="flex shrink-0 items-center gap-2 border-b border-line/20 px-2.5">
+                <Symbol name="magnifyingglass" className="size-3.5 shrink-0 text-muted" />
+                <input
+                  ref={search}
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    const first = shown[0];
+                    if (!first) return;
+                    onChange(first.id);
+                    setOpen(false);
+                  }}
+                  placeholder="Search models"
+                  aria-label="Search models"
+                  className="h-9 min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-muted"
+                />
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto py-1">
+              {families.length ? (
               <AnimatePresence initial={false} mode="popLayout">
                 {families.map((family) => {
                   const versions = family.models.length > 1;
@@ -1352,6 +1419,12 @@ function ModelSelect({
                   );
                 })}
               </AnimatePresence>
+              ) : (
+                <p className="px-2.5 py-2 text-[12px] text-muted">
+                  {needle ? "No matching models" : "No models"}
+                </p>
+              )}
+              </div>
             </div>
           </motion.div>
         ) : null}
@@ -1419,6 +1492,159 @@ function CapabilityIcons({ ids, faded = false }: { ids?: string[] | null; faded?
         document.body,
       )}
     </span>
+  );
+}
+
+function ProjectSelect({
+  workspace,
+  projects,
+  onOpen,
+  onNew,
+}: {
+  workspace: string;
+  projects: ProjectRow[];
+  onOpen: (path: string) => void;
+  onNew: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const [menuAbove, setMenuAbove] = useState(true);
+  const needle = query.trim();
+  const shown = filterProjectRows(projects, query);
+  const current = projects.find((row) => projectKey(row.path) === projectKey(workspace));
+  const label = current?.name || (workspace ? folderName(workspace) : "Project");
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const frame = button.current?.getBoundingClientRect();
+    if (!frame) return;
+    setMenuAbove(frame.top - 320 - 6 >= 8);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(ev: MouseEvent) {
+      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
+    }
+    function onKey(ev: globalThis.KeyboardEvent) {
+      if (ev.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    const focus = window.setTimeout(() => search.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(focus);
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative max-w-[38%]" ref={ref}>
+      <button
+        ref={button}
+        type="button"
+        title={workspace || "Project"}
+        aria-expanded={open}
+        aria-label="Project"
+        onClick={() => {
+          setOpen((next) => {
+            if (next) return false;
+            setQuery("");
+            return true;
+          });
+        }}
+        className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+          open ? "bg-wash text-ink" : "text-muted hover:text-ink"
+        }`}
+      >
+        <Symbol name="folder.fill" className="size-3 shrink-0 text-accent" />
+        <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+        <Symbol name="chevron.down" className="size-2.5 shrink-0 opacity-70" />
+      </button>
+      <AnimatePresence>
+        {open ? (
+          <motion.div
+            role="menu"
+            aria-label="Projects"
+            initial={{ opacity: 0, y: menuAbove ? 6 : -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: menuAbove ? 6 : -6 }}
+            transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+            className={`absolute right-0 z-30 flex h-80 w-[320px] flex-col overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
+              menuAbove ? "bottom-full mb-1 origin-bottom" : "top-full mt-1 origin-top"
+            }`}
+          >
+            <div className="flex shrink-0 items-center gap-2 border-b border-line/20 px-2.5">
+              <Symbol name="magnifyingglass" className="size-3.5 shrink-0 text-muted" />
+              <input
+                ref={search}
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.preventDefault();
+                }}
+                placeholder="Search projects"
+                aria-label="Search projects"
+                className="h-9 min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-muted"
+              />
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto py-1">
+              {shown.length ? (
+                shown.map((row) => {
+                  const selected = projectKey(row.path) === projectKey(workspace);
+                  return (
+                    <button
+                      key={row.path}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      title={row.path}
+                      onClick={() => {
+                        setOpen(false);
+                        if (!selected) onOpen(row.path);
+                      }}
+                      className={`flex h-8 w-full cursor-pointer items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                        selected ? "font-medium text-ink" : "text-ink/80"
+                      }`}
+                    >
+                      <Symbol name="folder.fill" className={`size-3.5 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{row.name}</span>
+                      </span>
+                      {row.remote ? <Symbol name="cloud.fill" className="size-3 shrink-0 text-[#3b82f6]" /> : null}
+                      <Symbol
+                        name="checkmark"
+                        className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${selected ? "opacity-100" : "opacity-0"}`}
+                      />
+                    </button>
+                  );
+                })
+              ) : (
+                <p className="px-2.5 py-2 text-[12px] text-muted">{needle ? "No matching projects" : "No projects yet"}</p>
+              )}
+            </div>
+            <div className="shrink-0 border-t border-line/20 p-1">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onNew();
+                }}
+                className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash"
+              >
+                <Symbol name="plus" className="size-3.5 shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate">New project</span>
+              </button>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
   );
 }
 

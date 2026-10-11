@@ -31,9 +31,11 @@ import {
   fileName,
   fileParent,
   isInsidePath,
+  joinFilePath,
   nextFolderName,
   topLevelPaths,
   validEntryName,
+  validNewFileName,
 } from "../lib/file-actions";
 import { dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import {
@@ -96,6 +98,7 @@ export const Workspace = memo(function Workspace({
   const [selected, setSelected] = useState<string[]>([]);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [creating, setCreating] = useState<string | null>(null);
+  const [newFileParent, setNewFileParent] = useState<string | null>(null);
   const [changes, setChanges] = useState<GitChange[]>([]);
   const [branches, setBranches] = useState<GitBranches>({ current: null, branches: [] });
   const [summary, setSummary] = useState<GitRepoSummary | null>(null);
@@ -168,6 +171,7 @@ export const Workspace = memo(function Workspace({
     setSelected([]);
     setRenaming(null);
     setCreating(null);
+    setNewFileParent(null);
   }, [workspace]);
 
   const setPane = useCallback(
@@ -318,6 +322,28 @@ export const Workspace = memo(function Workspace({
     }
   }
 
+  async function makeFile(parent: string, name: string) {
+    const next = name.trim();
+    if (!validNewFileName(next)) return;
+    const path = joinFilePath(parent, next);
+    try {
+      await api.writeFile(workspace, path, "");
+      setExpanded((prev) => {
+        const nextOpen = { ...prev, [parent]: true };
+        saveOpenFileTree(workspace, openTreePaths(nextOpen));
+        return nextOpen;
+      });
+      setNewFileParent(null);
+      setSelected([path]);
+      onOpenFile?.(path, "pin");
+      await loadDir(parent);
+      await refreshTree();
+      onRefresh?.();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   async function makeFolder(parent: string) {
     const rows = children[parent] ?? [];
     const name = nextFolderName(rows.map((row) => row.name));
@@ -460,6 +486,7 @@ export const Workspace = memo(function Workspace({
                   activePath={selectedPath ?? null}
                   renaming={renaming}
                   creating={creating}
+                  newFileParent={newFileParent}
                   changes={changes}
                   onToggle={(p) => void toggle(p)}
                   onSelect={(path, kind, ev) => selectRow(path, kind, ev)}
@@ -470,6 +497,16 @@ export const Workspace = memo(function Workspace({
                   onDelete={(paths) => void removeEntries(paths)}
                   onMove={(paths, dest) => void moveEntries(paths, dest)}
                   onNewFolder={(parent) => void makeFolder(parent)}
+                  onNewFile={(parent) => {
+                    setExpanded((prev) => {
+                      const next = { ...prev, [parent]: true };
+                      saveOpenFileTree(workspace, openTreePaths(next));
+                      return next;
+                    });
+                    setNewFileParent(parent);
+                  }}
+                  onNewFileCommit={(parent, name) => void makeFile(parent, name)}
+                  onNewFileCancel={() => setNewFileParent(null)}
                 />
               ) : null}
               {tab.kind === "git" ? (
@@ -750,6 +787,7 @@ function FilesPane({
   activePath,
   renaming,
   creating,
+  newFileParent,
   changes,
   onToggle,
   onSelect,
@@ -760,6 +798,9 @@ function FilesPane({
   onDelete,
   onMove,
   onNewFolder,
+  onNewFile,
+  onNewFileCommit,
+  onNewFileCancel,
 }: {
   error: string | null;
   expanded: Record<string, boolean>;
@@ -768,6 +809,7 @@ function FilesPane({
   activePath: string | null;
   renaming: string | null;
   creating: string | null;
+  newFileParent: string | null;
   changes: GitChange[];
   onToggle: (path: string) => void;
   onSelect: (path: string, kind: string, ev: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
@@ -778,10 +820,14 @@ function FilesPane({
   onDelete: (paths: string[]) => void;
   onMove: (paths: string[], dest: string) => void;
   onNewFolder: (parent: string) => void;
+  onNewFile: (parent: string) => void;
+  onNewFileCommit: (parent: string, name: string) => void;
+  onNewFileCancel: () => void;
 }) {
   const byPath = gitChangeMap(changes);
   const dirtyDirs = gitDirtyDirs(byPath);
   const [menu, setMenu] = useState<{ x: number; y: number; path: string; paths: string[] } | null>(null);
+  const [blankMenu, setBlankMenu] = useState<{ x: number; y: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [dragPaths, setDragPaths] = useState<string[] | null>(null);
   const dragPathsRef = useRef<string[] | null>(null);
@@ -796,12 +842,13 @@ function FilesPane({
   const allowMove = canMoveSelection(menuPaths, menuNodes);
 
   useEffect(() => {
-    if (!menu) return;
+    if (!menu && !blankMenu) return;
     function close() {
       setMenu(null);
+      setBlankMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
-      if (ev.key === "Escape") setMenu(null);
+      if (ev.key === "Escape") close();
     }
     window.addEventListener("mousedown", close);
     window.addEventListener("keydown", onKey);
@@ -811,7 +858,7 @@ function FilesPane({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("blur", close);
     };
-  }, [menu]);
+  }, [menu, blankMenu]);
 
   function pathsFor(path: string) {
     return selected.includes(path) ? selected : [path];
@@ -903,6 +950,12 @@ function FilesPane({
         ev.preventDefault();
         if (canDropOnDir(paths, dest, nodeMap)) onMove(paths, dest);
       }}
+      onContextMenu={(ev) => {
+        if ((ev.target as HTMLElement).closest(".file-row")) return;
+        ev.preventDefault();
+        setMenu(null);
+        setBlankMenu({ x: ev.clientX, y: ev.clientY });
+      }}
     >
       {error && <p className="px-2 text-[11px] text-err">{error}</p>}
       {dropTarget === "" ? (
@@ -920,6 +973,7 @@ function FilesPane({
         activePath={activePath}
         renaming={renaming}
         creating={creating}
+        newFileParent={newFileParent}
         dropTarget={dropTarget}
         dragPaths={dragPaths}
         changes={byPath}
@@ -930,6 +984,8 @@ function FilesPane({
         onOpen={onOpen}
         onRenameCommit={onRenameCommit}
         onCreateCommit={onCreateCommit}
+        onNewFileCommit={onNewFileCommit}
+        onNewFileCancel={onNewFileCancel}
         onContext={(path, x, y) => {
           const paths = selected.includes(path) ? selected : [path];
           if (!selected.includes(path)) onSelect(path, nodeMap.get(path)?.kind ?? "file", { metaKey: false, ctrlKey: false, shiftKey: false });
@@ -943,6 +999,14 @@ function FilesPane({
       />
       {menu ? (
         <AnchoredMenu x={menu.x} y={menu.y}>
+          <MenuItem
+            label="New file"
+            onClick={() => {
+              const parent = menuNodes.get(menu.path)?.kind === "dir" ? menu.path : fileParent(menu.path);
+              onNewFile(parent);
+              setMenu(null);
+            }}
+          />
           <MenuItem
             label="New folder"
             onClick={() => {
@@ -970,6 +1034,24 @@ function FilesPane({
           {!allowMove && menuPaths.length > 1 ? (
             <p className="m-0 px-2.5 py-1 text-[11px] text-muted">Move and rename need files or folders, not both.</p>
           ) : null}
+        </AnchoredMenu>
+      ) : null}
+      {blankMenu ? (
+        <AnchoredMenu x={blankMenu.x} y={blankMenu.y}>
+          <MenuItem
+            label="New file"
+            onClick={() => {
+              onNewFile("");
+              setBlankMenu(null);
+            }}
+          />
+          <MenuItem
+            label="New folder"
+            onClick={() => {
+              onNewFolder("");
+              setBlankMenu(null);
+            }}
+          />
         </AnchoredMenu>
       ) : null}
     </div>
@@ -1624,6 +1706,7 @@ function Tree({
   activePath,
   renaming,
   creating,
+  newFileParent,
   dropTarget,
   dragPaths,
   changes,
@@ -1634,6 +1717,8 @@ function Tree({
   onOpen,
   onRenameCommit,
   onCreateCommit,
+  onNewFileCommit,
+  onNewFileCancel,
   onContext,
   onDragPaths,
   onDragChange,
@@ -1649,6 +1734,7 @@ function Tree({
   activePath: string | null;
   renaming: string | null;
   creating: string | null;
+  newFileParent: string | null;
   dropTarget: string | null;
   dragPaths: string[] | null;
   changes: ReturnType<typeof gitChangeMap>;
@@ -1659,6 +1745,8 @@ function Tree({
   onOpen: (path: string, mode?: "preview" | "pin") => void;
   onRenameCommit: (path: string, name: string) => void;
   onCreateCommit: (path: string, name: string) => void;
+  onNewFileCommit: (parent: string, name: string) => void;
+  onNewFileCancel: () => void;
   onContext: (path: string, x: number, y: number) => void;
   onDragPaths: (path: string) => string[];
   onDragChange: (paths: string[] | null) => void;
@@ -1670,6 +1758,9 @@ function Tree({
 
   return (
     <div className="flex flex-col gap-px">
+      {newFileParent === path ? (
+        <NewFileRow depth={depth} onCommit={(name) => onNewFileCommit(path, name)} onCancel={onNewFileCancel} />
+      ) : null}
       {rows.map((row, index) => {
         const isDir = row.kind === "dir";
         const open = Boolean(expanded[row.path]);
@@ -1765,6 +1856,7 @@ function Tree({
                 activePath={activePath}
                 renaming={renaming}
                 creating={creating}
+                newFileParent={newFileParent}
                 dropTarget={dropTarget}
                 dragPaths={dragPaths}
                 changes={changes}
@@ -1775,6 +1867,8 @@ function Tree({
                 onOpen={onOpen}
                 onRenameCommit={onRenameCommit}
                 onCreateCommit={onCreateCommit}
+                onNewFileCommit={onNewFileCommit}
+                onNewFileCancel={onNewFileCancel}
                 onContext={onContext}
                 onDragPaths={onDragPaths}
                 onDragChange={onDragChange}
@@ -1786,6 +1880,76 @@ function Tree({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function NewFileRow({
+  depth,
+  onCommit,
+  onCancel,
+}: {
+  depth: number;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [invalid, setInvalid] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  function commit() {
+    if (done.current) return;
+    const name = draft.trim();
+    if (!name) {
+      done.current = true;
+      onCancel();
+      return;
+    }
+    if (!validNewFileName(name)) {
+      setInvalid(true);
+      ref.current?.focus();
+      return;
+    }
+    done.current = true;
+    onCommit(name);
+  }
+  return (
+    <div
+      className="file-row flex w-full items-center gap-1 rounded-[6px] bg-wash-strong py-[3px] pr-2 text-left text-[12px]"
+      style={{ paddingLeft: 8 + depth * 12 }}
+      onMouseDown={(ev) => ev.stopPropagation()}
+    >
+      <span className="inline-block w-3" />
+      <FileIcon name={draft.trim() || "file.txt"} className="size-3.5 text-muted" />
+      <input
+        ref={ref}
+        value={draft}
+        aria-label="New file name"
+        aria-invalid={invalid}
+        placeholder="name.ext"
+        onChange={(ev) => {
+          setDraft(ev.target.value);
+          setInvalid(false);
+        }}
+        onClick={(ev) => ev.stopPropagation()}
+        onBlur={commit}
+        onKeyDown={(ev) => {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            commit();
+          }
+          if (ev.key === "Escape") {
+            ev.preventDefault();
+            onCancel();
+          }
+        }}
+        className={`min-w-0 flex-1 rounded bg-canvas px-1 text-[12px] text-ink outline-none ring-1 select-text placeholder:text-muted ${
+          invalid ? "ring-err" : "ring-accent"
+        }`}
+      />
     </div>
   );
 }

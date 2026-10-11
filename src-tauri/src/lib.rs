@@ -146,6 +146,7 @@ pub fn run() {
             dev::commands::dev_git_show,
             dev::commands::dev_git_file_at,
             dev::commands::dev_run_command,
+            dev::commands::dev_stop_command,
             dev::commands::dev_open_url,
             dev::commands::dev_reveal_folder,
             dev::conv::dev_list_conversations,

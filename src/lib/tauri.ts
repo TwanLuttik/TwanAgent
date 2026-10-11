@@ -284,6 +284,13 @@ export type WebSearchEvent = {
   text?: string | null;
 };
 
+export type CommandEvent = {
+  stream_id: string;
+  kind: "start" | "data" | "exit" | string;
+  text?: string | null;
+  exit_code?: number | null;
+};
+
 export function projectsRoot(): Promise<string> {
   return invoke("dev_projects_root");
 }
@@ -571,8 +578,21 @@ export function gitFileAt(workspace: string, path: string, revision = "HEAD"): P
   return invoke("dev_git_file_at", { workspace, path, revision });
 }
 
-export function runCommand(workspace: string, command: string): Promise<string> {
-  return invoke("dev_run_command", { workspace, command });
+export function stopCommand(id: string): Promise<void> {
+  return invoke("dev_stop_command", { id });
+}
+
+export function runCommand(workspace: string, command: string, streamId?: string): Promise<string> {
+  return invoke("dev_run_command", {
+    workspace,
+    command,
+    streamId: streamId ?? null,
+    stream_id: streamId ?? null,
+  });
+}
+
+export function onCommand(fn: (ev: CommandEvent) => void): Promise<UnlistenFn> {
+  return listen<CommandEvent>("dev-command", (ev) => fn(ev.payload));
 }
 
 export function openUrl(url: string): Promise<void> {

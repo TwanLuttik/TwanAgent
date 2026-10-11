@@ -233,7 +233,7 @@ function ToolDetail({ text }: { text: string }) {
   return (
     <div className="font-mono text-[11px] leading-[1.35] text-muted">
       {lines.map((line, i) => (
-        <div key={i} className="truncate">
+        <div key={i} className="whitespace-pre-wrap break-all [overflow-wrap:anywhere]">
           {line}
         </div>
       ))}

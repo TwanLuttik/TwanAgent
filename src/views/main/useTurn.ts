@@ -62,7 +62,7 @@ import {
   enqueuePending,
   pendingIndexAfterRemove,
   removePending,
-  restoreStoppedPrompt,
+  commitPartialReply,
   setDraftForChat,
   shouldQueueForChat,
   takeNextPending,
@@ -632,18 +632,9 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
   return images.length ? { role: "user", content: text, images } : { role: "user", content: text };
 }
 
-function fillPrompt(id: string, text: string, images: ChatImage[]) {
-  saveComposerDraft(id, text);
-  setDrafts((prev) => setDraftForChat(prev, id, text));
-  setDraftImages((prev) => setImagesForChat(prev, id, images));
-}
-
-/** Put the stopped turn's user message back in the composer and drop it from the transcript. */
-function restorePrompt(id: string, messages: ChatMessage[]): ChatMessage[] | null {
-  const restored = restoreStoppedPrompt(messages);
-  if (!restored) return null;
-  fillPrompt(id, restored.text, restored.images);
-  return restored.messages;
+function partialReply(id: string): { text: string; reasoning: string } {
+  const live = liveByChatRef.current.get(id);
+  return { text: live?.streamText ?? "", reasoning: live?.streamReasoning ?? "" };
 }
 
 async function send() {
@@ -740,10 +731,6 @@ async function runTurn(
   const previous = turnsRef.current.get(id);
   previous?.abort();
   turnsRef.current.set(id, ac);
-  let stoppedByUser = false;
-  ac.signal.addEventListener("abort", () => {
-    stoppedByUser = true;
-  });
   busyRef.current = true;
   setBusy(true);
   const startedAt = Date.now();
@@ -826,6 +813,7 @@ async function runTurn(
       mcpServers: mcpServersRef.current,
       skills: skillsRef.current,
       remote: remoteRef.current,
+      conversationId: id,
       onDelta: (chunk) => {
         const live = liveByChatRef.current.get(id);
         const streamText = `${live?.streamText ?? ""}` + chunk;
@@ -874,6 +862,13 @@ async function runTurn(
           markRunning(id, { todo: badge && !badge.finished ? { done: badge.done, total: badge.total } : null });
           return;
         }
+        if (call.name === "run_command") {
+          const activity = activityFromToolCall(call);
+          rememberLive(id, { activity });
+          markRunning(id, { activity });
+          if (visible()) setRunningActivity(activity);
+          return;
+        }
         if (call.name === "spawn_subagent") return;
         const activity = activityFromToolCall(call);
         const rows = [
@@ -913,17 +908,23 @@ async function runTurn(
       },
       onUpdate: (nextMessages) => {
         saveMessages(nextMessages);
-        rememberLive(id, { messages: nextMessages, streamText: "", streamReasoning: "", activity: null });
+        const kept = liveByChatRef.current.get(id)?.activity;
+        const last = nextMessages[nextMessages.length - 1];
+        const commandStillOpen =
+          last?.role === "assistant" && (last.tool_calls ?? []).some((call) => call.name === "run_command");
+        const activity =
+          commandStillOpen && kept?.kind === "tool" && kept.label.startsWith("Run ") ? kept : null;
+        rememberLive(id, { messages: nextMessages, streamText: "", streamReasoning: "", activity });
         const badge = todoBadge(todosInLatestTurn(nextMessages));
         markRunning(id, {
-          activity: null,
+          activity,
           ...(badge ? { todo: badge.finished ? null : { done: badge.done, total: badge.total } } : {}),
         });
         if (!visible()) return;
         setMessages(nextMessages);
         setStreamText("");
         setStreamReasoning("");
-        setRunningActivity(null);
+        setRunningActivity(activity);
       },
       onRefresh: bumpFiles,
       onUsage: (usage) => {
@@ -947,14 +948,10 @@ async function runTurn(
       signal: ac.signal,
     });
     latestMessages = stampTurnDuration(
-      closeDanglingToolCalls(done),
+      commitPartialReply(closeDanglingToolCalls(done), partialReply(id)),
       Date.now() - startedAt,
       nowIso(),
     );
-    if (stoppedByUser && !pendingRef.current[id]?.length) {
-      const restored = restorePrompt(id, latestMessages);
-      if (restored) latestMessages = restored;
-    }
     saveMessages(latestMessages, { flush: true });
     rememberLive(id, { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
     if (visible()) {
@@ -976,11 +973,10 @@ async function runTurn(
     }
     await after?.(latestMessages);
   } catch (e) {
-    latestMessages = closeDanglingToolCalls(liveByChatRef.current.get(id)?.messages ?? next);
-    if (stoppedByUser && !pendingRef.current[id]?.length) {
-      const restored = restorePrompt(id, latestMessages);
-      if (restored) latestMessages = restored;
-    }
+    latestMessages = commitPartialReply(
+      closeDanglingToolCalls(liveByChatRef.current.get(id)?.messages ?? next),
+      partialReply(id),
+    );
     if (latestMessages.length) {
       saveMessages(latestMessages, { flush: true });
       if (visible()) setMessages(latestMessages);
