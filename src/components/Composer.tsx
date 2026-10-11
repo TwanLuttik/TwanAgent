@@ -1303,7 +1303,8 @@ function ModelSelect({
                       setProviderTip({ label: row.label, top: box.top + box.height / 2, left: box.right + 8 });
                     }}
                     onMouseLeave={() => setProviderTip(null)}
-                    className={`flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${providerIconClass(row.id, on)}`}
+                    data-colored={on || undefined}
+                    className={`group/minimax flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${providerIconClass(row.id, on)}`}
                   >
                     <Symbol name={row.icon} className="size-3.5" />
                   </button>
@@ -1644,7 +1645,7 @@ function ModelIcon({ model, className }: { model: Model; className?: string }) {
   const id = modelProvider(model);
   const symbol = id === "anthropic" ? "logo.claude" : id === "minimax" ? "logo.minimax" : "logo.grok";
   const color = id === "anthropic" ? "text-[#d97757]" : id === "minimax" ? "text-[#e21680]" : "text-current";
-  return <Symbol name={symbol} className={`${className ?? "size-3.5"} shrink-0 ${color}`} />;
+  return <Symbol name={symbol} colored className={`${className ?? "size-3.5"} shrink-0 ${color}`} />;
 }
 
 function ChipSelect({

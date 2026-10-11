@@ -927,7 +927,7 @@ const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) 
   const mark = profile.id === "anthropic" ? "model-mark-claude" : profile.id === "minimax" ? "model-mark-minimax" : "model-mark-xai";
   return (
     <span
-      className={`model-mark group/model relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted transition-[margin] duration-150 ease-out group-hover:mr-0.5 ${mark}`}
+      className={`model-mark group/model group/minimax relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted transition-[margin] duration-150 ease-out group-hover/minimax:mr-0.5 ${mark}`}
     >
       <Symbol name={profile.symbol} className="size-3" />
       <span

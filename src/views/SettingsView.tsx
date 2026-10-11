@@ -419,7 +419,7 @@ export function SettingsView({
               </ProviderBlock>
               <ProviderBlock
                 logo="logo.minimax"
-                markClass="bg-[#e21680] text-white"
+                markClass="bg-wash"
                 title="MiniMax"
                 text="MiniMax models. The mmx login is used when no API key is saved."
                 ready={Boolean(minimaxCli?.logged_in || minimaxStatus?.saved || minimaxStatus?.env)}
@@ -957,7 +957,7 @@ function ProviderBlock({
     <div className="grid gap-3 rounded-xl bg-panel px-3 py-3">
       <div className="flex items-start gap-2.5">
         <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${markClass}`}>
-          <Symbol name={logo} className="size-[18px]" />
+          <Symbol name={logo} colored className="size-[18px]" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

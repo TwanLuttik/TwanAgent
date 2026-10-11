@@ -89,9 +89,13 @@ describe("command runs", () => {
   it("keeps a backgrounded command after the tool returns", () => {
     assert.equal(commandDetaches("swift run HelloWorld &"), true);
     assert.equal(commandDetaches("echo 'leave & this'"), false);
+    assert.equal(commandDetaches("git status && git rev-parse && git remote -v"), false);
+    assert.equal(commandDetaches("npm test 2>&1"), false);
+    assert.equal(commandDetaches("cmd &> log.txt"), false);
+    assert.equal(commandDetaches("cmd1 && cmd2 &"), true);
     startCommandRun({ id: "a", chatId: "chat", command: "swift run HelloWorld &", label: "Run server" });
     appendCommandOutput("a", "\u001ebg:4321\nready\n");
-    assert.equal(commandRunForChat("chat")?.output, "ready\n");
+    assert.equal(commandRunForChat("chat"), null);
     settleCommandRun("a", "(no output)\nstill running in the background");
     const kept = commandRunForChat("chat");
     assert.equal(kept?.running, true);
@@ -105,6 +109,7 @@ describe("command runs", () => {
 
   it("keeps a backgrounded server up while a later foreground check runs", () => {
     startCommandRun({ id: "server", chatId: "chat", command: "swift run &", label: "Run server" });
+    settleCommandRun("server", "listening\nstill running in the background");
     assert.equal(commandRunForChat("chat")?.id, "server");
     startCommandRun({ id: "check", chatId: "chat", command: "curl localhost", label: "Run check" });
     assert.equal(commandRunForChat("chat")?.id, "server");
@@ -121,6 +126,18 @@ describe("command runs", () => {
     settleCommandRun("build", "ok");
     assert.equal(commandRunForChat("chat"), null);
     assert.equal(getCommandRuns().find((row) => row.id === "build"), undefined);
+  });
+
+  it("does not keep a chained command that only looks backgrounded", () => {
+    startCommandRun({
+      id: "chain",
+      chatId: "chat",
+      command: "git status && git rev-parse --abbrev-ref HEAD",
+      label: "Run status",
+    });
+    settleCommandRun("chain", "main\norigin");
+    assert.equal(commandRunForChat("chat"), null);
+    assert.equal(getCommandRuns().find((row) => row.id === "chain"), undefined);
   });
 
   it("drops every run for one chat", () => {

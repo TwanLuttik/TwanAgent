@@ -26,6 +26,102 @@ use tauri::Manager;
 
 use state::AppState;
 
+const WINDOW_SIZE_KEY: &str = "window.size";
+const WINDOW_MAXIMIZED_KEY: &str = "window.maximized";
+const WINDOW_MIN_WIDTH: f64 = 880.0;
+const WINDOW_MIN_HEIGHT: f64 = 560.0;
+
+/// `"1100x740"` from the settings table. Empty when it was never saved or cannot be read.
+fn saved_window_size(data_dir: &std::path::Path) -> Option<(f64, f64)> {
+    let conn = appdb::open(data_dir).ok()?;
+    let raw = appdb::get_setting(&conn, WINDOW_SIZE_KEY).ok()??;
+    parse_window_size(&raw)
+}
+
+fn parse_window_size(raw: &str) -> Option<(f64, f64)> {
+    let (width, height) = raw.trim().split_once('x')?;
+    let width: f64 = width.trim().parse().ok()?;
+    let height: f64 = height.trim().parse().ok()?;
+    if !width.is_finite() || !height.is_finite() {
+        return None;
+    }
+    if width < WINDOW_MIN_WIDTH || height < WINDOW_MIN_HEIGHT {
+        return None;
+    }
+    Some((width, height))
+}
+
+fn save_window_size(data_dir: &std::path::Path, width: f64, height: f64) {
+    let Some((width, height)) = parse_window_size(&format!("{width}x{height}")) else {
+        return;
+    };
+    let Ok(conn) = appdb::open(data_dir) else {
+        return;
+    };
+    let _ = appdb::set_setting(&conn, WINDOW_SIZE_KEY, &format!("{width}x{height}"));
+}
+
+fn saved_window_maximized(data_dir: &std::path::Path) -> bool {
+    let Ok(conn) = appdb::open(data_dir) else {
+        return false;
+    };
+    appdb::get_setting(&conn, WINDOW_MAXIMIZED_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("1")
+}
+
+fn save_window_maximized(data_dir: &std::path::Path, maximized: bool) {
+    let Ok(conn) = appdb::open(data_dir) else {
+        return;
+    };
+    let _ = appdb::set_setting(&conn, WINDOW_MAXIMIZED_KEY, if maximized { "1" } else { "0" });
+}
+
+/// The last session's size, applied before the window is shown so it does not open and then jump.
+fn restore_window_size(app: &tauri::App, data_dir: &std::path::Path) {
+    let Some((width, height)) = saved_window_size(data_dir) else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
+    nudge_window_on_screen(&window);
+    if saved_window_maximized(data_dir) {
+        let _ = window.maximize();
+    }
+}
+
+/// Moves the window back only when the restored size leaves it outside the monitor.
+fn nudge_window_on_screen(window: &tauri::WebviewWindow) {
+    let Ok(monitor) = window.current_monitor() else {
+        return;
+    };
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let area = monitor.position();
+    let screen = monitor.size();
+    let margin = 40;
+    let max_x = area.x + screen.width as i32 - margin;
+    let max_y = area.y + screen.height as i32 - margin;
+    let fits = position.x < max_x
+        && position.y < max_y
+        && position.x + size.width as i32 > area.x
+        && position.y + size.height as i32 > area.y;
+    if !fits {
+        let _ = window.center();
+    }
+}
+
 /// Debug runs keep their own app data so `tauri dev` cannot read or rewrite a release install.
 pub(crate) fn isolate_data_dir(dir: PathBuf) -> PathBuf {
     if !cfg!(debug_assertions) {
@@ -41,6 +137,17 @@ pub(crate) fn isolate_data_dir(dir: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn window_size_rejects_a_missing_or_too_small_value() {
+        assert_eq!(parse_window_size("1280x800"), Some((1280.0, 800.0)));
+        assert_eq!(parse_window_size(" 1440 x 900 "), Some((1440.0, 900.0)));
+        assert_eq!(parse_window_size(""), None);
+        assert_eq!(parse_window_size("1100"), None);
+        assert_eq!(parse_window_size("400x300"), None);
+        assert_eq!(parse_window_size("nanx800"), None);
+    }
 
     #[test]
     fn debug_data_dir_is_a_sibling_of_the_release_dir() {
@@ -77,7 +184,34 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(&space_corner, true);
+            restore_window_size(app, &state.data_dir);
+            let data_dir = state.data_dir.clone();
             app.manage(state);
+            if let Some(window) = app.get_webview_window("main") {
+                let data_dir = data_dir.clone();
+                let window = window.clone();
+                window.clone().on_window_event(move |event| {
+                    if let tauri::WindowEvent::Resized(size) = event {
+                        // A minimized window reports 0×0. Saving that would reopen the app tiny.
+                        if size.width == 0 || size.height == 0 {
+                            return;
+                        }
+                        let maximized = window.is_maximized().unwrap_or(false);
+                        save_window_maximized(&data_dir, maximized);
+                        // The maximized frame fills the screen. The restored size is what we want back.
+                        if maximized {
+                            return;
+                        }
+                        // The event is in physical pixels. The config size is in points, so a
+                        // Retina display has to be scaled back or the window grows every launch.
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        if scale <= 0.0 {
+                            return;
+                        }
+                        save_window_size(&data_dir, f64::from(size.width) / scale, f64::from(size.height) / scale);
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

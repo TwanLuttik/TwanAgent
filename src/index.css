@@ -340,6 +340,21 @@ html[data-theme-mode="light"] .model-mark-xai:hover {
   color: #e21680;
 }
 
+/* MiniMax is drawn with its own gradient. These spots keep it gray until hover or selection. */
+.group\/minimax .minimax-color {
+  display: none;
+}
+.group\/minimax:hover .minimax-plain,
+.group:hover .model-mark .minimax-plain,
+.group\/minimax[data-colored] .minimax-plain {
+  display: none;
+}
+.group\/minimax:hover .minimax-color,
+.group:hover .model-mark .minimax-color,
+.group\/minimax[data-colored] .minimax-color {
+  display: block;
+}
+
 .model-tip {
   background: #c8c8ce;
   color: #1c1c1e;

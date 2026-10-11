@@ -22,11 +22,16 @@ function visibleOutput(text: string): string {
   return text.replace(DETACH_PID, "");
 }
 
-/** A trailing `&` outside quotes means the shell was asked to leave the command running. */
+/**
+ * A background `&` outside quotes means the shell was asked to leave the command
+ * running. `&&`, `|&`, and redirects such as `2>&1` or `&>` are not that.
+ */
 export function commandDetaches(command: string): boolean {
   let quote: "'" | '"' | null = null;
   let escaped = false;
-  for (const ch of command) {
+  const chars = [...command];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
     if (quote) {
       if (escaped) {
         escaped = false;
@@ -48,9 +53,24 @@ export function commandDetaches(command: string): boolean {
       quote = ch;
       continue;
     }
-    if (ch === "&") return true;
+    if (ch === "&" && isBackgroundAmp(chars, i)) return true;
   }
   return false;
+}
+
+/** True when this `&` backgrounds a command rather than joining or redirecting one. */
+function isBackgroundAmp(chars: string[], index: number): boolean {
+  const prev = neighborChar(chars, index, -1);
+  const next = neighborChar(chars, index, 1);
+  if (prev === "&" || prev === ">" || prev === "<" || prev === "|") return false;
+  if (next === "&" || next === ">") return false;
+  return true;
+}
+
+function neighborChar(chars: string[], index: number, dir: -1 | 1): string {
+  let i = index + dir;
+  while (i >= 0 && i < chars.length && /\s/.test(chars[i] ?? "")) i += dir;
+  return chars[i] ?? "";
 }
 
 const OUTPUT_CAP = 80_000;
@@ -103,7 +123,8 @@ export function startCommandRun(
     ...run,
     output: "",
     running: true,
-    background: commandDetaches(run.command),
+    // A guess only. The runner's result is what keeps the terminal open.
+    background: false,
     exitCode: null,
     startedAt: Date.now(),
   });
@@ -136,7 +157,9 @@ export function finishCommandRun(id: string, exitCode: number | null = null): vo
 export function settleCommandRun(id: string, result: string): void {
   const row = runs.get(id);
   if (!row) return;
-  const background = row.background || result.includes(BACKGROUND_NOTE);
+  // The runner's own note is the truth. `&&` used to look like a background
+  // job, and that guess must not keep the terminal up after a normal command.
+  const background = result.includes(BACKGROUND_NOTE);
   if (!background) {
     runs.delete(id);
     publish();

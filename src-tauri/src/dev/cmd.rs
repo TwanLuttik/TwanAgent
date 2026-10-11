@@ -206,10 +206,12 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
 
 /// True when the shell is asked to leave the command running, as `cmd &` does.
 /// The runner then returns once the shell exits and leaves that process alive.
+/// `&&`, `|&`, and redirects such as `2>&1` or `&>` are not a background job.
 pub fn command_detaches(command: &str) -> bool {
     let mut quote: Option<char> = None;
     let mut escaped = false;
-    for ch in command.chars() {
+    let chars: Vec<char> = command.chars().collect();
+    for (index, ch) in chars.iter().copied().enumerate() {
         if let Some(open) = quote {
             if escaped {
                 escaped = false;
@@ -233,11 +235,33 @@ pub fn command_detaches(command: &str) -> bool {
             quote = Some(ch);
             continue;
         }
-        if ch == '&' {
+        if ch == '&' && is_background_amp(&chars, index) {
             return true;
         }
     }
     false
+}
+
+/// True when this `&` backgrounds a command rather than joining or redirecting one.
+fn is_background_amp(chars: &[char], index: usize) -> bool {
+    let prev = neighbor_char(chars, index, -1);
+    let next = neighbor_char(chars, index, 1);
+    if matches!(prev, Some('&' | '>' | '<' | '|')) {
+        return false;
+    }
+    !matches!(next, Some('&' | '>'))
+}
+
+fn neighbor_char(chars: &[char], index: usize, dir: isize) -> Option<char> {
+    let mut cursor = index as isize + dir;
+    while cursor >= 0 && (cursor as usize) < chars.len() && chars[cursor as usize].is_whitespace() {
+        cursor += dir;
+    }
+    if cursor < 0 || cursor as usize >= chars.len() {
+        None
+    } else {
+        Some(chars[cursor as usize])
+    }
 }
 
 /// Run a shell command and call `on_chunk` with each piece of stdout or stderr as it arrives.
@@ -485,6 +509,10 @@ mod tests {
         assert!(!command_detaches("swift run HelloWorld"));
         assert!(!command_detaches("echo 'leave this & alone'"));
         assert!(!command_detaches("echo \"quoted & ampersand\""));
+        assert!(!command_detaches("git status && git rev-parse"));
+        assert!(!command_detaches("npm test 2>&1"));
+        assert!(!command_detaches("cmd &> log.txt"));
+        assert!(!command_detaches("cmd |& cat"));
     }
 
     #[test]

@@ -85,7 +85,7 @@ function ProviderAccountUsage({
     return (
       <div className="px-2 pt-0.5 pb-1" aria-busy="true" aria-label={`Loading ${fallback} account`}>
         <div className="flex items-center gap-1.5 px-0.5 pb-1 text-[11px] text-muted">
-          <Symbol name={logo} className={`size-3 shrink-0 ${logoClass}`} />
+          <Symbol name={logo} colored className={`size-3 shrink-0 ${logoClass}`} />
           <span className="min-w-0 flex-1 truncate">{fallback}</span>
           <span className="size-2.5 shrink-0 animate-spin rounded-full border border-current border-t-transparent" />
         </div>
@@ -98,7 +98,7 @@ function ProviderAccountUsage({
   return (
     <div className="px-2 pt-0.5 pb-1" title={title} aria-label={title} aria-busy={loading}>
       <div className="flex items-center gap-1.5 px-0.5 pb-1 text-[11px] text-muted">
-        <Symbol name={logo} className={`size-3 shrink-0 ${logoClass}`} />
+        <Symbol name={logo} colored className={`size-3 shrink-0 ${logoClass}`} />
         <span className="min-w-0 flex-1 truncate">{usage.label === fallback ? fallback : usage.label}</span>
         {loading ? (
           <span className="size-2.5 shrink-0 animate-spin rounded-full border border-current border-t-transparent" aria-label="Updating" />
