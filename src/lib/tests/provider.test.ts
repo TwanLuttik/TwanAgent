@@ -13,7 +13,8 @@ describe("providerFor", () => {
   it("keeps grok, empty, and side-by-side ids on xai", () => {
     assert.equal(providerFor("grok-4.6"), "xai");
     assert.equal(providerFor(""), "xai");
-    assert.equal(providerFor("claude-opus-4-8-latest"), "xai");
+    assert.equal(providerFor("claude-opus-4-8-latest"), "anthropic");
+    assert.equal(providerFor("claude-sonnet-4-5-20250929"), "anthropic");
     assert.equal(providerFor("sxs-claude-opus-4-6"), "xai");
     assert.equal(isClaudeModel("sxs-claude-opus-4-6"), false);
   });

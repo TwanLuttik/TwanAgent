@@ -183,6 +183,10 @@ export function useLibrary(deps: LibraryDeps) {
 
   const persistQueue = useRef(new Map<string, Promise<void>>());
   const persistGen = useRef(new Map<string, number>());
+  const shownMessages = useRef(new Map<string, ChatMessage[]>());
+  const shownId = useRef(activeId);
+  if (activeId) shownMessages.current.set(activeId, messages);
+  shownId.current = activeId;
 
   function setPending(next: Record<string, PendingMessage[]>) {
     pendingRef.current = next;
@@ -605,8 +609,10 @@ async function openChat(id: string) {
   setRunningActivity(null);
   setTurnStartedAt(0);
   showChatSettings(conversations.find((row) => row.id === id));
+  const cached = shownMessages.current.get(id);
+  if (cached) setMessages(cached);
   setActiveId(id);
-  setOpeningId(id);
+  setOpeningId(cached ? "" : id);
   try {
     const full = await api.getConversation(workspace, id);
     if (generation !== openGeneration.current) return;
@@ -636,7 +642,8 @@ async function openChat(id: string) {
       full.compaction?.summary && full.compaction.through > 0
         ? insertCompactionEvent(loaded, full.compaction.through)
         : loaded;
-    setMessages(withNotice);
+    shownMessages.current.set(id, withNotice);
+    if (shownId.current === id) setMessages(withNotice);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));

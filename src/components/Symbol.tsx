@@ -412,6 +412,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M8.2 10.6V8a3.8 3.8 0 0 1 7.6 0v2.6" {...stroke} />
     </>
   ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="8.1" {...stroke} />
+      <path d="M3.9 12h16.2M12 3.9c2.2 2.3 3.3 5.1 3.3 8.1s-1.1 5.8-3.3 8.1c-2.2-2.3-3.3-5.1-3.3-8.1s1.1-5.8 3.3-8.1Z" {...stroke} />
+    </>
+  ),
   sparkles: (
     <>
       <path
@@ -449,6 +455,22 @@ const ICONS: Record<string, ReactNode> = {
     <>
       <circle cx="12" cy="12" r="8.4" fill="currentColor" />
       <path d="M12 16.2V8.4M8.6 11.4 12 8l3.4 3.4" stroke="#fff" strokeWidth={2.15} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </>
+  ),
+  leaf: (
+    <path
+      d="M12 20.2c0-8.2 2.2-12.6 7.6-15.2-1.2 8.8-4.4 13-7.6 15.2Zm0 0C12 12 9.8 7.6 4.4 5c1.2 8.8 4.4 13 7.6 15.2Z"
+      {...stroke}
+    />
+  ),
+  bolt: (
+    <path d="M13.2 3.4 5.6 13.2h5.2l-1 7.4 7.6-10.2h-5.2l1-7Z" fill="currentColor" />
+  ),
+  "gauge.medium": (
+    <>
+      <path d="M5.2 16.8a7.2 7.2 0 1 1 13.6 0" {...stroke} />
+      <path d="M12 16.6 15.4 11" {...stroke} />
+      <circle cx="12" cy="16.6" r="1.15" fill="currentColor" />
     </>
   ),
   brain: (

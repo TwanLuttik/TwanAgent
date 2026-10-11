@@ -1,53 +1,15 @@
 use std::io::{ErrorKind, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use super::paths::{home_dir, resolve_in_workspace};
+use super::paths::resolve_in_workspace;
+use crate::env_path::command_path;
 use crate::error::{Error, Result};
 
 pub(crate) const CMD_OUTPUT_LIMIT: usize = 80_000;
 const CMD_TIMEOUT_SECS: u64 = 60;
-
-/// GUI apps start with a short PATH, so `node` and `pnpm` are missing even when the CLI can see them.
-pub(crate) fn merge_command_path(current: &str, prefixes: &[String]) -> String {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for part in prefixes.iter().map(String::as_str).chain(current.split(':')) {
-        if part.is_empty() || !seen.insert(part.to_string()) {
-            continue;
-        }
-        out.push(part.to_string());
-    }
-    out.join(":")
-}
-
-fn installed_path_prefixes() -> Vec<String> {
-    let mut prefixes = Vec::new();
-    if let Some(home) = home_dir() {
-        for rel in [".local/share/pnpm", "Library/pnpm", ".local/bin"] {
-            push_dir(&mut prefixes, home.join(rel));
-        }
-    }
-    for extra in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"] {
-        push_dir(&mut prefixes, PathBuf::from(extra));
-    }
-    prefixes
-}
-
-fn push_dir(prefixes: &mut Vec<String>, path: PathBuf) {
-    if path.is_dir() {
-        prefixes.push(path.to_string_lossy().into_owned());
-    }
-}
-
-fn command_path() -> String {
-    merge_command_path(
-        &std::env::var("PATH").unwrap_or_default(),
-        &installed_path_prefixes(),
-    )
-}
 
 #[cfg(unix)]
 fn set_nonblocking(fd: i32) {
@@ -217,18 +179,6 @@ mod tests {
 
     fn temp_ws() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
-    }
-
-    #[test]
-    fn merge_command_path_puts_developer_bins_first_without_duplicates() {
-        let merged = merge_command_path(
-            "/usr/bin:/bin:/opt/homebrew/bin",
-            &["/opt/homebrew/bin".into(), "/Users/me/Library/pnpm".into()],
-        );
-        assert_eq!(
-            merged,
-            "/opt/homebrew/bin:/Users/me/Library/pnpm:/usr/bin:/bin"
-        );
     }
 
     #[test]

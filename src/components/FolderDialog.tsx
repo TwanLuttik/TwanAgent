@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { sidebarProjects } from "../lib/all-projects";
 import {
@@ -46,6 +46,7 @@ export function FolderDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [serversOpen, setServersOpen] = useState(false);
+  const [present, setPresent] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const visibleProjects = showProjects ? filterProjectRows(projects, query) : [];
   const nameTaken = isExistingProjectName(query, projects);
@@ -71,13 +72,18 @@ export function FolderDialog({
     };
   }, [showProjects]);
 
+  const dismiss = useCallback(() => {
+    if (busy || !present) return;
+    setPresent(false);
+  }, [busy, present]);
+
   useEffect(() => {
     function onDocKey(ev: globalThis.KeyboardEvent) {
-      if (ev.key === "Escape" && !busy) onClose();
+      if (ev.key === "Escape") dismiss();
     }
     window.addEventListener("keydown", onDocKey);
     return () => window.removeEventListener("keydown", onDocKey);
-  }, [busy, onClose]);
+  }, [dismiss]);
 
   useEffect(() => {
     if (manual && (active === "clone" || active === "create" || folderActionEnabled(active, query))) {
@@ -270,237 +276,239 @@ export function FolderDialog({
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
-      if (!busy) onClose();
+      dismiss();
     }
   }
 
   return (
-    <AnimatePresence>
-      <motion.div
-        className="fixed inset-0 z-40 flex items-start justify-center bg-black/40 px-4 pt-[16vh]"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={(ev) => {
-          if (ev.target === ev.currentTarget && !busy) onClose();
-        }}
-      >
+    <AnimatePresence onExitComplete={onClose}>
+      {present ? (
         <motion.div
-          className="w-full max-w-[520px] overflow-hidden rounded-xl border border-line bg-canvas shadow-card"
-          initial={{ opacity: 0, scale: 0.97, y: 8 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.98, y: 6 }}
+          key="folder-dialog"
+          className="fixed inset-0 z-40"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
           transition={{ duration: 0.16 }}
-          role="dialog"
-          aria-labelledby="folder-dialog-title"
         >
-          <div className="flex items-center gap-2 border-b border-line px-3">
-            <Symbol name="magnifyingglass" className="size-4 shrink-0 text-muted" />
-            <input
-              ref={inputRef}
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setError(null);
-              }}
-              onKeyDown={onSearchKey}
-              disabled={busy}
-              placeholder={
-                active === "clone"
-                  ? "https://github.com/org/repo.git"
-                  : active === "create"
-                    ? "Type a project name"
-                    : showProjects
-                      ? "Search projects, or type a path"
-                      : "Type a folder path or project name"
-              }
-              className={`h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted disabled:opacity-60 ${
-                active === "create" && nameTaken ? "text-err" : ""
-              }`}
-              aria-invalid={active === "create" && nameTaken}
-              aria-labelledby="folder-dialog-title"
-            />
-          </div>
-          <h2 id="folder-dialog-title" className="sr-only">
-            {showProjects ? "Open a project" : "Open a folder"}
-          </h2>
-          <div role="listbox" aria-label={showProjects ? "Projects" : "Folder actions"} className="p-1.5">
-            {showProjects && visibleProjects.length === 0 && !query.trim() && (
-              <p className="px-2.5 py-2 text-[12px] text-muted">No projects yet</p>
-            )}
-            {visibleProjects.length > 0 && (
-              <div className="mb-1 max-h-[220px] overflow-auto">
-                {visibleProjects.map((row, index) => {
-                  const on = focus.kind === "project" && focus.index === index;
-                  const conflict = active === "create" && isExistingProjectName(query, [row]);
-                  return (
-                    <button
-                      key={row.path}
-                      type="button"
+          <div className="absolute inset-0 bg-black/40" onClick={dismiss} />
+          <motion.div
+            className="absolute inset-x-0 top-[16vh] mx-auto w-[calc(100%-2rem)] max-w-[520px] overflow-hidden rounded-xl border border-line bg-canvas shadow-card"
+            initial={{ opacity: 0, scale: 0.97, y: 8 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, y: 6 }}
+            transition={{ duration: 0.16 }}
+            role="dialog"
+            aria-labelledby="folder-dialog-title"
+          >
+            <div className="flex items-center gap-2 border-b border-line px-3">
+              <Symbol name="magnifyingglass" className="size-4 shrink-0 text-muted" />
+              <input
+                ref={inputRef}
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setError(null);
+                }}
+                onKeyDown={onSearchKey}
+                disabled={busy}
+                placeholder={
+                  active === "clone"
+                    ? "https://github.com/org/repo.git"
+                    : active === "create"
+                      ? "Type a project name"
+                      : showProjects
+                        ? "Search projects, or type a path"
+                        : "Type a folder path or project name"
+                }
+                className={`h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted disabled:opacity-60 ${
+                  active === "create" && nameTaken ? "text-err" : ""
+                }`}
+                aria-invalid={active === "create" && nameTaken}
+                aria-labelledby="folder-dialog-title"
+              />
+            </div>
+            <h2 id="folder-dialog-title" className="sr-only">
+              {showProjects ? "Open a project" : "Open a folder"}
+            </h2>
+            <div role="listbox" aria-label={showProjects ? "Projects" : "Folder actions"} className="p-1.5">
+              {showProjects && visibleProjects.length === 0 && !query.trim() && (
+                <p className="px-2.5 py-2 text-[12px] text-muted">No projects yet</p>
+              )}
+              {visibleProjects.length > 0 && (
+                <div className="mb-1 max-h-[220px] overflow-auto">
+                  {visibleProjects.map((row, index) => {
+                    const on = focus.kind === "project" && focus.index === index;
+                    const conflict = active === "create" && isExistingProjectName(query, [row]);
+                    return (
+                      <button
+                        key={row.path}
+                        type="button"
+                        role="option"
+                        aria-selected={on}
+                        disabled={busy}
+                        onMouseEnter={() => {
+                          setFocus({ kind: "project", index });
+                          setManual(true);
+                        }}
+                        onClick={() => void runOpen(row.path)}
+                        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left ${
+                          on ? "bg-wash-strong" : "hover:bg-wash"
+                        }`}
+                      >
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-inset text-accent">
+                          <Symbol name="folder.fill" className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={`block text-[13px] font-medium ${conflict ? "text-err" : "text-ink"}`}
+                          >
+                            {row.name}
+                          </span>
+                          <span className="block truncate text-[12px] text-muted">{row.path}</span>
+                        </span>
+                        {on && <span className="shrink-0 text-[11px] text-muted">↵</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {FOLDER_ACTIONS.map((action) => {
+                const createConflict = action.id === "create" && nameTaken;
+                const can =
+                  action.id === "clone" || action.id === "create"
+                    ? true
+                    : folderActionEnabled(action.id, query);
+                const ready =
+                  action.id === "create"
+                    ? folderActionEnabled("create", query) && !nameTaken
+                    : action.id === "clone"
+                      ? folderActionEnabled("clone", query)
+                      : can;
+                const selected = focus.kind === "action" && focus.id === action.id;
+                const hint =
+                  createConflict && createName
+                    ? `${createName} already exists`
+                    : folderActionHint(action.id, query);
+                return (
+                  <div key={action.id}>
+                    <div
                       role="option"
-                      aria-selected={on}
-                      disabled={busy}
+                      aria-selected={selected}
+                      aria-disabled={!can || busy}
                       onMouseEnter={() => {
-                        setFocus({ kind: "project", index });
-                        setManual(true);
-                      }}
-                      onClick={() => void runOpen(row.path)}
-                      className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left ${
-                        on ? "bg-wash-strong" : "hover:bg-wash"
-                      }`}
-                    >
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-inset text-accent">
-                        <Symbol name="folder.fill" className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className={`block text-[13px] font-medium ${conflict ? "text-err" : "text-ink"}`}
-                        >
-                          {row.name}
-                        </span>
-                        <span className="block truncate text-[12px] text-muted">{row.path}</span>
-                      </span>
-                      {on && <span className="shrink-0 text-[11px] text-muted">↵</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {FOLDER_ACTIONS.map((action) => {
-              const createConflict = action.id === "create" && nameTaken;
-              const can =
-                action.id === "clone" || action.id === "create"
-                  ? true
-                  : folderActionEnabled(action.id, query);
-              const ready =
-                action.id === "create"
-                  ? folderActionEnabled("create", query) && !nameTaken
-                  : action.id === "clone"
-                    ? folderActionEnabled("clone", query)
-                    : can;
-              const selected = focus.kind === "action" && focus.id === action.id;
-              const hint =
-                createConflict && createName
-                  ? `${createName} already exists`
-                  : folderActionHint(action.id, query);
-              return (
-                <div key={action.id}>
-                  <div
-                    role="option"
-                    aria-selected={selected}
-                    aria-disabled={!can || busy}
-                    onMouseEnter={() => {
-                      if (can) {
-                        setActive(action.id);
-                        setFocus({ kind: "action", id: action.id });
-                        setManual(true);
-                      }
-                    }}
-                    className={`flex w-full items-center gap-1 rounded-lg pr-1.5 ${
-                      selected ? "bg-wash-strong" : "hover:bg-wash"
-                    } ${!can || (busy && !selected) ? "opacity-40" : ""}`}
-                  >
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        if (action.id === "clone" || action.id === "create") {
-                          selectAction(action.id);
-                          return;
+                        if (can) {
+                          setActive(action.id);
+                          setFocus({ kind: "action", id: action.id });
+                          setManual(true);
                         }
-                        void run(action.id);
                       }}
-                      className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left"
+                      className={`flex w-full items-center gap-1 rounded-lg pr-1.5 ${
+                        selected ? "bg-wash-strong" : "hover:bg-wash"
+                      } ${!can || (busy && !selected) ? "opacity-40" : ""}`}
                     >
-                      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-inset text-accent">
-                        <Symbol name={action.icon} className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span
-                          className={`block text-[13px] font-medium ${createConflict ? "text-err" : "text-ink"}`}
-                        >
-                          {action.label}
-                        </span>
-                        <span
-                          className={`block truncate text-[12px] ${createConflict ? "text-err" : "text-muted"}`}
-                        >
-                          {busy && selected
-                            ? action.id === "clone"
-                              ? "Cloning…"
-                              : action.id === "create"
-                                ? "Creating…"
-                                : "Opening…"
-                            : hint}
-                        </span>
-                      </span>
-                      {selected && ready && (
-                        <span className="shrink-0 text-[11px] text-muted">↵</span>
-                      )}
-                    </button>
-                    {action.id === "open" && !busy && (
                       <button
                         type="button"
-                        className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-wash hover:text-ink"
-                        onClick={() => void browse()}
+                        disabled={busy}
+                        onClick={() => {
+                          if (action.id === "clone" || action.id === "create") {
+                            selectAction(action.id);
+                            return;
+                          }
+                          void run(action.id);
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left"
                       >
-                        Browse
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-inset text-accent">
+                          <Symbol name={action.icon} className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={`block text-[13px] font-medium ${createConflict ? "text-err" : "text-ink"}`}
+                          >
+                            {action.label}
+                          </span>
+                          <span
+                            className={`block truncate text-[12px] ${createConflict ? "text-err" : "text-muted"}`}
+                          >
+                            {busy && selected
+                              ? action.id === "clone"
+                                ? "Cloning…"
+                                : action.id === "create"
+                                  ? "Creating…"
+                                  : "Opening…"
+                              : hint}
+                          </span>
+                        </span>
+                        {selected && ready && (
+                          <span className="shrink-0 text-[11px] text-muted">↵</span>
+                        )}
                       </button>
+                      {action.id === "open" && !busy && (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-md px-2 py-1 text-[11px] text-muted hover:bg-wash hover:text-ink"
+                          onClick={() => void browse()}
+                        >
+                          Browse
+                        </button>
+                      )}
+                    </div>
+                    {action.id === "open" && folders.length > 0 && (
+                      <div className="mb-1 ml-11 max-h-[180px] overflow-auto pr-1">
+                        {folders.map((row, index) => {
+                          const on = focus.kind === "folder" && focus.index === index;
+                          return (
+                            <button
+                              key={row.path}
+                              type="button"
+                              role="option"
+                              aria-selected={on}
+                              disabled={busy}
+                              onMouseEnter={() => {
+                                setFocus({ kind: "folder", index });
+                                setActive("open");
+                                setManual(true);
+                              }}
+                              onClick={() => applyFolder(row, true)}
+                              className={`flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[13px] ${
+                                on ? "bg-wash-strong text-ink" : "text-ink/85 hover:bg-wash"
+                              }`}
+                            >
+                              <Symbol name="folder.fill" className="size-3.5 shrink-0 text-accent" />
+                              <span className="min-w-0 truncate">{row.name}</span>
+                              {on && <span className="ml-auto shrink-0 text-[11px] text-muted">↵</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
-                  {action.id === "open" && folders.length > 0 && (
-                    <div className="mb-1 ml-11 max-h-[180px] overflow-auto pr-1">
-                      {folders.map((row, index) => {
-                        const on = focus.kind === "folder" && focus.index === index;
-                        return (
-                          <button
-                            key={row.path}
-                            type="button"
-                            role="option"
-                            aria-selected={on}
-                            disabled={busy}
-                            onMouseEnter={() => {
-                              setFocus({ kind: "folder", index });
-                              setActive("open");
-                              setManual(true);
-                            }}
-                            onClick={() => applyFolder(row, true)}
-                            className={`flex w-full items-center gap-2 rounded-md px-2 py-[5px] text-left text-[13px] ${
-                              on ? "bg-wash-strong text-ink" : "text-ink/85 hover:bg-wash"
-                            }`}
-                          >
-                            <Symbol name="folder.fill" className="size-3.5 shrink-0 text-accent" />
-                            <span className="min-w-0 truncate">{row.name}</span>
-                            {on && <span className="ml-auto shrink-0 text-[11px] text-muted">↵</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {error && <p className="m-0 px-3.5 pb-2.5 text-[12px] text-err">{error}</p>}
-          <div className="border-t border-line px-3 py-2">
-            <button
-              type="button"
-              className="text-[12px] text-accent hover:underline"
-              onClick={() => setServersOpen(true)}
-            >
-              Manage servers
-            </button>
-          </div>
+                );
+              })}
+            </div>
+            {error && <p className="m-0 px-3.5 pb-2.5 text-[12px] text-err">{error}</p>}
+            <div className="border-t border-line px-3 py-2">
+              <button
+                type="button"
+                className="text-[12px] text-accent hover:underline"
+                onClick={() => setServersOpen(true)}
+              >
+                Manage servers
+              </button>
+            </div>
+          </motion.div>
+          {serversOpen && (
+            <MachinesDialog
+              onClose={() => setServersOpen(false)}
+              onOpenProject={(path) => {
+                setServersOpen(false);
+                onPick(path);
+              }}
+            />
+          )}
         </motion.div>
-        {serversOpen && (
-          <MachinesDialog
-            onClose={() => setServersOpen(false)}
-            onOpenProject={(path) => {
-              setServersOpen(false);
-              onPick(path);
-            }}
-          />
-        )}
-      </motion.div>
+      ) : null}
     </AnimatePresence>
   );
 }

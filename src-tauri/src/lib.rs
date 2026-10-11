@@ -2,6 +2,7 @@ mod anthropic;
 mod appdb;
 mod remote;
 mod dev;
+mod env_path;
 mod error;
 mod grok_cli;
 mod image;

@@ -32,6 +32,9 @@ pub struct DevModel {
     /// `xai` or `anthropic`. Older callers that omit it are Grok.
     #[serde(default = "default_provider")]
     pub provider: String,
+    /// Short capability ids such as `vision` and `thinking`. Empty for Grok.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 fn default_provider() -> String {
@@ -429,6 +432,7 @@ pub fn parse_models_cache(src: &str) -> Vec<DevModel> {
             context_window,
             context_windows: context_windows_from(info, context_window),
             provider: "xai".into(),
+            capabilities: Vec::new(),
         });
     }
     rows.sort_by(|a, b| b.id.cmp(&a.id));
@@ -504,6 +508,7 @@ fn fallback_models() -> Vec<DevModel> {
             context_window: Some(256_000),
             context_windows: vec![256_000, 500_000],
             provider: "xai".into(),
+            capabilities: Vec::new(),
         })
         .collect()
 }

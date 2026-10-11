@@ -58,6 +58,7 @@ pub fn claude_models() -> Vec<DevModel> {
             context_window: Some(*window),
             context_windows: Vec::new(),
             provider: PROVIDER_ANTHROPIC.into(),
+            capabilities: bundled_capabilities(id),
         })
         .collect()
 }
@@ -67,8 +68,19 @@ pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u6
     CLAUDE_MODELS.iter().find(|(row_id, ..)| *row_id == id)
 }
 
+/// A chat model id from Anthropic. Dated snapshots (`claude-sonnet-4-5-20250929`) count.
+/// Grok's side-by-side tutor ids (`sxs-claude-…`) do not.
 pub fn is_claude_model(id: &str) -> bool {
-    claude_model(id).is_some()
+    let id = id.trim();
+    if claude_model(id).is_some() {
+        return true;
+    }
+    let rest = id.strip_prefix("claude-").unwrap_or("");
+    if rest.is_empty() {
+        return false;
+    }
+    rest.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
 }
 
 pub fn provider_for(id: &str) -> Provider {
@@ -81,15 +93,23 @@ pub fn provider_for(id: &str) -> Provider {
 
 /// Output cap for the Messages API. Not the context window.
 pub fn max_tokens_for(id: &str) -> u32 {
-    claude_model(id).map(|row| row.3).unwrap_or(16_000)
+    let id = id.trim();
+    if let Some(row) = claude_model(id) {
+        return row.3;
+    }
+    if id.contains("haiku") {
+        16_000
+    } else if is_claude_model(id) {
+        32_000
+    } else {
+        16_000
+    }
 }
 
-/// Opus 4.8 and Sonnet 4.6 accept adaptive thinking. Haiku 4.5 rejects it.
+/// Opus and Sonnet use adaptive thinking. Haiku keeps a fixed budget.
 pub fn supports_adaptive_thinking(id: &str) -> bool {
-    matches!(
-        claude_model(id).map(|row| row.0),
-        Some("claude-opus-4-8" | "claude-sonnet-4-6")
-    )
+    let id = id.trim();
+    is_claude_model(id) && !id.contains("haiku")
 }
 
 /// Manual thinking budget for a model that cannot use adaptive thinking.
@@ -125,8 +145,19 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
+    which_in(name, &crate::env_path::command_path())
+}
+
+/// `which` against an explicit PATH. A Dock-launched app does not inherit the shell PATH.
+fn which_in(name: &str, path: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
-    let out = Command::new(cmd).arg(name).output().ok()?;
+    let mut command = Command::new(cmd);
+    command.arg(name);
+    #[cfg(unix)]
+    command.env("PATH", path);
+    #[cfg(not(unix))]
+    let _ = path;
+    let out = command.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -139,7 +170,7 @@ fn which(name: &str) -> Option<PathBuf> {
     found.is_file().then_some(found)
 }
 
-/// Claude Code CLI. Local installs live under `~/.claude/local`, then the PATH.
+/// Claude Code CLI. Local installs live under `~/.claude/local`, then the developer PATH.
 pub fn claude_bin() -> Option<PathBuf> {
     if let Some(home) = home_dir() {
         let names = if cfg!(windows) {
@@ -336,6 +367,174 @@ fn token_expired(expires_at: Option<i64>) -> bool {
     expires_ms <= now.as_millis() as i64
 }
 
+/// Turn one page of `GET /v1/models` into picker rows.
+/// Retired models and non-Claude ids are dropped. The bundled three supply thinking levels
+/// when the same id is listed; anything else gets the line default.
+pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return (Vec::new(), None, false);
+    };
+    let Some(rows) = json.get("data").and_then(|value| value.as_array()) else {
+        return (Vec::new(), None, false);
+    };
+    let mut models = Vec::new();
+    for row in rows {
+        if row.get("type").and_then(|value| value.as_str()) == Some("model")
+            && row.get("lifecycle").and_then(|value| value.as_str()) == Some("retired")
+        {
+            continue;
+        }
+        let Some(id) = row.get("id").and_then(|value| value.as_str()).map(str::trim) else {
+            continue;
+        };
+        if !is_claude_model(id) || models.iter().any(|model: &DevModel| model.id == id) {
+            continue;
+        }
+        let known = claude_model(id);
+        let name = row
+            .get("display_name")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| known.map(|row| (*row.1).to_string()).unwrap_or_else(|| id.to_string()));
+        let window = row
+            .get("max_input_tokens")
+            .and_then(|value| value.as_u64())
+            .filter(|value| *value > 0)
+            .or_else(|| known.map(|row| row.2));
+        let efforts = effort_levels(row.get("capabilities").and_then(|value| value.get("effort")))
+            .map(|levels| efforts_for(&levels))
+            .or_else(|| known.map(|row| efforts_for(row.4)))
+            .unwrap_or_else(|| efforts_for(efforts_for_line(id)));
+        models.push(DevModel {
+            id: id.to_string(),
+            name,
+            efforts,
+            context_window: window,
+            context_windows: Vec::new(),
+            provider: PROVIDER_ANTHROPIC.into(),
+            capabilities: model_capabilities(row.get("capabilities"), known.is_some()),
+        });
+    }
+    let has_more = json.get("has_more").and_then(|value| value.as_bool()).unwrap_or(false);
+    let last_id = json
+        .get("last_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    (models, last_id, has_more)
+}
+
+fn bundled_capabilities(id: &str) -> Vec<String> {
+    let mut caps = vec!["vision".to_string(), "pdf".to_string(), "effort".to_string()];
+    if supports_adaptive_thinking(id) || manual_thinking_budget(id, Some("high")).is_some() {
+        caps.insert(1, "thinking".to_string());
+    }
+    caps
+}
+
+fn supported(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(|item| item.get("supported"))
+        .and_then(|item| item.as_bool())
+        .unwrap_or(false)
+}
+
+fn model_capabilities(caps: Option<&serde_json::Value>, known: bool) -> Vec<String> {
+    let Some(caps) = caps else {
+        return if known { vec!["vision".into(), "thinking".into(), "pdf".into(), "effort".into()] } else { Vec::new() };
+    };
+    let mut out = Vec::new();
+    if supported(caps.get("image_input")) {
+        out.push("vision".into());
+    }
+    if supported(caps.get("thinking")) {
+        out.push("thinking".into());
+    }
+    if supported(caps.get("pdf_input")) {
+        out.push("pdf".into());
+    }
+    if supported(caps.get("effort")) {
+        out.push("effort".into());
+    }
+    out
+}
+
+/// Effort levels the model actually offers, in picker order. `None` when the field is absent.
+fn effort_levels(effort: Option<&serde_json::Value>) -> Option<Vec<&str>> {
+    let effort = effort?;
+    const ORDER: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    let levels = ORDER
+        .iter()
+        .copied()
+        .filter(|id| supported(effort.get(*id)))
+        .collect::<Vec<_>>();
+    if levels.is_empty() { None } else { Some(levels) }
+}
+
+fn efforts_for_line(id: &str) -> &'static [&'static str] {
+    if id.contains("haiku") {
+        &["low", "medium", "high"]
+    } else {
+        &["low", "medium", "high", "xhigh", "max"]
+    }
+}
+
+/// Models this account can call. Falls back to the bundled three when the list is unavailable.
+pub async fn available_models(auth: &ClaudeAuth) -> Vec<DevModel> {
+    let client = reqwest::Client::builder()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut after: Option<String> = None;
+    let mut out = Vec::new();
+    for _ in 0..5 {
+        let mut req = client
+            .get(MODELS_URL)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .query(&[("limit", "100")]);
+        if let Some(cursor) = after.as_deref() {
+            req = req.query(&[("after_id", cursor)]);
+        }
+        req = if auth.via_cli {
+            req.bearer_auth(&auth.token)
+        } else {
+            req.header("x-api-key", &auth.token)
+        };
+        let Ok(resp) = req.send().await else {
+            break;
+        };
+        if !resp.status().is_success() {
+            break;
+        }
+        let Ok(body) = resp.text().await else {
+            break;
+        };
+        let (page, last_id, has_more) = parse_models_page(&body);
+        if page.is_empty() && out.is_empty() {
+            break;
+        }
+        for model in page {
+            if !out.iter().any(|row: &DevModel| row.id == model.id) {
+                out.push(model);
+            }
+        }
+        if !has_more {
+            break;
+        }
+        let Some(cursor) = last_id else {
+            break;
+        };
+        after = Some(cursor);
+    }
+    if out.is_empty() {
+        claude_models()
+    } else {
+        out
+    }
+}
+
 pub fn claude_cli_info() -> ClaudeCliInfo {
     let bin = claude_bin();
     let version = bin.as_ref().and_then(|path| claude_version(path));
@@ -350,6 +549,7 @@ pub fn claude_cli_info() -> ClaudeCliInfo {
 }
 
 pub const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+pub const MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const SIGN_IN_ERROR: &str =
     "Claude isn’t signed in. Run claude login, or add an Anthropic API key in Settings.";
@@ -1049,6 +1249,21 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn which_finds_a_binary_the_process_path_cannot_see() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "twanagent-which-probe";
+        let bin = dir.path().join(name);
+        fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let short = "/usr/bin:/bin:/usr/sbin:/sbin";
+        assert_eq!(which_in(name, short), None);
+        let merged = format!("{}:{short}", dir.path().display());
+        assert_eq!(which_in(name, &merged).as_deref(), Some(bin.as_path()));
+    }
+
     #[test]
     fn claude_bin_prefers_the_local_install() {
         let dir = tempfile::tempdir().unwrap();
@@ -1094,7 +1309,8 @@ mod tests {
         assert_eq!(provider_for("claude-sonnet-4-6"), Provider::Anthropic);
         assert_eq!(provider_for(" claude-opus-4-8 "), Provider::Anthropic);
         assert!(is_claude_model("claude-haiku-4-5"));
-        assert!(!is_claude_model("claude-opus-4-8-latest"));
+        assert!(is_claude_model("claude-opus-4-8-latest"));
+        assert!(is_claude_model("claude-sonnet-4-5-20250929"));
         assert!(!is_claude_model("sxs-claude-opus-4-6"));
         assert!(!is_claude_model("grok-4.6"));
         assert!(!is_claude_model(""));
@@ -1104,18 +1320,51 @@ mod tests {
     }
 
     #[test]
+    fn models_page_keeps_live_claude_ids_and_drops_the_rest() {
+        let body = r#"{
+            "data": [
+                {"type":"model","id":"claude-opus-4-8","display_name":"Claude Opus 4.8","max_input_tokens":200000,"capabilities":{"image_input":{"supported":true},"thinking":{"supported":true},"pdf_input":{"supported":true},"effort":{"supported":true,"high":{"supported":true},"xhigh":{"supported":true}}}},
+                {"type":"model","id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","max_input_tokens":200000},
+                {"type":"model","id":"claude-3-haiku-20240307","display_name":"Claude Haiku 3"},
+                {"type":"model","id":"claude-retired","display_name":"Gone","lifecycle":"retired"},
+                {"type":"model","id":"sxs-claude-opus-4-6","display_name":"Tutor"}
+            ],
+            "has_more": true,
+            "last_id": "claude-3-haiku-20240307"
+        }"#;
+        let (rows, last_id, has_more) = parse_models_page(body);
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["claude-opus-4-8", "claude-sonnet-4-5-20250929", "claude-3-haiku-20240307"]
+        );
+        assert_eq!(rows[0].efforts.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["high", "xhigh"]);
+        assert_eq!(rows[0].capabilities, ["vision", "thinking", "pdf", "effort"]);
+        assert_eq!(rows[1].name, "Claude Sonnet 4.5");
+        assert_eq!(rows[1].context_window, Some(200_000));
+        assert!(rows[1].efforts.iter().any(|row| row.id == "max"));
+        assert_eq!(rows[2].efforts.len(), 3);
+        assert!(rows.iter().all(|row| row.provider == PROVIDER_ANTHROPIC));
+        assert_eq!(last_id.as_deref(), Some("claude-3-haiku-20240307"));
+        assert!(has_more);
+        assert!(parse_models_page("nope").0.is_empty());
+    }
+
+    #[test]
     fn max_tokens_follow_the_catalog() {
         assert_eq!(max_tokens_for("claude-opus-4-8"), 32_000);
         assert_eq!(max_tokens_for("claude-sonnet-4-6"), 32_000);
         assert_eq!(max_tokens_for("claude-haiku-4-5"), 16_000);
-        assert_eq!(max_tokens_for("claude-opus-4-8-latest"), 16_000);
+        assert_eq!(max_tokens_for("claude-opus-4-8-latest"), 32_000);
+        assert_eq!(max_tokens_for("claude-3-haiku-20240307"), 16_000);
     }
 
     #[test]
     fn haiku_uses_a_fixed_thinking_budget_and_newer_models_stay_adaptive() {
         assert!(supports_adaptive_thinking("claude-opus-4-8"));
         assert!(supports_adaptive_thinking("claude-sonnet-4-6"));
+        assert!(supports_adaptive_thinking("claude-sonnet-4-5-20250929"));
         assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
+        assert!(!supports_adaptive_thinking("claude-3-haiku-20240307"));
         assert_eq!(manual_thinking_budget("claude-haiku-4-5", None), None);
         assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("low")), Some(1_024));
         assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("medium")), Some(4_096));

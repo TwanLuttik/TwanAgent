@@ -18,12 +18,12 @@ import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../l
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
+import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "../lib/model-family";
 import { providerFor, type ProviderId } from "../lib/provider";
 import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, voiceBars, type MicDevice } from "../lib/speech";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Effort, Model } from "../lib/tauri";
-import { AnchoredMenu } from "./ContextMenu";
 import { ContextUsageChip } from "./ContextUsageChip";
 import { FileIcon } from "./FileIcon";
 import { PromptImages } from "./PromptImages";
@@ -114,11 +114,12 @@ export function Composer({
   const box = useRef<HTMLFormElement>(null);
   const area = useRef<HTMLTextAreaElement>(null);
   const mirror = useRef<HTMLDivElement>(null);
+  const micRef = useRef<HTMLButtonElement>(null);
   const [usageHover, setUsageHover] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
-  const [micMenu, setMicMenu] = useState<{ x: number; y: number } | null>(null);
+  const [micMenu, setMicMenu] = useState(false);
   const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
   const [micDeviceId, setMicDeviceId] = useState(loadMicDevice);
   const [voiceLevel, setVoiceLevel] = useState(0);
@@ -278,9 +279,9 @@ export function Composer({
     };
   }, [micMenu]);
 
-  async function openMicMenu(x: number, y: number) {
+  async function openMicMenu() {
     setMicDeviceId(loadMicDevice());
-    setMicMenu({ x, y });
+    setMicMenu(true);
     const devices = navigator.mediaDevices;
     if (!devices?.enumerateDevices) return;
     try {
@@ -565,10 +566,11 @@ export function Composer({
                 if (recording) finishRecording();
                 else void startRecording();
               }}
+              ref={micRef}
               onContextMenu={(ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
-                void openMicMenu(ev.clientX, ev.clientY);
+                void openMicMenu();
               }}
               disabled={transcribing}
               aria-label={recording ? "Stop dictation" : "Dictate"}
@@ -580,19 +582,14 @@ export function Composer({
               <Symbol name={recording ? "mic.fill" : "mic"} className="size-3.5" />
             </button>
           ) : null}
-          {micMenu ? (
-            <AnchoredMenu x={micMenu.x} y={micMenu.y} label="Microphone">
-              <MicChoice label="System default" selected={micDeviceId === ""} onPick={() => pickMic("")} />
-              {micDevices.map((device) => (
-                <MicChoice
-                  key={device.id}
-                  label={device.label}
-                  selected={device.id === micDeviceId}
-                  onPick={() => pickMic(device.id)}
-                />
-              ))}
-            </AnchoredMenu>
-          ) : null}
+          <MicSelect
+            open={micMenu !== null}
+            devices={micDevices}
+            value={micDeviceId}
+            anchor={micRef}
+            onPick={pickMic}
+            onClose={() => setMicMenu(null)}
+          />
           <button
             type="button"
             onClick={onOpenFolder}
@@ -1032,27 +1029,43 @@ function VoiceMeter({ level }: { level: number }) {
   );
 }
 
-function MicChoice({ label, selected, onPick }: { label: string; selected: boolean; onPick: () => void }) {
+function MicSelect({
+  open,
+  devices,
+  value,
+  anchor,
+  onPick,
+  onClose,
+}: {
+  open: boolean;
+  devices: MicDevice[];
+  value: string;
+  anchor: RefObject<HTMLButtonElement | null>;
+  onPick: (id: string) => void;
+  onClose: () => void;
+}) {
   return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={selected}
-      onClick={onPick}
-      className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] hover:bg-inset ${
-        selected ? "font-medium text-ink" : "text-ink/80"
-      }`}
-    >
-      <Symbol name={selected ? "checkmark" : "mic"} className={`size-3 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
-      <span className="min-w-0 truncate">{label}</span>
-    </button>
+    <PopMenu open={open} anchor={anchor} label="Microphone" align="end" width={240} onClose={onClose}>
+      <PopChoice
+        label="System default"
+        icon="mic"
+        selected={value === ""}
+        onPick={() => onPick("")}
+      />
+      {devices.map((device) => (
+        <PopChoice
+          key={device.id}
+          label={device.label}
+          icon="mic"
+          selected={device.id === value}
+          onPick={() => onPick(device.id)}
+        />
+      ))}
+    </PopMenu>
   );
 }
 
 const MODEL_MENU_EASE = [0.22, 1, 0.36, 1] as const;
-const MODEL_ROW_H = 32;
-const MODEL_MENU_PAD = 8;
-const MODEL_MENU_MAX = 256;
 
 const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
   { id: "xai", label: "Grok", icon: "logo.grok" },
@@ -1078,10 +1091,19 @@ function ModelSelect({
     return current ? modelProvider(current) : null;
   });
   const ref = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const [menuAbove, setMenuAbove] = useState(true);
   const selected = models.find((row) => row.id === value);
   const providers = MODEL_PROVIDERS.filter((row) => models.some((model) => modelProvider(model) === row.id));
   const shown = focus ? models.filter((model) => modelProvider(model) === focus) : models;
-  const menuHeight = Math.min(MODEL_MENU_MAX, models.length * MODEL_ROW_H + MODEL_MENU_PAD);
+  const families = groupModelFamilies(shown);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const frame = button.current?.getBoundingClientRect();
+    if (!frame) return;
+    setMenuAbove(frame.top - 320 - 6 >= 8);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -1102,6 +1124,7 @@ function ModelSelect({
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={button}
         type="button"
         title="Model"
         aria-expanded={open}
@@ -1123,12 +1146,13 @@ function ModelSelect({
         {open ? (
           <motion.div
             role="menu"
-            initial={{ opacity: 0, y: 6 }}
+            initial={{ opacity: 0, y: menuAbove ? 6 : -6 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 6 }}
+            exit={{ opacity: 0, y: menuAbove ? 6 : -6 }}
             transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
-            style={{ height: menuHeight }}
-            className="absolute bottom-full left-0 z-30 mb-1 flex w-[236px] origin-bottom overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card"
+            className={`absolute left-0 z-30 flex h-80 w-[280px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
+              menuAbove ? "bottom-full mb-1 origin-bottom" : "top-full mt-1 origin-top"
+            }`}
           >
             <div className="flex w-9 shrink-0 flex-col gap-0.5 border-r border-line/20 bg-panel/40 p-1" role="group" aria-label="Model providers">
               {providers.map((row) => {
@@ -1155,34 +1179,64 @@ function ModelSelect({
             </div>
             <div className="min-w-0 flex-1 overflow-auto py-1">
               <AnimatePresence initial={false} mode="popLayout">
-                {shown.map((model) => {
-                  const on = model.id === value;
+                {families.map((family) => {
+                  const versions = family.models.length > 1;
+                  const shared = sharedModelCapabilities(family.models);
                   return (
-                    <motion.button
-                      key={model.id}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={on}
+                    <motion.div
+                      key={family.key}
+                      role="group"
+                      aria-label={family.label}
                       layout
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
                       transition={{ duration: 0.14, ease: MODEL_MENU_EASE }}
-                      onClick={() => {
-                        onChange(model.id);
-                        setOpen(false);
-                      }}
-                      className={`flex h-8 w-full items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-inset ${
-                        on ? "font-medium text-ink" : "text-ink/80"
-                      }`}
+                      className="py-0.5"
                     >
-                      <ModelIcon model={model} className="size-3.5" />
-                      <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                      <Symbol
-                        name="checkmark"
-                        className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${on ? "opacity-100" : "opacity-0"}`}
-                      />
-                    </motion.button>
+                      {versions ? (
+                        <div className="flex items-center gap-2 px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
+                          <span className="min-w-0 flex-1 truncate">{family.label}</span>
+                          {shared ? <CapabilityIcons ids={shared} /> : null}
+                          {shared ? <span className="size-3 shrink-0" aria-hidden /> : null}
+                        </div>
+                      ) : null}
+                      {family.models.map((row) => {
+                        const version = modelFamilyName(row.name).version;
+                        const current = row.id === value;
+                        const context = contextWindowLabel(row.context_window ?? 0);
+                        return (
+                          <button
+                            key={row.id}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={current}
+                            aria-label={row.name}
+                            onClick={() => {
+                              onChange(row.id);
+                              setOpen(false);
+                            }}
+                            className={`flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                              current ? "font-medium text-ink" : "text-ink/80"
+                            }`}
+                          >
+                            <ModelIcon model={row} className="size-3.5" />
+                            <span className="min-w-0 truncate">{versions ? version || row.name : row.name}</span>
+                            {context ? (
+                              <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
+                                {context} ctx
+                              </span>
+                            ) : null}
+                            <span className="min-w-2 flex-1" />
+                            <CapabilityIcons ids={row.capabilities} faded={Boolean(shared)} />
+                            <Symbol
+                              name="checkmark"
+                              className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${current ? "opacity-100" : "opacity-0"}`}
+                            />
+                          </button>
+                        );
+                      })}
+                    </motion.div>
                   );
                 })}
               </AnimatePresence>
@@ -1191,6 +1245,68 @@ function ModelSelect({
         ) : null}
       </AnimatePresence>
     </div>
+  );
+}
+
+const CAPABILITIES: { id: string; icon: string; label: string; detail: string; className: string }[] = [
+  { id: "vision", icon: "photo", label: "Images", detail: "Accepts image input.", className: "text-ok" },
+  { id: "pdf", icon: "doc", label: "PDFs", detail: "Reads PDF documents.", className: "text-[#d97757]" },
+  { id: "thinking", icon: "brain", label: "Thinking", detail: "Can think before it answers.", className: "text-accent" },
+  { id: "effort", icon: "sparkles", label: "Effort", detail: "Effort steers how thoroughly it works.", className: "text-warn" },
+];
+
+function CapabilityIcons({ ids, faded = false }: { ids?: string[] | null; faded?: boolean }) {
+  const known = new Set(ids ?? []);
+  const shown = CAPABILITIES.filter((row) => known.has(row.id));
+  const [tip, setTip] = useState<{ label: string; detail: string; className: string; icon: string; top: number; left: number } | null>(null);
+  if (!shown.length) return null;
+  return (
+    <span className={`flex shrink-0 items-center gap-1 ${faded ? "opacity-40" : ""}`}>
+      {shown.map((row) => (
+        <span
+          key={row.id}
+          aria-label={row.label}
+          className={row.className}
+          onMouseEnter={(event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            setTip({
+              label: row.label,
+              detail: row.detail,
+              className: row.className,
+              icon: row.icon,
+              top: box.top - 8,
+              left: Math.min(Math.max(8, box.left - 40), window.innerWidth - 188),
+            });
+          }}
+          onMouseLeave={() => setTip(null)}
+        >
+          <Symbol name={row.icon} className="size-3" />
+        </span>
+      ))}
+      {createPortal(
+        <AnimatePresence>
+          {tip ? (
+            <motion.span
+              key={`${tip.label}-${tip.left}-${tip.top}`}
+              role="tooltip"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+              style={{ top: tip.top, left: tip.left }}
+              className="pointer-events-none fixed z-50 w-[180px] -translate-y-full rounded-lg border border-line bg-canvas px-2.5 py-2 text-left shadow-card"
+            >
+              <span className="flex items-center gap-1.5">
+                <Symbol name={tip.icon} className={`size-3.5 ${tip.className}`} />
+                <span className="text-[12px] font-medium text-ink">{tip.label}</span>
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-snug font-normal text-muted">{tip.detail}</span>
+            </motion.span>
+          ) : null}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </span>
   );
 }
 
@@ -1218,29 +1334,17 @@ function ChipSelect({
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function onDoc(ev: MouseEvent) {
-      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
-    }
-    function onKey(ev: globalThis.KeyboardEvent) {
-      if (ev.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
+  const button = useRef<HTMLButtonElement>(null);
+  const wide = items.some((item) => item.detail);
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative">
       <button
+        ref={button}
         type="button"
         title={title}
-        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
         className={`flex items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
           open ? "bg-wash text-ink" : "text-muted hover:text-ink"
         }`}
@@ -1248,29 +1352,168 @@ function ChipSelect({
         <span className="max-w-[132px] truncate">{label}</span>
         <Symbol name="chevron.down" className="size-2.5 opacity-70" />
       </button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute bottom-full left-0 z-30 mb-1 min-w-[168px] overflow-hidden rounded-lg border border-line bg-canvas py-1 shadow-card"
-        >
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                onChange(item.id);
-                setOpen(false);
-              }}
-              className={`flex w-full items-center px-2.5 py-1.5 text-left text-[12px] hover:bg-inset ${
-                item.id === value ? "font-medium text-ink" : "text-ink/80"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <PopMenu open={open} anchor={button} label={title} width={wide ? 280 : 200} onClose={() => setOpen(false)}>
+        {items.map((item) => (
+          <PopChoice
+            key={item.id}
+            label={item.label}
+            detail={item.detail}
+            icon={chipIcon(title, item.id)}
+            selected={item.id === value}
+            onPick={() => {
+              onChange(item.id);
+              setOpen(false);
+            }}
+          />
+        ))}
+      </PopMenu>
     </div>
+  );
+}
+
+function chipIcon(title: string, id: string): string | undefined {
+  if (title === "Thinking") return effortIcon(id);
+  if (title === "Permissions") return permissionIcon(id);
+  return undefined;
+}
+
+function effortIcon(id: string): string {
+  if (id === "low") return "leaf";
+  if (id === "medium") return "gauge.medium";
+  if (id === "high" || id === "xhigh") return "bolt";
+  if (id === "max") return "sparkles";
+  return "brain";
+}
+
+function permissionIcon(id: string): string {
+  if (id === "approve-all") return "bolt";
+  if (id === "read-only") return "eye";
+  return "lock";
+}
+
+function PopMenu({
+  open,
+  anchor,
+  label,
+  align = "start",
+  width,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  anchor: RefObject<HTMLElement | null>;
+  label: string;
+  align?: "start" | "end";
+  width: number;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number; above: boolean } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const node = anchor.current;
+      const menu = panel.current;
+      if (!node || !menu) return;
+      const frame = node.getBoundingClientRect();
+      const height = menu.getBoundingClientRect().height;
+      const left = align === "end" ? frame.right - width : frame.left;
+      const clamped = Math.min(Math.max(8, left), window.innerWidth - width - 8);
+      const gap = 6;
+      const above = frame.top - height - gap >= 8;
+      setBox({
+        left: clamped,
+        top: above ? frame.top - gap - height : frame.bottom + gap,
+        above,
+      });
+    }
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, anchor, align, width, children]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(ev: MouseEvent) {
+      const target = ev.target as Node;
+      if (anchor.current?.contains(target) || panel.current?.contains(target)) return;
+      onClose();
+    }
+    function onKey(ev: globalThis.KeyboardEvent) {
+      if (ev.key === "Escape") onClose();
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, anchor, onClose]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          ref={panel}
+          role="menu"
+          aria-label={label}
+          initial={{ opacity: 0, y: box?.above === false ? -6 : 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: box?.above === false ? -6 : 6 }}
+          transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+          style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width, visibility: box ? "visible" : "hidden" }}
+          className={`fixed z-50 overflow-hidden rounded-lg border border-line/25 bg-canvas py-1 shadow-card ${
+            box?.above === false ? "origin-top" : "origin-bottom"
+          }`}
+          onMouseDown={(ev) => ev.stopPropagation()}
+        >
+          {children}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>,
+    document.body,
+  );
+}
+
+function PopChoice({
+  label,
+  detail,
+  icon,
+  selected,
+  onPick,
+}: {
+  label: string;
+  detail?: string;
+  icon?: string;
+  selected: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={selected}
+      onClick={onPick}
+      className={`flex w-full items-center gap-2 px-2.5 text-left transition-colors duration-150 hover:bg-wash ${
+        detail ? "py-1.5" : "h-7"
+      } ${selected ? "font-medium text-ink" : "text-ink/80"}`}
+    >
+      {icon ? <Symbol name={icon} className="size-3.5 shrink-0 text-muted" /> : null}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12px]">{label}</span>
+        {detail ? <span className="mt-0.5 block text-[11px] leading-snug font-normal text-muted">{detail}</span> : null}
+      </span>
+      <Symbol
+        name="checkmark"
+        className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${selected ? "opacity-100" : "opacity-0"}`}
+      />
+    </button>
   );
 }

@@ -21,7 +21,7 @@ export async function pickDir(): Promise<string | null> {
 }
 
 export type KeyStatus = { saved: boolean; env: boolean };
-export type Effort = { id: string; label: string };
+export type Effort = { id: string; label: string; detail?: string };
 export type ModelProvider = "xai" | "anthropic" | string;
 
 export type Model = {
@@ -31,6 +31,8 @@ export type Model = {
   context_window?: number | null;
   context_windows?: number[] | null;
   provider?: ModelProvider;
+  /** Claude capability ids: vision, thinking, pdf, effort. */
+  capabilities?: string[] | null;
 };
 export type Runtime = {
   installed: boolean;

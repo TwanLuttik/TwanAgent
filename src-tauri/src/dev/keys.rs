@@ -18,8 +18,14 @@ pub fn dev_key_status(state: State<'_, AppState>) -> KeyStatus {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_runtime(state: State<'_, AppState>) -> grok_cli::DevRuntime {
-    grok_cli::runtime(&state.data_dir)
+pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRuntime> {
+    let mut status = grok_cli::runtime(&state.data_dir);
+    if let Some(auth) = crate::anthropic::resolve_claude_auth() {
+        let live = crate::anthropic::available_models(&auth).await;
+        status.models.retain(|row| row.provider != crate::anthropic::PROVIDER_ANTHROPIC);
+        status.models.extend(live);
+    }
+    Ok(status)
 }
 
 #[tauri::command(rename_all = "snake_case")]
