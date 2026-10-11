@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, State};
@@ -425,8 +425,14 @@ async fn stream_anthropic(
     let mut last_usage: Option<DevChatUsage> = None;
     let mut emitted_text = false;
     let mut emitted_reasoning = false;
+    let mut pending_delta = String::new();
+    let mut pending_reasoning = String::new();
+    let mut last_delta_emit: Option<Instant> = None;
+    let mut last_reasoning_emit: Option<Instant> = None;
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
+            flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+            flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
             let _ = app.emit(
                 "dev-chat",
                 DevChatEvent {
@@ -443,6 +449,8 @@ async fn stream_anthropic(
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(err) => {
+                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
                 if emitted_text || emitted_reasoning || !tools.is_empty() {
                     emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
                     return Ok(());
@@ -464,32 +472,21 @@ async fn stream_anthropic(
             crate::anthropic::apply_thinking_piece(&mut thinking, &piece);
             match piece {
                 crate::anthropic::SsePiece::Delta(text) => {
-                    emitted_text = true;
-                    let _ = app.emit(
-                        "dev-chat",
-                        DevChatEvent {
-                            stream_id: stream_id.into(),
-                            kind: "delta".into(),
-                            text: Some(text),
-                            tool_calls: None,
-                            usage: None,
-                            thinking: None,
-                        },
-                    );
+                    if note_coalesced(&mut pending_delta, &text, &mut last_delta_emit) {
+                        flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                        last_delta_emit = Some(Instant::now());
+                    }
                 }
                 crate::anthropic::SsePiece::Reasoning(text) => {
-                    emitted_reasoning = true;
-                    let _ = app.emit(
-                        "dev-chat",
-                        DevChatEvent {
-                            stream_id: stream_id.into(),
-                            kind: "reasoning".into(),
-                            text: Some(text),
-                            tool_calls: None,
-                            usage: None,
-                            thinking: None,
-                        },
-                    );
+                    if note_coalesced(&mut pending_reasoning, &text, &mut last_reasoning_emit) {
+                        flush_reasoning(
+                            app,
+                            stream_id,
+                            &mut pending_reasoning,
+                            &mut emitted_reasoning,
+                        );
+                        last_reasoning_emit = Some(Instant::now());
+                    }
                 }
                 crate::anthropic::SsePiece::Usage {
                     prompt_tokens,
@@ -522,6 +519,8 @@ async fn stream_anthropic(
                     }
                 }
                 crate::anthropic::SsePiece::Stop => {
+                    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
                     emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
                     return Ok(());
                 }
@@ -529,6 +528,8 @@ async fn stream_anthropic(
             }
         }
     }
+    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
     if emitted_text || emitted_reasoning || !tools.is_empty() {
         emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage, None);
     }
@@ -636,6 +637,9 @@ async fn stream_chat(
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut pending_delta = String::new();
+    let mut pending_reasoning = String::new();
+    let mut last_delta_emit: Option<Instant> = None;
+    let mut last_reasoning_emit: Option<Instant> = None;
     let mut tool_acc: HashMap<u32, (String, String, String)> = HashMap::new();
     let mut last_usage: Option<DevChatUsage> = None;
     let mut emitted_text = false;
@@ -644,6 +648,8 @@ async fn stream_chat(
     let mut fallback_reasoning = String::new();
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
+            flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+            flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
             let _ = app.emit(
                 "dev-chat",
                 DevChatEvent {
@@ -661,8 +667,9 @@ async fn stream_chat(
             Ok(chunk) => chunk,
             Err(err) => {
                 // A dropped body after we already have text or tool calls is still a usable reply.
-                if emitted_text || emitted_reasoning || !pending_delta.is_empty() || !tool_acc.is_empty() {
-                    flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
+                if emitted_text || emitted_reasoning || !tool_acc.is_empty() {
                     emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
                     emit_done(
                         app,
@@ -689,6 +696,7 @@ async fn stream_chat(
             }
             if data == "[DONE]" {
                 flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
                 emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
                 emit_done(
                     app,
@@ -730,25 +738,17 @@ async fn stream_chat(
                 .get("content")
                 .map(text_from_content)
                 .unwrap_or_default();
-            // Flush each SSE data line that carried content. Waiting for [DONE]
-            // drops the reply when the provider never sends it or the body ends early.
-            if note_streamed_content(&mut pending_delta, &piece) {
+            // Coalesce SSE content instead of emitting every line. Still flush on
+            // [DONE], cancel, decode errors, and when the body ends, so a missing
+            // [DONE] cannot drop the reply.
+            if note_coalesced(&mut pending_delta, &piece, &mut last_delta_emit) {
                 flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                last_delta_emit = Some(Instant::now());
             }
             let thought = reasoning_from_delta(&delta);
-            if !thought.is_empty() {
-                emitted_reasoning = true;
-                let _ = app.emit(
-                    "dev-chat",
-                    DevChatEvent {
-                        stream_id: stream_id.into(),
-                        kind: "reasoning".into(),
-                        text: Some(thought),
-                        tool_calls: None,
-                        usage: None,
-                        thinking: None,
-                    },
-                );
+            if note_coalesced(&mut pending_reasoning, &thought, &mut last_reasoning_emit) {
+                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
+                last_reasoning_emit = Some(Instant::now());
             }
             let fallback = fallback_choice_text(choice);
             if !fallback.is_empty() {
@@ -795,11 +795,15 @@ async fn stream_chat(
             if choice.get("finish_reason").and_then(|f| f.as_str()) == Some("stop")
                 || choice.get("finish_reason").and_then(|f| f.as_str()) == Some("tool_calls")
             {
-                // wait for [DONE]
+                // Flush now so a missing [DONE] cannot drop the last words, then
+                // still wait for [DONE] (or the body ending) before emitting done.
+                flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+                flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
             }
         }
     }
     flush_delta(app, stream_id, &mut pending_delta, &mut emitted_text);
+    flush_reasoning(app, stream_id, &mut pending_reasoning, &mut emitted_reasoning);
     emit_pending_reasoning(app, stream_id, emitted_reasoning, &fallback_reasoning);
     emit_done(
         app,
@@ -811,28 +815,68 @@ async fn stream_chat(
     Ok(())
 }
 
-/// Append one SSE content piece and report whether it should be emitted now.
-/// Empty pieces (tool-call or usage lines) leave any pending text untouched.
-fn note_streamed_content(pending: &mut String, piece: &str) -> bool {
+/// Hold text and reasoning this long before emitting, unless the buffer is large.
+const COALESCE_INTERVAL: Duration = Duration::from_millis(50);
+/// Flush immediately once a pending buffer reaches this many bytes.
+const COALESCE_MAX_BYTES: usize = 2048;
+
+/// Append one SSE piece. Returns true when the buffer should be emitted now.
+/// Empty pieces leave the buffer and the last-emit clock untouched.
+/// The first piece starts the interval without emitting. Later pieces emit the
+/// buffer (including themselves) once the interval has elapsed or it is large.
+fn note_coalesced(pending: &mut String, piece: &str, last_emit: &mut Option<Instant>) -> bool {
     if piece.is_empty() {
-        false
+        return false;
+    }
+    pending.push_str(piece);
+    let due = match *last_emit {
+        Some(at) => at.elapsed() >= COALESCE_INTERVAL,
+        None => {
+            *last_emit = Some(Instant::now());
+            false
+        }
+    };
+    due || pending.len() >= COALESCE_MAX_BYTES
+}
+
+/// Take whatever is buffered so it can be emitted before done, error, or stop.
+/// Empty input stays empty and does not count as an emit.
+fn take_coalesced(pending: &mut String) -> Option<String> {
+    if pending.is_empty() {
+        None
     } else {
-        pending.push_str(piece);
-        true
+        Some(std::mem::take(pending))
     }
 }
 
 fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
-    if pending.is_empty() {
+    let Some(text) = take_coalesced(pending) else {
         return;
-    }
+    };
     *emitted = true;
-    let text = std::mem::take(pending);
     let _ = app.emit(
         "dev-chat",
         DevChatEvent {
             stream_id: stream_id.into(),
             kind: "delta".into(),
+            text: Some(text),
+            tool_calls: None,
+            usage: None,
+            thinking: None,
+        },
+    );
+}
+
+fn flush_reasoning(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: &mut bool) {
+    let Some(text) = take_coalesced(pending) else {
+        return;
+    };
+    *emitted = true;
+    let _ = app.emit(
+        "dev-chat",
+        DevChatEvent {
+            stream_id: stream_id.into(),
+            kind: "reasoning".into(),
             text: Some(text),
             tool_calls: None,
             usage: None,
@@ -1136,20 +1180,51 @@ mod tests {
     }
 
     #[test]
-    fn content_lines_flush_without_waiting_for_done() {
+    fn rapid_pieces_stay_buffered_until_the_interval_elapses() {
         let mut pending = String::new();
-        assert!(!note_streamed_content(&mut pending, ""));
-        assert!(pending.is_empty());
-
-        assert!(note_streamed_content(&mut pending, "Hel"));
+        let mut last = None;
+        assert!(!note_coalesced(&mut pending, "Hel", &mut last));
         assert_eq!(pending, "Hel");
-        let flushed = std::mem::take(&mut pending);
-        assert_eq!(flushed, "Hel");
+        assert!(last.is_some());
+        assert!(!note_coalesced(&mut pending, "lo", &mut last));
+        assert_eq!(pending, "Hello");
+    }
 
-        assert!(note_streamed_content(&mut pending, "lo"));
+    #[test]
+    fn piece_after_the_interval_flushes_the_previous_buffer() {
+        let mut pending = String::new();
+        let mut last = Some(Instant::now() - COALESCE_INTERVAL);
+        assert!(note_coalesced(&mut pending, "lo", &mut last));
         assert_eq!(pending, "lo");
-        assert!(!note_streamed_content(&mut pending, ""));
-        assert_eq!(pending, "lo");
+    }
+
+    #[test]
+    fn large_buffer_flushes_immediately() {
+        let mut pending = "x".repeat(COALESCE_MAX_BYTES - 1);
+        let mut last = None;
+        assert!(!note_coalesced(&mut pending, "", &mut last));
+        assert!(last.is_none());
+        assert!(note_coalesced(&mut pending, "yy", &mut last));
+        assert!(pending.len() >= COALESCE_MAX_BYTES);
+    }
+
+    #[test]
+    fn flush_now_sends_whatever_is_pending() {
+        let mut pending = String::from("held");
+        assert_eq!(take_coalesced(&mut pending), Some("held".into()));
+        assert!(pending.is_empty());
+        assert_eq!(take_coalesced(&mut pending), None);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn empty_pieces_do_not_flush_or_change_the_buffer() {
+        let mut pending = String::from("stay");
+        let mut last = Some(Instant::now() - COALESCE_INTERVAL - Duration::from_millis(10));
+        let before = last;
+        assert!(!note_coalesced(&mut pending, "", &mut last));
+        assert_eq!(pending, "stay");
+        assert_eq!(last, before);
     }
 
     #[test]

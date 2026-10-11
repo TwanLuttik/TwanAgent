@@ -19,6 +19,7 @@ import {
   uncachedFileExists,
   watchFileRefresh,
 } from "../lib/file-exists";
+import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import * as api from "../lib/tauri";
 import {
   inlineCodeValues,
@@ -43,16 +44,15 @@ export function useWorkspaceFileLinks(): FileLinkCtx {
 
 export function WorkspaceFileLinks({
   workspace,
-  tick = 0,
   onOpenFile,
   children,
 }: {
   workspace: string | null;
-  tick?: number;
   onOpenFile?: (path: string) => void;
   children: ReactNode;
 }) {
   const value = useMemo(() => ({ workspace, onOpenFile }), [workspace, onOpenFile]);
+  const tick = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
   useEffect(() => {
     refreshFileExists();
   }, [tick]);

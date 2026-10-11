@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
+import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   isAppProject,
   isProjectCollapsed,
@@ -24,6 +35,7 @@ export function AllProjectsList({
   onNewChat,
   onOpenSettings,
   onDeleteProject,
+  onReorderProject,
   renderList,
   archiveOpen,
   onToggleArchive,
@@ -39,6 +51,7 @@ export function AllProjectsList({
   onNewChat: (path: string) => void;
   onOpenSettings: (path: string, name: string) => void;
   onDeleteProject: (path: string) => void;
+  onReorderProject?: (fromPath: string, toPath: string) => void;
   renderList: (group: ProjectChatGroup, options: { showArchived: boolean }) => ReactNode;
   archiveOpen: Record<string, boolean>;
   onToggleArchive: (path: string) => void;
@@ -47,6 +60,7 @@ export function AllProjectsList({
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
   const [gitMenu, setGitMenu] = useState<{ x: number; y: number; path: string; remote: boolean } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
     function onDoc() {
@@ -72,7 +86,23 @@ export function AllProjectsList({
     return <p className="px-2 py-1 text-[12px] text-muted">No projects yet</p>;
   }
 
+  function onDragEnd(ev: DragEndEvent) {
+    const { active, over } = ev;
+    if (!over || active.id === over.id || !onReorderProject) return;
+    const from = groups.find((group) => projectKey(group.path) === String(active.id));
+    const to = groups.find((group) => projectKey(group.path) === String(over.id));
+    if (!from || !to) return;
+    onReorderProject(from.path, to.path);
+  }
+
   return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      modifiers={[restrictToVerticalAxis]}
+      onDragEnd={onDragEnd}
+    >
+    <SortableContext items={groups.map((group) => projectKey(group.path))} strategy={verticalListSortingStrategy}>
     <div className="flex flex-col gap-2">
       {groups.map((group) => {
         const current = isSameProject(group.path, activeWorkspace);
@@ -84,9 +114,14 @@ export function AllProjectsList({
           ? !hasArchived
           : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
         return (
-          <section key={projectKey(group.path)}>
+          <ProjectSection
+            key={projectKey(group.path)}
+            id={projectKey(group.path)}
+            header={(drag) => (
+            <div className="contents">
             <div
-              className="group flex items-center rounded-[6px] select-none hover:bg-wash"
+              className="group flex cursor-grab items-center rounded-[6px] select-none hover:bg-wash active:cursor-grabbing"
+              {...drag}
               onContextMenu={(ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
@@ -138,6 +173,9 @@ export function AllProjectsList({
                 </button>
               ) : null}
             </div>
+            </div>
+            )}
+          >
             {closed || !showArchived ? null : (
               <div className="mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/10 px-2 py-1 text-accent">
                 <Symbol name="archivebox" className="size-3 shrink-0" />
@@ -166,7 +204,7 @@ export function AllProjectsList({
             ) : (
               renderList(group, { showArchived })
             )}
-          </section>
+          </ProjectSection>
         );
       })}
       {menu ? (
@@ -213,6 +251,30 @@ export function AllProjectsList({
         />
       ) : null}
     </div>
+    </SortableContext>
+    </DndContext>
+  );
+}
+
+function ProjectSection({
+  id,
+  header,
+  children,
+}: {
+  id: string;
+  header: (drag: HTMLAttributes<HTMLDivElement>) => ReactNode;
+  children?: ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <section
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={isDragging ? "relative z-10 opacity-70" : undefined}
+    >
+      {header({ ...attributes, ...listeners })}
+      {children}
+    </section>
   );
 }
 

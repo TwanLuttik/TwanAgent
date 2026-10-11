@@ -13,6 +13,8 @@ import {
   expandCollapsedProject,
   isAppProject,
   isSameProject,
+  moveProjectGroup,
+  patchSidebarConversations,
   removeProjectGroup,
   renameConversationInGroups,
   toggleCollapsedProject,
@@ -59,6 +61,7 @@ import * as api from "../../lib/tauri";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { ConversationActivity, LiveToolRow } from "../../lib/core";
 import { emptySubagentDock, toggleSubagentExpanded, type SubagentDockState } from "../../lib/subagent";
+import { PERSIST_TRAIL_MS, createPersistQueue } from "../../lib/persist-queue";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 
@@ -185,8 +188,8 @@ export function useLibrary(deps: LibraryDeps) {
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
   } = deps;
 
-  const persistQueue = useRef(new Map<string, Promise<void>>());
   const persistGen = useRef(new Map<string, number>());
+  const persistTrail = useRef<ReturnType<typeof createPersistQueue<PersistPayload>> | null>(null);
   const shownMessages = useRef(new Map<string, ChatMessage[]>());
   const shownId = useRef(activeId);
   if (activeId) shownMessages.current.set(activeId, messages);
@@ -211,6 +214,17 @@ function closeFileTab(path: string) {
 
 function openFolder() {
   setFolderOpen(true);
+}
+
+async function reorderProjects(fromPath: string, toPath: string) {
+  const next = moveProjectGroup(allProjectGroups, fromPath, toPath);
+  if (next === allProjectGroups) return;
+  setAllProjectGroups(next);
+  try {
+    await api.reorderProjects(next.map((group) => group.path));
+  } catch (e) {
+    setFlash({ kind: "err", text: String(e) });
+  }
 }
 
 function toggleProjectCollapsed(path: string) {
@@ -636,16 +650,19 @@ async function openChat(id: string) {
     if (generation !== openGeneration.current) return;
     const known = conversations.find((row) => row.id === id);
     setConversations((rows) =>
-      rows.map((row) =>
-        row.id === id
-          ? {
-              ...row,
-              effort: full.effort ?? row.effort,
-              model: full.model ?? row.model,
-              context_window: full.context_window ?? row.context_window,
-              permission: full.permission ?? row.permission,
-            }
-          : row,
+      patchSidebarConversations(
+        rows,
+        rows.map((row) =>
+          row.id === id
+            ? {
+                ...row,
+                effort: full.effort ?? row.effort,
+                model: full.model ?? row.model,
+                context_window: full.context_window ?? row.context_window,
+                permission: full.permission ?? row.permission,
+              }
+            : row,
+        ),
       ),
     );
     if (generation !== openGeneration.current) return;
@@ -758,12 +775,99 @@ async function removeChat(id: string, path = workspace) {
   }
 }
 
+type PersistPayload = {
+  next: ChatMessage[];
+  ws: string;
+  usage?: ChatUsage;
+  compaction?: { summary: string; through: number } | null;
+  generation: number;
+};
+
+async function writePersisted(id: string, payload: PersistPayload) {
+  if (persistGen.current.get(id) !== payload.generation) return;
+  if (!canPersistTurn(id, deletedIdsRef.current)) return;
+  const { next, ws, usage, compaction } = payload;
+  const title = conversationTitleFrom(next);
+  const now = nowIso();
+  const existing =
+    conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
+  const kind = parseConversationKind(existing?.kind);
+  // Until an assistant reply exists, the composer chip is the model for this
+  // chat. The row may still hold the model copied when the empty chat was created.
+  const unanswered = !next.some((message) => message.role === "assistant");
+  const chipModel = (modelRef.current || model || loadModel()).trim();
+  const storedModel = (existing?.model ?? "").trim();
+  const modelId = (unanswered ? chipModel || storedModel : storedModel || chipModel) || null;
+  await api.saveConversation(ws, {
+    id,
+    title,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    kind,
+    journey_id: existing?.journey_id ?? null,
+    sort_order: existing?.sort_order ?? 0,
+    effort: existing?.effort ?? null,
+    model: modelId,
+    context_window: existing?.context_window ?? null,
+    permission: existing?.permission ?? null,
+    archived: existing?.archived ?? false,
+    messages: persistableMessages(next),
+    context_usage: usageToPersist(usage, usageByChat[id]),
+    compaction: persistableCompaction(compaction ?? compactionByChat[id]),
+  });
+  if (persistGen.current.get(id) !== payload.generation) return;
+  const summary = {
+    title,
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    kind,
+    effort: existing?.effort ?? null,
+    model: modelId,
+    context_window: existing?.context_window ?? null,
+    permission: existing?.permission ?? null,
+  };
+  if (isSameProject(ws, workspaceRef.current)) {
+    setConversations((rows) => {
+      const prev = rows.find((row) => row.id === id);
+      const nextRow = {
+        id,
+        ...summary,
+        created_at: prev?.created_at ?? summary.created_at,
+        journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
+        sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
+        archived: prev?.archived ?? existing?.archived ?? false,
+      };
+      const idx = rows.findIndex((r) => r.id === id);
+      if (idx < 0) return [nextRow, ...rows];
+      // A turn save rewrites the same title on every step. Keep the row so the sidebar does not rebuild.
+      return patchSidebarConversations(rows, rows.map((r, i) => (i === idx ? { ...r, ...nextRow } : r)));
+    });
+    return;
+  }
+  setAllProjectGroups((groups) =>
+    renameConversationInGroups(groups, id, {
+      ...summary,
+      journey_id: existing?.journey_id ?? null,
+      sort_order: existing?.sort_order ?? 0,
+      archived: existing?.archived ?? false,
+    }).groups,
+  );
+}
+
+if (!persistTrail.current) {
+  persistTrail.current = createPersistQueue<PersistPayload>({
+    delay: PERSIST_TRAIL_MS,
+    write: writePersisted,
+  });
+}
+
 async function persist(
   next: ChatMessage[],
   id: string,
   ws = workspace,
   usage?: ChatUsage,
   compaction?: { summary: string; through: number } | null,
+  options?: { flush?: boolean },
 ) {
   if (compaction?.summary && compaction.through > 0) {
     setCompactionByChat((prev) =>
@@ -776,79 +880,16 @@ async function persist(
   if (!ws || !id) return;
   const generation = (persistGen.current.get(id) ?? 0) + 1;
   persistGen.current.set(id, generation);
-  const previous = persistQueue.current.get(id) ?? Promise.resolve();
-  const run = previous
-    .catch(() => undefined)
-    .then(async () => {
-      if (persistGen.current.get(id) !== generation) return;
-      if (!canPersistTurn(id, deletedIdsRef.current)) return;
-      const title = conversationTitleFrom(next);
-      const now = nowIso();
-      const existing =
-        conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
-      const kind = parseConversationKind(existing?.kind);
-      // Until an assistant reply exists, the composer chip is the model for this
-      // chat. The row may still hold the model copied when the empty chat was created.
-      const unanswered = !next.some((message) => message.role === "assistant");
-      const chipModel = (modelRef.current || model || loadModel()).trim();
-      const storedModel = (existing?.model ?? "").trim();
-      const modelId = (unanswered ? chipModel || storedModel : storedModel || chipModel) || null;
-      await api.saveConversation(ws, {
-        id,
-        title,
-        created_at: existing?.created_at ?? now,
-        updated_at: now,
-        kind,
-        journey_id: existing?.journey_id ?? null,
-        sort_order: existing?.sort_order ?? 0,
-        effort: existing?.effort ?? null,
-        model: modelId,
-        context_window: existing?.context_window ?? null,
-        permission: existing?.permission ?? null,
-        archived: existing?.archived ?? false,
-        messages: persistableMessages(next),
-        context_usage: usageToPersist(usage, usageByChat[id]),
-        compaction: persistableCompaction(compaction ?? compactionByChat[id]),
-      });
-      if (persistGen.current.get(id) !== generation) return;
-      const summary = {
-        title,
-        created_at: existing?.created_at ?? now,
-        updated_at: now,
-        kind,
-        effort: existing?.effort ?? null,
-        model: modelId,
-        context_window: existing?.context_window ?? null,
-        permission: existing?.permission ?? null,
-      };
-      if (isSameProject(ws, workspaceRef.current)) {
-        setConversations((rows) => {
-          const prev = rows.find((row) => row.id === id);
-          const next = {
-            id,
-            ...summary,
-            created_at: prev?.created_at ?? summary.created_at,
-            journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
-            sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
-            archived: prev?.archived ?? existing?.archived ?? false,
-          };
-          const idx = rows.findIndex((r) => r.id === id);
-          if (idx < 0) return [next, ...rows];
-          return rows.map((r, i) => (i === idx ? { ...r, ...next } : r));
-        });
-        return;
-      }
-      setAllProjectGroups((groups) =>
-        renameConversationInGroups(groups, id, {
-          ...summary,
-          journey_id: existing?.journey_id ?? null,
-          sort_order: existing?.sort_order ?? 0,
-          archived: existing?.archived ?? false,
-        }).groups,
-      );
-    });
-  persistQueue.current.set(id, run);
-  await run;
+  const trail = persistTrail.current!;
+  const payload: PersistPayload = { next, ws, usage, compaction, generation };
+  // Tool steps only schedule. The turn's last save flushes so the await sees this payload.
+  if (options?.flush) {
+    const queued = trail.enqueue(id, payload).catch(() => undefined);
+    await trail.flush(id);
+    await queued;
+    return;
+  }
+  await trail.enqueue(id, payload);
 }
 
 async function reorderChats(fromId: string, toId: string, path = workspace) {
@@ -1062,6 +1103,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     closeFileTab,
     openFolder,
     toggleProjectCollapsed,
+    reorderProjects,
     clearWorkspace,
     deleteProjectFromSidebar,
     applyWorkspace,

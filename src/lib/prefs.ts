@@ -84,21 +84,32 @@ const PASTES_KEY = "twanagent.pastes";
 
 export type StoredPaste = { id: string; text: string };
 
-export function loadComposerPastes(): Record<string, StoredPaste[]> {
+const COMPOSER_DRAFT_WAIT = 200;
+const pendingDrafts = new Map<string, string>();
+const pendingPastes = new Map<string, StoredPaste[]>();
+let composerFlushTimer: ReturnType<typeof setTimeout> | undefined;
+let composerFlushAt = 0;
+let composerHideBound = false;
+
+function storedPastes(rows: unknown): StoredPaste[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(
+    (row): row is StoredPaste =>
+      !!row &&
+      typeof row === "object" &&
+      typeof (row as StoredPaste).id === "string" &&
+      typeof (row as StoredPaste).text === "string" &&
+      (row as StoredPaste).text.length > 0,
+  );
+}
+
+function readComposerPastes(): Record<string, StoredPaste[]> {
   try {
     const raw = JSON.parse(localStorage.getItem(PASTES_KEY) ?? "");
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
     const out: Record<string, StoredPaste[]> = {};
     for (const [id, rows] of Object.entries(raw)) {
-      if (!Array.isArray(rows)) continue;
-      const pastes = rows.filter(
-        (row): row is StoredPaste =>
-          !!row &&
-          typeof row === "object" &&
-          typeof (row as StoredPaste).id === "string" &&
-          typeof (row as StoredPaste).text === "string" &&
-          (row as StoredPaste).text.length > 0,
-      );
+      const pastes = storedPastes(rows);
       if (pastes.length) out[id] = pastes;
     }
     return out;
@@ -107,12 +118,62 @@ export function loadComposerPastes(): Record<string, StoredPaste[]> {
   }
 }
 
+function readComposerDrafts(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [id, text] of Object.entries(raw)) {
+      if (typeof text === "string" && text) out[id] = text;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function armComposerFlush(wait = COMPOSER_DRAFT_WAIT): void {
+  const delay = Math.max(0, wait);
+  const due = Date.now() + delay;
+  if (composerFlushTimer !== undefined && composerFlushAt <= due) return;
+  if (composerFlushTimer !== undefined) clearTimeout(composerFlushTimer);
+  composerFlushAt = due;
+  composerFlushTimer = setTimeout(() => {
+    composerFlushTimer = undefined;
+    composerFlushAt = 0;
+    flushComposerDrafts();
+  }, delay);
+}
+
+function bindComposerFlush(): void {
+  if (composerHideBound || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  const flush = () => flushComposerDrafts();
+  window.addEventListener("pagehide", flush);
+  window.addEventListener("beforeunload", flush);
+  composerHideBound = true;
+}
+
+export function loadComposerPastes(): Record<string, StoredPaste[]> {
+  const out = readComposerPastes();
+  for (const [id, pastes] of pendingPastes) {
+    if (pastes.length) out[id] = pastes;
+    else delete out[id];
+  }
+  return out;
+}
+
 export function saveComposerPastes(chatId: string, pastes: StoredPaste[]): void {
   if (!chatId) return;
-  const all = loadComposerPastes();
-  if (pastes.length) all[chatId] = pastes;
-  else delete all[chatId];
-  localStorage.setItem(PASTES_KEY, JSON.stringify(all));
+  pendingPastes.set(chatId, pastes.map((row) => ({ id: row.id, text: row.text })));
+  armComposerFlush();
+  bindComposerFlush();
+}
+
+export function scheduleComposerPastes(chatId: string, pastes: StoredPaste[], wait = COMPOSER_DRAFT_WAIT): void {
+  if (!chatId) return;
+  pendingPastes.set(chatId, pastes.map((row) => ({ id: row.id, text: row.text })));
+  armComposerFlush(wait);
+  bindComposerFlush();
 }
 
 export function loadWorkspace(): string {
@@ -204,25 +265,58 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
 }
 
 export function loadComposerDrafts(): Record<string, string> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "");
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const out: Record<string, string> = {};
-    for (const [id, text] of Object.entries(raw)) {
-      if (typeof text === "string" && text) out[id] = text;
-    }
-    return out;
-  } catch {
-    return {};
+  const out = readComposerDrafts();
+  for (const [id, text] of pendingDrafts) {
+    if (text) out[id] = text;
+    else delete out[id];
   }
+  return out;
 }
 
 export function saveComposerDraft(chatId: string, text: string): void {
   if (!chatId) return;
-  const all = loadComposerDrafts();
-  if (text) all[chatId] = text;
-  else delete all[chatId];
-  localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+  pendingDrafts.set(chatId, text);
+  armComposerFlush();
+  bindComposerFlush();
+}
+
+export function scheduleComposerDraft(chatId: string, text: string, wait = COMPOSER_DRAFT_WAIT): void {
+  if (!chatId) return;
+  pendingDrafts.set(chatId, text);
+  armComposerFlush(wait);
+  bindComposerFlush();
+}
+
+export function flushComposerDrafts(): void {
+  if (composerFlushTimer !== undefined) {
+    clearTimeout(composerFlushTimer);
+    composerFlushTimer = undefined;
+    composerFlushAt = 0;
+  }
+  if (pendingDrafts.size) {
+    const written = new Map(pendingDrafts);
+    const all = readComposerDrafts();
+    for (const [id, text] of written) {
+      if (text) all[id] = text;
+      else delete all[id];
+    }
+    localStorage.setItem(DRAFTS_KEY, JSON.stringify(all));
+    for (const [id, text] of written) {
+      if (pendingDrafts.get(id) === text) pendingDrafts.delete(id);
+    }
+  }
+  if (pendingPastes.size) {
+    const written = new Map(pendingPastes);
+    const all = readComposerPastes();
+    for (const [id, pastes] of written) {
+      if (pastes.length) all[id] = pastes;
+      else delete all[id];
+    }
+    localStorage.setItem(PASTES_KEY, JSON.stringify(all));
+    for (const [id, pastes] of written) {
+      if (pendingPastes.get(id) === pastes) pendingPastes.delete(id);
+    }
+  }
 }
 
 export function loadConversation(workspace: string): string {

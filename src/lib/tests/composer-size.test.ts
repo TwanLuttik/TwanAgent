@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { textareaFitHeight } from "../composer-size.ts";
+import { shouldRemeasureComposer, textareaFitHeight } from "../composer-size.ts";
+
+describe("shouldRemeasureComposer", () => {
+  it("skips the zero-height measure while the text grows", () => {
+    assert.equal(shouldRemeasureComposer(3, 4, false), false);
+    assert.equal(shouldRemeasureComposer(4, 4, false), false);
+  });
+
+  it("remeasures when the text shrinks or the width changes", () => {
+    assert.equal(shouldRemeasureComposer(4, 3, false), true);
+    assert.equal(shouldRemeasureComposer(4, 8, true), true);
+  });
+});
 
 describe("textareaFitHeight", () => {
   const lineHeight = 22.75;

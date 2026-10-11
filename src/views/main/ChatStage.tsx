@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { motion } from "motion/react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
@@ -29,8 +29,9 @@ import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
+import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { CenterTabs } from "./AppChrome";
-import { useMain, useStream } from "./context";
+import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
 export function ChatStage() {
@@ -71,7 +72,6 @@ export function ChatStage() {
     closeChatTab,
     showSettings,
     showUsage,
-    tick,
     workspace,
   } = useMain();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
@@ -130,7 +130,6 @@ export function ChatStage() {
             <Editor
               workspace={workspace}
               path={editor.activePath}
-              tick={tick}
               fileView={editorFileView(editor.tabs.find((tab: { path: string }) => tab.path === editor.activePath))}
               markdownView={markdownViewForTab(
                 editor.activePath,
@@ -172,7 +171,6 @@ export function ChatStage() {
         {paneWorkspace && !fullPage ? (
           <Workspace
             workspace={paneWorkspace}
-            tick={tick}
             selectedPath={editor.activePath}
             onOpenFile={openWorkspaceFile}
             onRefresh={bumpFiles}
@@ -227,24 +225,12 @@ function ChatColumn() {
     workspace,
     allProjectGroups,
   } = useMain();
-  const { streamText, streamReasoning, liveTools, runningActivity } = useStream();
   const current = models.find((row: { id: string; name: string; context_windows?: number[]; context_window?: number; efforts: { id: string; label: string }[] }) => row.id === model);
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
   const transcriptPending = Boolean(openingId) && openingId === activeId;
-  const composerCentered =
-    !transcriptPending &&
-    messages.length === 0 &&
-    !streamText &&
-    !streamReasoning &&
-    !activeRunning &&
-    queued.length === 0;
-  const dock = useRef({ id: activeId, centered: composerCentered, sliding: false });
-  if (dock.current.id !== activeId) {
-    dock.current = { id: activeId, centered: composerCentered, sliding: false };
-  } else if (dock.current.centered && !composerCentered) {
-    dock.current.sliding = true;
-  }
-  dock.current.centered = composerCentered;
+  const centeredWithoutStream =
+    !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
+  const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <ConversationDocks align="end">
@@ -273,10 +259,7 @@ function ChatColumn() {
         ) : null}
         {fileDrag ? <DropImagesHint /> : null}
         <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]">
-          <div
-            className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5"
-            style={{ paddingBottom: composerCentered ? 24 : composerPad }}
-          >
+          <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
             <div className="mb-5">
               <div className="truncate text-[15px] font-semibold">
                 {workspace
@@ -294,28 +277,20 @@ function ChatColumn() {
                 {workspace ? ` · ${workspace}` : ""}
               </div>
             </div>
-            {composerCentered ? (
-              <p className="m-0 text-center text-[13px] text-muted">
-                Ask {providerFor(model) === "anthropic" ? "Claude" : "Grok"} to inspect, edit, or run something in this folder.
-              </p>
-            ) : null}
-            <ChatTranscript
+            <LiveTranscript
               messages={messages}
-              streamText={streamText}
-              streamReasoning={streamReasoning}
-              liveTools={liveTools}
-              busy={activeRunning}
+              model={model}
+              centeredWithoutStream={centeredWithoutStream}
+              activeRunning={activeRunning}
+              transcriptPending={transcriptPending}
               conversationId={activeId}
               mentionFiles={mentionFiles}
               onLoadOlder={holdScrollForOlder}
+              pendingShell={Boolean(pendingShell)}
+              pendingPlan={Boolean(pendingPlan)}
+              activity={runningTurns[activeId]?.activity}
+              startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
             />
-            {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
-            {activeRunning && !pendingShell && !pendingPlan && (
-              <ActivityStatus
-                label={conversationActivityLabel(runningTurns[activeId]?.activity ?? runningActivity)}
-                startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
-              />
-            )}
             {pendingShell && (
               <div className="mb-4 rounded-md border border-line bg-panel px-3 py-2.5">
                 <div className="text-[12px] font-medium">
@@ -355,6 +330,7 @@ function ChatColumn() {
                 onRemove={() => removePendingAt(i)}
               />
             ))}
+            <StreamBottomPad composerPad={composerPad} centeredWithoutStream={centeredWithoutStream} />
           </div>
         </div>
         {pendingPlan ? (
@@ -364,25 +340,146 @@ function ChatColumn() {
             onAnswer={(decision, note) => answerPlan(decision, note)}
           />
         ) : null}
-        <motion.div
-          ref={composerDockRef}
-          initial={false}
-          animate={{ top: composerCentered ? "42%" : "100%", y: composerCentered ? "-50%" : "-100%" }}
-          transition={dock.current.sliding ? { duration: 0.42, ease: [0.22, 1, 0.36, 1] } : { duration: 0 }}
-          onAnimationComplete={() => {
-            dock.current.sliding = false;
-          }}
-          className="pointer-events-none absolute inset-x-0 z-10"
+        <StreamComposerDock
+          dockRef={composerDockRef}
+          dock={dock}
+          activeId={activeId}
+          centeredWithoutStream={centeredWithoutStream}
         >
-          {composerCentered ? null : (
-            <div className="h-16 bg-gradient-to-t from-canvas from-15% to-transparent" aria-hidden />
-          )}
-          <div className="pointer-events-auto bg-canvas px-6 pb-3">
-            <div className="mx-auto w-full min-w-0 max-w-[720px]">
-              <SessionComposer placement="chat" />
-            </div>
-          </div>
-        </motion.div>
+          <SessionComposer placement="chat" />
+        </StreamComposerDock>
       </div>
     );
+}
+
+/** Bottom padding flips with stream emptiness, not with each token. */
+function StreamBottomPad({
+  composerPad,
+  centeredWithoutStream,
+}: {
+  composerPad: number;
+  centeredWithoutStream: boolean;
+}) {
+  const centered = useComposerCentered(centeredWithoutStream);
+  return <div style={{ paddingBottom: centered ? 24 : composerPad }} />;
+}
+
+/**
+ * The dock slides when the first token arrives. It subscribes only to the
+ * centered boolean, so later tokens do not move the composer.
+ */
+function StreamComposerDock({
+  dockRef,
+  dock,
+  activeId,
+  centeredWithoutStream,
+  children,
+}: {
+  dockRef: RefObject<HTMLDivElement | null>;
+  dock: RefObject<{ id: string; centered: boolean; sliding: boolean }>;
+  activeId: string;
+  centeredWithoutStream: boolean;
+  children: ReactNode;
+}) {
+  const composerCentered = useComposerCentered(centeredWithoutStream);
+  if (dock.current.id !== activeId) {
+    dock.current = { id: activeId, centered: composerCentered, sliding: false };
+  } else if (dock.current.centered && !composerCentered) {
+    dock.current.sliding = true;
+  }
+  dock.current.centered = composerCentered;
+  return (
+    <motion.div
+      ref={dockRef}
+      initial={false}
+      animate={{ top: composerCentered ? "42%" : "100%", y: composerCentered ? "-50%" : "-100%" }}
+      transition={dock.current.sliding ? { duration: 0.42, ease: [0.22, 1, 0.36, 1] } : { duration: 0 }}
+      onAnimationComplete={() => {
+        dock.current.sliding = false;
+      }}
+      className="pointer-events-none absolute inset-x-0 z-10"
+    >
+      <ComposerDockChrome centered={composerCentered}>{children}</ComposerDockChrome>
+    </motion.div>
+  );
+}
+
+const ComposerDockChrome = memo(function ComposerDockChrome({
+  centered,
+  children,
+}: {
+  centered: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {centered ? null : <div className="h-16 bg-gradient-to-t from-canvas from-15% to-transparent" aria-hidden />}
+      <div className="pointer-events-auto bg-canvas px-6 pb-3">
+        <div className="mx-auto w-full min-w-0 max-w-[720px]">{children}</div>
+      </div>
+    </>
+  );
+});
+
+/** True while the composer should sit in the middle. The empty flag is stable across tokens. */
+function useComposerCentered(centeredWithoutStream: boolean): boolean {
+  const streamEmpty = useLiveStreamEmpty();
+  return centeredWithoutStream && streamEmpty;
+}
+
+function LiveTranscript({
+  messages,
+  model,
+  centeredWithoutStream,
+  activeRunning,
+  transcriptPending,
+  conversationId,
+  mentionFiles,
+  onLoadOlder,
+  pendingShell,
+  pendingPlan,
+  activity,
+  startedAt,
+}: {
+  messages: Parameters<typeof ChatTranscript>[0]["messages"];
+  model: string;
+  centeredWithoutStream: boolean;
+  activeRunning: boolean;
+  transcriptPending: boolean;
+  conversationId: string;
+  mentionFiles: Parameters<typeof ChatTranscript>[0]["mentionFiles"];
+  onLoadOlder: () => void;
+  pendingShell: boolean;
+  pendingPlan: boolean;
+  activity: Parameters<typeof conversationActivityLabel>[0];
+  startedAt: number;
+}) {
+  const { streamText, streamReasoning, liveTools, runningActivity } = useLiveStream();
+  const showEmpty = centeredWithoutStream && !streamText && !streamReasoning;
+  return (
+    <>
+      {showEmpty ? (
+        <p className="m-0 text-center text-[13px] text-muted">
+          Ask {providerFor(model) === "anthropic" ? "Claude" : "Grok"} to inspect, edit, or run something in this folder.
+        </p>
+      ) : null}
+      <ChatTranscript
+        messages={messages}
+        streamText={streamText}
+        streamReasoning={streamReasoning}
+        liveTools={liveTools}
+        busy={activeRunning}
+        conversationId={conversationId}
+        mentionFiles={mentionFiles}
+        onLoadOlder={onLoadOlder}
+      />
+      {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
+      {activeRunning && !pendingShell && !pendingPlan && (
+        <ActivityStatus
+          label={conversationActivityLabel(activity ?? runningActivity)}
+          startedAt={startedAt}
+        />
+      )}
+    </>
+  );
 }

@@ -8,7 +8,11 @@ import {
   isSameProject,
   projectHasArchived,
   removeProjectGroup,
+  patchSidebarConversation,
+  patchSidebarConversations,
+  moveProjectGroup,
   renameConversationInGroups,
+  sameSidebarConversationList,
   sidebarProjects,
   toggleCollapsedProject,
   applyLiveProjectChats,
@@ -164,6 +168,34 @@ describe("upsertProjectGroup", () => {
   });
 });
 
+describe("patchSidebarConversations", () => {
+  const now = Date.parse("2026-09-16T12:00:30.000Z");
+
+  it("keeps the row when another save stays inside the same age label", () => {
+    const rows = [{ ...chat("a1", "Fix the login"), updated_at: "2026-09-16T12:00:10.000Z" }];
+    const next = [{ ...rows[0], updated_at: "2026-09-16T12:00:20.000Z" }];
+    assert.equal(patchSidebarConversations(rows, next, now), rows);
+    assert.equal(patchSidebarConversation(rows[0], next[0], now), rows[0]);
+    assert.equal(sameSidebarConversationList(rows, rows), true);
+    assert.equal(sameSidebarConversationList(rows, next), false);
+  });
+
+  it("replaces the row when the age label or title changes", () => {
+    const rows = [{ ...chat("a1", "Fix the login"), updated_at: "2026-09-16T11:58:00.000Z" }];
+    const aged = patchSidebarConversations(rows, [{ ...rows[0], updated_at: "2026-09-16T12:00:20.000Z" }], now);
+    assert.equal(aged[0]?.updated_at, "2026-09-16T12:00:20.000Z");
+    const titled = patchSidebarConversations(rows, [{ ...rows[0], title: "Ship it" }], now);
+    assert.equal(titled[0]?.title, "Ship it");
+  });
+
+  it("replaces the row when the title changes", () => {
+    const rows = [chat("a1", "New chat")];
+    const patched = patchSidebarConversations(rows, [{ ...rows[0], title: "Fix the login", updated_at: "t1" }]);
+    assert.equal(patched[0]?.title, "Fix the login");
+    assert.notEqual(patched, rows);
+  });
+});
+
 describe("renameConversationInGroups", () => {
   it("renames the chat in its own project and does not copy it into another", () => {
     const groups = buildProjectGroups(
@@ -187,6 +219,27 @@ describe("renameConversationInGroups", () => {
     const missing = renameConversationInGroups(groups, "nope", { title: "x" });
     assert.equal(missing.found, false);
     assert.equal(missing.groups, groups);
+  });
+});
+
+describe("moveProjectGroup", () => {
+  it("moves a project in front of another and ignores a missing path", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+        { name: "gamma", path: "/app/gamma" },
+      ],
+      [],
+      {},
+    );
+    const next = moveProjectGroup(groups, "/app/gamma/", "/app/alpha");
+    assert.deepEqual(
+      next.map((row) => row.name),
+      ["gamma", "alpha", "beta"],
+    );
+    assert.equal(moveProjectGroup(groups, "/app/alpha", "/missing"), groups);
+    assert.equal(moveProjectGroup(groups, "/app/alpha", "/app/alpha"), groups);
   });
 });
 

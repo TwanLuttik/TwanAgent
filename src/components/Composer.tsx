@@ -16,7 +16,7 @@ import {
 } from "../lib/paste";
 import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../lib/image";
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
-import { textareaFitHeight } from "../lib/composer-size";
+import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
 import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "../lib/model-family";
 import { providerFor, type ProviderId } from "../lib/provider";
@@ -328,12 +328,15 @@ export function Composer({
     takeImageFiles(imageFilesFromDrop(ev.dataTransfer.files) as File[]);
   }
 
+  const draftLenRef = useRef(draft.length);
   useLayoutEffect(() => {
     const el = area.current;
     if (!el) return;
     const max = compact ? COMPACT_MAX : LANDING_MAX;
+    const prevLen = draftLenRef.current;
+    draftLenRef.current = draft.length;
 
-    function fit() {
+    function fit(remeasure: boolean) {
       const node = area.current;
       if (!node) return;
       const cs = getComputedStyle(node);
@@ -341,17 +344,19 @@ export function Composer({
       const lh = parseFloat(cs.lineHeight);
       const lineHeight = Number.isFinite(lh) && cs.lineHeight !== "normal" ? lh : fontSize * 1.625;
       const paddingY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      node.style.height = "0px";
-      node.style.height = `${textareaFitHeight({
+      if (remeasure) node.style.height = "0px";
+      const next = textareaFitHeight({
         value: node.value,
         scrollHeight: node.scrollHeight,
         lineHeight: Number.isFinite(lineHeight) ? lineHeight : 0,
         paddingY,
         max,
-      })}px`;
+      });
+      const height = `${next}px`;
+      if (node.style.height !== height) node.style.height = height;
     }
 
-    fit();
+    fit(shouldRemeasureComposer(prevLen, draft.length, false));
     const host = box.current;
     if (!host || typeof ResizeObserver === "undefined") return;
     let width = host.getBoundingClientRect().width;
@@ -359,7 +364,7 @@ export function Composer({
       const next = host.getBoundingClientRect().width;
       if (next === width) return;
       width = next;
-      fit();
+      fit(true);
     });
     ro.observe(host);
     return () => ro.disconnect();
@@ -769,7 +774,7 @@ function MentionField({
   useLayoutEffect(() => {
     const from = area.current;
     const to = mirror.current;
-    if (!from || !to) return;
+    if (!from || !to || spans.length === 0) return;
     const sync = () => {
       const cs = getComputedStyle(from);
       to.style.boxSizing = cs.boxSizing;

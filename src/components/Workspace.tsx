@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -35,7 +35,7 @@ import {
   topLevelPaths,
   validEntryName,
 } from "../lib/file-actions";
-import { dirsToList, fileStructureDirs, subscribeFileStructure } from "../lib/file-structure";
+import { dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import {
   closedTerminalTabs,
   paneForWorkspace,
@@ -75,13 +75,11 @@ import { Symbol } from "./Symbol";
 
 export const Workspace = memo(function Workspace({
   workspace,
-  tick,
   selectedPath,
   onOpenFile,
   onRefresh,
 }: {
   workspace: string;
-  tick: number;
   selectedPath?: string | null;
   onOpenFile?: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
   onRefresh?: () => void;
@@ -105,6 +103,7 @@ export const Workspace = memo(function Workspace({
   const [error, setError] = useState<string | null>(null);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
+  const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
 
   const loadDir = useCallback(
     async (path: string) => {
@@ -176,7 +175,7 @@ export const Workspace = memo(function Workspace({
 
   useEffect(() => {
     void refreshTree();
-  }, [workspace, tick, structureTick, refreshTree]);
+  }, [workspace, fileRefresh, structureTick, refreshTree]);
 
   useEffect(() => {
     void loadDir("").catch((e) => setError(String(e)));

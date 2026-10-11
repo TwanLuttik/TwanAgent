@@ -58,6 +58,7 @@ import {
   isTurnFailureMessage,
   modelForTurn,
   markUnseenFinished,
+  patchRunningTurn,
   enqueuePending,
   pendingIndexAfterRemove,
   removePending,
@@ -115,6 +116,7 @@ export type TurnDeps = {
     ws?: string,
     usage?: ChatUsage,
     compaction?: { summary: string; through: number } | null,
+    options?: { flush?: boolean },
   ) => Promise<void>;
   setFlash: (flash: { kind: "ok" | "err"; text: string } | null) => void;
   setModel: Update<string>;
@@ -508,10 +510,7 @@ function showLive(id: string) {
 }
 
 function markRunning(id: string, patch: Partial<RunningTurn> = {}) {
-  setRunningTurns((prev) => {
-    const current = prev[id] ?? { activity: null, startedAt: Date.now() };
-    return { ...prev, [id]: { ...current, ...patch } };
-  });
+  setRunningTurns((prev) => patchRunningTurn(prev, id, patch));
 }
 
 function clearRunning(id: string) {
@@ -769,10 +768,10 @@ async function runTurn(
   let latestUsage = usageByChat[id];
   let latestCompaction: { summary: string; through: number } | null = compactionByChat[id] ?? null;
   let persistQueue = Promise.resolve();
-  const saveMessages = (snapshot: ChatMessage[]) => {
+  const saveMessages = (snapshot: ChatMessage[], options?: { flush?: boolean }) => {
     latestMessages = snapshot;
     persistQueue = persistQueue
-      .then(() => persist(snapshot, id, ws, latestUsage, latestCompaction))
+      .then(() => persist(snapshot, id, ws, latestUsage, latestCompaction, options))
       .catch(() => undefined);
   };
   const chat = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
@@ -952,7 +951,7 @@ async function runTurn(
       const restored = restorePrompt(id, latestMessages);
       if (restored) latestMessages = restored;
     }
-    saveMessages(latestMessages);
+    saveMessages(latestMessages, { flush: true });
     rememberLive(id, { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
     if (visible()) {
       setMessages(latestMessages);
@@ -979,7 +978,7 @@ async function runTurn(
       if (restored) latestMessages = restored;
     }
     if (latestMessages.length) {
-      saveMessages(latestMessages);
+      saveMessages(latestMessages, { flush: true });
       if (visible()) setMessages(latestMessages);
       await persistQueue;
     }

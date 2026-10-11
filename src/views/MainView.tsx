@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, easeChatToEnd, isNearBottom, scrollChatToEnd } from "../lib/chat-scroll";
+import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
 import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
@@ -8,9 +8,10 @@ import { detectMcp, setMcpEnabledInToml, withMcpAuth, type DetectedMcpServer } f
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
-import { fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
+import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
+import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
+import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
@@ -48,7 +49,7 @@ import { emptyGrokPlan, planModeEngaged, type GrokPlan, type PlanDecision, type 
 import { emptySubagentDock, type SubagentDockState, type SubagentRecord } from "../lib/subagent";
 import { bindTurn } from "./main/useTurn";
 import { useLibrary, type RunTurn } from "./main/useLibrary";
-import type { MainModel } from "./main/context";
+import type { MainModel, SidebarSlice } from "./main/context";
 import { MainProvider } from "./main/context";
 import type { SettingsTab } from "./SettingsView";
 import { MainShell } from "./main/MainShell";
@@ -80,12 +81,32 @@ export function MainView() {
   const [runningId, setRunningId] = useState("");
   const [runningTurns, setRunningTurns] = useState<Record<string, RunningTurn>>({});
   const [unseenFinished, setUnseenFinished] = useState<ReadonlySet<string>>(() => new Set());
-  const [streamText, setStreamText] = useState("");
-  const [streamReasoning, setStreamReasoning] = useState("");
   const [usageByChat, setUsageByChat] = useState<Record<string, ChatUsage>>({});
   const [compactionByChat, setCompactionByChat] = useState<Record<string, { summary: string; through: number }>>({});
-  const [liveTools, setLiveTools] = useState<LiveToolRow[]>([]);
-  const [runningActivity, setRunningActivity] = useState<ConversationActivity | null>(null);
+  // Foreground live tail lives in the external store so a token does not render MainView.
+  const setStreamText = useCallback((value: string | ((prev: string) => string)) => {
+    setLiveStream((prev) => ({
+      streamText: typeof value === "function" ? value(prev.streamText) : value,
+    }));
+  }, []);
+  const setStreamReasoning = useCallback((value: string | ((prev: string) => string)) => {
+    setLiveStream((prev) => ({
+      streamReasoning: typeof value === "function" ? value(prev.streamReasoning) : value,
+    }));
+  }, []);
+  const setLiveTools = useCallback((value: LiveToolRow[] | ((prev: LiveToolRow[]) => LiveToolRow[])) => {
+    setLiveStream((prev) => ({
+      liveTools: typeof value === "function" ? value(prev.liveTools) : value,
+    }));
+  }, []);
+  const setRunningActivity = useCallback(
+    (value: ConversationActivity | null | ((prev: ConversationActivity | null) => ConversationActivity | null)) => {
+      setLiveStream((prev) => ({
+        runningActivity: typeof value === "function" ? value(prev.runningActivity) : value,
+      }));
+    },
+    [],
+  );
   const [turnStartedAt, setTurnStartedAt] = useState(0);
   const [openingId, setOpeningId] = useState("");
   const [shellQueue, setShellQueue] = useState<
@@ -105,7 +126,6 @@ export function MainView() {
   const [mcpBusy, setMcpBusy] = useState<string | null>(null);
   const [skills, setSkills] = useState<DetectedSkill[]>([]);
   const [skillBusy, setSkillBusy] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
   const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [recents, setRecents] = useState(loadRecentWorkspaces);
@@ -301,13 +321,14 @@ export function MainView() {
     }
     if (live) {
       const cached = liveByChatRef.current.get(found.id);
-      setStreamText(cached?.streamText ?? turnLiveRef.current.streamText);
-      setStreamReasoning(cached?.streamReasoning ?? turnLiveRef.current.streamReasoning);
-      setLiveTools(cached?.liveTools ?? turnLiveRef.current.liveTools);
+      setLiveStream({
+        streamText: cached?.streamText ?? turnLiveRef.current.streamText,
+        streamReasoning: cached?.streamReasoning ?? turnLiveRef.current.streamReasoning,
+        liveTools: cached?.liveTools ?? turnLiveRef.current.liveTools,
+        runningActivity: cached?.activity ?? turnLiveRef.current.activity,
+      });
     } else {
-      setStreamText("");
-      setStreamReasoning("");
-      setLiveTools([]);
+      clearLiveStream();
     }
     const dock = subagentsByChatRef.current.get(found.id) ?? emptySubagentDock();
     setSubagents(dock.agents);
@@ -531,6 +552,13 @@ export function MainView() {
     let gone = false;
     let timer = 0;
     const watch = () => {
+      const again = () => {
+        if (!gone) timer = window.setTimeout(watch, remoteRef.current ? 15000 : 8000);
+      };
+      if (typeof document !== "undefined" && document.hidden) {
+        again();
+        return;
+      }
       void api
         .treeSignature(workspace)
         .then((snapshot) => {
@@ -547,9 +575,7 @@ export function MainView() {
           }
         })
         .catch(() => undefined)
-        .finally(() => {
-          if (!gone) timer = window.setTimeout(watch, remoteRef.current ? 15000 : 8000);
-        });
+        .finally(again);
     };
     watch();
     return () => {
@@ -564,14 +590,18 @@ export function MainView() {
       return;
     }
     let gone = false;
+    let seenSignature = "";
     const apply = () => {
+      const signature = fileStructureSignature(workspace);
+      if (signature === seenSignature && signature) return;
+      seenSignature = signature;
       const known = fileStructureFiles(workspace);
       if (known.length) {
         setMentionFiles(known);
         return;
       }
       // A signature with no files is an empty project, not a snapshot that forgot its list.
-      if (fileStructureSignature(workspace)) {
+      if (signature) {
         setMentionFiles([]);
         return;
       }
@@ -604,11 +634,7 @@ export function MainView() {
         const rows = saved.map((row) =>
           remoteMounts.has(projectKey(row.path)) ? { ...row, remote: true } : row,
         );
-        const currentPath = workspaceRef.current;
-        const ordered = [
-          ...rows.filter((row) => isSameProject(row.path, currentPath)),
-          ...rows.filter((row) => !isSameProject(row.path, currentPath)),
-        ];
+        const ordered = rows;
         const loaded: ProjectChatGroup[] = [];
         for (const row of ordered) {
           if (cancelled) return;
@@ -656,8 +682,8 @@ export function MainView() {
   useEffect(() => {
     if (!workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
-    setAllProjectGroups((prev) =>
-      placeProjectChats(prev, workspace, conversations, journeys).map((group) =>
+    setAllProjectGroups((prev) => {
+      const placed = placeProjectChats(prev, workspace, conversations, journeys).map((group) =>
         isSameProject(group.path, workspace)
           ? {
               ...group,
@@ -674,8 +700,25 @@ export function MainView() {
                 : group.server,
             }
           : group,
-      ),
-    );
+      );
+      if (
+        placed.length === prev.length &&
+        placed.every((group, i) => {
+          const before = prev[i];
+          return (
+            before &&
+            before.path === group.path &&
+            before.remote === group.remote &&
+            before.server === group.server &&
+            sameSidebarConversationList(before.conversations, group.conversations) &&
+            sameJourneyList(before.journeys, group.journeys)
+          );
+        })
+      ) {
+        return prev;
+      }
+      return placed;
+    });
   }, [workspace, conversations, journeys, remoteWorkspace]);
 
   useEffect(() => {
@@ -737,32 +780,36 @@ export function MainView() {
 
   useEffect(() => {
     let cancelled = false;
-    void detectMcp({
-      readHome: async (path) => {
-        try {
-          return await api.readUserMcp(path);
-        } catch {
-          return null;
-        }
-      },
-      readWorkspace: workspace
-        ? async (path) => {
-            try {
-              return await api.readFile(workspace, path);
-            } catch {
-              return null;
-            }
+    const loadMcp = () => {
+      void detectMcp({
+        readHome: async (path) => {
+          try {
+            return await api.readUserMcp(path);
+          } catch {
+            return null;
           }
-        : undefined,
-    }).then(async (rows) => {
-      let authed: string[] = [];
-      try {
-        authed = await api.mcpAuthNames();
-      } catch {
-        authed = [];
-      }
-      if (!cancelled) setMcpServers(withMcpAuth(rows, authed));
-    });
+        },
+        readWorkspace: workspace
+          ? async (path) => {
+              try {
+                return await api.readFile(workspace, path);
+              } catch {
+                return null;
+              }
+            }
+          : undefined,
+      }).then(async (rows) => {
+        let authed: string[] = [];
+        try {
+          authed = await api.mcpAuthNames();
+        } catch {
+          authed = [];
+        }
+        if (!cancelled) setMcpServers(withMcpAuth(rows, authed));
+      });
+    };
+    loadMcp();
+    const stopRefresh = subscribeFileRefresh(loadMcp);
     void (async () => {
       try {
         const files = await api.listSkillFiles(workspace || null);
@@ -797,8 +844,9 @@ export function MainView() {
     })();
     return () => {
       cancelled = true;
+      stopRefresh();
     };
-  }, [workspace, tick]);
+  }, [workspace]);
 
   const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
   const pendingPlan = planQueue.find((item) => item.chatId === activeId) ?? null;
@@ -835,37 +883,36 @@ export function MainView() {
     const scrollerEl = scroller.current;
     if (!scrollerEl) return;
     let frame = 0;
-    const follow = () => {
-      frame = 0;
-      followingRef.current = false;
-      if (!stickToBottomRef.current) return;
-      followingRef.current = true;
-      if (easeChatToEnd(scroller.current, true)) frame = requestAnimationFrame(follow);
-      else followingRef.current = false;
-    };
+    // One jump to the end. Streaming must not ease across frames.
     const pin = () => {
       if (!stickToBottomRef.current) return;
       followingRef.current = true;
-      scrollChatToEnd(scroller.current, true);
-      if (frame) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(follow);
+      pinChatToEnd(scroller.current, true);
+      followingRef.current = false;
+    };
+    const pinAfterLayout = () => {
+      if (!stickToBottomRef.current || frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        pin();
+      });
     };
     pin();
+    // Tokens no longer re-render MainView. Pin once per store update, no setState.
+    const stopStream = subscribeLiveStream(pin);
     const content = scrollerEl.firstElementChild;
     const ro =
       content && typeof ResizeObserver !== "undefined"
-        ? new ResizeObserver(() => {
-            if (!stickToBottomRef.current || frame) return;
-            frame = requestAnimationFrame(follow);
-          })
+        ? new ResizeObserver(pinAfterLayout)
         : null;
     if (content) ro?.observe(content);
     return () => {
       followingRef.current = false;
       if (frame) cancelAnimationFrame(frame);
+      stopStream();
       ro?.disconnect();
     };
-  }, [messages, streamText, streamReasoning, pendingShell, runningActivity, liveTools, openingId, pendingByChat, activeId, editor.focus, composerPad]);
+  }, [messages, pendingShell, openingId, pendingByChat, activeId, editor.focus, composerPad]);
 
   const closeSettings = useCallback(() => setShowSettings(false), []);
   const closeUsage = useCallback(() => setShowUsage(false), []);
@@ -921,7 +968,7 @@ export function MainView() {
   const fileRefreshTimer = useRef(0);
   const bumpFiles = useCallback(() => {
     window.clearTimeout(fileRefreshTimer.current);
-    fileRefreshTimer.current = window.setTimeout(() => setTick((n) => n + 1), 200);
+    fileRefreshTimer.current = window.setTimeout(() => bumpFileRefresh(), 400);
   }, []);
 
   const library = useLibrary({
@@ -1086,6 +1133,7 @@ export function MainView() {
     closeFileTab,
     openFolder,
     toggleProjectCollapsed,
+    reorderProjects,
     deleteProjectFromSidebar,
     applyWorkspace,
     startNewChat,
@@ -1140,10 +1188,7 @@ export function MainView() {
       }
       setActiveId("");
       setMessages([]);
-      setStreamText("");
-      setStreamReasoning("");
-      setLiveTools([]);
-      setRunningActivity(null);
+      clearLiveStream();
       setTurnStartedAt(0);
       setSubagents([]);
       setExpandedAgents({});
@@ -1318,6 +1363,125 @@ export function MainView() {
     };
   }, [showLanding, showSettings, showUsage, editor.focus]);
 
+  const sidebarRef = useRef<SidebarSlice | null>(null);
+  if (!sidebarRef.current) sidebarRef.current = {
+    activeId,
+    allProjectGroups,
+    archiveChat,
+    collapsedProjects,
+    conversations,
+    createJourneyFromChat,
+    deleteJourney,
+    deleteProjectFromSidebar,
+    journeys,
+    legacyProjectsRoot,
+    messages,
+    moveConversation,
+    openChat,
+    openingId,
+    openJourneyKnowledge,
+    openProjectFromSidebar,
+    openProjectSettings,
+    openSidebarChat,
+    projectSettings,
+    projectsRoot,
+    removeChat,
+    renameJourney,
+    setProjectMenu,
+    reorderChats,
+    reorderProjects,
+    reorderSidebar,
+    runningTurns,
+    unseenFinished,
+    setJourneyColor,
+    showSettings,
+    showUsage,
+    startNewChat,
+    toggleJourney,
+    toggleProjectCollapsed,
+    workspace,
+  };
+  const sidebar = sidebarRef.current;
+  const sidebarChanged =
+    sidebar.activeId !== activeId ||
+    sidebar.allProjectGroups !== allProjectGroups ||
+    sidebar.collapsedProjects !== collapsedProjects ||
+    sidebar.conversations !== conversations ||
+    sidebar.journeys !== journeys ||
+    sidebar.legacyProjectsRoot !== legacyProjectsRoot ||
+    sidebar.messages !== messages ||
+    sidebar.openingId !== openingId ||
+    sidebar.projectSettings !== projectSettings ||
+    sidebar.projectsRoot !== projectsRoot ||
+    sidebar.runningTurns !== runningTurns ||
+    sidebar.unseenFinished !== unseenFinished ||
+    sidebar.setProjectMenu !== setProjectMenu ||
+    sidebar.showSettings !== showSettings ||
+    sidebar.showUsage !== showUsage ||
+    sidebar.workspace !== workspace;
+  if (sidebarChanged) {
+    sidebarRef.current = {
+      ...sidebar,
+      activeId,
+      allProjectGroups,
+      archiveChat,
+      collapsedProjects,
+      conversations,
+      createJourneyFromChat,
+      deleteJourney,
+      deleteProjectFromSidebar,
+      journeys,
+      legacyProjectsRoot,
+      messages,
+      moveConversation,
+      openChat,
+      openingId,
+      openJourneyKnowledge,
+      openProjectFromSidebar,
+      openProjectSettings,
+      openSidebarChat,
+      projectSettings,
+      projectsRoot,
+      removeChat,
+      renameJourney,
+      setProjectMenu,
+      reorderChats,
+      reorderProjects,
+      reorderSidebar,
+      runningTurns,
+      unseenFinished,
+      setJourneyColor,
+      showSettings,
+      showUsage,
+      startNewChat,
+      toggleJourney,
+      toggleProjectCollapsed,
+      workspace,
+    };
+  } else if (sidebarRef.current) {
+    const live = sidebarRef.current;
+    live.archiveChat = archiveChat;
+    live.createJourneyFromChat = createJourneyFromChat;
+    live.deleteJourney = deleteJourney;
+    live.deleteProjectFromSidebar = deleteProjectFromSidebar;
+    live.moveConversation = moveConversation;
+    live.openChat = openChat;
+    live.openJourneyKnowledge = openJourneyKnowledge;
+    live.openProjectFromSidebar = openProjectFromSidebar;
+    live.openProjectSettings = openProjectSettings;
+    live.openSidebarChat = openSidebarChat;
+    live.removeChat = removeChat;
+    live.renameJourney = renameJourney;
+    live.reorderChats = reorderChats;
+    live.reorderProjects = reorderProjects;
+    live.reorderSidebar = reorderSidebar;
+    live.setJourneyColor = setJourneyColor;
+    live.startNewChat = startNewChat;
+    live.toggleJourney = toggleJourney;
+    live.toggleProjectCollapsed = toggleProjectCollapsed;
+  }
+  const sidebarValue = sidebarRef.current;
+
   const main: MainModel = {
     activeId,
     addPromptImages,
@@ -1414,6 +1578,7 @@ export function MainView() {
     removePendingAt,
     renameJourney,
     reorderChats,
+    reorderProjects,
     reorderSidebar,
     runningId,
     runningTurns,
@@ -1449,7 +1614,6 @@ export function MainView() {
     skills,
     startNewChat,
     subagents,
-    tick,
     toggleJourney,
     toggleMcpServer,
     toggleProjectCollapsed,
@@ -1461,10 +1625,7 @@ export function MainView() {
   };
 
   return (
-    <MainProvider
-      value={main}
-      stream={{ streamText, streamReasoning, liveTools, runningActivity }}
-    >
+    <MainProvider value={main} sidebar={sidebarValue}>
       <MainShell />
     </MainProvider>
   );

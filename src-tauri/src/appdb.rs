@@ -147,12 +147,12 @@ pub fn add_project_named(conn: &Connection, path: &Path, display_name: Option<&s
             name,
         });
     }
-    let sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort_order), -1) FROM projects", [], |row| {
+    let sort: i64 = conn.query_row("SELECT COALESCE(MIN(sort_order), 1) FROM projects", [], |row| {
         row.get(0)
     })?;
     conn.execute(
         "INSERT INTO projects (path, name, added_at, sort_order) VALUES (?1, ?2, ?3, ?4)",
-        params![stored, name, now_iso(), sort + 1],
+        params![stored, name, now_iso(), sort - 1],
     )?;
     Ok(FolderSuggestion {
         path: stored,
@@ -174,6 +174,38 @@ fn find_project(conn: &Connection, path: &str) -> Result<Option<FolderSuggestion
     )
     .optional()
     .map_err(Error::from)
+}
+
+/// Write the sidebar order. Unknown paths are skipped. Known paths not in the list keep their relative order after it.
+pub fn reorder_projects(conn: &Connection, paths: &[String]) -> Result<Vec<FolderSuggestion>> {
+    let existing = list_projects(conn)?;
+    if existing.is_empty() || paths.is_empty() {
+        return Ok(existing);
+    }
+    let mut ordered = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in paths {
+        let Some(row) = existing.iter().find(|row| path_key(&row.path) == path_key(path)) else {
+            continue;
+        };
+        if seen.insert(path_key(&row.path)) {
+            ordered.push(row.path.clone());
+        }
+    }
+    for row in &existing {
+        if seen.insert(path_key(&row.path)) {
+            ordered.push(row.path.clone());
+        }
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (index, path) in ordered.iter().enumerate() {
+        tx.execute(
+            "UPDATE projects SET sort_order = ?1 WHERE path = ?2",
+            params![index as i64, path],
+        )?;
+    }
+    tx.commit()?;
+    list_projects(conn)
 }
 
 pub fn remove_project(conn: &Connection, path: &str) -> Result<bool> {
@@ -292,6 +324,15 @@ pub fn dev_app_add_project(app: AppHandle, path: String) -> Result<FolderSuggest
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn dev_app_reorder_projects(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Vec<FolderSuggestion>> {
+    let conn = open(&state.data_dir)?;
+    reorder_projects(&conn, &paths)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_app_remove_project(state: State<'_, AppState>, path: String) -> Result<bool> {
     let conn = open(&state.data_dir)?;
     remove_project(&conn, &path)
@@ -329,6 +370,26 @@ mod tests {
         assert!(remove_project(&conn, &added.path).unwrap());
         assert!(list_projects(&conn).unwrap().is_empty());
         assert!(!remove_project(&conn, &added.path).unwrap());
+    }
+
+    #[test]
+    fn reorder_projects_keeps_unknown_rows_and_skips_missing_paths() {
+        let data = tempdir().unwrap();
+        let a = tempdir().unwrap();
+        let b = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        let first = add_project(&conn, a.path()).unwrap();
+        let second = add_project(&conn, b.path()).unwrap();
+        let third = add_project(&conn, c.path()).unwrap();
+        let third_path = third.path.clone();
+        let rows = reorder_projects(&conn, &[third.path, first.path.clone(), "/missing".into()]).unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>(),
+            vec![third_path.clone(), first.path, second.path]
+        );
+        let again = list_projects(&conn).unwrap();
+        assert_eq!(again[0].path, third_path);
     }
 
     #[test]

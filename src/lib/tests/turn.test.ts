@@ -19,6 +19,7 @@ import {
   setDraftForChat,
   skipToolIfAborted,
   chatHasRunningTurn,
+  patchRunningTurn,
   composerSettingsForChat,
   effortForModel,
   modelForTurn,
@@ -343,6 +344,19 @@ describe("per-conversation pending queue", () => {
     assert.equal(shouldQueueForChat("chat-a", "chat-a"), true);
     assert.equal(shouldQueueForChat("chat-a", "chat-b"), false);
     assert.equal(shouldQueueForChat("", "chat-b"), false);
+  });
+
+  it("keeps the running map when a tool tick repeats the same label", () => {
+    const running = {
+      "chat-a": { activity: { kind: "tool" as const, label: "Read a.ts" }, startedAt: 10 },
+    };
+    assert.equal(patchRunningTurn(running, "chat-a", { activity: { kind: "tool", label: "Read a.ts" } }), running);
+    const next = patchRunningTurn(running, "chat-a", { activity: { kind: "tool", label: "Edit a.ts" } });
+    assert.notEqual(next, running);
+    assert.equal(next["chat-a"]?.activity?.kind, "tool");
+    assert.equal(patchRunningTurn(running, "chat-a", { todo: { done: 1, total: 2 } })["chat-a"]?.todo?.total, 2);
+    const withTodo = patchRunningTurn(running, "chat-a", { todo: { done: 1, total: 2 } });
+    assert.equal(patchRunningTurn(withTodo, "chat-a", { todo: { done: 1, total: 2 } }), withTodo);
   });
 
   it("keeps every live turn running when a second chat becomes foreground", () => {

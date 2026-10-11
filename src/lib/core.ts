@@ -847,39 +847,57 @@ function thinkingAlreadyShown(items: TranscriptItem[], text: string): boolean {
   return false;
 }
 
+type CommittedTranscript = {
+  items: TranscriptItem[];
+  turns: TranscriptTurn[];
+  /** Finished turns. Stable for this messages array so a stream token does not rebuild them. */
+  settled: TranscriptTurn[];
+  /** Tool labels already rendered anywhere in the committed transcript. */
+  toolLabels: Set<string>;
+};
+
 /**
- * Split a transcript so finished turns stay referentially stable while a reply streams.
- * `settled` is every turn before the one that is still growing. `tail` is that open turn,
- * including the live stream, so a token does not rebuild the earlier bubbles.
+ * Settled turns are keyed by the messages array. Callers replace that array when history
+ * changes, so the same reference means the committed turns have not changed.
  */
-export function splitLiveTranscript(
-  messages: ChatMessage[],
-  streamText: string,
-  liveTools: LiveToolInput[] = [],
-  streamReasoning = "",
-): { settled: TranscriptTurn[]; tail: TranscriptItem[] } {
-  const committed = transcriptItems(messages);
-  const turns = groupTranscriptTurns(committed);
-  const live = liveTranscriptItems(messages, streamText, liveTools, streamReasoning);
-  if (turns.length === 0) return { settled: [], tail: live };
-  const open = turns[turns.length - 1];
-  const openCount = (open?.user ? 1 : 0) + (open?.rest.length ?? 0);
-  const settledCount = committed.length - openCount;
-  return {
-    settled: turns.slice(0, -1),
-    tail: live.slice(settledCount),
-  };
+const committedByMessages = new WeakMap<ChatMessage[], CommittedTranscript>();
+
+function committedTranscript(messages: ChatMessage[]): CommittedTranscript {
+  const cached = committedByMessages.get(messages);
+  if (cached) return cached;
+  const items = transcriptItems(messages);
+  const turns = groupTranscriptTurns(items);
+  const settled = turns.slice(0, -1);
+  const toolLabels = new Set(items.flatMap((item) => (item.kind === "tools" ? item.labels : [])));
+  const entry = { items, turns, settled, toolLabels };
+  committedByMessages.set(messages, entry);
+  return entry;
 }
 
-export function liveTranscriptItems(
-  messages: ChatMessage[],
+/** Open turn items copied from the committed list, so live appends do not mutate the cache. */
+function openTurnItems(committed: CommittedTranscript): TranscriptItem[] {
+  const open = committed.turns[committed.turns.length - 1];
+  if (!open) return [];
+  const items: TranscriptItem[] = [];
+  if (open.user) items.push(open.user);
+  items.push(...open.rest);
+  return items;
+}
+
+/**
+ * Append live reasoning, text, and tools onto an already-parsed item list.
+ * Does not walk messages. Copies a trailing tools item before merging so the
+ * committed list stays intact. `seenTools` is every committed tool label, including
+ * ones outside `out`, so a settled call is not shown again on the open turn.
+ */
+function appendLiveTranscript(
+  out: TranscriptItem[],
   streamText: string,
-  liveTools: LiveToolInput[] = [],
-  streamReasoning = "",
+  liveTools: LiveToolInput[],
+  streamReasoning: string,
+  seenTools: Set<string>,
 ): TranscriptItem[] {
-  const out = transcriptItems(messages);
-  const seen = new Set(out.flatMap((item) => (item.kind === "tools" ? item.labels : [])));
-  const pending = liveTools.filter((tool) => !seen.has(liveToolLabel(tool)));
+  const pending = liveTools.filter((tool) => !seenTools.has(liveToolLabel(tool)));
   if (streamReasoning && !thinkingAlreadyShown(out, streamReasoning)) {
     out.push({ kind: "thinking", content: streamReasoning, live: true });
   }
@@ -895,14 +913,59 @@ export function liveTranscriptItems(
     const files = mergeToolFileChanges(details.flatMap((change) => (change ? [change] : [])));
     const tail = out[out.length - 1];
     if (tail?.kind === "tools") {
-      tail.labels.push(...labels);
-      tail.details.push(...details);
-      tail.commands.push(...commands);
-      tail.callIds.push(...callIds);
-      tail.files = mergeToolFileChanges([...tail.files, ...files]);
+      const merged: TranscriptItem = {
+        kind: "tools",
+        labels: [...tail.labels, ...labels],
+        details: [...tail.details, ...details],
+        commands: [...tail.commands, ...commands],
+        callIds: [...tail.callIds, ...callIds],
+        files: mergeToolFileChanges([...tail.files, ...files]),
+      };
+      out[out.length - 1] = merged;
     } else out.push({ kind: "tools", labels, files, details, commands, callIds });
   }
   return out;
+}
+
+/**
+ * Split a transcript so finished turns stay referentially stable while a reply streams.
+ * `settled` is every turn before the one that is still growing. `tail` is that open turn,
+ * including the live stream, so a token does not rebuild the earlier bubbles.
+ * Messages are parsed once; the settled array is cached on the messages array identity.
+ */
+export function splitLiveTranscript(
+  messages: ChatMessage[],
+  streamText: string,
+  liveTools: LiveToolInput[] = [],
+  streamReasoning = "",
+): { settled: TranscriptTurn[]; tail: TranscriptItem[] } {
+  const committed = committedTranscript(messages);
+  return {
+    settled: committed.settled,
+    tail: appendLiveTranscript(
+      openTurnItems(committed),
+      streamText,
+      liveTools,
+      streamReasoning,
+      committed.toolLabels,
+    ),
+  };
+}
+
+export function liveTranscriptItems(
+  messages: ChatMessage[],
+  streamText: string,
+  liveTools: LiveToolInput[] = [],
+  streamReasoning = "",
+): TranscriptItem[] {
+  const committed = committedTranscript(messages);
+  return appendLiveTranscript(
+    committed.items.slice(),
+    streamText,
+    liveTools,
+    streamReasoning,
+    committed.toolLabels,
+  );
 }
 
 export function systemPrompt(

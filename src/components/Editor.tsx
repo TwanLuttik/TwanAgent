@@ -2,7 +2,7 @@ import { Prec, type Extension } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { langs } from "@uiw/codemirror-extensions-langs";
 import CodeMirror from "@uiw/react-codemirror";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
   editorTabTitle,
@@ -21,6 +21,7 @@ import { addedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } fro
 import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
 import { normalizeGitPath } from "../lib/core";
+import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import { selectionPromptSnippet, selectionRangeFromOffsets } from "../lib/editor-selection";
 import * as api from "../lib/tauri";
 import { isMacOS } from "./WindowButtons";
@@ -40,7 +41,6 @@ type Buffer = {
 export function Editor({
   workspace,
   path,
-  tick,
   markdownView = null,
   fileView = "edit",
   editor,
@@ -56,7 +56,6 @@ export function Editor({
 }: {
   workspace: string;
   path: string;
-  tick: number;
   markdownView?: MarkdownOpenMode | null;
   fileView?: EditorFileView;
   editor: EditorState;
@@ -77,6 +76,8 @@ export function Editor({
   const [selectionTip, setSelectionTip] = useState<{ top: number; left: number; snippet: string } | null>(
     null,
   );
+  const tick = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
+  const seenRefresh = useRef(tick);
   const buf = buffers[path];
   const dirty = Boolean(buf && buf.draft !== buf.original && !buf.error);
   const media = mediaKindForPath(path);
@@ -131,7 +132,8 @@ export function Editor({
   }, [selectionTip]);
 
   useEffect(() => {
-    if (!path || tick === 0) return;
+    if (!path || tick === seenRefresh.current) return;
+    seenRefresh.current = tick;
     void load(path, true);
   }, [tick, path, load]);
 
@@ -269,9 +271,9 @@ export function Editor({
         />
       </div>
       {fileView === "diff" ? (
-        <GitDiffView workspace={workspace} path={path} tick={tick} />
+        <GitDiffView workspace={workspace} path={path} />
       ) : media ? (
-        <Media workspace={workspace} path={path} kind={media} tick={tick} onMeta={setMediaMeta} />
+        <Media workspace={workspace} path={path} kind={media} onMeta={setMediaMeta} />
       ) : buf?.error ? (
         <div className="min-h-0 flex-1 overflow-auto px-4 py-3 text-[13px] text-err">{buf.error}</div>
       ) : buf && markdownView === "viewer" ? (

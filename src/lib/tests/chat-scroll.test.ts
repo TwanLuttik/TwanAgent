@@ -7,6 +7,7 @@ import {
   chatBottomPadding,
   easeChatToEnd,
   isNearBottom,
+  pinChatToEnd,
   scrollChatToEnd,
 } from "../chat-scroll.ts";
 
@@ -76,6 +77,21 @@ describe("scrollChatToEnd", () => {
 
   it("does nothing without a scroller", () => {
     scrollChatToEnd(null, true);
+  });
+});
+
+describe("pinChatToEnd", () => {
+  it("jumps to the end in one assignment while pinned", () => {
+    const el = { scrollTop: 10, scrollHeight: 900, clientHeight: 200 };
+    pinChatToEnd(el, true);
+    assert.equal(el.scrollTop, 700);
+  });
+
+  it("does not move the scroller after the user has scrolled up", () => {
+    const el = { scrollTop: 40, scrollHeight: 900, clientHeight: 200 };
+    pinChatToEnd(el, false);
+    assert.equal(el.scrollTop, 40);
+    pinChatToEnd(null, true);
   });
 });
 

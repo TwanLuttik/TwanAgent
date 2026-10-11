@@ -170,6 +170,7 @@ pub fn run() {
             remote::commands::dev_workspace_remote,
             appdb::dev_app_list_projects,
             appdb::dev_app_add_project,
+            appdb::dev_app_reorder_projects,
             appdb::dev_app_remove_project,
             appdb::dev_app_get_setting,
             appdb::dev_app_set_setting,

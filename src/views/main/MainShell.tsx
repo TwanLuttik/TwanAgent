@@ -24,7 +24,6 @@ export function MainShell() {
     setProjectMenu,
     showLanding,
     startNewChat,
-    tick,
     openWorkspaceFile,
     workspace,
   } = useMain();
@@ -32,7 +31,7 @@ export function MainShell() {
   if (showLanding) return <LandingScreen />;
 
   return (
-    <WorkspaceFileLinks workspace={workspace || null} tick={tick} onOpenFile={openWorkspaceFile}>
+    <WorkspaceFileLinks workspace={workspace || null} onOpenFile={openWorkspaceFile}>
       <div className="flex h-full min-w-0 overflow-hidden bg-sidebar">
         <Flash />
         {folderOpen ? (

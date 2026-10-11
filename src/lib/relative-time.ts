@@ -6,6 +6,17 @@ export function formatElapsed(ms: number): string {
   return `${min}:${String(sec).padStart(2, "0")}`;
 }
 
+/** How long until the compact age label (`now`, `5m`, `2h`) can change. */
+export function relativeAgeTickMs(iso: string, nowMs = Date.now()): number {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return 60_000;
+  const sec = Math.max(0, Math.floor(Math.max(0, nowMs - then) / 1000));
+  if (sec < 60) return Math.max(1000, (60 - sec) * 1000);
+  if (sec < 3600) return Math.max(1000, (60 - (sec % 60)) * 1000);
+  if (sec < 86_400) return Math.max(1000, (3600 - (sec % 3600)) * 1000);
+  return 3_600_000;
+}
+
 export function formatRelativeAge(iso: string, nowMs = Date.now()): string {
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return "";

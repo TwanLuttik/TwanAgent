@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AllProjectsList } from "../../components/AllProjectsList";
 import { ConversationList } from "../../components/ConversationList";
 import { SpaceCorner } from "../../components/SpaceCorner";
@@ -10,12 +10,12 @@ import { conversationActivityLabel, folderName, projectKey, type ChatMessage } f
 import { projectGitKey, projectGitLabel, type ProjectGit } from "../../lib/project-git";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
-import type { JourneySummary } from "../../lib/journey";
+import type { JourneyColor, JourneySummary } from "../../lib/journey";
 import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
 import { SETTINGS_TABS } from "../SettingsView";
 import { NewChatMenu } from "./AppChrome";
-import { useMain } from "./context";
+import { useMain, useSidebar } from "./context";
 
 export function AppSidebar() {
   const {
@@ -25,10 +25,13 @@ export function AppSidebar() {
     setSidebarWidth,
     settingsTab,
     setSettingsTab,
-    showSettings,
+    openSettings,
+    openUsage,
     sidebarDragging,
     sidebarWidth,
+    usageTick,
   } = useMain();
+  const { showSettings } = useSidebar();
   const [usageHover, setUsageHover] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState<Record<string, boolean>>({});
   const [gitByProject, setGitByProject] = useState<Record<string, ProjectGit>>({});
@@ -83,6 +86,10 @@ export function AppSidebar() {
           setGitByProject={setGitByProject}
           todoByChat={todoByChat}
           setTodoByChat={setTodoByChat}
+          openFolder={openFolder}
+          openSettings={openSettings}
+          openUsage={openUsage}
+          usageTick={usageTick}
         />
       )}
     </aside>
@@ -153,6 +160,10 @@ function ProjectsNav({
   setGitByProject,
   todoByChat,
   setTodoByChat,
+  openFolder,
+  openSettings,
+  openUsage,
+  usageTick,
 }: {
   usageHover: boolean;
   setUsageHover: (hover: boolean) => void;
@@ -162,6 +173,10 @@ function ProjectsNav({
   setGitByProject: (next: Record<string, ProjectGit> | ((prev: Record<string, ProjectGit>) => Record<string, ProjectGit>)) => void;
   todoByChat: Record<string, TodoBadge>;
   setTodoByChat: (next: Record<string, TodoBadge> | ((prev: Record<string, TodoBadge>) => Record<string, TodoBadge>)) => void;
+  openFolder: () => void;
+  openSettings: () => void;
+  openUsage: () => void;
+  usageTick: number;
 }) {
   const {
     activeId,
@@ -171,22 +186,19 @@ function ProjectsNav({
     deleteProjectFromSidebar,
     legacyProjectsRoot,
     messages,
-    openFolder,
     openProjectFromSidebar,
     openProjectSettings,
-    openSettings,
-    openUsage,
     projectSettings,
     projectsRoot,
     setProjectMenu,
     showSettings,
     runningTurns,
     showUsage,
+    reorderProjects,
     startNewChat,
     toggleProjectCollapsed,
-    usageTick,
     workspace,
-  } = useMain();
+  } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
   const currentArchiveOpen = Boolean(workspace && archiveOpen[projectKey(workspace)]);
   const currentHasArchived = projectHasArchived(conversations);
@@ -223,7 +235,14 @@ function ProjectsNav({
       group.conversations.map((row) => `${group.path}\t${row.id}\t${row.updated_at}`),
     )
     .join("\n");
-  const openTodoKey = `${workspace}\t${activeId}\t${messages.length}`;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const openTodoKey = `${workspace}\t${activeId}\t${todoSignature(messages as ChatMessage[])}`;
+  const openTodo = useRef({ workspace, activeId });
+  openTodo.current = { workspace, activeId };
+  const runningRef = useRef(runningTurns);
+  runningRef.current = runningTurns;
+  const todoRowsRef = useRef<{ path: string; id: string; updated: string }[]>([]);
   useEffect(() => {
     const rows = todoWatch
       .split("\n")
@@ -233,21 +252,28 @@ function ProjectsNav({
         return { path, id, updated };
       })
       .filter((row: { path: string; id: string }) => row.path && row.id);
+    const previous = new Map(todoRowsRef.current.map((row) => [`${row.path}\t${row.id}`, row.updated]));
+    todoRowsRef.current = rows;
     if (!rows.length) {
       setTodoByChat({});
       return;
     }
+    const { workspace: openWorkspace, activeId: openId } = openTodo.current;
+    const openKey = openWorkspace && openId ? `${projectKey(openWorkspace)}\t${openId}` : "";
     let cancelled = false;
     void (async () => {
       const found: Record<string, TodoBadge> = {};
       await Promise.all(
-        rows.map(async (row: { path: string; id: string }) => {
-          if (workspace && projectKey(row.path) === projectKey(workspace) && row.id === activeId) {
-            const badge = todoBadge(todosInLatestTurn(messages as ChatMessage[]));
+        rows.map(async (row: { path: string; id: string; updated: string }) => {
+          const key = `${row.path}\t${row.id}`;
+          const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
+          if (isOpen) {
+            const badge = todoBadge(todosInLatestTurn(messagesRef.current as ChatMessage[]));
             if (badge) found[row.id] = badge;
             return;
           }
-          if (row.id in runningTurns) return;
+          if (row.id in runningRef.current) return;
+          if (previous.get(key) === row.updated) return;
           try {
             const full = await api.getConversation(row.path, row.id);
             const badge = todoBadge(todosInLatestTurn((full.messages as ChatMessage[]) ?? []));
@@ -257,7 +283,22 @@ function ProjectsNav({
           }
         }),
       );
-      if (!cancelled) setTodoByChat(found);
+      if (cancelled) return;
+      setTodoByChat((prev) => {
+        const next: Record<string, TodoBadge> = {};
+        for (const row of rows) {
+          const key = `${row.path}\t${row.id}`;
+          const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
+          if (row.id in found) next[row.id] = found[row.id];
+          else if (prev[row.id] && !isOpen && previous.get(key) === row.updated && !(row.id in runningRef.current)) {
+            next[row.id] = prev[row.id];
+          }
+        }
+        const prevIds = Object.keys(prev);
+        const nextIds = Object.keys(next);
+        if (prevIds.length === nextIds.length && nextIds.every((id) => prev[id] === next[id])) return prev;
+        return next;
+      });
     })();
     return () => {
       cancelled = true;
@@ -289,6 +330,7 @@ function ProjectsNav({
           onNewChat={(path) => void startNewChat("chat", undefined, path)}
           onOpenSettings={openProjectSettings}
           onDeleteProject={(path) => void deleteProjectFromSidebar(path)}
+          onReorderProject={(fromPath, toPath) => void reorderProjects(fromPath, toPath)}
           archiveOpen={archiveOpen}
           onToggleArchive={toggleArchive}
           gitByProject={gitByProject}
@@ -388,6 +430,18 @@ function ProjectsNav({
   );
 }
 
+function todoSignature(messages: ChatMessage[]): string {
+  let sig = "";
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.tool_calls?.length) continue;
+    for (const call of message.tool_calls) {
+      if (call.name !== "todo_write") continue;
+      sig += `${call.id}:${call.arguments}\n`;
+    }
+  }
+  return sig;
+}
+
 function ProjectConversations({
   conversations,
   journeys,
@@ -405,6 +459,7 @@ function ProjectConversations({
 }) {
   const {
     activeId,
+    archiveChat,
     createJourneyFromChat,
     deleteJourney,
     moveConversation,
@@ -412,7 +467,6 @@ function ProjectConversations({
     openJourneyKnowledge,
     openSidebarChat,
     openingId,
-    archiveChat,
     removeChat,
     renameJourney,
     reorderChats,
@@ -422,7 +476,77 @@ function ProjectConversations({
     setJourneyColor,
     startNewChat,
     toggleJourney,
-  } = useMain();
+  } = useSidebar();
+  const actions = useRef({
+    archiveChat,
+    createJourneyFromChat,
+    deleteJourney,
+    moveConversation,
+    openChat,
+    openJourneyKnowledge,
+    openSidebarChat,
+    removeChat,
+    renameJourney,
+    reorderChats,
+    reorderSidebar,
+    setJourneyColor,
+    startNewChat,
+    toggleJourney,
+  });
+  actions.current = {
+    archiveChat,
+    createJourneyFromChat,
+    deleteJourney,
+    moveConversation,
+    openChat,
+    openJourneyKnowledge,
+    openSidebarChat,
+    removeChat,
+    renameJourney,
+    reorderChats,
+    reorderSidebar,
+    setJourneyColor,
+    startNewChat,
+    toggleJourney,
+  };
+  const handlers = useMemo(
+    () => ({
+      onOpen: (id: string) => (path ? void actions.current.openSidebarChat(path, id) : void actions.current.openChat(id)),
+      onDelete: (id: string) => void actions.current.removeChat(id, path),
+      onArchive: (id: string, archived: boolean) => void actions.current.archiveChat(id, archived, path),
+      onReorder: (fromId: string, toId: string) => void actions.current.reorderChats(fromId, toId, path),
+      onReorderSidebar: (
+        fromId: string,
+        fromKind: "journey" | "conversation",
+        toId: string,
+        toKind: "journey" | "conversation",
+      ) => void actions.current.reorderSidebar(fromId, fromKind, toId, toKind, path),
+      onCreateJourney: (id: string) => void actions.current.createJourneyFromChat(id, path),
+      onOpenKnowledge: (id: string) => void actions.current.openJourneyKnowledge(id, path),
+      onNewChat: (journeyId: string, kind: "chat" | "terminal") =>
+        void actions.current.startNewChat(kind, journeyId, path),
+      onToggleCollapse: (id: string) => void actions.current.toggleJourney(id, path),
+      onRenameJourney: (id: string, title: string) => void actions.current.renameJourney(id, title, path),
+      onDeleteJourney: (id: string, deleteChats: boolean) => void actions.current.deleteJourney(id, deleteChats, path),
+      onRemoveFromJourney: (id: string) => void actions.current.moveConversation(id, null, path),
+      onMoveToJourney: (id: string, journeyId: string) => void actions.current.moveConversation(id, journeyId, path),
+      onSetColor: (id: string, color: JourneyColor) => void actions.current.setJourneyColor(id, color, path),
+    }),
+    [path],
+  );
+  const runningPreview = useMemo(
+    () => (id: string) => conversationActivityLabel(runningTurns[id]?.activity),
+    [runningTurns],
+  );
+  const todoFor = useMemo(
+    () => (id: string) => {
+      const live = runningTurns[id]?.todo;
+      if (live) return { done: live.done, total: live.total, finished: false };
+      if (id in runningTurns) return null;
+      return todoByChat[id] ?? null;
+    },
+    [runningTurns, todoByChat],
+  );
 
   return (
     <ConversationList
@@ -432,31 +556,11 @@ function ProjectConversations({
       runningIds={runningTurns}
       unseenIds={unseenFinished}
       loadingId={openingId}
-      runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
-      todoFor={(id) => {
-        const live = runningTurns[id]?.todo;
-        if (live) return { done: live.done, total: live.total, finished: false };
-        if (id in runningTurns) return null;
-        return todoByChat[id] ?? null;
-      }}
+      runningPreview={runningPreview}
+      todoFor={todoFor}
       showSettings={dimmed}
-      onOpen={(id) => (path ? void openSidebarChat(path, id) : void openChat(id))}
-      onDelete={(id) => void removeChat(id, path)}
-      onArchive={(id, archived) => void archiveChat(id, archived, path)}
       archivedView={archivedView}
-      onReorder={(fromId, toId) => void reorderChats(fromId, toId, path)}
-      onReorderSidebar={(fromId, fromKind, toId, toKind) =>
-        void reorderSidebar(fromId, fromKind, toId, toKind, path)
-      }
-      onCreateJourney={(id) => void createJourneyFromChat(id, path)}
-      onOpenKnowledge={(id) => void openJourneyKnowledge(id, path)}
-      onNewChat={(journeyId, kind) => void startNewChat(kind, journeyId, path)}
-      onToggleCollapse={(id) => void toggleJourney(id, path)}
-      onRenameJourney={(id, title) => void renameJourney(id, title, path)}
-      onDeleteJourney={(id, deleteChats) => void deleteJourney(id, deleteChats, path)}
-      onRemoveFromJourney={(id) => void moveConversation(id, null, path)}
-      onMoveToJourney={(id, journeyId) => void moveConversation(id, journeyId, path)}
-      onSetColor={(id, color) => void setJourneyColor(id, color, path)}
+      {...handlers}
     />
   );
 }

@@ -165,6 +165,8 @@ export function ChatTranscript({
   /** Called before older turns mount so the scroller can keep its place. */
   onLoadOlder?: () => void;
 }) {
+  // splitLiveTranscript parses messages once and returns the same settled turns
+  // while only the stream changes, so SettledTurn does not rebuild per token.
   const split = useMemo(
     () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning),
     [messages, streamText, liveTools, streamReasoning],

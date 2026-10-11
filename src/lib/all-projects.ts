@@ -1,4 +1,5 @@
 import { folderName, mergeProjectRows, projectKey, type ProjectRow } from "./core.ts";
+import { formatRelativeAge } from "./relative-time.ts";
 import type { JourneySummary } from "./journey.ts";
 import type { ConversationSummary } from "./tauri.ts";
 
@@ -59,6 +60,58 @@ export function buildProjectGroups(
   });
 }
 
+/** Fields the sidebar paints. `updated_at` is left out so a save can refresh the age without rebuilding the row. */
+export function sameSidebarConversation(a: ConversationSummary, b: ConversationSummary): boolean {
+  return (
+    a.id === b.id &&
+    a.title === b.title &&
+    a.kind === b.kind &&
+    (a.journey_id ?? null) === (b.journey_id ?? null) &&
+    (a.sort_order ?? 0) === (b.sort_order ?? 0) &&
+    (a.model ?? null) === (b.model ?? null) &&
+    (a.archived ?? false) === (b.archived ?? false)
+  );
+}
+
+/**
+ * Keep the previous row when the sidebar would paint the same card.
+ * A timestamp that changes `now` to `1m` is a new row. One that stays inside the same minute is not.
+ */
+export function patchSidebarConversation(
+  prev: ConversationSummary | undefined,
+  next: ConversationSummary,
+  nowMs = Date.now(),
+): ConversationSummary {
+  if (!prev) return next;
+  if (!sameSidebarConversation(prev, next)) return { ...prev, ...next, id: next.id };
+  if (prev.updated_at === next.updated_at) return prev;
+  if (formatRelativeAge(prev.updated_at, nowMs) !== formatRelativeAge(next.updated_at, nowMs)) {
+    return { ...prev, ...next, id: next.id };
+  }
+  return prev;
+}
+
+/** Replace a list only when a row the sidebar paints actually changed. */
+export function patchSidebarConversations(
+  prev: ConversationSummary[],
+  next: ConversationSummary[],
+  nowMs = Date.now(),
+): ConversationSummary[] {
+  const patchAt = (before: ConversationSummary | undefined, row: ConversationSummary) =>
+    patchSidebarConversation(before, row, nowMs);
+  if (prev.length !== next.length) {
+    return next.map((row, i) => patchAt(prev[i]?.id === row.id ? prev[i] : prev.find((item) => item.id === row.id), row));
+  }
+  let changed = false;
+  const rows = next.map((row, i) => {
+    const before = prev[i];
+    const patched = patchAt(before?.id === row.id ? before : undefined, row);
+    if (patched !== before) changed = true;
+    return patched;
+  });
+  return changed ? rows : prev;
+}
+
 export function renameConversationInGroups(
   groups: ProjectChatGroup[],
   id: string,
@@ -102,6 +155,39 @@ export function applyLiveProjectChats(
   ];
 }
 
+/** True when two sidebar rows would paint the same card, including the relative-age timestamp. */
+export function sameSidebarConversationList(a: ConversationSummary[], b: ConversationSummary[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i];
+    const right = b[i];
+    if (!left || !right) return false;
+    if (left !== right && (!sameSidebarConversation(left, right) || left.updated_at !== right.updated_at)) return false;
+  }
+  return true;
+}
+
+export function sameJourneyList(a: JourneySummary[], b: JourneySummary[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i];
+    const right = b[i];
+    if (!left || !right || left === right) continue;
+    if (
+      left.id !== right.id ||
+      left.title !== right.title ||
+      left.collapsed !== right.collapsed ||
+      (left.color ?? "") !== (right.color ?? "") ||
+      left.sort_order !== right.sort_order
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Put this project's chats on its own group and drop those ids from every other group. */
 export function placeProjectChats(
   groups: ProjectChatGroup[],
@@ -139,17 +225,16 @@ export function upsertProjectGroup(
   const key = projectKey(path);
   const idx = groups.findIndex((group) => projectKey(group.path) === key);
   if (idx < 0) {
-    return [
-      {
-        name: patch.name || folderName(path),
-        path,
-        remote: patch.remote,
-        server: patch.server,
-        conversations: patch.conversations ?? [],
-        journeys: patch.journeys ?? [],
-      },
-      ...groups,
-    ];
+    const fresh: ProjectChatGroup = {
+      name: patch.name || folderName(path),
+      path,
+      remote: patch.remote,
+      server: patch.server,
+      conversations: patch.conversations ?? [],
+      journeys: patch.journeys ?? [],
+    };
+    // A project opened for the first time leads the list, matching the stored sort.
+    return [fresh, ...groups];
   }
   const next = groups.slice();
   next[idx] = { ...next[idx], ...patch };
@@ -171,6 +256,18 @@ export function toggleCollapsedProject(keys: string[], path: string): string[] {
 export function expandCollapsedProject(keys: string[], path: string): string[] {
   const key = projectKey(path);
   return keys.map(projectKey).filter((item) => item !== key);
+}
+
+/** Move one project in front of another. Same path, or a path that is not in the list, leaves the array alone. */
+export function moveProjectGroup(groups: ProjectChatGroup[], fromPath: string, toPath: string): ProjectChatGroup[] {
+  if (isSameProject(fromPath, toPath)) return groups;
+  const from = groups.findIndex((group) => isSameProject(group.path, fromPath));
+  const to = groups.findIndex((group) => isSameProject(group.path, toPath));
+  if (from < 0 || to < 0) return groups;
+  const next = groups.slice();
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
 }
 
 export function removeProjectGroup(groups: ProjectChatGroup[], path: string): ProjectChatGroup[] {

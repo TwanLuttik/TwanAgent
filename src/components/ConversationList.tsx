@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   DndContext,
@@ -34,7 +34,7 @@ import {
   type SidebarNode,
 } from "../lib/journey";
 import type { ConversationKind } from "../lib/terminal-chat";
-import { formatRelativeAge } from "../lib/relative-time";
+import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
 import { providerFor } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { formatModelName } from "../lib/usage";
@@ -100,17 +100,31 @@ export function ConversationList({
   const listRef = useRef<HTMLDivElement>(null);
   const [overlayWidth, setOverlayWidth] = useState<number | undefined>();
   const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  const openRowMenu = useMemo(
+    () => (ev: MouseEvent, target: MenuTarget) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setMenu({ x: ev.clientX, y: ev.clientY, target });
+    },
+    [],
+  );
   const [renameId, setRenameId] = useState<string | null>(null);
+  const finishRename = useMemo(() => () => setRenameId(null), []);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const nodes = buildSidebar(conversations, journeys);
-  const items = flattenNodes(nodes);
-  const groups = groupItems(items);
-  const sortableIds = items.map((item) => item.key);
+  const nodes = useMemo(() => buildSidebar(conversations, journeys), [conversations, journeys]);
+  const items = useMemo(() => flattenNodes(nodes), [nodes]);
+  const groups = useMemo(() => groupItems(items), [items]);
+  const sortableIds = useMemo(() => items.map((item) => item.key), [items]);
+  const itemIndex = useMemo(() => {
+    const index = new Map<string, number>();
+    items.forEach((item, i) => index.set(item.key, i));
+    return index;
+  }, [items]);
 
   useEffect(() => {
     function onDoc() {
@@ -124,13 +138,33 @@ export function ConversationList({
     }
     document.addEventListener("mousedown", onDoc);
     window.addEventListener("keydown", onKey);
-    const tick = window.setInterval(() => setNowMs(Date.now()), 30_000);
     return () => {
       document.removeEventListener("mousedown", onDoc);
       window.removeEventListener("keydown", onKey);
-      window.clearInterval(tick);
     };
   }, []);
+
+  const ageKey = items
+    .map((item) => (item.kind === "chat" ? item.conversation.updated_at : ""))
+    .join("\n");
+  useEffect(() => {
+    let timer = 0;
+    const arm = () => {
+      const now = Date.now();
+      setNowMs((prev) => (Math.abs(now - prev) < 500 ? prev : now));
+      let wait = 60_000;
+      for (const item of items) {
+        if (item.kind !== "chat") continue;
+        if (item.conversation.id in runningIds || loadingId === item.conversation.id) continue;
+        wait = Math.min(wait, relativeAgeTickMs(item.conversation.updated_at, now));
+      }
+      timer = window.setTimeout(arm, wait);
+    };
+    arm();
+    return () => window.clearTimeout(timer);
+    // The joined timestamps are the clock input. `items` is rebuilt whenever they change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ageKey, runningIds, loadingId]);
 
   if (conversations.length === 0 && journeys.length === 0) return null;
 
@@ -221,7 +255,7 @@ export function ConversationList({
                   insert={Boolean(draggingId && overId === item.key && draggingId !== item.key)}
                   insertAfter={
                     Boolean(draggingId) &&
-                    items.findIndex((row) => row.key === draggingId) < items.findIndex((row) => row.key === item.key)
+                    (itemIndex.get(String(draggingId)) ?? -1) < (itemIndex.get(item.key) ?? -1)
                   }
                   renaming={item.kind === "journey" && renameId === item.journey.id}
                   age={
@@ -236,15 +270,9 @@ export function ConversationList({
                   onToggle={onToggleCollapse}
                   onOpenKnowledge={onOpenKnowledge}
                   onNewChat={onNewChat}
-                  onRename={(id, title) => {
-                    onRenameJourney(id, title);
-                    setRenameId(null);
-                  }}
-                  onContext={(ev, target) => {
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    setMenu({ x: ev.clientX, y: ev.clientY, target });
-                  }}
+                  onRename={onRenameJourney}
+                  onRenameDone={finishRename}
+                  onContextMenu={openRowMenu}
                 />
               ))}
             </div>
@@ -398,7 +426,7 @@ function parseItemKey(key: string): { kind: "journey" | "conversation"; id: stri
   return null;
 }
 
-function SortableRow({
+const SortableRow = memo(function SortableRow({
   item,
   selected,
   running,
@@ -416,7 +444,8 @@ function SortableRow({
   onOpenKnowledge,
   onNewChat,
   onRename,
-  onContext,
+  onRenameDone,
+  onContextMenu,
 }: {
   item: FlatItem;
   selected: boolean;
@@ -435,7 +464,8 @@ function SortableRow({
   onOpenKnowledge: (id: string) => void;
   onNewChat: (journeyId: string, kind: ConversationKind) => void;
   onRename: (id: string, title: string) => void;
-  onContext: (ev: MouseEvent, target: MenuTarget) => void;
+  onRenameDone: () => void;
+  onContextMenu: (ev: MouseEvent, target: MenuTarget) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.key,
@@ -451,8 +481,8 @@ function SortableRow({
       role="listitem"
       {...drag}
       onContextMenu={(ev) => {
-        if (item.kind === "journey") onContext(ev, { type: "journey", id: item.journey.id });
-        else onContext(ev, { type: "chat", id: item.conversation.id, journeyId: item.conversation.journey_id });
+        if (item.kind === "journey") onContextMenu(ev, { type: "journey", id: item.journey.id });
+        else onContextMenu(ev, { type: "chat", id: item.conversation.id, journeyId: item.conversation.journey_id });
       }}
     >
       {insert ? (
@@ -469,10 +499,12 @@ function SortableRow({
           renaming={renaming}
           drag={attributes}
           dragListeners={listeners}
-          onToggle={() => onToggle(item.journey.id)}
-          onOpenKnowledge={() => onOpenKnowledge(item.journey.id)}
-          onNewChat={(kind) => onNewChat(item.journey.id, kind)}
-          onRename={(title) => onRename(item.journey.id, title)}
+          rowId={item.journey.id}
+          onToggle={onToggle}
+          onOpenKnowledge={onOpenKnowledge}
+          onNewChat={onNewChat}
+          onRename={onRename}
+          onRenameDone={onRenameDone}
         />
       ) : (
         <ConversationCard
@@ -485,25 +517,28 @@ function SortableRow({
           indent={item.indent}
           placeholder={hidden}
           age={age}
-          onOpen={() => onOpen(item.conversation.id)}
-          onDelete={() => onDelete(item.conversation.id)}
+          rowId={item.conversation.id}
+          onOpen={onOpen}
+          onDelete={onDelete}
         />
       )}
     </div>
   );
-}
+});
 
-function JourneyCard({
+const JourneyCard = memo(function JourneyCard({
   journey,
   placeholder,
   overlay,
   renaming,
   drag,
   dragListeners,
+  rowId = "",
   onToggle,
   onOpenKnowledge,
   onNewChat,
   onRename,
+  onRenameDone,
 }: {
   journey: JourneySummary;
   placeholder?: boolean;
@@ -511,10 +546,12 @@ function JourneyCard({
   renaming?: boolean;
   drag?: DraggableAttributes;
   dragListeners?: DraggableSyntheticListeners;
-  onToggle?: () => void;
-  onOpenKnowledge?: () => void;
-  onNewChat?: (kind: ConversationKind) => void;
-  onRename?: (title: string) => void;
+  rowId?: string;
+  onToggle?: (id: string) => void;
+  onOpenKnowledge?: (id: string) => void;
+  onNewChat?: (journeyId: string, kind: ConversationKind) => void;
+  onRename?: (id: string, title: string) => void;
+  onRenameDone?: () => void;
 }) {
   const [draft, setDraft] = useState(journey.title);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -536,7 +573,7 @@ function JourneyCard({
       <button
         type="button"
         disabled={placeholder || overlay || renaming}
-        onClick={onToggle}
+        onClick={() => onToggle?.(rowId)}
         className="flex size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
         aria-label={journey.collapsed ? "Expand journey" : "Collapse journey"}
       >
@@ -547,10 +584,19 @@ function JourneyCard({
           autoFocus
           value={draft}
           onChange={(ev) => setDraft(ev.target.value)}
-          onBlur={() => onRename?.(draft.trim() || journey.title)}
+          onBlur={() => {
+            onRename?.(rowId, draft.trim() || journey.title);
+            onRenameDone?.();
+          }}
           onKeyDown={(ev) => {
-            if (ev.key === "Enter") onRename?.(draft.trim() || journey.title);
-            if (ev.key === "Escape") onRename?.(journey.title);
+            if (ev.key === "Enter") {
+              onRename?.(rowId, draft.trim() || journey.title);
+              onRenameDone?.();
+            }
+            if (ev.key === "Escape") {
+              onRename?.(rowId, journey.title);
+              onRenameDone?.();
+            }
           }}
           className="mr-1 min-w-0 flex-1 rounded bg-canvas px-1 py-[5px] text-[13px] text-ink outline-none select-text"
         />
@@ -558,7 +604,7 @@ function JourneyCard({
         <button
           type="button"
           disabled={placeholder || overlay}
-          onClick={onToggle}
+          onClick={() => onToggle?.(rowId)}
           className="flex min-w-0 flex-1 touch-none items-center py-[7px] pr-1 text-left text-[13px] font-medium text-ink"
           {...drag}
           {...dragListeners}
@@ -572,7 +618,7 @@ function JourneyCard({
             type="button"
             aria-label="Open journey knowledge"
             title="Knowledge"
-            onClick={onOpenKnowledge}
+            onClick={() => onOpenKnowledge?.(rowId)}
             className="flex size-6 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink"
           >
             <Symbol name="doc.fill" className="size-3.5" />
@@ -596,7 +642,7 @@ function JourneyCard({
                   type="button"
                   role="menuitem"
                   onClick={() => {
-                    onNewChat?.("chat");
+                    onNewChat?.(rowId, "chat");
                     setMenuOpen(false);
                   }}
                   className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
@@ -607,7 +653,7 @@ function JourneyCard({
                   type="button"
                   role="menuitem"
                   onClick={() => {
-                    onNewChat?.("terminal");
+                    onNewChat?.(rowId, "terminal");
                     setMenuOpen(false);
                   }}
                   className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
@@ -623,9 +669,9 @@ function JourneyCard({
       )}
     </div>
   );
-}
+});
 
-function ConversationCard({
+const ConversationCard = memo(function ConversationCard({
   row,
   selected,
   running,
@@ -636,6 +682,7 @@ function ConversationCard({
   placeholder,
   overlay,
   age,
+  rowId = "",
   onOpen,
   onDelete,
 }: {
@@ -649,8 +696,9 @@ function ConversationCard({
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
-  onOpen?: () => void;
-  onDelete?: () => void;
+  rowId?: string;
+  onOpen?: (id: string) => void;
+  onDelete?: (id: string) => void;
 }) {
   const showPreview = Boolean(running && preview);
   return (
@@ -670,8 +718,8 @@ function ConversationCard({
       <button
         type="button"
         disabled={placeholder || overlay}
-        onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-2 py-[6px] pr-1 pl-2 text-left text-[13px] text-ink"
+        onClick={() => onOpen?.(rowId)}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-[6px] pr-1 pl-2 text-left text-[13px] text-ink disabled:cursor-default"
       >
         <span className="min-w-0 flex-1">
           <span className="block min-w-0 truncate">{row.title}</span>
@@ -708,7 +756,7 @@ function ConversationCard({
           <button
             type="button"
             aria-label="Delete conversation"
-            onClick={onDelete}
+            onClick={() => onDelete?.(rowId)}
             className={`absolute inset-0 hidden items-center justify-center text-muted hover:text-ink ${
               placeholder ? "" : "group-hover:flex"
             }`}
@@ -719,7 +767,7 @@ function ConversationCard({
       </span>
     </div>
   );
-}
+});
 
 function ChatContextMenu({
   x,
@@ -875,7 +923,7 @@ function TodoMark({ badge }: { badge: TodoBadge }) {
   );
 }
 
-function ModelMark({ model }: { model?: string | null }) {
+const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) {
   const id = model?.trim() ?? "";
   if (!id) return null;
   const claude = providerFor(id) === "anthropic";
@@ -895,6 +943,6 @@ function ModelMark({ model }: { model?: string | null }) {
       </span>
     </span>
   );
-}
+});
 
 

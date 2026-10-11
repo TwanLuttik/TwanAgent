@@ -58,26 +58,38 @@ export function wheelTargetOwnsScroll(target: EventTarget | null): boolean {
   return false;
 }
 
+function isDocumentShell(el: Element): boolean {
+  if (typeof document === "undefined") return false;
+  return el === document.documentElement || el === document.body;
+}
+
 function boxChain(target: EventTarget | null): WheelBox | null {
   if (typeof Element === "undefined" || !(target instanceof Element)) return null;
   let el: Element | null = target;
   let head: WheelBox | null = null;
   let prev: WheelBox | null = null;
   while (el) {
-    const style = getComputedStyle(el);
-    const node: WheelBox = {
-      overflowX: style.overflowX,
-      overflowY: style.overflowY,
-      scrollTop: el.scrollTop,
-      scrollLeft: el.scrollLeft,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-    };
-    if (!head) head = node;
-    if (prev) prev.parent = node;
-    prev = node;
+    // The document shell never consumes the app wheel, and a box that does not
+    // overflow cannot either. Skip getComputedStyle in both cases.
+    const overflows =
+      !isDocumentShell(el) &&
+      (el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth);
+    if (overflows) {
+      const style = getComputedStyle(el);
+      const node: WheelBox = {
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        scrollTop: el.scrollTop,
+        scrollLeft: el.scrollLeft,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      };
+      if (!head) head = node;
+      if (prev) prev.parent = node;
+      prev = node;
+    }
     el = el.parentElement;
   }
   return head;

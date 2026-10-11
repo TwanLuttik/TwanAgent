@@ -1,26 +1,31 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
+  bumpFileRefresh,
   dirsToList,
+  fileRefreshRevision,
   fileStructureDirs,
   fileStructureFiles,
   fileStructureSignature,
   publishFileStructure,
   resetFileStructureForTests,
+  subscribeFileRefresh,
   subscribeFileStructure,
 } from "../file-structure.ts";
 
 afterEach(() => resetFileStructureForTests());
 
 describe("file structure signatures", () => {
-  it("does not refresh on the first snapshot", () => {
+  it("notifies once when the first snapshot arrives", () => {
     let notices = 0;
     subscribeFileStructure(() => {
       notices += 1;
     });
-    assert.equal(publishFileStructure("/repo", "aaa"), false);
-    assert.equal(notices, 0);
+    assert.equal(publishFileStructure("/repo", "aaa", ["src"], [{ path: "src/a.ts", name: "a.ts" }]), false);
+    assert.equal(notices, 1);
     assert.equal(fileStructureSignature("/repo"), "aaa");
+    assert.equal(publishFileStructure("/repo", "aaa", ["src"], [{ path: "src/a.ts", name: "a.ts" }]), false);
+    assert.equal(notices, 1);
   });
 
   it("refreshes when a later snapshot has a different tree", () => {
@@ -29,10 +34,11 @@ describe("file structure signatures", () => {
       notices += 1;
     });
     publishFileStructure("/repo", "aaa");
-    assert.equal(publishFileStructure("/repo", "aaa"), false);
-    assert.equal(notices, 0);
-    assert.equal(publishFileStructure("/repo", "bbb"), true);
     assert.equal(notices, 1);
+    assert.equal(publishFileStructure("/repo", "aaa"), false);
+    assert.equal(notices, 1);
+    assert.equal(publishFileStructure("/repo", "bbb"), true);
+    assert.equal(notices, 2);
   });
 
   it("lists only the next folder under one that is open", () => {
@@ -47,6 +53,25 @@ describe("file structure signatures", () => {
     assert.deepEqual(fileStructureFiles("/repo"), [{ path: "src/a.ts", name: "a.ts" }]);
     publishFileStructure("/repo", "aaa", ["src"], []);
     assert.deepEqual(fileStructureFiles("/repo"), [{ path: "src/a.ts", name: "a.ts" }]);
+  });
+
+  it("bumps a refresh revision without pretending the tree changed", () => {
+    let treeNotices = 0;
+    let refreshNotices = 0;
+    subscribeFileStructure(() => {
+      treeNotices += 1;
+    });
+    subscribeFileRefresh(() => {
+      refreshNotices += 1;
+    });
+    publishFileStructure("/repo", "aaa", ["src"]);
+    assert.equal(fileRefreshRevision(), 0);
+    bumpFileRefresh();
+    bumpFileRefresh();
+    assert.equal(fileRefreshRevision(), 2);
+    assert.equal(refreshNotices, 2);
+    assert.equal(treeNotices, 1);
+    assert.equal(fileStructureSignature("/repo"), "aaa");
   });
 
   it("keeps projects separate", () => {

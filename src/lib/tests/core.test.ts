@@ -687,6 +687,90 @@ describe("splitLiveTranscript", () => {
     assert.equal(again.settled[0]?.user?.content, "first");
     assert.equal(again.settled[0]?.rest[0]?.kind === "assistant" && again.settled[0].rest[0].content, "done");
   });
+
+  it("returns the same settled turns when only the stream changes", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "done", reasoning: "thought it through" },
+      { role: "user", content: "second" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"a.ts"}' }],
+      },
+      { role: "tool", tool_call_id: "1", content: "..." },
+    ];
+    const first = splitLiveTranscript(messages, "", [], "thought it through");
+    const next = splitLiveTranscript(
+      messages,
+      "partially done",
+      [{ label: "Read b.ts", change: null }],
+      "new thought",
+    );
+    assert.equal(next.settled, first.settled);
+    assert.equal(next.settled[0], first.settled[0]);
+    assert.equal(next.settled[0]?.user?.content, "first");
+    assert.equal(next.settled[0]?.rest[0]?.kind, "thinking");
+    assert.deepEqual(next.settled, first.settled);
+    assert.ok(next.tail.length > first.tail.length);
+    assert.deepEqual(
+      next.tail.map((item) => item.kind),
+      ["user", "tools", "thinking", "assistant", "tools"],
+    );
+    const assistant = next.tail.find((item) => item.kind === "assistant");
+    assert.equal(assistant?.kind === "assistant" && assistant.content, "partially done");
+    const liveToolsItem = next.tail.at(-1);
+    assert.equal(liveToolsItem?.kind, "tools");
+    if (liveToolsItem?.kind === "tools") assert.deepEqual(liveToolsItem.labels, ["Read b.ts"]);
+    const replay = liveTranscriptItems(
+      messages,
+      "partially done",
+      [{ label: "Read b.ts", change: null }],
+      "new thought",
+    );
+    assert.deepEqual(replay.slice(replay.length - next.tail.length), next.tail);
+    assert.deepEqual(first.settled, splitLiveTranscript(messages, "x", []).settled);
+  });
+
+  it("merges pending live tools into a trailing tools item without duplicating committed ones", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "look" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "1", name: "read_file", arguments: '{"path":"a.ts"}' }],
+      },
+    ];
+    const split = splitLiveTranscript(messages, "", [
+      "Read a.ts",
+      {
+        label: "Edit src/app.ts",
+        change: {
+          path: "src/app.ts",
+          name: "app.ts",
+          additions: 1,
+          deletions: 0,
+          added: ["x"],
+          removed: [],
+        },
+      },
+    ]);
+    assert.deepEqual(split.settled, []);
+    const tools = split.tail.filter((item) => item.kind === "tools");
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0]?.kind, "tools");
+    if (tools[0]?.kind !== "tools") return;
+    assert.deepEqual(tools[0].labels, ["Read a.ts", "Edit src/app.ts"]);
+    assert.equal(tools[0].details[1]?.path, "src/app.ts");
+    const again = splitLiveTranscript(messages, "now writing", []);
+    assert.equal(again.settled, split.settled);
+    assert.deepEqual(
+      again.tail.map((item) => item.kind),
+      ["user", "tools", "assistant"],
+    );
+    const committed = again.tail.find((item) => item.kind === "tools");
+    assert.equal(committed?.kind === "tools" && committed.labels.length, 1);
+  });
 });
 
 describe("groupTranscriptTurns", () => {

@@ -225,6 +225,47 @@ export type RunningTurn = {
   todo?: { done: number; total: number } | null;
 };
 
+function sameActivity(a: ConversationActivity | null | undefined, b: ConversationActivity | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.kind !== b.kind) return false;
+  if (a.kind === "editing" && b.kind === "editing") return a.path === b.path;
+  if (a.kind === "tool" && b.kind === "tool") return a.label === b.label;
+  return true;
+}
+
+function sameTodo(a: RunningTurn["todo"], b: RunningTurn["todo"]): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  return a.done === b.done && a.total === b.total;
+}
+
+/**
+ * Sidebar label for one live turn.
+ * A tool tick that repeats the same label must keep the previous object so the conversation list does not reconcile.
+ */
+export function patchRunningTurn(
+  running: Record<string, RunningTurn>,
+  id: string,
+  patch: Partial<RunningTurn>,
+): Record<string, RunningTurn> {
+  if (!id) return running;
+  const current = running[id] ?? { activity: null, startedAt: patch.startedAt ?? 0 };
+  const next: RunningTurn = {
+    activity: patch.activity !== undefined ? patch.activity : current.activity,
+    startedAt: patch.startedAt !== undefined ? patch.startedAt : current.startedAt,
+    todo: patch.todo !== undefined ? patch.todo : current.todo,
+  };
+  if (
+    running[id] &&
+    sameActivity(current.activity, next.activity) &&
+    current.startedAt === next.startedAt &&
+    sameTodo(current.todo, next.todo)
+  ) {
+    return running;
+  }
+  return { ...running, [id]: next };
+}
+
 export function chatTurnIsRunning(runningId: string, chatId: string): boolean {
   return Boolean(chatId) && runningId === chatId;
 }

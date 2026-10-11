@@ -1,3 +1,8 @@
+/** True when a zero-height measure is required. Growth can use scrollHeight as-is. */
+export function shouldRemeasureComposer(prevLen: number, nextLen: number, widthChanged: boolean): boolean {
+  return widthChanged || nextLen < prevLen;
+}
+
 export function textareaFitHeight(input: {
   value: string;
   scrollHeight: number;

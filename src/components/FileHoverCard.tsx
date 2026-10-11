@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { watchFileRefresh } from "../lib/file-exists";
+import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import { fileFolderLabel, fileKindLabel, formatFileBytes, formatLineCount } from "../lib/file-preview";
 import { loadFileHoverCard, subscribePrefs } from "../lib/prefs";
 import * as api from "../lib/tauri";
@@ -21,18 +22,17 @@ function cacheKey(workspace: string, path: string): string {
 export function FileHoverCard({
   workspace,
   path,
-  tick = 0,
   enabled,
   onOpen,
   children,
 }: {
   workspace: string;
   path: string;
-  tick?: number;
   enabled: boolean;
   onOpen?: (path: string) => void;
   children: ReactNode;
 }) {
+  const tick = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
   const [prefOn, setPrefOn] = useState(loadFileHoverCard);
   const on = enabled && prefOn;
   const wrap = useRef<HTMLSpanElement>(null);

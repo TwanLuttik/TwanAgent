@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { isAllDiffPath } from "../lib/editor";
+import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import {
   addedFileDiff,
   groupDiffByFile,
@@ -14,12 +15,11 @@ import { FileIcon } from "./FileIcon";
 export function GitDiffView({
   workspace,
   path,
-  tick,
 }: {
   workspace: string;
   path: string;
-  tick: number;
 }) {
+  const tick = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
   const [sections, setSections] = useState<DiffSection[] | null>(null);
   const [files, setFiles] = useState<DiffFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);

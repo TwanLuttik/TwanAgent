@@ -32,9 +32,18 @@ export function scrollChatToEnd(
   el.scrollTop = chatScrollMax(el);
 }
 
+/** Jump to the end in one assignment when stick-to-bottom is on. */
+export function pinChatToEnd(
+  el: { scrollTop: number; scrollHeight: number; clientHeight?: number } | null,
+  pin: boolean,
+): void {
+  scrollChatToEnd(el, pin);
+}
+
 /**
  * Move part of the way to the end.
  * Returns true when the view is still short, so the caller keeps following.
+ * The live chat no longer uses this loop; it stays for tests.
  */
 export function easeChatToEnd(
   el: { scrollTop: number; scrollHeight: number; clientHeight?: number } | null,

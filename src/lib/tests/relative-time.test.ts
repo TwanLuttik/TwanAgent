@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { formatElapsed, formatRelativeAge } from "../relative-time.ts";
+import { formatElapsed, formatRelativeAge, relativeAgeTickMs } from "../relative-time.ts";
 
 const NOW = Date.parse("2026-09-16T12:00:00.000Z");
 
@@ -13,6 +13,13 @@ describe("formatRelativeAge", () => {
     assert.equal(formatRelativeAge("2026-08-26T12:00:00.000Z", NOW), "3w");
     assert.equal(formatRelativeAge("2026-07-16T12:00:00.000Z", NOW), "2mo");
     assert.equal(formatRelativeAge("2024-09-16T12:00:00.000Z", NOW), "2y");
+  });
+
+  it("waits until the compact label can change", () => {
+    assert.equal(relativeAgeTickMs("2026-09-16T11:59:20.000Z", NOW), 20_000);
+    assert.equal(relativeAgeTickMs("2026-09-16T11:55:10.000Z", NOW), 10_000);
+    assert.equal(relativeAgeTickMs("2026-09-16T10:20:00.000Z", NOW), 20 * 60_000);
+    assert.equal(relativeAgeTickMs("not-a-date", NOW), 60_000);
   });
 
   it("returns empty for missing or invalid timestamps", () => {

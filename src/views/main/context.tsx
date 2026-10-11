@@ -1,4 +1,8 @@
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+import type { ProjectChatGroup } from "../../lib/all-projects";
+import type { JourneySummary } from "../../lib/journey";
+import type { ConversationSummary } from "../../lib/tauri";
+import type { RunningTurn } from "../../lib/turn";
 
 type MainFn = (...args: any[]) => any;
 
@@ -41,8 +45,6 @@ export type MainModel = {
   fileDrag: any;
   folderOpen: any;
   journeys: any;
-  /** @deprecated Read from useStream. Kept optional so a stale object still typechecks. */
-  liveTools?: any;
   mcpBusy: any;
   mcpServers: any;
   messages: any;
@@ -96,8 +98,8 @@ export type MainModel = {
   removePendingAt: MainFn;
   renameJourney: MainFn;
   reorderChats: MainFn;
+  reorderProjects: MainFn;
   reorderSidebar: MainFn;
-  runningActivity?: any;
   runningId: any;
   runningTurns: any;
   unseenFinished: any;
@@ -131,10 +133,7 @@ export type MainModel = {
   skillBusy: any;
   skills: any;
   startNewChat: MainFn;
-  streamText?: any;
-  streamReasoning?: any;
   subagents: any;
-  tick: any;
   toggleJourney: MainFn;
   toggleMcpServer: MainFn;
   toggleProjectCollapsed: MainFn;
@@ -148,46 +147,73 @@ export type MainModel = {
 const MainContext = createContext<MainModel | null>(null);
 
 /**
- * Fields that change on every streamed token. They stay off `MainModel` so a
- * delta does not rebuild the sidebar, file tree, and composer.
+ * The conversation list. It stays off `MainModel` so a draft, a streamed token,
+ * or the composer height does not rebuild every chat row.
  */
-export type StreamSlice = {
-  streamText: string;
-  streamReasoning: string;
-  liveTools: MainModel["liveTools"];
-  runningActivity: MainModel["runningActivity"];
+export type SidebarSlice = {
+  activeId: string;
+  allProjectGroups: ProjectChatGroup[];
+  archiveChat: MainFn;
+  collapsedProjects: string[];
+  conversations: ConversationSummary[];
+  createJourneyFromChat: MainFn;
+  deleteJourney: MainFn;
+  deleteProjectFromSidebar: MainFn;
+  journeys: JourneySummary[];
+  legacyProjectsRoot: string;
+  messages: MainModel["messages"];
+  moveConversation: MainFn;
+  openChat: MainFn;
+  openingId: string;
+  openJourneyKnowledge: MainFn;
+  openProjectFromSidebar: MainFn;
+  openProjectSettings: MainFn;
+  openSidebarChat: MainFn;
+  projectSettings: MainModel["projectSettings"];
+  projectsRoot: string;
+  removeChat: MainFn;
+  renameJourney: MainFn;
+  setProjectMenu: MainFn;
+  reorderChats: MainFn;
+  reorderProjects: MainFn;
+  reorderSidebar: MainFn;
+  runningTurns: Record<string, RunningTurn>;
+  unseenFinished: ReadonlySet<string>;
+  setJourneyColor: MainFn;
+  showSettings: boolean;
+  showUsage: boolean;
+  startNewChat: MainFn;
+  toggleJourney: MainFn;
+  toggleProjectCollapsed: MainFn;
+  workspace: string;
 };
 
-const StreamContext = createContext<StreamSlice | null>(null);
+const SidebarContext = createContext<SidebarSlice | null>(null);
 
 export function MainProvider({
   value,
-  stream,
+  sidebar,
   children,
 }: {
   value: MainModel;
-  stream: StreamSlice;
+  sidebar: SidebarSlice;
   children: ReactNode;
 }) {
-  const streamValue = useMemo(
-    () => stream,
-    [stream.streamText, stream.streamReasoning, stream.liveTools, stream.runningActivity],
-  );
   return (
     <MainContext.Provider value={value}>
-      <StreamContext.Provider value={streamValue}>{children}</StreamContext.Provider>
+      <SidebarContext.Provider value={sidebar}>{children}</SidebarContext.Provider>
     </MainContext.Provider>
   );
-}
-
-export function useStream(): StreamSlice {
-  const value = useContext(StreamContext);
-  if (!value) throw new Error("useStream must be used inside MainProvider");
-  return value;
 }
 
 export function useMain(): MainModel {
   const value = useContext(MainContext);
   if (!value) throw new Error("useMain must be used inside MainProvider");
+  return value;
+}
+
+export function useSidebar(): SidebarSlice {
+  const value = useContext(SidebarContext);
+  if (!value) throw new Error("useSidebar must be used inside MainProvider");
   return value;
 }

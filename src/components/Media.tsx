@@ -4,10 +4,12 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { formatPlayerTime, type MediaKind } from "../lib/editor";
+import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import * as api from "../lib/tauri";
 import { Symbol } from "./Symbol";
 
@@ -17,15 +19,15 @@ export function Media({
   workspace,
   path,
   kind,
-  tick,
   onMeta,
 }: {
   workspace: string;
   path: string;
   kind: MediaKind;
-  tick: number;
   onMeta?: (meta: MediaMeta | null) => void;
 }) {
+  const tick = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
+  const seenRefresh = useRef(tick);
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const onMetaRef = useRef(onMeta);
@@ -41,7 +43,9 @@ export function Media({
       .then((abs) => {
         if (cancelled) return;
         const url = convertFileSrc(abs);
-        setSrc(tick ? `${url}${url.includes("?") ? "&" : "?"}t=${tick}` : url);
+        const changed = tick !== seenRefresh.current;
+        seenRefresh.current = tick;
+        setSrc(changed ? `${url}${url.includes("?") ? "&" : "?"}t=${tick}` : url);
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));

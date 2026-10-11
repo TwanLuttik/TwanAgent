@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { Composer } from "../../components/Composer";
 import { contextWindowForModel } from "../../lib/context";
 import { providerFor } from "../../lib/provider";
@@ -9,7 +10,7 @@ import { chatHasRunningTurn } from "../../lib/turn";
 import { useApp } from "../../state/app-state";
 import { useMain } from "./context";
 
-export function SessionComposer({ placement }: { placement: "landing" | "chat" }) {
+export const SessionComposer = memo(function SessionComposer({ placement }: { placement: "landing" | "chat" }) {
   const {
     activeId,
     addPromptImages,
@@ -42,6 +43,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     dictate,
   } = useMain();
   const { setFlash } = useApp();
+  const todos = useMemo(() => todosFromMessages(messages), [messages]);
   const landing = placement === "landing";
   const claude = providerFor(model) === "anthropic";
   const ask = claude ? "Ask Claude…" : "Ask Grok…";
@@ -107,7 +109,7 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
         setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, activeId, next))
       }
       onAddImages={(files) => void addPromptImages(files)}
-      todos={todosFromMessages(messages)}
+      todos={todos}
     />
   );
-}
+});
