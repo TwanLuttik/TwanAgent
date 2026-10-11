@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 const RELEASE_SERVICE: &str = "app.twanagent.desktop";
 const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
+const ANTHROPIC_ACCOUNT: &str = "anthropic";
 
 fn ssh_entry(account: &str) -> std::result::Result<Entry, String> {
     Entry::new(keychain_service(), account).map_err(|e| e.to_string())
@@ -145,6 +146,18 @@ pub trait SecretStore {
     fn set(&self, value: &str) -> std::result::Result<(), String>;
     fn get(&self) -> std::result::Result<Option<String>, String>;
     fn delete(&self);
+
+    fn set_account(&self, account: &str, value: &str) -> std::result::Result<(), String> {
+        let _ = (account, value);
+        Err("account secrets are not supported".into())
+    }
+    fn get_account(&self, account: &str) -> std::result::Result<Option<String>, String> {
+        let _ = account;
+        Ok(None)
+    }
+    fn delete_account(&self, account: &str) {
+        let _ = account;
+    }
 }
 
 pub struct SystemKeychain;
@@ -168,6 +181,54 @@ impl SecretStore for SystemKeychain {
         if let Ok(entry) = Entry::new(keychain_service(), XAI_ACCOUNT) {
             let _ = entry.delete_credential();
         }
+    }
+
+    fn set_account(&self, account: &str, value: &str) -> std::result::Result<(), String> {
+        Entry::new(keychain_service(), account)
+            .and_then(|entry| entry.set_password(value))
+            .map_err(|e| e.to_string())
+    }
+
+    fn get_account(&self, account: &str) -> std::result::Result<Option<String>, String> {
+        match Entry::new(keychain_service(), account).and_then(|entry| entry.get_password()) {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => {
+                if cfg!(debug_assertions) && account == ANTHROPIC_ACCOUNT {
+                    copy_release_account_into_dev(account)
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn delete_account(&self, account: &str) {
+        if let Ok(entry) = Entry::new(keychain_service(), account) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
+fn copy_release_account_into_dev(account: &str) -> std::result::Result<Option<String>, String> {
+    let Some(value) = read_account(RELEASE_SERVICE, account)? else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Entry::new(DEV_SERVICE, account)
+        .and_then(|entry| entry.set_password(trimmed))
+        .map_err(|e| e.to_string())?;
+    Ok(Some(trimmed.to_string()))
+}
+
+fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
+    match Entry::new(service, account).and_then(|entry| entry.get_password()) {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -284,6 +345,51 @@ pub fn resolve_xai_key_on_disk(data_dir: &Path) -> Option<String> {
     resolve_xai_key(get_xai_key(data_dir), std::env::var("XAI_API_KEY").ok())
 }
 
+/// Anthropic key. Same keychain service as xAI, different account. Never reads `secrets.json`.
+pub fn set_anthropic_key(key: &str) -> Result<()> {
+    set_anthropic_key_in(key, &SystemKeychain)
+}
+
+pub fn set_anthropic_key_in(key: &str, store: &dyn SecretStore) -> Result<()> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return delete_anthropic_key_in(store);
+    }
+    store
+        .set_account(ANTHROPIC_ACCOUNT, trimmed)
+        .map_err(|e| Error::Keychain(format!("could not save key to keychain: {e}")))
+}
+
+pub fn get_anthropic_key() -> Option<String> {
+    get_anthropic_key_in(&SystemKeychain)
+}
+
+pub fn get_anthropic_key_in(store: &dyn SecretStore) -> Option<String> {
+    store
+        .get_account(ANTHROPIC_ACCOUNT)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn delete_anthropic_key() -> Result<()> {
+    delete_anthropic_key_in(&SystemKeychain)
+}
+
+pub fn delete_anthropic_key_in(store: &dyn SecretStore) -> Result<()> {
+    store.delete_account(ANTHROPIC_ACCOUNT);
+    Ok(())
+}
+
+pub fn resolve_anthropic_key(saved: Option<String>, env: Option<String>) -> Option<String> {
+    resolve_xai_key(saved, env)
+}
+
+pub fn resolve_anthropic_key_on_disk() -> Option<String> {
+    resolve_anthropic_key(get_anthropic_key(), std::env::var("ANTHROPIC_API_KEY").ok())
+}
+
 #[cfg(test)]
 mod xai_key_tests {
     use super::*;
@@ -326,6 +432,41 @@ mod xai_key_tests {
         fn delete(&self, account: &str) {
             self.0.lock().unwrap().remove(account);
         }
+    }
+
+    #[test]
+    fn anthropic_key_does_not_read_the_xai_key() {
+        let store = MemStore::default();
+        set_xai_key_in(std::path::Path::new("/tmp/unused"), "xai-secret", &store).unwrap();
+        assert_eq!(get_anthropic_key_in(&store), None);
+        set_anthropic_key_in("anthropic-secret", &store).unwrap();
+        assert_eq!(
+            get_anthropic_key_in(&store).as_deref(),
+            Some("anthropic-secret")
+        );
+        assert_eq!(get_xai_key_in(std::path::Path::new("/tmp/unused"), &store).as_deref(), Some("xai-secret"));
+        delete_anthropic_key_in(&store).unwrap();
+        assert_eq!(get_anthropic_key_in(&store), None);
+        assert_eq!(get_xai_key_in(std::path::Path::new("/tmp/unused"), &store).as_deref(), Some("xai-secret"));
+    }
+
+    #[test]
+    fn anthropic_key_is_not_written_to_secrets_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MemStore::default();
+        std::fs::write(dir.path().join("secrets.json"), r#"{"xai_key":"file-secret"}"#).unwrap();
+        set_anthropic_key_in("anthropic-secret", &store).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
+        assert!(raw.contains("file-secret"), "{raw}");
+        assert!(!raw.contains("anthropic-secret"), "{raw}");
+        assert_eq!(
+            resolve_anthropic_key(get_anthropic_key_in(&store), None).as_deref(),
+            Some("anthropic-secret")
+        );
+        assert_eq!(
+            resolve_anthropic_key(None, Some(" env-key ".into())).as_deref(),
+            Some("env-key")
+        );
     }
 
     #[test]
@@ -412,7 +553,10 @@ mod xai_key_tests {
     }
 
     #[derive(Default)]
-    struct MemStore(std::sync::Mutex<Option<String>>);
+    struct MemStore(
+        std::sync::Mutex<Option<String>>,
+        std::sync::Mutex<std::collections::HashMap<String, String>>,
+    );
 
     impl SecretStore for MemStore {
         fn set(&self, value: &str) -> std::result::Result<(), String> {
@@ -424,6 +568,19 @@ mod xai_key_tests {
         }
         fn delete(&self) {
             *self.0.lock().unwrap() = None;
+        }
+        fn set_account(&self, account: &str, value: &str) -> std::result::Result<(), String> {
+            self.1
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), value.to_string());
+            Ok(())
+        }
+        fn get_account(&self, account: &str) -> std::result::Result<Option<String>, String> {
+            Ok(self.1.lock().unwrap().get(account).cloned())
+        }
+        fn delete_account(&self, account: &str) {
+            self.1.lock().unwrap().remove(account);
         }
     }
 

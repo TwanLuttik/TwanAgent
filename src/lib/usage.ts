@@ -1,4 +1,5 @@
 import { folderName, projectKey } from "./core.ts";
+import { providerFor } from "./provider.ts";
 
 export type UsageRange = 7 | 30 | 90;
 
@@ -22,10 +23,13 @@ export type UsageDay = UsageTotals & { date: string };
 
 export type UsageProject = UsageTotals & { path: string; name: string };
 
+export type UsageModel = UsageTotals & { model: string };
+
 export type UsageSnapshot = {
   totals: UsageTotals;
   days: UsageDay[];
   projects: UsageProject[];
+  models: UsageModel[];
   /** Mean response time for turns that recorded one. Null when none did. */
   avgDurationMs: number | null;
   durationCount: number;
@@ -73,8 +77,24 @@ function addTotals(target: UsageTotals, delta: UsageTotals) {
   target.total += delta.total;
 }
 
+function addModelTotals(models: UsageTrendModel[], model: string, delta: UsageTotals) {
+  if (delta.total <= 0 && delta.prompt <= 0 && delta.completion <= 0) return;
+  const id = model.trim();
+  const prev = models.find((row) => row.model === id);
+  if (prev) {
+    addTotals(prev, delta);
+    return;
+  }
+  models.push({ model: id, ...delta });
+}
+
 function conversationKey(ev: UsageEvent): string {
   return ev.conversation_id || `event:${ev.id}`;
+}
+
+/** One growing prompt stays one series. Switching models starts a new series so the old prompt is not subtracted from the new one. */
+function usageSeriesKey(ev: UsageEvent): string {
+  return `${conversationKey(ev)}\0${ev.model.trim()}`;
 }
 
 /**
@@ -133,9 +153,43 @@ export const MODEL_RATES: Record<string, ModelRate> = {
   "grok-4.20-0309-non-reasoning": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
   "grok-4.20-multi-agent-0309": { input: 1.25, cachedInput: 0.2, output: 2.5, longContextFrom: 200_000, longInput: 2.5, longCachedInput: 0.4, longOutput: 5 },
   "grok-build-0.1": { input: 1, cachedInput: 0.2, output: 2, longContextFrom: 200_000, longInput: 2, longCachedInput: 0.4, longOutput: 4 },
+  // Anthropic standard context, per million tokens. No cached or long-context tier in this slice.
+  "claude-opus-4-8": { input: 5, output: 25 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
 };
 
 const PER_MILLION = 1_000_000;
+
+const MODEL_NAMES: Record<string, string> = {
+  "claude-opus-4-8": "Claude Opus 4.8",
+  "claude-sonnet-4-6": "Claude Sonnet 4.6",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
+};
+
+/** Short name for a usage row. Unknown ids stay as stored, including an empty model. */
+export function formatModelName(model: string): string {
+  const id = model.trim();
+  if (!id) return "Unknown model";
+  return MODEL_NAMES[id.toLowerCase()] ?? id;
+}
+
+/** Stable swatch index so the same model keeps the same color across charts. */
+export function modelColorIndex(model: string): number {
+  const id = model.trim().toLowerCase();
+  if (!id) return 7;
+  if (id.startsWith("claude-opus")) return 4;
+  if (id.startsWith("claude-sonnet")) return 5;
+  if (id.startsWith("claude-haiku")) return 3;
+  if (id.startsWith("claude")) return 5;
+  if (id.includes("grok-4.7") || id.includes("grok-4.6")) return 0;
+  if (id.startsWith("grok-4.5") || id.startsWith("grok-4.3")) return 1;
+  if (id.startsWith("grok-4")) return 2;
+  if (id.startsWith("grok")) return 6;
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 33 + id.charCodeAt(i)) >>> 0;
+  return hash % 8;
+}
 
 export function modelRate(model: string): ModelRate | null {
   const id = model.trim().toLowerCase();
@@ -175,6 +229,10 @@ export function formatUsd(amount: number): string {
 
 export type UsageCost = {
   usd: number;
+  /** Priced tokens from Grok models. */
+  xai: number;
+  /** Priced tokens from Claude models. */
+  anthropic: number;
   /** Tokens whose model has no list price, so they are left out of the estimate. */
   unpricedTokens: number;
 };
@@ -191,6 +249,8 @@ export function estimateUsageCost(
   const startMs = rangeStartMs(opts.range, nowMs);
   const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
   let usd = 0;
+  let xai = 0;
+  let anthropic = 0;
   let unpricedTokens = 0;
   for (const { ev, atMs, delta } of eachUsageDelta(events, (row, t) => {
     if (t < startMs || t > nowMs) return false;
@@ -199,10 +259,15 @@ export function estimateUsageCost(
   })) {
     void atMs;
     const cost = usageCostUsd(delta, ev.model, ev.prompt_tokens);
-    if (cost == null) unpricedTokens += delta.total;
-    else usd += cost;
+    if (cost == null) {
+      unpricedTokens += delta.total;
+      continue;
+    }
+    usd += cost;
+    if (providerFor(ev.model) === "anthropic") anthropic += cost;
+    else xai += cost;
   }
-  return { usd, unpricedTokens };
+  return { usd, xai, anthropic, unpricedTokens };
 }
 
 function eachUsageDelta(
@@ -216,7 +281,7 @@ function eachUsageDelta(
   const previous = new Map<string, UsageEvent>();
   const out: { ev: UsageEvent; atMs: number; delta: UsageTotals }[] = [];
   for (const row of ordered) {
-    const key = conversationKey(row.ev);
+    const key = usageSeriesKey(row.ev);
     const delta = usageDelta(row.ev, previous.get(key));
     previous.set(key, row.ev);
     if (inside(row.ev, row.atMs)) out.push({ ev: row.ev, atMs: row.atMs, delta });
@@ -251,6 +316,7 @@ export function buildUsageSnapshot(
 
   const totals = emptyTotals();
   const byProject = new Map<string, UsageProject>();
+  const byModel = new Map<string, UsageModel>();
   let durationSum = 0;
   let durationCount = 0;
   for (const { ev, delta } of eachUsageDelta(rows, () => true)) {
@@ -262,6 +328,13 @@ export function buildUsageSnapshot(
     addTotals(totals, delta);
     const day = byDay.get(dayKey(ev.recorded_at));
     if (day) addTotals(day, delta);
+    const modelId = ev.model.trim();
+    const prevModel = byModel.get(modelId);
+    if (prevModel) {
+      addTotals(prevModel, delta);
+    } else {
+      byModel.set(modelId, { model: modelId, ...delta });
+    }
     const key = projectKey(ev.workspace_path);
     const prev = byProject.get(key);
     if (prev) {
@@ -278,10 +351,12 @@ export function buildUsageSnapshot(
   }
 
   const projects = [...byProject.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  const models = [...byModel.values()].sort((a, b) => b.total - a.total || a.model.localeCompare(b.model));
   return {
     totals,
     days,
     projects,
+    models,
     avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
     durationCount,
   };
@@ -431,15 +506,30 @@ export function teaserIndex(nowMs: number, startedMs = 0, intervalMs = 5000): nu
 
 export type UsageTrendRange = "24h" | "7d" | "30d";
 
+export type UsageTrendModel = UsageTotals & {
+  model: string;
+};
+
 export type UsageTrendPoint = UsageTotals & {
   atMs: number;
   label: string;
+  models: UsageTrendModel[];
 };
 
 export type UsageTrend = {
   points: UsageTrendPoint[];
   totals: UsageTotals;
 };
+
+/** Tokens in a dragged span of the chart, inclusive of both ends. */
+export function sumTrendRange(points: UsageTrendPoint[], from: number, to: number): UsageTotals {
+  const start = Math.max(0, Math.min(from, to));
+  const end = Math.min(points.length - 1, Math.max(from, to));
+  const totals = emptyTotals();
+  if (start > end) return totals;
+  for (let i = start; i <= end; i++) addTotals(totals, points[i]);
+  return totals;
+}
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -489,6 +579,29 @@ function trendLabel(range: UsageTrendRange, atMs: number): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric" });
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+
+function hourName(atMs: number): string {
+  return new Date(atMs).toLocaleTimeString(undefined, { hour: "numeric" });
+}
+
+/**
+ * The window a chart point covers.
+ * 24h and 7d are one hour. 30d is the whole calendar day.
+ */
+export function trendBucketSpan(range: UsageTrendRange, atMs: number): string {
+  if (range === "30d") {
+    const start = new Date(atMs);
+    return start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+  const end = atMs + HOUR_MS;
+  if (range === "7d") {
+    const day = new Date(atMs).toLocaleDateString(undefined, { weekday: "short" });
+    return `${day}, ${hourName(atMs)} – ${hourName(end)}`;
+  }
+  return `${hourName(atMs)} – ${hourName(end)}`;
+}
+
 /**
  * Tokens added inside a rolling window.
  * 24h and 7d are hourly. 30d is one local calendar day per point.
@@ -505,19 +618,22 @@ export function buildUsageTrend(
   const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
   const points: UsageTrendPoint[] = Array.from({ length: count }, (_, i) => {
     const atMs = trendBucketAt(opts.range, startMs, i, size);
-    return { atMs, label: trendLabel(opts.range, atMs), ...emptyTotals() };
+    return { atMs, label: trendLabel(opts.range, atMs), models: [], ...emptyTotals() };
   });
   const totals = emptyTotals();
   for (const { ev, atMs, delta } of eachUsageDelta(
     events,
     (row, t) => t >= startMs && t <= nowMs && (!want || projectKey(row.workspace_path) === want),
   )) {
-    void ev;
     addTotals(totals, delta);
     let i = opts.range === "30d" ? dayIndex(startMs, atMs) : Math.floor((atMs - startMs) / size);
     if (i >= count) i = count - 1;
     if (i < 0) continue;
     addTotals(points[i], delta);
+    addModelTotals(points[i].models, ev.model, delta);
+  }
+  for (const point of points) {
+    point.models.sort((a, b) => b.total - a.total || a.model.localeCompare(b.model));
   }
   return { points, totals };
 }

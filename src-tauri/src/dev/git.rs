@@ -138,9 +138,19 @@ fn classify_git(x: char, y: char) -> (String, bool) {
     ("modified".into(), false)
 }
 
-fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
-    if let Some(text) = crate::remote::git::try_remote(workspace, args)? {
-        return Ok(text);
+enum GitText {
+    Output(String),
+    NotRepo,
+}
+
+fn git_text(workspace: &Path, args: &[&str]) -> Result<GitText> {
+    match crate::remote::git::try_remote(workspace, args) {
+        Ok(Some(text)) => return Ok(GitText::Output(text)),
+        Ok(None) => {}
+        Err(err) if err.to_string().contains("not a git repository") => {
+            return Ok(GitText::NotRepo);
+        }
+        Err(err) => return Err(err),
     }
     let out = Command::new("git")
         .args(args)
@@ -150,11 +160,20 @@ fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("not a git repository") {
-            return Ok(String::new());
+            return Ok(GitText::NotRepo);
         }
         return Err(Error::Other(err.trim().to_string()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(GitText::Output(
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    ))
+}
+
+fn git_output(workspace: &Path, args: &[&str]) -> Result<String> {
+    match git_text(workspace, args)? {
+        GitText::Output(text) => Ok(text),
+        GitText::NotRepo => Ok(String::new()),
+    }
 }
 
 pub fn git_status(workspace: &Path) -> Result<Vec<GitChange>> {
@@ -197,7 +216,11 @@ pub fn parse_git_branches(text: &str) -> GitBranches {
             current = Some(name.to_string());
         }
     }
-    GitBranches { current, branches }
+    GitBranches {
+        current,
+        branches,
+        repo: true,
+    }
 }
 
 pub fn sanitize_git_branch(raw: &str) -> Result<String> {
@@ -238,8 +261,27 @@ fn git_run(workspace: &Path, args: &[&str]) -> Result<String> {
 
 pub fn git_branches(workspace: &Path) -> Result<GitBranches> {
     let root = resolve_in_workspace(workspace, "")?;
-    let text = git_output(&root, &["branch", "--list"])?;
-    Ok(parse_git_branches(&text))
+    match git_text(&root, &["branch", "--list"])? {
+        GitText::NotRepo => Ok(GitBranches {
+            current: None,
+            branches: Vec::new(),
+            repo: false,
+        }),
+        GitText::Output(text) => {
+            let mut listed = parse_git_branches(&text);
+            if listed.current.is_none() {
+                if let Ok(GitText::Output(head)) =
+                    git_text(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
+                {
+                    let name = head.trim();
+                    if !name.is_empty() && name != "HEAD" {
+                        listed.current = Some(name.to_string());
+                    }
+                }
+            }
+            Ok(listed)
+        }
+    }
 }
 
 pub fn git_switch(workspace: &Path, name: &str) -> Result<GitBranches> {
@@ -356,6 +398,17 @@ mod tests {
         let parsed = parse_git_branches("  develop\n* main\n  feature/login\n");
         assert_eq!(parsed.current.as_deref(), Some("main"));
         assert_eq!(parsed.branches, ["develop", "main", "feature/login"]);
+        assert!(parsed.repo);
+    }
+
+    #[test]
+    fn git_branches_reports_a_missing_repo() {
+        let dir = temp_ws();
+        let listed = git_branches(dir.path()).unwrap();
+        assert!(!listed.repo);
+        assert_eq!(listed.current, None);
+        assert!(listed.branches.is_empty());
+        assert!(git_status(dir.path()).unwrap().is_empty());
     }
 
     #[test]

@@ -18,13 +18,24 @@ pub fn dev_key_status(state: State<'_, AppState>) -> KeyStatus {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_runtime(state: State<'_, AppState>) -> grok_cli::DevRuntime {
-    grok_cli::runtime(&state.data_dir)
+pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRuntime> {
+    let mut status = grok_cli::runtime(&state.data_dir);
+    if let Some(auth) = crate::anthropic::resolve_claude_auth() {
+        let live = crate::anthropic::available_models(&auth).await;
+        status.models.retain(|row| row.provider != crate::anthropic::PROVIDER_ANTHROPIC);
+        status.models.extend(live);
+    }
+    Ok(status)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_cli_info(state: State<'_, AppState>) -> grok_cli::GrokCliInfo {
     grok_cli::cli_info(&state.data_dir)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_claude_cli_info() -> crate::anthropic::ClaudeCliInfo {
+    crate::anthropic::claude_cli_info()
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -37,4 +48,27 @@ pub fn dev_set_key(state: State<'_, AppState>, key: String) -> Result<KeyStatus>
 pub fn dev_clear_key(state: State<'_, AppState>) -> Result<KeyStatus> {
     secrets::delete_xai_key(&state.data_dir)?;
     Ok(dev_key_status(state))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_anthropic_key_status() -> KeyStatus {
+    KeyStatus {
+        saved: secrets::get_anthropic_key().is_some(),
+        env: std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_set_anthropic_key(key: String) -> Result<KeyStatus> {
+    secrets::set_anthropic_key(&key)?;
+    Ok(dev_anthropic_key_status())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_clear_anthropic_key() -> Result<KeyStatus> {
+    secrets::delete_anthropic_key()?;
+    Ok(dev_anthropic_key_status())
 }

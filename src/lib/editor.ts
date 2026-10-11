@@ -35,13 +35,30 @@ export function emptyEditor(): EditorState {
 }
 
 export const ALL_DIFF_PATH = "diff:all";
+export const MCP_EDITOR_PREFIX = "mcp:";
 
 export function isAllDiffPath(path: string): boolean {
   return path === ALL_DIFF_PATH;
 }
 
+export function isMcpEditorPath(path: string): boolean {
+  return path.startsWith(MCP_EDITOR_PREFIX);
+}
+
+export function mcpEditorPath(source: string): string {
+  return `${MCP_EDITOR_PREFIX}${source}`;
+}
+
+export function mcpSourceFromPath(path: string): string | null {
+  if (!isMcpEditorPath(path)) return null;
+  const source = path.slice(MCP_EDITOR_PREFIX.length);
+  return source || null;
+}
+
 export function editorTabTitle(path: string, journeyTitles?: Record<string, string>): string {
   if (isAllDiffPath(path)) return "All changes";
+  const mcp = mcpSourceFromPath(path);
+  if (mcp) return editorTabTitle(mcp);
   if (path.startsWith("journey:")) {
     const id = path.slice("journey:".length);
     return journeyTitles?.[id] || "Knowledge";
@@ -51,7 +68,7 @@ export function editorTabTitle(path: string, journeyTitles?: Record<string, stri
 }
 
 export function normalizeEditorPath(path: string): string {
-  if (path.startsWith("journey:") || isAllDiffPath(path)) return path;
+  if (path.startsWith("journey:") || isAllDiffPath(path) || isMcpEditorPath(path)) return path;
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
@@ -193,7 +210,7 @@ const VIDEO_MIME: Record<string, string> = {
 };
 
 function fileExtension(path: string): string {
-  const name = editorTabTitle(path).toLowerCase();
+  const name = editorTabTitle(path.startsWith(MCP_EDITOR_PREFIX) ? path.slice(MCP_EDITOR_PREFIX.length) : path).toLowerCase();
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1) : "";
 }
@@ -252,7 +269,7 @@ export function formatPlayerTime(seconds: number): string {
 }
 
 export function languageForPath(path: string): EditorLanguage {
-  const name = editorTabTitle(path).toLowerCase();
+  const name = editorTabTitle(path.startsWith(MCP_EDITOR_PREFIX) ? path.slice(MCP_EDITOR_PREFIX.length) : path).toLowerCase();
   const i = name.lastIndexOf(".");
   const ext = i > 0 ? name.slice(i + 1) : "";
   if (ext === "py" || ext === "pyw") return "python";

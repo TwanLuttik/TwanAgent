@@ -8,6 +8,8 @@ import {
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
+import { projectGitKey, type ProjectGit } from "../lib/project-git";
+import * as api from "../lib/tauri";
 import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
 
@@ -25,6 +27,7 @@ export function AllProjectsList({
   renderList,
   archiveOpen,
   onToggleArchive,
+  gitByProject,
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -39,17 +42,21 @@ export function AllProjectsList({
   renderList: (group: ProjectChatGroup, options: { showArchived: boolean }) => ReactNode;
   archiveOpen: Record<string, boolean>;
   onToggleArchive: (path: string) => void;
+  gitByProject?: Record<string, ProjectGit>;
 }) {
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
+  const [gitMenu, setGitMenu] = useState<{ x: number; y: number; path: string; remote: boolean } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
 
   useEffect(() => {
     function onDoc() {
       setMenu(null);
+      setGitMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
       if (ev.key === "Escape") {
         setMenu(null);
+        setGitMenu(null);
         setPendingDelete(null);
       }
     }
@@ -72,9 +79,10 @@ export function AllProjectsList({
         const closed = isProjectCollapsed(collapsed, group.path);
         const showArchived = Boolean(archiveOpen[projectKey(group.path)]);
         const hasArchived = projectHasArchived(group.conversations);
+        const git = gitByProject?.[projectGitKey(group.path)] ?? null;
         const visibleEmpty = showArchived
           ? !hasArchived
-          : !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
+          : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
         return (
           <section key={projectKey(group.path)}>
             <div
@@ -145,6 +153,12 @@ export function AllProjectsList({
                 </button>
               </div>
             )}
+            {closed || showArchived || !git ? null : (
+              <ProjectGitRow
+                branch={git.branch}
+                onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
+              />
+            )}
             {closed ? null : visibleEmpty ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}
@@ -175,6 +189,18 @@ export function AllProjectsList({
           }}
         />
       ) : null}
+      {gitMenu ? (
+        <ProjectGitMenu
+          x={gitMenu.x}
+          y={gitMenu.y}
+          remote={gitMenu.remote}
+          onOpenFinder={() => {
+            const path = gitMenu.path;
+            setGitMenu(null);
+            void api.revealFolder(path).catch(() => undefined);
+          }}
+        />
+      ) : null}
       {pendingDelete ? (
         <DeleteProjectDialog
           name={pendingDelete.name}
@@ -187,6 +213,64 @@ export function AllProjectsList({
         />
       ) : null}
     </div>
+  );
+}
+
+function ProjectGitRow({
+  branch,
+  onMenu,
+}: {
+  branch: string;
+  onMenu: (x: number, y: number) => void;
+}) {
+  return (
+    <div className="group/git flex items-center gap-1.5 rounded-[6px] py-[3px] pr-1 pl-1 text-[12px] text-muted select-none hover:bg-wash">
+      <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0" />
+      <span className="min-w-0 flex-1 truncate text-ink/80" title={branch}>
+        {branch}
+      </span>
+      <button
+        type="button"
+        aria-label="Project actions"
+        aria-haspopup="menu"
+        title="Project actions"
+        onClick={(ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const box = ev.currentTarget.getBoundingClientRect();
+          onMenu(box.right, box.bottom + 4);
+        }}
+        className="flex size-6 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:bg-wash-strong hover:text-ink group-hover/git:opacity-100 focus-visible:opacity-100"
+      >
+        <Symbol name="ellipsis" className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function ProjectGitMenu({
+  x,
+  y,
+  remote,
+  onOpenFinder,
+}: {
+  x: number;
+  y: number;
+  remote: boolean;
+  onOpenFinder: () => void;
+}) {
+  return (
+    <AnchoredMenu x={x} y={y} label="Project">
+      <button
+        type="button"
+        role="menuitem"
+        disabled={remote}
+        onClick={onOpenFinder}
+        className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset disabled:cursor-default disabled:opacity-40"
+      >
+        Open in Finder
+      </button>
+    </AnchoredMenu>
   );
 }
 

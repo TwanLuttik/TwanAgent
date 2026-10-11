@@ -165,6 +165,12 @@ function useExistingFiles(workspace: string | null, paths: string[]): Set<string
   return existing;
 }
 
+/** Webview navigation is blocked, so only http(s) links open in the system browser. */
+export function browserLink(href: string): boolean {
+  const value = href.trim();
+  return value.startsWith("https://") || value.startsWith("http://");
+}
+
 function closeOpenFence(text: string): string {
   const fences = text.match(/^```/gm)?.length ?? 0;
   return fences % 2 === 1 ? `${text}\n\`\`\`` : text;
@@ -212,9 +218,14 @@ function markdownComponents(
     a: ({ href, children }) => (
       <a
         href={href}
-        target="_blank"
+        title={href}
         rel="noreferrer noopener"
-        className="text-accent underline-offset-2 hover:underline"
+        className="cursor-pointer text-accent underline-offset-2 hover:underline"
+        onClick={(event) => {
+          if (!href || !browserLink(href)) return;
+          event.preventDefault();
+          void api.openUrl(href);
+        }}
       >
         {children}
       </a>

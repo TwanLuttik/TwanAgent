@@ -640,6 +640,65 @@ fn run_remote_git<T>(remote: Option<RemoteGit>, work: impl FnOnce() -> Result<T>
     crate::remote::git::with_remote(remote.machine, remote.project, remote.pool, remote.secret, work)
 }
 
+/// http(s) only. `open` would also launch local files and custom URL schemes.
+fn browser_url(raw: &str) -> Result<String> {
+    let url = raw.trim();
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or_else(|| Error::Other("only http and https links can be opened".into()))?;
+    if rest.is_empty() || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(Error::Other("that link cannot be opened".into()));
+    }
+    Ok(url.to_string())
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::browser_url;
+
+    #[test]
+    fn browser_links_are_http_only() {
+        assert_eq!(
+            browser_url(" https://example.com/a ").unwrap(),
+            "https://example.com/a"
+        );
+        assert!(browser_url("http://localhost:1430").is_ok());
+        assert!(browser_url("file:///etc/passwd").is_err());
+        assert!(browser_url("javascript:alert(1)").is_err());
+        assert!(browser_url("https://evil.test\nopen").is_err());
+        assert!(browser_url("notaurl").is_err());
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_reveal_folder(state: State<'_, AppState>, path: String) -> Result<()> {
+    let root = state.require_workspace(&path)?;
+    if crate::remote::project_for_workspace(&state, &root)?.is_some() {
+        return Err(Error::Other("this project lives on a server".into()));
+    }
+    super::open_path(&root)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_open_url(url: String) -> Result<()> {
+    let url = browser_url(&url)?;
+    let status = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(&url).status()
+    } else if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .status()
+    } else {
+        std::process::Command::new("xdg-open").arg(&url).status()
+    };
+    match status {
+        Ok(code) if code.success() => Ok(()),
+        Ok(_) => Err(Error::Other("could not open the link".into())),
+        Err(err) => Err(Error::Other(format!("could not open the link: {err}"))),
+    }
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_run_command(
     state: State<'_, AppState>,

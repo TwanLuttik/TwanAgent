@@ -17,6 +17,9 @@ struct ConvHead {
     usage: Option<String>,
     compaction: Option<String>,
     effort: Option<String>,
+    model: Option<String>,
+    context_window: Option<i64>,
+    permission: Option<String>,
     archived: bool,
 }
 
@@ -32,11 +35,14 @@ fn map_head(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConvHead> {
         usage: row.get(7)?,
         compaction: row.get(8)?,
         effort: row.get(9)?,
-        archived: row.get::<_, i64>(10)? != 0,
+        model: row.get(10)?,
+        context_window: row.get(11)?,
+        permission: row.get(12)?,
+        archived: row.get::<_, i64>(13)? != 0,
     })
 }
 
-const HEAD_SQL: &str = "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, archived
+const HEAD_SQL: &str = "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, model, context_window, permission, archived
          FROM conversations";
 
 fn summary_from_head(head: ConvHead) -> ConversationSummary {
@@ -53,6 +59,12 @@ fn summary_from_head(head: ConvHead) -> ConversationSummary {
         journey_id: head.journey_id,
         sort_order: head.sort_order,
         effort: head.effort.filter(|value| !value.trim().is_empty()),
+        model: head.model.filter(|value| !value.trim().is_empty()),
+        context_window: head
+            .context_window
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0),
+        permission: head.permission.filter(|value| !value.trim().is_empty()),
         archived: head.archived,
     }
 }
@@ -86,6 +98,9 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
             head.usage,
             head.compaction,
             head.effort,
+            head.model,
+            head.context_window,
+            head.permission,
             head.archived,
             messages,
         )?);
@@ -112,6 +127,9 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
         head.usage,
         head.compaction,
         head.effort,
+        head.model,
+        head.context_window,
+        head.permission,
         head.archived,
         messages,
     )
@@ -157,6 +175,17 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
         .as_ref()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let model = conv
+        .model
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let permission = conv
+        .permission
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let context_window = conv.context_window.filter(|value| *value > 0);
     if existing.is_some() {
         // Journey, order, and archived live on their own commands. A turn save
         // must not put a moved or archived chat back where it started.
@@ -164,9 +193,23 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
             "UPDATE conversations SET title = ?1, updated_at = ?2, kind = ?3,
              context_usage = COALESCE(?4, context_usage),
              compaction = COALESCE(?5, compaction),
-             effort = COALESCE(?6, effort)
-             WHERE id = ?7",
-            params![conv.title, conv.updated_at, kind, usage, compaction, effort, conv.id],
+             effort = COALESCE(?6, effort),
+             model = COALESCE(?7, model),
+             context_window = COALESCE(?8, context_window),
+             permission = COALESCE(?9, permission)
+             WHERE id = ?10",
+            params![
+                conv.title,
+                conv.updated_at,
+                kind,
+                usage,
+                compaction,
+                effort,
+                model,
+                context_window.map(|value| value as i64),
+                permission,
+                conv.id
+            ],
         )?;
         sync_messages(conn, &conv.id, &conv.messages)?;
         return Ok(());

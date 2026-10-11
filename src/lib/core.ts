@@ -2,6 +2,7 @@ import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
+import { agentIdentityLine } from "./provider.ts";
 import { skillSystemLine, type DetectedSkill } from "./skill.ts";
 
 export type ChatRole = "system" | "user" | "assistant" | "tool";
@@ -21,11 +22,21 @@ export type ChatImage = {
   dataUrl?: string;
 };
 
+/** One Anthropic thinking block, replayed unmodified on the next request. */
+export type ThinkingBlock = {
+  type: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  data?: string;
+};
+
 export type ChatMessage = {
   role: ChatRole;
   content?: string | null;
-  /** Model reasoning for this assistant step. Kept in the transcript, not sent back to the API. */
+  /** Display text for this assistant step. Grok does not send it back. */
   reasoning?: string;
+  /** Signed Claude thinking blocks. Required, unchanged, on the next Claude request. */
+  thinking?: ThinkingBlock[];
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   error?: boolean;
@@ -275,6 +286,12 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
   if (name === "list_dir") return `List ${path || "."}`;
   if (name === "git_status") return "Git status";
   if (name === "git_diff") return path ? `Diff ${fileBaseName(path) || path}` : "Diff";
+  if (name === "web_search") {
+    const query = String(args.query ?? args.search_term ?? "")
+      .trim()
+      .replace(/\s+/g, " ");
+    return query ? `Web search: ${query}` : "Web search";
+  }
   if (name === "run_command") {
     const description = String(args.description ?? "")
       .trim()
@@ -299,6 +316,60 @@ export function toolActivityLabel(call: ChatToolCall): string {
   return toolSummary(call.name, parseToolArgs(call.arguments));
 }
 
+const WEB_SEARCH_SITE_CAP = 8;
+
+/** Hosts the model asked to search, before any results come back. */
+export function webSearchDomains(args: Record<string, unknown>): string[] {
+  const raw = args.allowed_domains ?? args.allowedDomains;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    const host = siteHost(String(item));
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    out.push(host);
+    if (out.length === 5) break;
+  }
+  return out;
+}
+
+export function siteHost(raw: string): string {
+  const trimmed = raw.trim().replace(/^['"]|['"]$/g, "");
+  if (!trimmed || /\s/.test(trimmed)) return "";
+  const withoutScheme = trimmed.replace(/^https?:\/\//i, "");
+  const host = withoutScheme.split(/[/?#]/)[0]?.replace(/\.$/, "").replace(/^www\./i, "") ?? "";
+  if (!/^[a-z0-9.-]+\.[a-z0-9-]+$/i.test(host) || host.includes("..")) return "";
+  return host.toLowerCase();
+}
+
+/** One line of websites, shown under the search while it runs and after it finishes. */
+export function webSearchSitesLabel(sites: string[]): string {
+  const unique: string[] = [];
+  for (const site of sites) {
+    const host = siteHost(site) || site.trim();
+    if (!host || unique.includes(host)) continue;
+    unique.push(host);
+    if (unique.length === WEB_SEARCH_SITE_CAP) break;
+  }
+  return unique.join("\n");
+}
+
+/** Hosts from a finished search result. Keeps the order the search returned them. */
+export function webSearchResultSites(content: string): string[] {
+  const sites: string[] = [];
+  const seen = new Set<string>();
+  const urls = content.match(/https?:\/\/[^\s<>)\]]+/g) ?? [];
+  for (const url of urls) {
+    const host = siteHost(url.replace(/[.,;:]+$/, ""));
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    sites.push(host);
+    if (sites.length === WEB_SEARCH_SITE_CAP) break;
+  }
+  return sites;
+}
+
 export type ToolFileChange = {
   path: string;
   name: string;
@@ -313,6 +384,9 @@ export function toolDetail(call: ChatToolCall): string {
   const args = parseToolArgs(call.arguments);
   if (call.name === "run_command") {
     return String(args.command ?? "").trim().replace(/\s+/g, " ");
+  }
+  if (call.name === "web_search") {
+    return webSearchSitesLabel(webSearchDomains(args));
   }
   if (call.name === "spawn_subagent") {
     return String(args.prompt ?? "").trim().replace(/\s+/g, " ");
@@ -540,7 +614,12 @@ export function gitChangesTree<T extends GitDecorChange>(changes: T[]): GitChang
   return sortNodes(root.children);
 }
 
-export type LiveToolRow = { label: string; change: ToolFileChange | null; detail?: string };
+export type LiveToolRow = {
+  label: string;
+  change: ToolFileChange | null;
+  detail?: string;
+  callId?: string;
+};
 
 export type LiveToolInput = string | LiveToolRow;
 
@@ -568,6 +647,7 @@ export type TranscriptItem =
       files: ToolFileChange[];
       details: (ToolFileChange | null)[];
       commands: string[];
+      callIds: string[];
     };
 
 export type ToolTrailRow = { label: string; change: ToolFileChange | null; detail: string };
@@ -649,6 +729,7 @@ export function toolTrailTypeCountText(type: string, count: number): string {
 export function toolTrailTypeIcon(type: string): string {
   if (type === "$") return "terminal";
   if (type === "Subagent") return "person.2";
+  if (type === "Web") return "globe";
   if (type === "Git status" || type === "Diff") return "arrow.triangle.branch";
   if (type.includes("journey knowledge")) return "sparkles";
   if (type === "Read") return "doc";
@@ -669,7 +750,11 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
       out.push({ kind: "compaction" });
       continue;
     }
-    if (msg.role === "tool" || msg.role === "system") continue;
+    if (msg.role === "tool") {
+      fillWebSearchSites(out, msg);
+      continue;
+    }
+    if (msg.role === "system") continue;
     if (msg.role === "user") {
       const item: TranscriptItem = { kind: "user", content: String(msg.content ?? "") };
       if (msg.images?.length) item.images = msg.images;
@@ -685,7 +770,8 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     const calls = (msg.tool_calls ?? []).filter((call) => call.name !== "todo_write");
     const labels = calls.map(toolActivityLabel);
     const details = calls.map((call) => toolFileChange(call));
-    const commands = calls.map(toolDetail);
+    const commands = calls.map((call) => toolDetail(call));
+    const callIds = calls.map((call) => call.id);
     const files = toolTrailFileChanges(calls);
     if (reasoning) out.push({ kind: "thinking", content: reasoning });
     if (text) {
@@ -701,8 +787,9 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
         last.labels.push(...labels);
         last.details.push(...details);
         last.commands.push(...commands);
+        last.callIds.push(...callIds);
         last.files = mergeToolFileChanges([...last.files, ...files]);
-      } else out.push({ kind: "tools", labels, files, details, commands });
+      } else out.push({ kind: "tools", labels, files, details, commands, callIds });
     }
   }
   return out;
@@ -729,6 +816,24 @@ export function groupTranscriptTurns(items: TranscriptItem[]): TranscriptTurn[] 
   }
   if (current.user || current.rest.length) turns.push(current);
   return turns;
+}
+
+/** Replace a search row's requested domains with the sites the result actually cited. */
+function fillWebSearchSites(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  if (toolMessage.role !== "tool") return;
+  const sites = webSearchResultSites(String(toolMessage.content ?? ""));
+  if (!sites.length) return;
+  const id = toolMessage.tool_call_id ?? "";
+  if (!id) return;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (!item || item.kind === "user") return;
+    if (item.kind !== "tools") continue;
+    const index = item.callIds.indexOf(id);
+    if (index < 0 || !item.labels[index]?.startsWith("Web search")) continue;
+    item.commands[index] = webSearchSitesLabel(sites);
+    return;
+  }
 }
 
 function thinkingAlreadyShown(items: TranscriptItem[], text: string): boolean {
@@ -784,14 +889,16 @@ export function liveTranscriptItems(
     const labels = pending.map(liveToolLabel);
     const details = pending.map(liveToolChange);
     const commands = pending.map(liveToolDetail);
+    const callIds = pending.map((tool) => (typeof tool === "string" ? "" : tool.callId ?? ""));
     const files = mergeToolFileChanges(details.flatMap((change) => (change ? [change] : [])));
     const tail = out[out.length - 1];
     if (tail?.kind === "tools") {
       tail.labels.push(...labels);
       tail.details.push(...details);
       tail.commands.push(...commands);
+      tail.callIds.push(...callIds);
       tail.files = mergeToolFileChanges([...tail.files, ...files]);
-    } else out.push({ kind: "tools", labels, files, details, commands });
+    } else out.push({ kind: "tools", labels, files, details, commands, callIds });
   }
   return out;
 }
@@ -803,6 +910,7 @@ export function systemPrompt(
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
+  modelId?: string,
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
@@ -810,13 +918,15 @@ export function systemPrompt(
   const extra = extraSystemLines(mcpServers, skills);
   const remoteLine = remoteWorkspaceLine(remote);
   const place = remoteLine ? `\n${remoteLine}` : "";
+  const who = agentIdentityLine(modelId);
   return {
     role: "system",
-    content: `You are Grok, a coding agent in TwanAgent. Only Grok is available — do not suggest other models.
+    content: `${who}
 Workspace: ${workspace}${place}
 ${permissionSystemLine(permission)}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
+For current facts, news, docs, or anything that may have changed, call web_search instead of guessing. Cite the source URLs it returns.
 Prefer edit_file for small changes. Don't commit unless asked. Be concise.${knowledgeBlock}${extra}`,
   };
 }
@@ -830,8 +940,9 @@ export function withSystem(
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
+  modelId?: string,
 ): ChatMessage[] {
-  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote);
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId);
   const extra = system ? extraSystemLines(mcpServers, skills) : "";
   const content =
     extra && !String(base.content ?? "").includes(extra.trim())
@@ -860,6 +971,8 @@ export type ApiChatMessage = {
   content?: string | null | ApiContentPart[];
   tool_calls?: ApiToolCall[];
   tool_call_id?: string;
+  /** Signed Claude thinking blocks. Absent for Grok. */
+  thinking?: ThinkingBlock[];
 };
 
 export function toApiToolCall(call: ChatToolCall): ApiToolCall {
@@ -884,11 +997,12 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
         content: msg.content ?? "",
       };
     }
-    if (msg.role === "assistant" && msg.tool_calls?.length) {
+    if (msg.role === "assistant" && (msg.tool_calls?.length || msg.thinking?.length)) {
       return {
         role: "assistant",
         content: msg.content?.trim() ? msg.content : null,
-        tool_calls: msg.tool_calls.map(toApiToolCall),
+        ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.map(toApiToolCall) } : {}),
+        ...(msg.thinking?.length ? { thinking: msg.thinking } : {}),
       };
     }
     if (isCompactionSummary(msg)) {

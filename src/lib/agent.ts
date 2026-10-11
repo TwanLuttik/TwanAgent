@@ -1,7 +1,7 @@
 import type { ToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./context.ts";
-import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage } from "./core.ts";
+import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage, type ThinkingBlock } from "./core.ts";
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
@@ -38,6 +38,8 @@ import {
 
 export type ConfirmShell = (command: string) => Promise<boolean>;
 
+export type ToolProgress = (detail: string) => void;
+
 export async function executeTool(
   workspace: string,
   call: ToolCall,
@@ -46,6 +48,7 @@ export async function executeTool(
   permission: PermissionMode = "ask",
   signal?: AbortSignal,
   journeyId?: string,
+  onProgress?: ToolProgress,
 ): Promise<string> {
   const skipped = signal ? skipToolIfAborted(signal) : null;
   if (skipped) return skipped;
@@ -81,6 +84,8 @@ export async function executeTool(
         return await api.gitDiff(workspace, String(args.path ?? ""));
       case "run_command":
         return runOrSkip(workspace, String(args.command ?? ""), confirmShell);
+      case "web_search":
+        return runWebSearch(call.arguments || "{}", signal, onProgress);
       case "todo_write": {
         const parsed = parseTodoWriteArgs(call.arguments);
         if (parsed.error) return `Error: ${parsed.error}`;
@@ -103,6 +108,35 @@ export async function executeTool(
     }
   } catch (e) {
     return `Error: ${String(e)}`;
+  }
+}
+
+async function runWebSearch(
+  argumentsJson: string,
+  signal?: AbortSignal,
+  onProgress?: ToolProgress,
+): Promise<string> {
+  const streamId = crypto.randomUUID();
+  const seen = new Set<string>();
+  const sites: string[] = [];
+  let unlisten: (() => void) | undefined;
+  const note = (host: string) => {
+    const clean = host.trim();
+    if (!clean || seen.has(clean)) return;
+    seen.add(clean);
+    sites.push(clean);
+    onProgress?.(sites.join("\n"));
+  };
+  try {
+    unlisten = await api.onWebSearch((ev) => {
+      if (ev.stream_id !== streamId) return;
+      if (ev.kind === "site" && ev.host) note(ev.host);
+      if (ev.kind === "scope" && ev.text) onProgress?.(ev.text);
+    });
+    if (signal?.aborted) return "Skipped: stopped.";
+    return await api.webSearch(streamId, argumentsJson);
+  } finally {
+    unlisten?.();
   }
 }
 
@@ -132,6 +166,8 @@ export type TurnOpts = {
   confirmShell: ConfirmShell;
   getPermission?: () => PermissionMode;
   onTool?: (call: ToolCall) => void;
+  /** Live detail for the tool call that is running now, such as websites found mid-search. */
+  onToolProgress?: (callId: string, detail: string) => void;
   onUpdate?: (messages: ChatMessage[]) => void;
   onRefresh?: () => void;
   onSubagent?: (event: SubagentEvent) => void;
@@ -150,14 +186,34 @@ export type TurnOpts = {
   remote?: RemoteWorkspace | null;
 };
 
-function assistantMessage(text: string, reasoning: string, toolCalls: ToolCall[]): ChatMessage {
+function assistantMessage(
+  text: string,
+  reasoning: string,
+  toolCalls: ToolCall[],
+  thinking: ThinkingBlock[] = [],
+): ChatMessage {
   const thought = reasoning.trim();
   return {
     role: "assistant",
     content: text,
     ...(thought ? { reasoning: thought } : {}),
+    ...(thinking.length ? { thinking } : {}),
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
+}
+
+function signedThinking(blocks: api.ApiThinkingBlock[] | null | undefined): ThinkingBlock[] {
+  const out: ThinkingBlock[] = [];
+  for (const block of blocks ?? []) {
+    if (block.type === "redacted_thinking" && block.data) {
+      out.push({ type: "redacted_thinking", data: block.data });
+      continue;
+    }
+    if (block.type === "thinking" && block.signature) {
+      out.push({ type: "thinking", thinking: block.thinking ?? "", signature: block.signature });
+    }
+  }
+  return out;
 }
 
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
@@ -185,14 +241,14 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
     let result = await streamCompletion(
-      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
+      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
       opts,
       imageCache,
     );
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
         opts,
         imageCache,
       );
@@ -211,7 +267,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onError(result.error);
       if (result.error !== "Stopped.") {
         const thought = result.reasoning.trim();
-        if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+        if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
         transcript = [...transcript, turnFailureMessage(result.error)];
         opts.onUpdate?.(transcript);
         return transcript;
@@ -221,7 +277,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
         opts,
         imageCache,
       );
@@ -230,7 +286,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.onError(result.error);
         if (result.error !== "Stopped.") {
           const thought = result.reasoning.trim();
-          if (thought) transcript = [...transcript, assistantMessage("", thought, [])];
+          if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
           transcript = [...transcript, turnFailureMessage(result.error)];
           opts.onUpdate?.(transcript);
           return transcript;
@@ -244,7 +300,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       return transcript;
     }
     if (result.usage) opts.onUsage?.(result.usage);
-    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls)];
+    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls, result.thinking)];
     opts.onUpdate?.(transcript);
     if (!result.toolCalls.length) return transcript;
     const contents: string[] = new Array(result.toolCalls.length);
@@ -283,6 +339,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
             parsePermissionMode(opts.getPermission?.()),
             opts.signal,
             opts.journeyId,
+            (detail) => opts.onToolProgress?.(call.id, detail),
           )) || UNFINISHED_TOOL;
       } catch (err) {
         contents[i] = `Error: ${String(err)}`;
@@ -371,6 +428,7 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
         parsed.description,
         parsePermissionMode(opts.getPermission?.()),
         opts.journeyKnowledge,
+        opts.model,
       ),
       journeyKnowledge: opts.journeyKnowledge,
       allowSpawn: false,
@@ -426,11 +484,12 @@ async function streamCompletion(
     journeyId?: string;
   },
   imageCache: Map<string, string> = new Map(),
-): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; error?: string; usage?: ChatUsage }> {
+): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; thinking: ThinkingBlock[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
   let reasoning = "";
   let toolCalls: ToolCall[] = [];
+  let thinking: ThinkingBlock[] = [];
   let usage: ChatUsage | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -439,6 +498,7 @@ async function streamCompletion(
       text: string;
       reasoning: string;
       toolCalls: ToolCall[];
+      thinking: ThinkingBlock[];
       error?: string;
       usage?: ChatUsage;
     }) => {
@@ -450,7 +510,7 @@ async function streamCompletion(
     };
     const onAbort = () => {
       void api.chatCancel(streamId);
-      finish({ text, reasoning, toolCalls, error: "Stopped." });
+      finish({ text, reasoning, toolCalls, thinking, error: "Stopped." });
     };
     void (async () => {
       try {
@@ -467,10 +527,12 @@ async function streamCompletion(
             if (next) usage = next;
           } else if (ev.kind === "done") {
             if (ev.tool_calls?.length) toolCalls = ev.tool_calls;
+            const signed = signedThinking(ev.thinking);
+            if (signed.length) thinking = signed;
             usage = parseChatUsage(ev.usage) ?? usage;
-            finish({ text: text || ev.text || "", reasoning, toolCalls, usage });
+            finish({ text: text || ev.text || "", reasoning, toolCalls, thinking, usage });
           } else if (ev.kind === "error") {
-            finish({ text, reasoning, toolCalls, error: ev.text || "xAI request failed.", usage });
+            finish({ text, reasoning, toolCalls, thinking, error: ev.text || "xAI request failed.", usage });
           }
         });
         opts.onReasoning?.("");

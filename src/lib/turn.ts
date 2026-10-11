@@ -1,5 +1,7 @@
 import { isSameProject } from "./all-projects.ts";
+import { contextWindowChoices, resolveContextWindow } from "./context.ts";
 import { TURN_FAILURE_PREFIX, type ChatImage, type ChatMessage, type ConversationActivity } from "./core.ts";
+import { parsePermissionMode } from "./permission.ts";
 
 export const SKIPPED_STOPPED = "Skipped: stopped.";
 export { TURN_FAILURE_PREFIX };
@@ -219,6 +221,8 @@ export function dequeuePending(
 export type RunningTurn = {
   activity: ConversationActivity | null;
   startedAt: number;
+  /** `done/total` for the todo list in this turn. Absent when the turn has no todos. */
+  todo?: { done: number; total: number } | null;
 };
 
 export function chatTurnIsRunning(runningId: string, chatId: string): boolean {
@@ -231,6 +235,77 @@ export function chatHasRunningTurn(
   chatId: string,
 ): boolean {
   return Boolean(chatId) && Boolean(running && chatId in running);
+}
+
+export type ComposerModel = {
+  id: string;
+  efforts?: readonly { id: string }[] | null;
+  context_windows?: number[] | null;
+  context_window?: number | null;
+};
+
+export type ComposerSettings = {
+  model: string;
+  effort: string;
+  contextWindow: number;
+  permission: string;
+};
+
+export type StoredComposerSettings = {
+  model?: string | null;
+  effort?: string | null;
+  contextWindow?: number | null;
+  permission?: string | null;
+};
+
+/**
+ * Model id sent with the next turn.
+ * A chat that already has an assistant reply keeps its saved model.
+ * A new chat has none yet, so the composer chip wins over a model copied
+ * from the previous conversation when the empty chat was created.
+ */
+export function modelForTurn(
+  messages: readonly { role?: string | null }[],
+  storedModel: string | null | undefined,
+  chipModel: string,
+): string {
+  const stored = (storedModel ?? "").trim();
+  const chip = chipModel.trim();
+  if (messages.some((message) => message.role === "assistant") && stored) return stored;
+  return chip || stored;
+}
+
+/**
+ * Settings for the chat being opened.
+ * A value saved on that chat wins. Anything missing stays on the app default.
+ * The context size is kept only when the chosen model offers it.
+ *
+ * A brand-new chat has no saved model yet. The composer chip is the choice
+ * until the first message stores one, so switching models before that send
+ * is not overwritten by the model copied from the previous chat.
+ */
+export function composerSettingsForChat(
+  stored: StoredComposerSettings | null | undefined,
+  models: readonly ComposerModel[],
+  fallback: ComposerSettings,
+): ComposerSettings {
+  const modelId = (stored?.model ?? "").trim();
+  const model = models.find((row) => row.id === modelId) ?? models.find((row) => row.id === fallback.model) ?? models[0];
+  const modelChoice = model?.id || fallback.model;
+  const effort = effortForModel(stored?.effort, model?.efforts, fallback.effort);
+  const choices = contextWindowChoices(model?.context_windows, model?.context_window);
+  const contextWindow = resolveContextWindow(
+    choices,
+    stored?.contextWindow ?? fallback.contextWindow,
+    model?.context_window,
+    modelChoice,
+  );
+  return {
+    model: modelChoice,
+    effort,
+    contextWindow,
+    permission: parsePermissionMode(stored?.permission || fallback.permission),
+  };
 }
 
 /** Keep a thinking level only when this model offers it. Otherwise use the model default. */

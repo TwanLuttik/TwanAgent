@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   DndContext,
   DragOverlay,
@@ -34,6 +35,9 @@ import {
 } from "../lib/journey";
 import type { ConversationKind } from "../lib/terminal-chat";
 import { formatRelativeAge } from "../lib/relative-time";
+import { providerFor } from "../lib/provider";
+import type { TodoBadge } from "../lib/todo";
+import { formatModelName } from "../lib/usage";
 
 type MenuTarget =
   | { type: "chat"; id: string; journeyId?: string | null }
@@ -47,6 +51,7 @@ export function ConversationList({
   unseenIds,
   loadingId,
   runningPreview,
+  todoFor,
   showSettings,
   onOpen,
   onDelete,
@@ -71,6 +76,7 @@ export function ConversationList({
   unseenIds?: ReadonlySet<string>;
   loadingId?: string;
   runningPreview: (id: string) => string;
+  todoFor?: (id: string) => TodoBadge | null;
   showSettings: boolean;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
@@ -210,6 +216,7 @@ export function ConversationList({
                       ? runningPreview(item.conversation.id)
                       : ""
                   }
+                  todo={item.kind === "chat" ? todoFor?.(item.conversation.id) ?? null : null}
                   dragging={draggingId === item.key}
                   insert={Boolean(draggingId && overId === item.key && draggingId !== item.key)}
                   insertAfter={
@@ -248,15 +255,7 @@ export function ConversationList({
         {dragging ? (
           <div style={overlayWidth ? { width: overlayWidth } : undefined}>
             {dragging.kind === "journey" ? (
-              <JourneyCard
-                journey={dragging.journey}
-                overlay
-                handle={
-                  <div className="flex size-6 items-center justify-center text-muted">
-                    <Grip />
-                  </div>
-                }
-              />
+              <JourneyCard journey={dragging.journey} overlay />
             ) : (
               <ConversationCard
                 row={dragging.conversation}
@@ -267,6 +266,7 @@ export function ConversationList({
                 preview={
                   dragging.conversation.id in runningIds ? runningPreview(dragging.conversation.id) : ""
                 }
+                todo={todoFor?.(dragging.conversation.id) ?? null}
                 indent={dragging.indent}
                 age={
                   !(dragging.conversation.id in runningIds) && loadingId !== dragging.conversation.id
@@ -274,11 +274,6 @@ export function ConversationList({
                     : ""
                 }
                 overlay
-                handle={
-                  <div className="flex size-6 items-center justify-center text-muted">
-                    <Grip />
-                  </div>
-                }
               />
             )}
           </div>
@@ -409,6 +404,7 @@ function SortableRow({
   running,
   unseen,
   preview,
+  todo,
   dragging,
   insert,
   insertAfter,
@@ -427,6 +423,7 @@ function SortableRow({
   running: boolean;
   unseen?: boolean;
   preview: string;
+  todo?: TodoBadge | null;
   dragging: boolean;
   insert: boolean;
   insertAfter: boolean;
@@ -444,25 +441,15 @@ function SortableRow({
     id: item.key,
   });
   const hidden = isDragging || dragging;
-  const handle = (
-    <button
-      type="button"
-      aria-label="Drag to reorder"
-      title="Drag to reorder"
-      className="flex size-6 shrink-0 touch-none items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
-      {...attributes}
-      {...listeners}
-    >
-      <Grip />
-    </button>
-  );
+  const drag = item.kind === "chat" ? { ...attributes, ...listeners } : undefined;
 
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className="relative"
+      className={`relative ${item.kind === "chat" ? "touch-none" : ""}`}
       role="listitem"
+      {...drag}
       onContextMenu={(ev) => {
         if (item.kind === "journey") onContext(ev, { type: "journey", id: item.journey.id });
         else onContext(ev, { type: "chat", id: item.conversation.id, journeyId: item.conversation.journey_id });
@@ -480,7 +467,8 @@ function SortableRow({
           journey={item.journey}
           placeholder={hidden}
           renaming={renaming}
-          handle={handle}
+          drag={attributes}
+          dragListeners={listeners}
           onToggle={() => onToggle(item.journey.id)}
           onOpenKnowledge={() => onOpenKnowledge(item.journey.id)}
           onNewChat={(kind) => onNewChat(item.journey.id, kind)}
@@ -493,10 +481,10 @@ function SortableRow({
           running={running}
           unseen={unseen}
           preview={preview}
+          todo={todo}
           indent={item.indent}
           placeholder={hidden}
           age={age}
-          handle={handle}
           onOpen={() => onOpen(item.conversation.id)}
           onDelete={() => onDelete(item.conversation.id)}
         />
@@ -510,7 +498,8 @@ function JourneyCard({
   placeholder,
   overlay,
   renaming,
-  handle,
+  drag,
+  dragListeners,
   onToggle,
   onOpenKnowledge,
   onNewChat,
@@ -520,7 +509,8 @@ function JourneyCard({
   placeholder?: boolean;
   overlay?: boolean;
   renaming?: boolean;
-  handle?: ReactNode;
+  drag?: DraggableAttributes;
+  dragListeners?: DraggableSyntheticListeners;
   onToggle?: () => void;
   onOpenKnowledge?: () => void;
   onNewChat?: (kind: ConversationKind) => void;
@@ -542,7 +532,7 @@ function JourneyCard({
             : "hover:bg-wash"
       }`}
     >
-      {handle ? <div className="pl-0.5">{handle}</div> : <div className="w-1.5 shrink-0" />}
+      <div className="w-1.5 shrink-0" />
       <button
         type="button"
         disabled={placeholder || overlay || renaming}
@@ -569,7 +559,9 @@ function JourneyCard({
           type="button"
           disabled={placeholder || overlay}
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center py-[7px] pr-1 text-left text-[13px] font-medium text-ink"
+          className="flex min-w-0 flex-1 touch-none items-center py-[7px] pr-1 text-left text-[13px] font-medium text-ink"
+          {...drag}
+          {...dragListeners}
         >
           <span className="block min-w-0 truncate">{journey.title}</span>
         </button>
@@ -639,11 +631,11 @@ function ConversationCard({
   running,
   unseen,
   preview,
+  todo,
   indent,
   placeholder,
   overlay,
   age,
-  handle,
   onOpen,
   onDelete,
 }: {
@@ -652,11 +644,11 @@ function ConversationCard({
   running: boolean;
   unseen?: boolean;
   preview: string;
+  todo?: TodoBadge | null;
   indent?: boolean;
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
-  handle?: ReactNode;
   onOpen?: () => void;
   onDelete?: () => void;
 }) {
@@ -675,55 +667,56 @@ function ConversationCard({
                 : "border border-transparent hover:bg-wash"
       }`}
     >
-      {handle ? <div className="pl-0.5">{handle}</div> : <div className="w-1.5 shrink-0" />}
       <button
         type="button"
         disabled={placeholder || overlay}
         onClick={onOpen}
-        className={`flex min-w-0 flex-1 items-center gap-2 py-[6px] pr-1 text-left text-[13px] text-ink ${
-          handle ? "pl-0.5" : "pl-2"
-        }`}
+        className="flex min-w-0 flex-1 items-center gap-2 py-[6px] pr-1 pl-2 text-left text-[13px] text-ink"
       >
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1.5">
-            {row.kind === "terminal" ? (
-              <Symbol name="terminal" className="size-3 shrink-0 text-muted" />
-            ) : null}
-            <span className="block min-w-0 truncate">{row.title}</span>
-            {running ? (
-              <span
-                className="size-2.5 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-                aria-label={preview || "Loading"}
-              />
-            ) : null}
-          </span>
+          <span className="block min-w-0 truncate">{row.title}</span>
           {showPreview ? (
             <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted">{preview}</span>
+          ) : todo ? (
+            <TodoMark badge={todo} />
           ) : null}
         </span>
       </button>
-      <span
-        className={`mr-1.5 w-7 shrink-0 text-right text-[11px] tabular-nums text-muted ${
-          onDelete && !overlay && !placeholder ? "group-hover:hidden" : ""
-        }`}
-        title={
-          age && Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined
-        }
-      >
-        {age || ""}
-      </span>
-      {onDelete && !overlay ? (
-        <button
-          type="button"
-          aria-label="Delete conversation"
-          onClick={onDelete}
-          className={`mr-1 hidden size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink ${
-            placeholder ? "" : "group-hover:flex"
-          }`}
-        >
-          <Symbol name="xmark" className="size-3" />
-        </button>
+      {row.kind === "terminal" ? (
+        <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
+      ) : (
+        <ModelMark model={row.model} />
+      )}
+      {running ? (
+        <span
+          className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+          aria-label={preview || "Loading"}
+        />
       ) : null}
+      <span className="relative mr-1.5 flex h-4 w-6 shrink-0 items-center justify-center">
+        <span
+          className={`text-[11px] leading-none tabular-nums text-muted ${
+            onDelete && !overlay && !placeholder ? "group-hover:opacity-0" : ""
+          }`}
+          title={
+            age && Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined
+          }
+        >
+          {age || ""}
+        </span>
+        {onDelete && !overlay ? (
+          <button
+            type="button"
+            aria-label="Delete conversation"
+            onClick={onDelete}
+            className={`absolute inset-0 hidden items-center justify-center text-muted hover:text-ink ${
+              placeholder ? "" : "group-hover:flex"
+            }`}
+          >
+            <Symbol name="xmark" className="size-2.5" />
+          </button>
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -864,15 +857,44 @@ function DeleteJourneyDialog({
   );
 }
 
-function Grip() {
+function TodoMark({ badge }: { badge: TodoBadge }) {
+  if (badge.finished) {
+    return (
+      <span className="mt-0.5 flex h-[14px] items-center gap-1 text-[11px] leading-[14px] text-ok" title="Todos finished">
+        <Symbol name="checkmark" className="size-2.5" />
+        <span>
+          {badge.done}/{badge.total}
+        </span>
+      </span>
+    );
+  }
   return (
-    <svg viewBox="0 0 16 16" className="block size-3.5" aria-hidden>
-      <circle cx="5.5" cy="3.5" r="1.05" fill="currentColor" />
-      <circle cx="10.5" cy="3.5" r="1.05" fill="currentColor" />
-      <circle cx="5.5" cy="8" r="1.05" fill="currentColor" />
-      <circle cx="10.5" cy="8" r="1.05" fill="currentColor" />
-      <circle cx="5.5" cy="12.5" r="1.05" fill="currentColor" />
-      <circle cx="10.5" cy="12.5" r="1.05" fill="currentColor" />
-    </svg>
+    <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted" title="Todo progress">
+      {badge.done}/{badge.total}
+    </span>
   );
 }
+
+function ModelMark({ model }: { model?: string | null }) {
+  const id = model?.trim() ?? "";
+  if (!id) return null;
+  const claude = providerFor(id) === "anthropic";
+  const name = formatModelName(id);
+  return (
+    <span
+      className={`model-mark group/model relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted ${
+        claude ? "model-mark-claude" : "model-mark-xai"
+      }`}
+    >
+      <Symbol name={claude ? "logo.claude" : "logo.grok"} className="size-3" />
+      <span
+        role="tooltip"
+        className="model-tip pointer-events-none absolute top-1/2 right-full z-30 mr-1.5 -translate-y-1/2 rounded-md border px-1.5 py-0.5 text-[11px] whitespace-nowrap opacity-0 shadow-card transition-opacity duration-150 group-hover/model:opacity-100"
+      >
+        {name}
+      </span>
+    </span>
+  );
+}
+
+

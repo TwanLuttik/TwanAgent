@@ -4,7 +4,7 @@ import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, easeChatToEnd, isNearBotto
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
 import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
-import { detectMcp, setMcpEnabledInToml, userMcpRel, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
+import { detectMcp, setMcpEnabledInToml, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
@@ -13,7 +13,7 @@ import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
-import { emptyEditor, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
+import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -40,7 +40,7 @@ import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "
 import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
-import { clearUnseenFinished, draftForChat, effortForModel, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -49,6 +49,7 @@ import { bindTurn } from "./main/useTurn";
 import { useLibrary, type RunTurn } from "./main/useLibrary";
 import type { MainModel } from "./main/context";
 import { MainProvider } from "./main/context";
+import type { SettingsTab } from "./SettingsView";
 import { MainShell } from "./main/MainShell";
 
 export function MainView() {
@@ -100,6 +101,7 @@ export function MainView() {
   const [folderOpen, setFolderOpen] = useState(false);
   const [recents, setRecents] = useState(loadRecentWorkspaces);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
   const [showUsage, setShowUsage] = useState(false);
   const [projectSettings, setProjectSettings] = useState<{ path: string; name: string } | null>(null);
   const [usageTick, setUsageTick] = useState(0);
@@ -128,6 +130,12 @@ export function MainView() {
   const runningIdRef = useRef("");
   const permissionRef = useRef(permission);
   permissionRef.current = permission;
+  const modelRef = useRef(model);
+  const effortRef = useRef(effort);
+  const contextWindowRef = useRef(contextWindow);
+  modelRef.current = model;
+  effortRef.current = effort;
+  contextWindowRef.current = contextWindow;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const viewingChatRef = useRef(true);
@@ -222,7 +230,16 @@ export function MainView() {
     const nextJourneys = await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
     if (!isSameProject(ws, workspaceRef.current)) return;
     sidebarLoadedForRef.current = ws;
-    setConversations(rows);
+    // A model switch on an empty chat updates the in-memory row before disk.
+    // Replacing the list with the stale row would send the previous model.
+    const fresh = conversationsRef.current;
+    setConversations(
+      rows.map((row) => {
+        const live = fresh.find((item) => item.id === row.id);
+        if (!live?.model || live.model === row.model) return row;
+        return { ...row, model: live.model, effort: live.effort ?? row.effort, context_window: live.context_window ?? row.context_window, permission: live.permission ?? row.permission };
+      }),
+    );
     setJourneys(nextJourneys);
     const visible = rows.filter((row) => !isArchivedConversation(row));
     const saved = loadConversation(ws);
@@ -289,10 +306,39 @@ export function MainView() {
       setCompactionByChat((prev) => ({ ...prev, [found.id]: full.compaction! }));
     }
     saveConversation(ws, found.id);
-    const chosen = models.find((row) => row.id === model) ?? models[0];
-    const nextEffort = effortForModel(full.effort || found.effort, chosen?.efforts, loadEffort());
-    if (nextEffort) setEffort(nextEffort);
-  }, [model, models]);
+    // Only retarget the composer when this reload actually opened a different chat.
+    // Depending on `model` re-runs this after a chip change, and the row still has
+    // the model copied at creation until the settings save lands.
+    if (found.id === activeIdRef.current && modelRef.current) return;
+    const next = composerSettingsForChat(
+      {
+        model: full.model ?? found.model,
+        effort: full.effort ?? found.effort,
+        contextWindow: full.context_window ?? found.context_window,
+        permission: full.permission ?? found.permission,
+      },
+      models,
+      {
+        model: modelRef.current || loadModel(),
+        effort: effortRef.current || loadEffort(),
+        contextWindow: contextWindowRef.current || loadContextWindow(),
+        permission: permissionRef.current || loadPermission(),
+      },
+    );
+    if (next.model) {
+      modelRef.current = next.model;
+      setModel(next.model);
+    }
+    if (next.effort) {
+      effortRef.current = next.effort;
+      setEffort(next.effort);
+    }
+    if (next.contextWindow) {
+      contextWindowRef.current = next.contextWindow;
+      setContextWindow(next.contextWindow);
+    }
+    setPermission(parsePermissionMode(next.permission));
+  }, [models]);
 
   const applyRuntime = useCallback((next: Runtime) => {
     setRuntime(next);
@@ -339,6 +385,7 @@ export function MainView() {
               ],
               context_window: 256000,
               context_windows: [256000, 500000],
+              provider: "xai",
             },
           ],
           has_key: false,
@@ -878,14 +925,21 @@ export function MainView() {
     compactionByChat,
     setCompactionByChat,
     model,
+    effort,
+    contextWindow,
+    permission,
     models,
     defaultEffort: loadEffort(),
+    setModel,
     setEffort,
+    setContextWindow,
+    setPermission,
     openSettings,
     reloadConversations,
     runTurn: (ws, id, next, after, journeyIdOverride) => runTurnRef.current(ws, id, next, after, journeyIdOverride),
     scroller,
     runningWsRef,
+    modelRef,
     workspaceRef,
     runningIdRef,
     abortRef,
@@ -984,6 +1038,10 @@ export function MainView() {
     bumpFiles,
     setShellQueue,
     permissionRef,
+    modelRef,
+    effortRef,
+    contextWindowRef,
+    conversationsRef,
     activeIdRef,
     runningIdRef,
     runningWsRef,
@@ -1121,18 +1179,12 @@ export function MainView() {
     [setFlash],
   );
 
-  const editMcpServer = useCallback(
-    async (server: DetectedMcpServer) => {
-      const rel = userMcpRel(server.source);
-      try {
-        if (rel) await api.openUserMcp(rel);
-        else openWorkspaceFile(server.source);
-      } catch (e) {
-        setFlash({ kind: "err", text: String(e) });
-      }
-    },
-    [openWorkspaceFile, setFlash],
-  );
+  const editMcpServer = useCallback((server: DetectedMcpServer) => {
+    setShowSettings(false);
+    setShowUsage(false);
+    setProjectSettings(null);
+    setEditor((prev) => pinEditorTab(prev, mcpEditorPath(server.source)));
+  }, []);
 
   const reauthMcpServer = useCallback(
     async (server: DetectedMcpServer) => {
@@ -1352,6 +1404,8 @@ export function MainView() {
     setProjectMenu,
     setShowSettings,
     setShowUsage,
+    settingsTab,
+    setSettingsTab,
     setSidebarWidth,
     bumpFiles,
     showLanding,

@@ -21,13 +21,18 @@ export async function pickDir(): Promise<string | null> {
 }
 
 export type KeyStatus = { saved: boolean; env: boolean };
-export type Effort = { id: string; label: string };
+export type Effort = { id: string; label: string; detail?: string };
+export type ModelProvider = "xai" | "anthropic" | string;
+
 export type Model = {
   id: string;
   name: string;
   efforts: Effort[];
   context_window?: number | null;
   context_windows?: number[] | null;
+  provider?: ModelProvider;
+  /** Claude capability ids: vision, thinking, pdf, effort. */
+  capabilities?: string[] | null;
 };
 export type Runtime = {
   installed: boolean;
@@ -56,6 +61,18 @@ export type GrokCliInfo = {
 
 export function cliInfo(): Promise<GrokCliInfo> {
   return invoke("dev_cli_info");
+}
+
+export type ClaudeCliInfo = {
+  installed: boolean;
+  path: string;
+  version: string | null;
+  logged_in: boolean;
+  email: string | null;
+};
+
+export function claudeCliInfo(): Promise<ClaudeCliInfo> {
+  return invoke("dev_claude_cli_info");
 }
 
 export type UsageDbInfo = {
@@ -91,7 +108,7 @@ export type GitChange = {
   additions: number;
   deletions: number;
 };
-export type GitBranches = { current: string | null; branches: string[] };
+export type GitBranches = { current: string | null; branches: string[]; repo?: boolean };
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -101,6 +118,9 @@ export type ConversationSummary = {
   journey_id?: string | null;
   sort_order?: number;
   effort?: string | null;
+  model?: string | null;
+  context_window?: number | null;
+  permission?: string | null;
   archived?: boolean;
 };
 export type Compaction = {
@@ -123,6 +143,12 @@ export type Journey = {
 };
 export type SidebarItem = { kind: "journey" | "conversation" | string; id: string };
 export type ToolCall = { id: string; name: string; arguments: string };
+export type ApiThinkingBlock = {
+  type: "thinking" | "redacted_thinking" | string;
+  thinking?: string;
+  signature?: string;
+  data?: string;
+};
 export type ApiChatUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -158,6 +184,14 @@ export type ChatEvent = {
   text?: string | null;
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
+  thinking?: ApiThinkingBlock[] | null;
+};
+
+export type WebSearchEvent = {
+  stream_id: string;
+  kind: "site" | "scope" | string;
+  host?: string | null;
+  text?: string | null;
 };
 
 export function projectsRoot(): Promise<string> {
@@ -228,6 +262,18 @@ export function setKey(key: string): Promise<KeyStatus> {
 
 export function clearKey(): Promise<KeyStatus> {
   return invoke("dev_clear_key");
+}
+
+export function anthropicKeyStatus(): Promise<KeyStatus> {
+  return invoke("dev_anthropic_key_status");
+}
+
+export function setAnthropicKey(key: string): Promise<KeyStatus> {
+  return invoke("dev_set_anthropic_key", { key });
+}
+
+export function clearAnthropicKey(): Promise<KeyStatus> {
+  return invoke("dev_clear_anthropic_key");
 }
 
 export function listDir(workspace: string, path = ""): Promise<Entry[]> {
@@ -364,6 +410,14 @@ export function gitSwitch(workspace: string, name: string): Promise<GitBranches>
 
 export function runCommand(workspace: string, command: string): Promise<string> {
   return invoke("dev_run_command", { workspace, command });
+}
+
+export function openUrl(url: string): Promise<void> {
+  return invoke("dev_open_url", { url });
+}
+
+export function revealFolder(path: string): Promise<void> {
+  return invoke("dev_reveal_folder", { path });
 }
 
 export type MachineAuth = "agent" | "private_key" | "password";
@@ -723,6 +777,18 @@ export function chatStart(
 
 export function chatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
+}
+
+export function webSearch(streamId: string, argumentsJson: string): Promise<string> {
+  return invoke("dev_web_search", {
+    streamId,
+    stream_id: streamId,
+    arguments: argumentsJson,
+  });
+}
+
+export function onWebSearch(fn: (ev: WebSearchEvent) => void): Promise<UnlistenFn> {
+  return listen<WebSearchEvent>("dev-web-search", (ev) => fn(ev.payload));
 }
 
 export function usageRecord(event: ApiUsageRecord): Promise<ApiUsageEvent | null> {

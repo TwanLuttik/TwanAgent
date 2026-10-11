@@ -5,8 +5,10 @@ import {
   formatTodoWriteResult,
   isTodoTool,
   parseTodoWriteArgs,
+  todoBadge,
   todosAreOpen,
   todosFromMessages,
+  todosInLatestTurn,
 } from "../todo.ts";
 import type { ChatMessage } from "../core.ts";
 
@@ -184,6 +186,113 @@ describe("todosAreOpen", () => {
       true,
     );
     assert.equal(todosAreOpen([{ id: "a", content: "Read", status: "pending" }]), true);
+  });
+});
+
+describe("todoBadge", () => {
+  it("counts finished items and marks a closed list", () => {
+    assert.equal(todoBadge([]), null);
+    assert.deepEqual(
+      todoBadge([
+        { id: "a", content: "Read", status: "completed" },
+        { id: "b", content: "Patch", status: "in_progress" },
+        { id: "c", content: "Test", status: "pending" },
+      ]),
+      { done: 1, total: 3, finished: false },
+    );
+    assert.deepEqual(
+      todoBadge([
+        { id: "a", content: "Read", status: "completed" },
+        { id: "b", content: "Skip", status: "cancelled" },
+      ]),
+      { done: 2, total: 2, finished: true },
+    );
+  });
+});
+
+describe("todosInLatestTurn", () => {
+  it("keeps a finished list until the next user message is answered", () => {
+    const first: ChatMessage[] = [
+      { role: "user", content: "fix it" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "todo_write",
+            arguments: JSON.stringify({
+              merge: false,
+              todos: [{ id: "a", content: "Read", status: "completed" }],
+            }),
+          },
+        ],
+      },
+      { role: "assistant", content: "Done." },
+    ];
+    assert.equal(todoBadge(todosInLatestTurn(first))?.finished, true);
+  });
+
+  it("drops a finished list once a newer user message has no todos", () => {
+    const first: ChatMessage[] = [
+      { role: "user", content: "fix it" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "todo_write",
+            arguments: JSON.stringify({
+              merge: false,
+              todos: [{ id: "a", content: "Read", status: "completed" }],
+            }),
+          },
+        ],
+      },
+    ];
+    assert.equal(todoBadge(todosInLatestTurn(first))?.finished, true);
+    const next: ChatMessage[] = [...first, { role: "user", content: "and also this" }];
+    assert.deepEqual(todosInLatestTurn(next), []);
+  });
+
+  it("keeps todos written in the latest turn", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "first" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "todo_write",
+            arguments: JSON.stringify({
+              merge: false,
+              todos: [{ id: "old", content: "Old", status: "completed" }],
+            }),
+          },
+        ],
+      },
+      { role: "user", content: "second" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "2",
+            name: "todo_write",
+            arguments: JSON.stringify({
+              merge: false,
+              todos: [
+                { id: "a", content: "Read", status: "completed" },
+                { id: "b", content: "Patch", status: "pending" },
+              ],
+            }),
+          },
+        ],
+      },
+    ];
+    assert.deepEqual(todosInLatestTurn(messages).map((row) => row.id), ["a", "b"]);
   });
 });
 

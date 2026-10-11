@@ -20,6 +20,9 @@ fn conv(id: &str, title: &str, messages: Vec<Value>) -> Conversation {
         journey_id: None,
         sort_order: 0,
         effort: None,
+        model: None,
+        context_window: None,
+        permission: None,
         archived: false,
     }
 }
@@ -233,7 +236,77 @@ fn older_store_gains_archived_column() {
     let version: i64 = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    // Opening any older store runs every later migration, including composer settings.
+    assert_eq!(version, 9);
+}
+
+#[test]
+fn save_keeps_composer_settings_until_new_ones_are_written() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let mut row = conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]);
+    row.model = Some("grok-4.6".into());
+    row.context_window = Some(500_000);
+    row.permission = Some("read-only".into());
+    save_conversation(&conn, &row).unwrap();
+    row.model = None;
+    row.context_window = None;
+    row.permission = None;
+    row.title = "Hello again".into();
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.model.as_deref(), Some("grok-4.6"));
+    assert_eq!(loaded.context_window, Some(500_000));
+    assert_eq!(loaded.permission.as_deref(), Some("read-only"));
+    let summaries = list_conversation_summaries(&conn).unwrap();
+    assert_eq!(summaries[0].model.as_deref(), Some("grok-4.6"));
+    assert_eq!(summaries[0].context_window, Some(500_000));
+    assert_eq!(summaries[0].permission.as_deref(), Some("read-only"));
+    row.model = Some("grok-4.7".into());
+    row.context_window = Some(256_000);
+    row.permission = Some("approve-all".into());
+    save_conversation(&conn, &row).unwrap();
+    let updated = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(updated.model.as_deref(), Some("grok-4.7"));
+    assert_eq!(updated.context_window, Some(256_000));
+    assert_eq!(updated.permission.as_deref(), Some("approve-all"));
+}
+
+#[test]
+fn older_store_gains_composer_setting_columns() {
+    let dir = tempdir().unwrap();
+    let conn = Connection::open(dir.path().join("store.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_migrations (version) VALUES (8);
+         CREATE TABLE conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
+            journey_id TEXT,
+            sort_order INTEGER NOT NULL,
+            context_usage TEXT,
+            compaction TEXT,
+            effort TEXT,
+            archived INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO conversations (id, title, created_at, updated_at, kind, sort_order, archived)
+         VALUES ('old', 'Legacy', 't', 't', 'chat', 0, 0);",
+    )
+    .unwrap();
+    drop(conn);
+    let conn = open(dir.path()).unwrap();
+    let rows = list_conversation_summaries(&conn).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].model, None);
+    assert_eq!(rows[0].context_window, None);
+    assert_eq!(rows[0].permission, None);
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 9);
 }
 
 #[test]

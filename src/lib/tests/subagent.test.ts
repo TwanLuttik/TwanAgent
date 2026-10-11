@@ -66,6 +66,8 @@ describe("childCanUseTool", () => {
     assert.equal(childCanUseTool("plan", "run_command"), false);
     assert.equal(childCanUseTool("general-purpose", "run_command"), true);
     assert.equal(childCanUseTool("explore", "list_dir"), true);
+    assert.equal(childCanUseTool("explore", "web_search"), true);
+    assert.equal(childCanUseTool("plan", "web_search"), true);
   });
 });
 
@@ -89,6 +91,25 @@ describe("subagentSystemPrompt", () => {
     assert.doesNotMatch(
       String(subagentSystemPrompt("/tmp/app", "explore", "Find parser").content),
       /Journey knowledge:/,
+    );
+  });
+
+  it("names the parent model and does not claim only Grok exists", () => {
+    assert.match(
+      String(subagentSystemPrompt("/tmp/app", "explore", "Find parser", "ask", undefined, "claude-opus-4-8").content),
+      /You are Claude \(claude-opus-4-8\), a explore subagent/,
+    );
+    assert.match(
+      String(subagentSystemPrompt("/tmp/app", "plan", "Write a plan", "ask", undefined, "grok-4.6").content),
+      /You are Grok \(grok-4\.6\), a plan subagent/,
+    );
+    assert.match(
+      String(subagentSystemPrompt("/tmp/app", "explore", "Find parser").content),
+      /You are a explore subagent/,
+    );
+    assert.doesNotMatch(
+      String(subagentSystemPrompt("/tmp/app", "explore", "Find parser", "ask", undefined, "grok-4.6").content),
+      /Only Grok is available/,
     );
   });
 });

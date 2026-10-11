@@ -29,6 +29,16 @@ pub struct DevModel {
     /// Selectable sizes from the CLI catalog. Empty when the model has a single window.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context_windows: Vec<u64>,
+    /// `xai` or `anthropic`. Older callers that omit it are Grok.
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    /// Short capability ids such as `vision` and `thinking`. Empty for Grok.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+fn default_provider() -> String {
+    "xai".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -321,7 +331,8 @@ pub fn cli_proxy_headers(version: &str) -> CliProxyHeaders {
 
 pub fn effort_label(id: &str) -> String {
     match id {
-        "xhigh" | "max" => "Extra high".into(),
+        "xhigh" => "Extra high".into(),
+        "max" => "Max".into(),
         "high" => "High".into(),
         "medium" => "Medium".into(),
         "low" | "minimal" | "none" => "Low".into(),
@@ -420,6 +431,8 @@ pub fn parse_models_cache(src: &str) -> Vec<DevModel> {
             efforts,
             context_window,
             context_windows: context_windows_from(info, context_window),
+            provider: "xai".into(),
+            capabilities: Vec::new(),
         });
     }
     rows.sort_by(|a, b| b.id.cmp(&a.id));
@@ -466,7 +479,8 @@ pub fn context_window_header_value(tokens: Option<u64>) -> Option<String> {
 
 fn friendly_effort_label(raw: &str, id: &str) -> String {
     match id {
-        "xhigh" | "max" => "Extra high".into(),
+        "xhigh" => "Extra high".into(),
+        "max" => "Max".into(),
         "high" => "High".into(),
         "medium" => "Medium".into(),
         "low" | "minimal" | "none" => "Low".into(),
@@ -493,6 +507,8 @@ fn fallback_models() -> Vec<DevModel> {
                 .collect(),
             context_window: Some(256_000),
             context_windows: vec![256_000, 500_000],
+            provider: "xai".into(),
+            capabilities: Vec::new(),
         })
         .collect()
 }
@@ -615,11 +631,12 @@ pub fn runtime(data_dir: &Path) -> DevRuntime {
     let installed = bin.is_some();
     let version = bin.as_ref().and_then(|p| grok_version(p));
     let home = grok_home();
-    let models = home
+    let mut models = home
         .as_ref()
         .map(|h| load_models(h))
         .filter(|m| !m.is_empty())
         .unwrap_or_else(fallback_models);
+    models.extend(crate::anthropic::claude_models());
     let (default_model, default_effort) = home
         .as_ref()
         .map(|h| load_defaults(h, &models))
@@ -767,7 +784,43 @@ mod tests {
     #[test]
     fn effort_labels_are_short() {
         assert_eq!(effort_label("xhigh"), "Extra high");
+        assert_eq!(effort_label("max"), "Max");
         assert_eq!(effort_label("medium"), "Medium");
+    }
+
+    #[test]
+    fn runtime_appends_claude_without_replacing_the_grok_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("grok-home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join("models_cache.json"),
+            r#"{"models":{"grok-4.5":{"info":{"id":"grok-4.5","name":"Grok 4.5","model_family":"xai","reasoning_efforts":[{"id":"high","label":"High"}]}}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            home.join("config.toml"),
+            "[models]\ndefault = \"grok-4.5\"\ndefault_reasoning_effort = \"high\"\n",
+        )
+        .unwrap();
+        let prev = std::env::var_os("GROK_HOME");
+        std::env::set_var("GROK_HOME", &home);
+        let status = runtime(dir.path());
+        match prev {
+            Some(value) => std::env::set_var("GROK_HOME", value),
+            None => std::env::remove_var("GROK_HOME"),
+        }
+        assert_eq!(status.default_model, "grok-4.5");
+        let providers: Vec<_> = status
+            .models
+            .iter()
+            .map(|row| (row.id.as_str(), row.provider.as_str()))
+            .collect();
+        assert!(providers.iter().any(|(id, provider)| *id == "grok-4.5" && *provider == "xai"));
+        assert!(providers
+            .iter()
+            .any(|(id, provider)| *id == "claude-sonnet-4-6" && *provider == "anthropic"));
+        assert!(!providers.iter().any(|(id, _)| id.starts_with("sxs-")));
     }
 
     #[test]

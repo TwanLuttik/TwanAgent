@@ -11,7 +11,7 @@ pub(crate) mod paths;
 pub(crate) mod project_location;
 mod projects;
 mod skills;
-mod types;
+pub(crate) mod types;
 
 pub use types::{
     Conversation, ConversationSummary, DevChatUsage, DevCompaction, Journey, SidebarItem,

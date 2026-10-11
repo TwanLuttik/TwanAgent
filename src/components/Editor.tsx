@@ -7,13 +7,16 @@ import { createPortal } from "react-dom";
 import {
   editorTabTitle,
   isAllDiffPath,
+  isMcpEditorPath,
   languageForPath,
+  mcpSourceFromPath,
   mediaKindForPath,
   type EditorFileView,
   type EditorState,
   type MarkdownOpenMode,
 } from "../lib/editor";
 import { parseJourneyId } from "../lib/journey";
+import { userMcpRel } from "../lib/mcp";
 import { addedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
 import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
@@ -89,10 +92,7 @@ export function Editor({
       if (existing && existing.draft !== existing.original) return;
       if (existing && !force && !existing.error) return;
       try {
-        const journeyId = parseJourneyId(file);
-        const text = journeyId
-          ? await api.getJourneyKnowledge(workspace, journeyId)
-          : await api.readFile(workspace, file);
+        const text = await readEditorFile(workspace, file);
         setBuffers((prev) => {
           const cur = prev[file];
           if (cur && cur.draft !== cur.original) return prev;
@@ -149,7 +149,7 @@ export function Editor({
   }, [path]);
 
   useEffect(() => {
-    if (!workspace || !path || fileView === "diff" || media || parseJourneyId(path)) {
+    if (!workspace || !path || fileView === "diff" || media || parseJourneyId(path) || isMcpEditorPath(path)) {
       setGutterMarks(new Map());
       return;
     }
@@ -183,9 +183,7 @@ export function Editor({
     if (!current || current.error || current.draft === current.original) return;
     setSaving(true);
     try {
-      const journeyId = parseJourneyId(path);
-      if (journeyId) await api.saveJourneyKnowledge(workspace, journeyId, current.draft);
-      else await api.writeFile(workspace, path, current.draft);
+      await writeEditorFile(workspace, path, current.draft);
       setBuffers((prev) => ({
         ...prev,
         [path]: { ...current, original: current.draft, error: null },
@@ -326,7 +324,11 @@ export function Editor({
       )}
       <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1 text-[11px] text-muted">
         <span className="min-w-0 truncate">
-          {isAllDiffPath(path) ? "All changes" : parseJourneyId(path) ? "Journey knowledge" : path}
+          {isAllDiffPath(path)
+            ? "All changes"
+            : parseJourneyId(path)
+              ? "Journey knowledge"
+              : mcpSourceFromPath(path) ?? path}
         </span>
         <span className="ml-auto shrink-0">
           {fileView === "diff"
@@ -456,6 +458,37 @@ function SelectionChatTooltip({
       </button>
     </div>
   );
+}
+
+async function readEditorFile(workspace: string, file: string): Promise<string> {
+  const journeyId = parseJourneyId(file);
+  if (journeyId) return api.getJourneyKnowledge(workspace, journeyId);
+  const mcp = mcpSourceFromPath(file);
+  if (mcp) {
+    const rel = userMcpRel(mcp);
+    if (rel) return api.readUserMcp(rel);
+    return api.readFile(workspace, mcp);
+  }
+  return api.readFile(workspace, file);
+}
+
+async function writeEditorFile(workspace: string, file: string, contents: string): Promise<void> {
+  const journeyId = parseJourneyId(file);
+  if (journeyId) {
+    await api.saveJourneyKnowledge(workspace, journeyId, contents);
+    return;
+  }
+  const mcp = mcpSourceFromPath(file);
+  if (mcp) {
+    const rel = userMcpRel(mcp);
+    if (rel) {
+      await api.writeUserMcp(rel, contents);
+      return;
+    }
+    await api.writeFile(workspace, mcp, contents);
+    return;
+  }
+  await api.writeFile(workspace, file, contents);
 }
 
 function languageExtension(path: string) {

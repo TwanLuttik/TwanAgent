@@ -49,7 +49,7 @@ fn journey_tool_json() -> serde_json::Value {
     })
 }
 
-fn tools_json(include_journey: bool) -> serde_json::Value {
+pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
     let mut tools = serde_json::json!([
         {
             "type": "function",
@@ -133,6 +133,28 @@ fn tools_json(include_journey: bool) -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "web_search",
+                "description": "Search the web for current information. Use for facts, news, docs, and anything that may have changed since training. Returns a short answer with source URLs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query. Be specific and include versions or dates when they matter."
+                        },
+                        "allowed_domains": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional domains to limit the search to, at most 5. Omit to search the whole web. Ignored when the user configured a domain policy."
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_command",
                 "description": "Run a shell command in the workspace. The user must approve it first. Always set description to one short sentence of what the command does. That sentence is the chat line.",
                 "parameters": {
@@ -149,7 +171,7 @@ fn tools_json(include_journey: bool) -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "spawn_subagent",
-                "description": "Start a child agent with its own context for a delegated task. Use for research, planning, or independent work. The child reports a summary when it finishes. Explore cannot edit files. Plan produces a plan without edits. General-purpose may edit.",
+                "description": "Start a child agent with its own context for a delegated task. Use for research, planning, or independent work. The child reports a summary when it finishes. Explore cannot edit files. Plan produces a plan without edits. General-purpose may edit. The child uses the same model as this chat.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -207,6 +229,17 @@ fn tools_json(include_journey: bool) -> serde_json::Value {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_web_search(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    stream_id: String,
+    arguments: String,
+) -> Result<String> {
+    let data_dir = state.data_dir.clone();
+    crate::web_search::search(&app, &data_dir, &stream_id, &arguments).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_chat_cancel(stream_id: String) {
     if let Ok(map) = streams().lock() {
         if let Some(flag) = map.get(&stream_id) {
@@ -226,14 +259,28 @@ pub async fn dev_chat_start(
     context_window: Option<u64>,
     journey_id: Option<String>,
 ) -> Result<()> {
-    let Some(auth) = grok_cli::resolve_auth(&state.data_dir) else {
-        return Err(Error::Other(
-            "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings.".into(),
-        ));
-    };
     let model = model
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "grok-4.6".into());
+    let provider = crate::anthropic::provider_for(&model);
+    let auth = if provider == crate::anthropic::Provider::Xai {
+        let Some(auth) = grok_cli::resolve_auth(&state.data_dir) else {
+            return Err(Error::Other(
+                "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings.".into(),
+            ));
+        };
+        Some(auth)
+    } else {
+        None
+    };
+    let anthropic_auth = if provider == crate::anthropic::Provider::Anthropic {
+        let Some(auth) = crate::anthropic::resolve_claude_auth() else {
+            return Err(Error::Other(crate::anthropic::SIGN_IN_ERROR.into()));
+        };
+        Some(auth)
+    } else {
+        None
+    };
     let effort = effort.filter(|s| !s.trim().is_empty());
     let context_window = context_window.filter(|n| *n > 0);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -248,18 +295,32 @@ pub async fn dev_chat_start(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .is_some();
-        let result = stream_chat(
-            &app2,
-            &sid,
-            &auth,
-            messages,
-            model,
-            effort,
-            context_window,
-            include_journey,
-            cancel,
-        )
-        .await;
+        let result = if provider == crate::anthropic::Provider::Anthropic {
+            stream_anthropic(
+                &app2,
+                &sid,
+                anthropic_auth.as_ref().expect("claude auth"),
+                messages,
+                model,
+                effort,
+                include_journey,
+                cancel,
+            )
+            .await
+        } else {
+            stream_chat(
+                &app2,
+                &sid,
+                auth.as_ref().expect("xai auth"),
+                messages,
+                model,
+                effort,
+                context_window,
+                include_journey,
+                cancel,
+            )
+            .await
+        };
         if let Err(e) = result {
             let _ = app2.emit(
                 "dev-chat",
@@ -269,6 +330,7 @@ pub async fn dev_chat_start(
                     text: Some(e.to_string()),
                     tool_calls: None,
                     usage: None,
+                    thinking: None,
                 },
             );
         }
@@ -277,6 +339,197 @@ pub async fn dev_chat_start(
         }
     });
     Ok(())
+}
+
+async fn stream_anthropic(
+    app: &AppHandle,
+    stream_id: &str,
+    auth: &crate::anthropic::ClaudeAuth,
+    messages: serde_json::Value,
+    model: String,
+    effort: Option<String>,
+    include_journey: bool,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let body = crate::anthropic::to_messages_body(
+        &messages,
+        &model,
+        effort.as_deref(),
+        &tools_json(include_journey),
+    );
+    let mut req = http_client()
+        .post(crate::anthropic::MESSAGES_URL)
+        .header("anthropic-version", crate::anthropic::ANTHROPIC_VERSION);
+    req = if auth.via_cli {
+        req.bearer_auth(&auth.token)
+    } else {
+        req.header("x-api-key", &auth.token)
+    };
+    let resp = req
+        .header("content-type", "application/json")
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| Error::Other(format!("Anthropic request failed: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(Error::Other(crate::anthropic::http_error_message(
+            status.as_u16(),
+            &text,
+        )));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    let mut tools: Vec<crate::anthropic::SseTool> = Vec::new();
+    let mut thinking = crate::anthropic::ThinkingAccum::default();
+    let mut last_usage: Option<DevChatUsage> = None;
+    let mut emitted_text = false;
+    let mut emitted_reasoning = false;
+    while let Some(chunk) = stream.next().await {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = app.emit(
+                "dev-chat",
+                DevChatEvent {
+                    stream_id: stream_id.into(),
+                    kind: "error".into(),
+                    text: Some("Stopped.".into()),
+                    tool_calls: None,
+                    usage: None,
+                    thinking: None,
+                },
+            );
+            return Ok(());
+        }
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                if emitted_text || emitted_reasoning || !tools.is_empty() {
+                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
+                    return Ok(());
+                }
+                return Err(Error::Other(format!("error decoding response body: {err}")));
+            }
+        };
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(idx) = buf.find('\n') {
+            let line = buf[..idx].trim().to_string();
+            buf.drain(..=idx);
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let Some(piece) = crate::anthropic::parse_sse_data(data.trim()) else {
+                continue;
+            };
+            crate::anthropic::apply_tool_piece(&mut tools, &piece);
+            crate::anthropic::apply_thinking_piece(&mut thinking, &piece);
+            match piece {
+                crate::anthropic::SsePiece::Delta(text) => {
+                    emitted_text = true;
+                    let _ = app.emit(
+                        "dev-chat",
+                        DevChatEvent {
+                            stream_id: stream_id.into(),
+                            kind: "delta".into(),
+                            text: Some(text),
+                            tool_calls: None,
+                            usage: None,
+                            thinking: None,
+                        },
+                    );
+                }
+                crate::anthropic::SsePiece::Reasoning(text) => {
+                    emitted_reasoning = true;
+                    let _ = app.emit(
+                        "dev-chat",
+                        DevChatEvent {
+                            stream_id: stream_id.into(),
+                            kind: "reasoning".into(),
+                            text: Some(text),
+                            tool_calls: None,
+                            usage: None,
+                            thinking: None,
+                        },
+                    );
+                }
+                crate::anthropic::SsePiece::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
+                    let (prompt_tokens, completion_tokens) = crate::anthropic::merge_usage(
+                        last_usage.as_ref().map(|usage| (usage.prompt_tokens, usage.completion_tokens)),
+                        prompt_tokens,
+                        completion_tokens,
+                    );
+                    let usage = DevChatUsage {
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens: prompt_tokens.saturating_add(completion_tokens),
+                    };
+                    let first = last_usage.is_none();
+                    last_usage = Some(usage.clone());
+                    if first {
+                        let _ = app.emit(
+                            "dev-chat",
+                            DevChatEvent {
+                                stream_id: stream_id.into(),
+                                kind: "usage".into(),
+                                text: None,
+                                tool_calls: None,
+                                usage: Some(usage),
+                                thinking: None,
+                            },
+                        );
+                    }
+                }
+                crate::anthropic::SsePiece::Stop => {
+                    emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage.clone(), None);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
+    if emitted_text || emitted_reasoning || !tools.is_empty() {
+        emit_anthropic_done(app, stream_id, &tools, &thinking, last_usage, None);
+    }
+    Ok(())
+}
+
+fn emit_anthropic_done(
+    app: &AppHandle,
+    stream_id: &str,
+    tools: &[crate::anthropic::SseTool],
+    thinking: &crate::anthropic::ThinkingAccum,
+    usage: Option<DevChatUsage>,
+    text: Option<String>,
+) {
+    let tool_calls: Vec<DevToolCall> = crate::anthropic::finished_tools(tools)
+        .into_iter()
+        .map(|(id, name, arguments)| DevToolCall { id, name, arguments })
+        .collect();
+    let thinking = crate::anthropic::finished_thinking(thinking);
+    let _ = app.emit(
+        "dev-chat",
+        DevChatEvent {
+            stream_id: stream_id.into(),
+            kind: "done".into(),
+            text,
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
+            usage,
+            thinking: if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking)
+            },
+        },
+    );
 }
 
 async fn stream_chat(
@@ -362,6 +615,7 @@ async fn stream_chat(
                     text: Some("Stopped.".into()),
                     tool_calls: None,
                     usage: None,
+                    thinking: None,
                 },
             );
             return Ok(());
@@ -423,6 +677,7 @@ async fn stream_chat(
                             text: None,
                             tool_calls: None,
                             usage: Some(usage),
+                            thinking: None,
                         },
                     );
                 }
@@ -454,6 +709,7 @@ async fn stream_chat(
                         text: Some(thought),
                         tool_calls: None,
                         usage: None,
+                        thinking: None,
                     },
                 );
             }
@@ -543,6 +799,7 @@ fn flush_delta(app: &AppHandle, stream_id: &str, pending: &mut String, emitted: 
             text: Some(text),
             tool_calls: None,
             usage: None,
+            thinking: None,
         },
     );
 }
@@ -654,6 +911,7 @@ fn emit_pending_reasoning(app: &AppHandle, stream_id: &str, emitted: bool, fallb
             text: Some(fallback.to_string()),
             tool_calls: None,
             usage: None,
+            thinking: None,
         },
     );
 }
@@ -694,6 +952,7 @@ fn emit_done(
                 Some(tool_calls)
             },
             usage,
+            thinking: None,
         },
     );
 }

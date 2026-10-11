@@ -44,6 +44,20 @@ export function shouldPreventDocumentWheel(
   return true;
 }
 
+/** The terminal scrolls its own buffer. Cancelling the wheel would swallow it. */
+export function wheelTargetOwnsScroll(target: EventTarget | null): boolean {
+  let node: EventTarget | null = target;
+  while (node) {
+    if (typeof node === "object" && "classList" in node) {
+      const list = (node as { classList?: { contains?: (name: string) => boolean } }).classList;
+      if (list?.contains?.("term")) return true;
+    }
+    if (typeof node !== "object" || node == null || !("parentElement" in node)) return false;
+    node = (node as { parentElement?: EventTarget | null }).parentElement ?? null;
+  }
+  return false;
+}
+
 function boxChain(target: EventTarget | null): WheelBox | null {
   if (typeof Element === "undefined" || !(target instanceof Element)) return null;
   let el: Element | null = target;
@@ -80,6 +94,7 @@ export function installDocumentScrollLock(root: EventTarget = document): () => v
   const onWheel = (event: Event) => {
     const delta = wheelDeltas(event);
     if (!delta) return;
+    if (wheelTargetOwnsScroll(event.target)) return;
     if (!shouldPreventDocumentWheel(boxChain(event.target), delta.deltaX, delta.deltaY)) return;
     event.preventDefault();
   };

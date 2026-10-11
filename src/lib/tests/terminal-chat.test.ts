@@ -69,6 +69,34 @@ describe("conversationDraft", () => {
       kind: "chat",
       effort: "low",
     });
+    assert.deepEqual(conversationDraft("chat", "id-6", "t5", null, "high", { model: "   " }), {
+      id: "id-6",
+      title: "New chat",
+      created_at: "t5",
+      updated_at: "t5",
+      messages: [],
+      kind: "chat",
+      effort: "high",
+    });
+    assert.deepEqual(
+      conversationDraft("chat", "id-5", "t4", null, "high", {
+        model: "grok-4.6",
+        contextWindow: 500000,
+        permission: "read-only",
+      }),
+      {
+        id: "id-5",
+        title: "New chat",
+        created_at: "t4",
+        updated_at: "t4",
+        messages: [],
+        kind: "chat",
+        effort: "high",
+        model: "grok-4.6",
+        context_window: 500000,
+        permission: "read-only",
+      },
+    );
   });
 });
 

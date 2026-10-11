@@ -1,6 +1,8 @@
+mod anthropic;
 mod appdb;
 mod remote;
 mod dev;
+mod env_path;
 mod error;
 mod grok_cli;
 mod image;
@@ -12,6 +14,7 @@ mod speech;
 mod state;
 mod store;
 mod usage;
+mod web_search;
 mod workspace;
 
 use std::path::PathBuf;
@@ -75,8 +78,12 @@ pub fn run() {
             dev::keys::dev_key_status,
             dev::keys::dev_runtime,
             dev::keys::dev_cli_info,
+            dev::keys::dev_claude_cli_info,
             dev::keys::dev_set_key,
             dev::keys::dev_clear_key,
+            dev::keys::dev_anthropic_key_status,
+            dev::keys::dev_set_anthropic_key,
+            dev::keys::dev_clear_anthropic_key,
             dev::commands::dev_projects_root,
             dev::commands::dev_projects_location,
             dev::commands::dev_list_projects,
@@ -113,6 +120,8 @@ pub fn run() {
             dev::commands::dev_git_branches,
             dev::commands::dev_git_switch,
             dev::commands::dev_run_command,
+            dev::commands::dev_open_url,
+            dev::commands::dev_reveal_folder,
             dev::conv::dev_list_conversations,
             dev::conv::dev_get_conversation,
             dev::conv::dev_save_conversation,
@@ -132,6 +141,7 @@ pub fn run() {
             dev::conv::dev_update_journey_knowledge,
             dev::chat::dev_chat_start,
             dev::chat::dev_chat_cancel,
+            dev::chat::dev_web_search,
             grok_cli::dev_grok_plan,
             pty::dev_pty_open,
             pty::dev_pty_open_grok,

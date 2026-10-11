@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { motion } from "motion/react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
 import { GrokTerminal } from "../../components/GrokTerminal";
@@ -9,6 +10,7 @@ import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } fr
 import { conversationActivityLabel, folderName, projectKey } from "../../lib/core";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { contextWindowChoices, contextWindowLabel } from "../../lib/context";
+import { providerFor } from "../../lib/provider";
 import {
   editorFileView,
   focusEditor,
@@ -61,6 +63,8 @@ export function ChatStage() {
     setEditor,
     setShowSettings,
     setShowUsage,
+    settingsTab,
+    setSettingsTab,
     bumpFiles,
     chatTabs,
     closeChatTab,
@@ -100,7 +104,8 @@ export function ChatStage() {
           {showSettings ? (
             <SettingsView
               embedded
-              initialTab="grok"
+              tab={settingsTab}
+              onTab={setSettingsTab}
               permission={permission}
               onPermission={pickPermission}
               speechModel={speechModel}
@@ -160,7 +165,7 @@ export function ChatStage() {
           ) : chatKind === "terminal" && workspace && opened && activeId ? (
             <GrokTerminal workspace={workspace} conversationId={activeId} active />
           ) : (
-            <ChatColumn />
+            <ChatColumn key={workspace || "none"} />
           )}
         </div>
         {paneWorkspace && !fullPage ? (
@@ -222,6 +227,21 @@ function ChatColumn() {
   const { streamText, streamReasoning, liveTools, runningActivity } = useStream();
   const current = models.find((row: { id: string; name: string; context_windows?: number[]; context_window?: number; efforts: { id: string; label: string }[] }) => row.id === model);
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
+  const transcriptPending = Boolean(openingId) && openingId === activeId;
+  const composerCentered =
+    !transcriptPending &&
+    messages.length === 0 &&
+    !streamText &&
+    !streamReasoning &&
+    !activeRunning &&
+    queued.length === 0;
+  const dock = useRef({ id: activeId, centered: composerCentered, sliding: false });
+  if (dock.current.id !== activeId) {
+    dock.current = { id: activeId, centered: composerCentered, sliding: false };
+  } else if (dock.current.centered && !composerCentered) {
+    dock.current.sliding = true;
+  }
+  dock.current.centered = composerCentered;
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1">
         <ConversationDocks align="end">
@@ -252,7 +272,7 @@ function ChatColumn() {
         <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]">
           <div
             className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5"
-            style={{ paddingBottom: composerPad }}
+            style={{ paddingBottom: composerCentered ? 24 : composerPad }}
           >
             <div className="mb-5">
               <div className="truncate text-[15px] font-semibold">
@@ -271,11 +291,11 @@ function ChatColumn() {
                 {workspace ? ` · ${workspace}` : ""}
               </div>
             </div>
-            {messages.length === 0 && !streamText && !streamReasoning && !activeRunning && queued.length === 0 && (
+            {composerCentered ? (
               <p className="m-0 text-center text-[13px] text-muted">
-                Ask Grok to inspect, edit, or run something in this folder.
+                Ask {providerFor(model) === "anthropic" ? "Claude" : "Grok"} to inspect, edit, or run something in this folder.
               </p>
-            )}
+            ) : null}
             <ChatTranscript
               messages={messages}
               streamText={streamText}
@@ -286,7 +306,7 @@ function ChatColumn() {
               mentionFiles={mentionFiles}
               onLoadOlder={holdScrollForOlder}
             />
-            {openingId && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
+            {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
             {activeRunning && !pendingShell && (
               <ActivityStatus
                 label={conversationActivityLabel(runningTurns[activeId]?.activity ?? runningActivity)}
@@ -334,14 +354,25 @@ function ChatColumn() {
             ))}
           </div>
         </div>
-        <div ref={composerDockRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
-          <div className="h-16 bg-gradient-to-t from-canvas from-15% to-transparent" aria-hidden />
+        <motion.div
+          ref={composerDockRef}
+          initial={false}
+          animate={{ top: composerCentered ? "42%" : "100%", y: composerCentered ? "-50%" : "-100%" }}
+          transition={dock.current.sliding ? { duration: 0.42, ease: [0.22, 1, 0.36, 1] } : { duration: 0 }}
+          onAnimationComplete={() => {
+            dock.current.sliding = false;
+          }}
+          className="pointer-events-none absolute inset-x-0 z-10"
+        >
+          {composerCentered ? null : (
+            <div className="h-16 bg-gradient-to-t from-canvas from-15% to-transparent" aria-hidden />
+          )}
           <div className="pointer-events-auto bg-canvas px-6 pb-3">
             <div className="mx-auto w-full min-w-0 max-w-[720px]">
               <SessionComposer placement="chat" />
             </div>
           </div>
-        </div>
+        </motion.div>
       </div>
     );
 }
