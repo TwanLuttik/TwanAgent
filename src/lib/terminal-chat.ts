@@ -1,5 +1,9 @@
 import { projectKey } from "./core.ts";
 
+/**
+ * Terminal chats spawn the Grok CLI in a PTY. Deprecated: plan mode and new work
+ * belong in a normal chat. Keep this only so existing terminal conversations still open.
+ */
 export type ConversationKind = "chat" | "terminal";
 
 export function parseConversationKind(value: unknown): ConversationKind {

@@ -39,6 +39,8 @@ import { conversationDraft, parseConversationKind, type ConversationKind } from 
 import { terminalSessions } from "../../lib/terminal-sessions";
 import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
 import { parsePermissionMode, type PermissionMode } from "../../lib/permission";
+import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../../lib/plan";
+import { providerFor } from "../../lib/provider";
 import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
 import {
   loadContextWindow,
@@ -128,6 +130,8 @@ export type LibraryDeps = {
     >
   >;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
+  planByChatRef: RefObject<Map<string, GrokPlan>>;
+  onPlanChange?: () => void;
   stickToBottomRef: RefObject<boolean>;
   /** Latest sidebar rows, so a turn save does not write a stale journey or archive flag. */
   conversationsRef: RefObject<ConversationSummary[]>;
@@ -173,7 +177,7 @@ export function useLibrary(deps: LibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
+    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -397,6 +401,19 @@ function applyWorkspace(path: string) {
 const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => void>(() => {});
 const openSettingsRef = useRef(openSettings);
 
+async function ensureChatPlan(path: string, id: string, modelId: string | null | undefined) {
+  if (!path || !id || providerFor(modelId ?? "") !== "xai") return;
+  if (planByChatRef.current.has(id)) return;
+  try {
+    const plan = grokPlanFromPayload(await api.grokPlan(path, id));
+    const state = plan.found && planModeEngaged(plan.state) ? plan.state : "Inactive";
+    planByChatRef.current.set(id, plan.found ? { ...plan, state, awaitingApproval: false } : emptyGrokPlan());
+    onPlanChange?.();
+  } catch {
+    planByChatRef.current.set(id, emptyGrokPlan());
+  }
+}
+
 async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
@@ -463,6 +480,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   retargetForegroundTurn(conv.id);
   setEditor((prev) => selectChatTab(prev));
   setConversations((current) => [summary, ...current.filter((row) => row.id !== conv.id)]);
+  if (kind === "chat") planByChatRef.current.set(conv.id, emptyGrokPlan());
 }
 
 async function openSidebarChat(path: string, id: string) {
@@ -652,6 +670,8 @@ async function openChat(id: string) {
       void persist(withNotice, id, workspace, parseChatUsage(full.context_usage) ?? undefined, full.compaction);
     }
     saveConversation(workspace, id);
+    const opened = conversationsRef.current.find((row) => row.id === id);
+    void ensureChatPlan(workspace, id, opened?.model);
   } finally {
     setOpeningId("");
   }

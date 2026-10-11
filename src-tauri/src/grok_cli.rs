@@ -209,14 +209,178 @@ pub fn read_grok_plan(home: &Path, workspace: &Path, session_id: &str) -> GrokPl
     }
 }
 
+const PLAN_STATES: &[&str] = &["Inactive", "Pending", "Active", "ExitPending"];
+
+fn normalize_plan_state(state: &str) -> &'static str {
+    PLAN_STATES
+        .iter()
+        .copied()
+        .find(|known| *known == state)
+        .unwrap_or("Inactive")
+}
+
+/// Keep the fields the CLI already wrote. Only `state` and approval change.
+fn plan_mode_json(previous: &str, state: &str, awaiting: bool) -> String {
+    let mut value = serde_json::from_str::<serde_json::Value>(previous).unwrap_or_else(|_| {
+        serde_json::json!({
+            "was_previously_active": false,
+            "reminder_count": 0,
+            "pending_exit_reminder": false,
+        })
+    });
+    if !value.is_object() {
+        value = serde_json::json!({
+            "was_previously_active": false,
+            "reminder_count": 0,
+            "pending_exit_reminder": false,
+        });
+    }
+    if let Some(obj) = value.as_object_mut() {
+        let normalized = normalize_plan_state(state);
+        let was = obj
+            .get("state")
+            .and_then(|item| item.as_str())
+            .unwrap_or("Inactive");
+        if normalized == "Active" && was != "Active" {
+            obj.insert("was_previously_active".into(), serde_json::Value::Bool(true));
+        }
+        obj.insert(
+            "state".into(),
+            serde_json::Value::String(normalized.into()),
+        );
+        obj.insert(
+            "awaiting_plan_approval".into(),
+            serde_json::Value::Bool(awaiting),
+        );
+        obj.entry("reminder_count")
+            .or_insert(serde_json::Value::from(0));
+        obj.entry("pending_exit_reminder")
+            .or_insert(serde_json::Value::Bool(false));
+        obj.entry("was_previously_active")
+            .or_insert(serde_json::Value::Bool(false));
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| {
+        format!("{{\"state\":\"{}\",\"awaiting_plan_approval\":{awaiting}}}", normalize_plan_state(state))
+    })
+}
+
+pub fn write_grok_plan_state(
+    home: &Path,
+    workspace: &Path,
+    session_id: &str,
+    state: &str,
+    awaiting_approval: bool,
+) -> std::result::Result<GrokPlanSnapshot, String> {
+    if !session_id_safe(session_id) {
+        return Err("invalid session id".into());
+    }
+    let dir = home
+        .join("sessions")
+        .join(encode_session_cwd(workspace))
+        .join(session_id.trim());
+    fs::create_dir_all(&dir).map_err(|err| format!("create plan session: {err}"))?;
+    let mode_path = dir.join("plan_mode.json");
+    let previous = fs::read_to_string(&mode_path).unwrap_or_default();
+    let next = plan_mode_json(&previous, state, awaiting_approval);
+    fs::write(&mode_path, next).map_err(|err| format!("write plan mode: {err}"))?;
+    Ok(read_grok_plan(home, workspace, session_id))
+}
+
+pub fn write_grok_plan_file(
+    home: &Path,
+    workspace: &Path,
+    session_id: &str,
+    contents: &str,
+) -> std::result::Result<(), String> {
+    if !session_id_safe(session_id) {
+        return Err("invalid session id".into());
+    }
+    if contents.len() > PLAN_CAP {
+        return Err("plan is too large".into());
+    }
+    let dir = home
+        .join("sessions")
+        .join(encode_session_cwd(workspace))
+        .join(session_id.trim());
+    fs::create_dir_all(&dir).map_err(|err| format!("create plan session: {err}"))?;
+    fs::write(dir.join("plan.md"), contents).map_err(|err| format!("write plan: {err}"))
+}
+
+pub fn edit_grok_plan_file(
+    home: &Path,
+    workspace: &Path,
+    session_id: &str,
+    old: &str,
+    new_text: &str,
+) -> std::result::Result<(), String> {
+    if old.is_empty() {
+        return Err("old_string is empty".into());
+    }
+    if !session_id_safe(session_id) {
+        return Err("invalid session id".into());
+    }
+    let dir = session_dir(home, workspace, session_id).ok_or_else(|| "plan file is missing".to_string())?;
+    let path = dir.join("plan.md");
+    let current = fs::read_to_string(&path).map_err(|_| "plan file is missing".to_string())?;
+    let count = current.matches(old).count();
+    if count == 0 {
+        return Err("old_string was not found in plan.md".into());
+    }
+    if count > 1 {
+        return Err("old_string matched more than once in plan.md".into());
+    }
+    let next = current.replacen(old, new_text, 1);
+    if next.len() > PLAN_CAP {
+        return Err("plan is too large".into());
+    }
+    fs::write(path, next).map_err(|err| format!("write plan: {err}"))
+}
+
+fn plan_paths(workspace: &str) -> Option<(PathBuf, PathBuf)> {
+    let home = grok_home()?;
+    let path = PathBuf::from(workspace);
+    let path = fs::canonicalize(&path).unwrap_or(path);
+    Some((home, path))
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_grok_plan(workspace: String, session_id: String) -> GrokPlanSnapshot {
-    let Some(home) = grok_home() else {
+    let Some((home, path)) = plan_paths(&workspace) else {
         return GrokPlanSnapshot::missing();
     };
-    let path = PathBuf::from(&workspace);
-    let path = fs::canonicalize(&path).unwrap_or(path);
     read_grok_plan(&home, &path, &session_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_grok_plan_set(
+    workspace: String,
+    session_id: String,
+    state: String,
+    awaiting_approval: bool,
+) -> Result<GrokPlanSnapshot, String> {
+    let (home, path) = plan_paths(&workspace).ok_or_else(|| "Grok home is missing".to_string())?;
+    write_grok_plan_state(&home, &path, &session_id, &state, awaiting_approval)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_grok_plan_write(
+    workspace: String,
+    session_id: String,
+    contents: String,
+) -> Result<(), String> {
+    let (home, path) = plan_paths(&workspace).ok_or_else(|| "Grok home is missing".to_string())?;
+    write_grok_plan_file(&home, &path, &session_id, &contents)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_grok_plan_edit(
+    workspace: String,
+    session_id: String,
+    old_string: String,
+    new_string: String,
+) -> Result<(), String> {
+    let (home, path) = plan_paths(&workspace).ok_or_else(|| "Grok home is missing".to_string())?;
+    edit_grok_plan_file(&home, &path, &session_id, &old_string, &new_string)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -934,6 +1098,43 @@ mod tests {
 
         let escaped = read_grok_plan(dir.path(), Path::new("/tmp/missing"), "../escape");
         assert!(!escaped.found);
+    }
+
+    #[test]
+    fn write_grok_plan_state_round_trips_and_keeps_cli_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b73";
+        let workspace = PathBuf::from("/tmp/project");
+        let wrote = write_grok_plan_state(dir.path(), &workspace, id, "Pending", false).unwrap();
+        assert!(wrote.found);
+        assert_eq!(wrote.state, "Pending");
+        assert!(!wrote.awaiting_approval);
+
+        let session = dir
+            .path()
+            .join("sessions")
+            .join("%2Ftmp%2Fproject")
+            .join(id);
+        let raw = fs::read_to_string(session.join("plan_mode.json")).unwrap();
+        assert!(raw.contains("\"reminder_count\": 0"));
+        let active = write_grok_plan_state(dir.path(), &workspace, id, "nope", true).unwrap();
+        assert_eq!(active.state, "Inactive");
+        assert!(active.awaiting_approval);
+        let err = write_grok_plan_state(dir.path(), &workspace, "../escape", "Active", false);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn write_and_edit_plan_file_stay_inside_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "01a0a89f-8f33-7600-8603-fb8517309b74";
+        let workspace = PathBuf::from("/tmp/project");
+        write_grok_plan_file(dir.path(), &workspace, id, "# Plan\n\nReuse helper.\n").unwrap();
+        edit_grok_plan_file(dir.path(), &workspace, id, "Reuse helper.", "Reuse the session helper.").unwrap();
+        let plan = read_grok_plan(dir.path(), &workspace, id);
+        assert!(plan.content.contains("Reuse the session helper."));
+        let missing = edit_grok_plan_file(dir.path(), &workspace, id, "nope", "x");
+        assert!(missing.is_err());
     }
 
     #[test]

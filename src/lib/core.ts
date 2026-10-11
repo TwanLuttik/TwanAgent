@@ -309,6 +309,8 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
     return String(args.mode ?? "") === "edit" ? "Edit journey knowledge" : "Update journey knowledge";
   }
   if (name === "todo_write") return "Updated todos";
+  if (name === "enter_plan_mode") return "Enter plan mode";
+  if (name === "exit_plan_mode") return "Exit plan mode";
   return name;
 }
 
@@ -767,7 +769,7 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     }
     const text = (msg.content ?? "").trim();
     const reasoning = String(msg.reasoning ?? "").trim();
-    const calls = (msg.tool_calls ?? []).filter((call) => call.name !== "todo_write");
+    const calls = (msg.tool_calls ?? []).filter((call) => call.name !== "todo_write" && call.name !== "enter_plan_mode" && call.name !== "exit_plan_mode");
     const labels = calls.map(toolActivityLabel);
     const details = calls.map((call) => toolFileChange(call));
     const commands = calls.map((call) => toolDetail(call));
@@ -911,6 +913,7 @@ export function systemPrompt(
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
   modelId?: string,
+  planLine?: string,
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
@@ -919,11 +922,12 @@ export function systemPrompt(
   const remoteLine = remoteWorkspaceLine(remote);
   const place = remoteLine ? `\n${remoteLine}` : "";
   const who = agentIdentityLine(modelId);
+  const planning = (planLine ?? "").trim();
   return {
     role: "system",
     content: `${who}
 Workspace: ${workspace}${place}
-${permissionSystemLine(permission)}
+${permissionSystemLine(permission)}${planning ? `\n${planning}` : ""}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
 For current facts, news, docs, or anything that may have changed, call web_search instead of guessing. Cite the source URLs it returns.
@@ -941,8 +945,9 @@ export function withSystem(
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
   modelId?: string,
+  planLine?: string,
 ): ChatMessage[] {
-  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId);
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId, planLine);
   const extra = system ? extraSystemLines(mcpServers, skills) : "";
   const content =
     extra && !String(base.content ?? "").includes(extra.trim())

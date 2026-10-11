@@ -49,8 +49,35 @@ fn journey_tool_json() -> serde_json::Value {
     })
 }
 
+const PLAN_TOOL_NAMES: &[&str] = &["enter_plan_mode", "exit_plan_mode"];
+
 pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
-    let mut tools = serde_json::json!([
+    tools_json_for(include_journey, true)
+}
+
+/// Claude chats do not get Grok's plan-mode tools. The gate lives in the client too.
+pub(crate) fn tools_json_for(include_journey: bool, include_plan: bool) -> serde_json::Value {
+    let mut tools = base_tools_json();
+    if !include_plan {
+        if let Some(list) = tools.as_array_mut() {
+            list.retain(|tool| {
+                tool.get("function")
+                    .and_then(|row| row.get("name"))
+                    .and_then(|name| name.as_str())
+                    .is_none_or(|name| !PLAN_TOOL_NAMES.contains(&name))
+            });
+        }
+    }
+    if include_journey {
+        if let Some(list) = tools.as_array_mut() {
+            list.push(journey_tool_json());
+        }
+    }
+    tools
+}
+
+fn base_tools_json() -> serde_json::Value {
+    serde_json::json!([
         {
             "type": "function",
             "function": {
@@ -190,6 +217,22 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "enter_plan_mode",
+                "description": "Switch to plan mode. In plan mode, you can only read the codebase and write a plan. The user approves the plan before you change any code. Use this tool only when the user asks for a plan.",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "exit_plan_mode",
+                "description": "Show your plan to the user for approval. Plan mode ends when the user approves the plan.",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "todo_write",
                 "description": "Create or update the step list shown above the user's input. Use for multi-step work. Call at the start of a turn or mid-turn as you progress. Keep at most one item in_progress.",
                 "parameters": {
@@ -219,13 +262,7 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
                 }
             }
         }
-    ]);
-    if include_journey {
-        if let Some(list) = tools.as_array_mut() {
-            list.push(journey_tool_json());
-        }
-    }
-    tools
+    ])
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -355,7 +392,7 @@ async fn stream_anthropic(
         &messages,
         &model,
         effort.as_deref(),
-        &tools_json(include_journey),
+        &tools_json_for(include_journey, false),
     );
     let mut req = http_client()
         .post(crate::anthropic::MESSAGES_URL)
@@ -1131,6 +1168,30 @@ mod tests {
         });
         assert_eq!(text_from_content(delta.get("content").unwrap()), "Hi");
         assert_eq!(reasoning_from_delta(&delta), "secret");
+    }
+
+    #[test]
+    fn claude_tools_omit_grok_plan_mode() {
+        let names = |tools: serde_json::Value| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| {
+                    tool.get("function")
+                        .and_then(|row| row.get("name"))
+                        .and_then(|name| name.as_str())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        };
+        let grok = names(tools_json(false));
+        assert!(grok.iter().any(|name| name == "enter_plan_mode"));
+        assert!(grok.iter().any(|name| name == "exit_plan_mode"));
+        let claude = names(tools_json_for(true, false));
+        assert!(!claude.iter().any(|name| name == "enter_plan_mode"));
+        assert!(!claude.iter().any(|name| name == "exit_plan_mode"));
+        assert!(claude.iter().any(|name| name == "update_journey_knowledge"));
     }
 
     #[test]

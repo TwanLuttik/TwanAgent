@@ -7,6 +7,7 @@ export type MainModel = {
   activeId: any;
   addPromptImages: MainFn;
   allProjectGroups: any;
+  answerPlan: MainFn;
   answerShell: MainFn;
   applyWorkspace: MainFn;
   beginPendingEdit: MainFn;
@@ -62,12 +63,15 @@ export type MainModel = {
   openWorkspaceFile: MainFn;
   pendingClosePath: any;
   pendingDeleteProject: any;
+  pendingPlan: any;
   pendingShell: any;
   permission: any;
   pickContextWindow: MainFn;
   pickEffort: MainFn;
   pickModel: MainFn;
   pickPermission: MainFn;
+  pickPlanMode: MainFn;
+  planMode: "off" | "pending" | "on";
   pickSpeechModel: MainFn;
   dictate: MainFn;
   speechModel: any;

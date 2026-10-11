@@ -73,7 +73,7 @@ export function NewChatMenu({
             className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
           >
             <Symbol name="terminal" className="size-3.5 text-muted" />
-            Terminal
+            Terminal (deprecated)
           </button>
         </div>
       ) : null}

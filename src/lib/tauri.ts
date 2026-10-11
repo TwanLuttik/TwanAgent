@@ -848,6 +848,48 @@ export function grokPlan(workspace: string, sessionId: string): Promise<ApiGrokP
   });
 }
 
+export function grokPlanSet(
+  workspace: string,
+  sessionId: string,
+  state: string,
+  awaitingApproval: boolean,
+): Promise<ApiGrokPlan> {
+  return invoke("dev_grok_plan_set", {
+    workspace,
+    sessionId,
+    session_id: sessionId,
+    state,
+    awaitingApproval,
+    awaiting_approval: awaitingApproval,
+  });
+}
+
+export function grokPlanWrite(workspace: string, sessionId: string, contents: string): Promise<void> {
+  return invoke("dev_grok_plan_write", {
+    workspace,
+    sessionId,
+    session_id: sessionId,
+    contents,
+  });
+}
+
+export function grokPlanEdit(
+  workspace: string,
+  sessionId: string,
+  oldString: string,
+  newString: string,
+): Promise<void> {
+  return invoke("dev_grok_plan_edit", {
+    workspace,
+    sessionId,
+    session_id: sessionId,
+    oldString,
+    newString,
+    old_string: oldString,
+    new_string: newString,
+  });
+}
+
 export function ptyOpenGrok(
   workspace: string,
   cols: number,

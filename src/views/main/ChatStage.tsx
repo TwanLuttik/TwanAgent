@@ -21,6 +21,7 @@ import {
   setEditorMarkdownView,
 } from "../../lib/editor";
 import { permissionLabel, shellApprovalLabel } from "../../lib/permission";
+import { PlanApproval } from "../../components/PlanApproval";
 import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
@@ -185,6 +186,7 @@ export function ChatStage() {
 function ChatColumn() {
   const {
     activeId,
+    answerPlan,
     answerShell,
     beginPendingEdit,
     closePendingEdit,
@@ -205,6 +207,7 @@ function ChatColumn() {
     model,
     models,
     openingId,
+    pendingPlan,
     pendingShell,
     permission,
     remoteWorkspace,
@@ -307,7 +310,7 @@ function ChatColumn() {
               onLoadOlder={holdScrollForOlder}
             />
             {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
-            {activeRunning && !pendingShell && (
+            {activeRunning && !pendingShell && !pendingPlan && (
               <ActivityStatus
                 label={conversationActivityLabel(runningTurns[activeId]?.activity ?? runningActivity)}
                 startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
@@ -354,6 +357,13 @@ function ChatColumn() {
             ))}
           </div>
         </div>
+        {pendingPlan ? (
+          <PlanApproval
+            prompt={pendingPlan.prompt}
+            workspace={workspace}
+            onAnswer={(decision, note) => answerPlan(decision, note)}
+          />
+        ) : null}
         <motion.div
           ref={composerDockRef}
           initial={false}

@@ -44,6 +44,7 @@ import { clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMes
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 import { useApp } from "../state/app-state";
+import { emptyGrokPlan, planModeEngaged, type GrokPlan, type PlanDecision, type PlanPrompt } from "../lib/plan";
 import { emptySubagentDock, type SubagentDockState, type SubagentRecord } from "../lib/subagent";
 import { bindTurn } from "./main/useTurn";
 import { useLibrary, type RunTurn } from "./main/useLibrary";
@@ -89,6 +90,14 @@ export function MainView() {
   const [openingId, setOpeningId] = useState("");
   const [shellQueue, setShellQueue] = useState<
     { chatId: string; command: string; resolve: (ok: boolean) => void }[]
+  >([]);
+  const [planTick, setPlanTick] = useState(0);
+  const [planQueue, setPlanQueue] = useState<
+    {
+      chatId: string;
+      prompt: PlanPrompt;
+      resolve: (answer: { decision: PlanDecision; note: string }) => void;
+    }[]
   >([]);
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
@@ -179,6 +188,8 @@ export function MainView() {
     >(),
   );
   const subagentsByChatRef = useRef(new Map<string, SubagentDockState>());
+  const planByChatRef = useRef(new Map<string, GrokPlan>());
+  const bumpPlan = useCallback(() => setPlanTick((n) => n + 1), []);
   const scroller = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const [composerPad, setComposerPad] = useState(CHAT_BOTTOM_PAD_FALLBACK);
@@ -559,7 +570,11 @@ export function MainView() {
         setMentionFiles(known);
         return;
       }
-      if (fileStructureSignature(workspace)) return;
+      // A signature with no files is an empty project, not a snapshot that forgot its list.
+      if (fileStructureSignature(workspace)) {
+        setMentionFiles([]);
+        return;
+      }
       void collectWorkspaceFiles((path) => api.listDir(workspace, path)).then((files) => {
         if (!gone && !fileStructureFiles(workspace).length) setMentionFiles(files);
       });
@@ -786,6 +801,7 @@ export function MainView() {
   }, [workspace, tick]);
 
   const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
+  const pendingPlan = planQueue.find((item) => item.chatId === activeId) ?? null;
 
   useLayoutEffect(() => {
     const el = composerDockRef.current;
@@ -950,6 +966,8 @@ export function MainView() {
     turnLiveRef,
     liveByChatRef,
     subagentsByChatRef,
+    planByChatRef,
+    onPlanChange: bumpPlan,
     stickToBottomRef,
     conversationsRef,
     openGeneration,
@@ -1037,6 +1055,9 @@ export function MainView() {
     setUsageTick,
     bumpFiles,
     setShellQueue,
+    setPlanQueue,
+    planByChatRef,
+    onPlanChange: bumpPlan,
     permissionRef,
     modelRef,
     effortRef,
@@ -1134,11 +1155,13 @@ export function MainView() {
   );
 
   const {
+    answerPlan,
     answerShell,
     pickModel,
     pickEffort,
     pickContextWindow,
     pickPermission,
+    pickPlanMode,
     addPromptImages,
     addPromptImagePaths,
     beginPendingEdit,
@@ -1299,6 +1322,7 @@ export function MainView() {
     activeId,
     addPromptImages,
     allProjectGroups,
+    answerPlan,
     answerShell,
     applyWorkspace,
     beginPendingEdit,
@@ -1352,12 +1376,20 @@ export function MainView() {
     openWorkspaceFile,
     pendingClosePath,
     pendingDeleteProject,
+    pendingPlan,
     pendingShell,
     permission,
     pickContextWindow,
     pickEffort,
     pickModel,
     pickPermission,
+    pickPlanMode,
+    planMode: (() => {
+      void planTick;
+      const plan = planByChatRef.current.get(activeId) ?? emptyGrokPlan();
+      if (plan.state === "Pending") return "pending" as const;
+      return planModeEngaged(plan.state) ? ("on" as const) : ("off" as const);
+    })(),
     pickSpeechModel,
     dictate,
     speechModel: speechModelId,

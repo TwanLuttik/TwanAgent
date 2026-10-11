@@ -10,6 +10,7 @@ import * as api from "../lib/tauri";
 import { applyXtermTheme, paneIsShown, xtermTheme } from "./Terminal";
 import { PlanPreview } from "./PlanPreview";
 
+/** @deprecated Terminal chats are not the product. Plan mode lives in the normal Grok chat. */
 export function GrokTerminal({
   workspace,
   conversationId,

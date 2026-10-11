@@ -3,11 +3,19 @@ import { describe, it } from "node:test";
 import {
   emptyGrokPlan,
   grokPlanFromPayload,
+  isSessionPlanPath,
   planIsVisible,
+  planModeBlockMessage,
+  planModeBlocksTool,
+  planModeEngaged,
+  planModeSystemLine,
   planOpenByDefault,
   planShowsEmpty,
+  planStateAfterDecision,
   planStatus,
+  planTextFromMessages,
   planTitle,
+  planToolResult,
 } from "../plan.ts";
 
 describe("grok plan payload", () => {
@@ -66,6 +74,49 @@ describe("plan preview", () => {
     assert.equal(planStatus({ ...writing, state: "Pending" }), "Starts on the next message");
     assert.equal(planStatus({ ...writing, state: "ExitPending" }), "Leaving plan mode");
     assert.equal(planStatus(saved), "");
+  });
+
+  it("follows the CLI state machine", () => {
+    assert.equal(planModeEngaged("Inactive"), false);
+    assert.equal(planModeEngaged("Pending"), true);
+    assert.equal(planModeEngaged("Active"), true);
+    assert.equal(planModeEngaged("ExitPending"), true);
+    assert.equal(planStateAfterDecision("enter", "approve"), "Active");
+    assert.equal(planStateAfterDecision("enter", "decline"), "Inactive");
+    assert.equal(planStateAfterDecision("exit", "approve"), "Inactive");
+    assert.equal(planStateAfterDecision("exit", "quit"), "Inactive");
+    assert.equal(planStateAfterDecision("exit", "revise"), "Active");
+    assert.match(planToolResult("enter", "approve"), /plan\.md/);
+    assert.match(planToolResult("exit", "revise", "use the helper"), /use the helper/);
+    assert.match(planToolResult("exit", "quit"), /Do not implement/);
+    assert.match(planToolResult("exit", "approve", "# edited"), /# edited/);
+    assert.equal(
+      planTextFromMessages([
+        {
+          role: "assistant",
+          tool_calls: [{ name: "write_file", arguments: JSON.stringify({ path: "plan.md", contents: "# Plan\n" }) }],
+        },
+        {
+          role: "assistant",
+          tool_calls: [{ name: "write_file", arguments: JSON.stringify({ path: "src/lib.ts", contents: "nope" }) }],
+        },
+      ]),
+      "# Plan\n",
+    );
+  });
+
+  it("blocks workspace edits and allows only the session plan file", () => {
+    assert.equal(planModeBlocksTool("write_file"), true);
+    assert.equal(planModeBlocksTool("edit_file"), true);
+    assert.equal(planModeBlocksTool("read_file"), false);
+    assert.equal(planModeBlocksTool("run_command"), false);
+    assert.equal(isSessionPlanPath("plan.md"), true);
+    assert.equal(isSessionPlanPath("src/plan.md"), true);
+    assert.equal(isSessionPlanPath("src/lib.ts"), false);
+    assert.match(planModeBlockMessage("src/lib.ts"), /plan\.md/);
+    assert.match(planModeSystemLine("Active", "/tmp/plan.md"), /latest request/);
+    assert.match(planModeSystemLine("Active"), /write_file to path plan\.md/);
+    assert.equal(planModeSystemLine("Inactive", "/tmp/plan.md"), "");
   });
 
   it("opens while plan mode is on and stays collapsed for a saved plan", () => {

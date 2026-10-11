@@ -27,6 +27,8 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
     pickEffort,
     pickModel,
     pickPermission,
+    pickPlanMode,
+    planMode,
     promptImages,
     ready,
     runningTurns,
@@ -82,6 +84,8 @@ export function SessionComposer({ placement }: { placement: "landing" | "chat" }
       onContextWindow={pickContextWindow}
       permission={permission}
       onPermission={pickPermission}
+      planMode={claude ? undefined : planMode}
+      onPlanMode={claude ? undefined : pickPlanMode}
       autoFocus={landing}
       compact={!landing}
       usage={landing || !activeId ? undefined : usageByChat[activeId]}

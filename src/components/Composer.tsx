@@ -55,6 +55,8 @@ export function Composer({
   onContextWindow,
   permission,
   onPermission,
+  planMode,
+  onPlanMode,
   autoFocus,
   compact,
   usage,
@@ -87,6 +89,9 @@ export function Composer({
   onContextWindow?: (tokens: number) => void;
   permission: string;
   onPermission: (id: string) => void;
+  /** Grok chats only. Omitted for Claude, which has no plan mode here. */
+  planMode?: "off" | "pending" | "on";
+  onPlanMode?: (mode: "off" | "pending" | "on") => void;
   autoFocus?: boolean;
   compact?: boolean;
   usage?: ChatUsage | null;
@@ -266,10 +271,10 @@ export function Composer({
   useEffect(() => {
     if (!micMenu) return;
     function close() {
-      setMicMenu(null);
+      setMicMenu(false);
     }
     function onKey(ev: globalThis.KeyboardEvent) {
-      if (ev.key === "Escape") setMicMenu(null);
+      if (ev.key === "Escape") setMicMenu(false);
     }
     document.addEventListener("mousedown", close);
     window.addEventListener("keydown", onKey);
@@ -302,7 +307,7 @@ export function Composer({
   function pickMic(id: string) {
     saveMicDevice(id);
     setMicDeviceId(id);
-    setMicMenu(null);
+    setMicMenu(false);
   }
 
   function takeImageFiles(list: File[]) {
@@ -471,36 +476,14 @@ export function Composer({
             Drop images
           </div>
         ) : null}
-        {mention && mentionRows.length ? (
-          <div
-            role="listbox"
-            aria-label="Files"
-            className="absolute bottom-full left-3 z-30 mb-1 max-h-56 w-[min(100%-1.5rem,22rem)] overflow-auto rounded-lg border border-line bg-canvas py-1 shadow-card"
-          >
-            {mentionRows.map((file, index) => (
-              <button
-                key={file.path}
-                type="button"
-                role="option"
-                aria-selected={index === mentionIndex}
-                onMouseEnter={() => setMentionIndex(index)}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  pickMention(file);
-                }}
-                className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2 text-left transition-colors ${
-                  index === mentionIndex ? "bg-accent/10 text-accent" : "text-ink/80 hover:bg-accent/10 hover:text-accent"
-                }`}
-              >
-                <FileIcon name={file.name} className="size-3.5 shrink-0" />
-                <span className="shrink-0 truncate text-[12px] leading-none">{file.name}</span>
-                <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-none opacity-60">
-                  {file.path}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <MentionMenu
+          open={Boolean(mention && mentionRows.length)}
+          anchor={box}
+          rows={mentionRows}
+          index={mentionIndex}
+          onIndex={setMentionIndex}
+          onPick={pickMention}
+        />
         <MentionField
           draft={draft}
           files={mentionFiles}
@@ -557,6 +540,16 @@ export function Composer({
             value={permissionMode}
             onChange={onPermission}
           />
+          {onPlanMode ? (
+            <PlanToggle
+              mode={planMode ?? "off"}
+              busy={busy}
+              onToggle={() => {
+                if ((planMode ?? "off") === "off") onPlanMode(busy ? "on" : "pending");
+                else onPlanMode("off");
+              }}
+            />
+          ) : null}
           <div className="min-w-0 flex-1" />
           {recording ? <VoiceMeter level={voiceLevel} /> : null}
           {onDictate ? (
@@ -583,12 +576,12 @@ export function Composer({
             </button>
           ) : null}
           <MicSelect
-            open={micMenu !== null}
+            open={micMenu}
             devices={micDevices}
             value={micDeviceId}
             anchor={micRef}
             onPick={pickMic}
-            onClose={() => setMicMenu(null)}
+            onClose={() => setMicMenu(false)}
           />
           <button
             type="button"
@@ -622,6 +615,87 @@ export function Composer({
         </div>
       </div>
     </form>
+  );
+}
+
+function MentionMenu({
+  open,
+  anchor,
+  rows,
+  index,
+  onIndex,
+  onPick,
+}: {
+  open: boolean;
+  anchor: RefObject<HTMLElement | null>;
+  rows: MentionFile[];
+  index: number;
+  onIndex: (index: number) => void;
+  onPick: (file: MentionFile) => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const node = anchor.current;
+      const menu = panel.current;
+      if (!node || !menu) return;
+      const frame = node.getBoundingClientRect();
+      const height = menu.getBoundingClientRect().height;
+      const width = Math.min(352, Math.max(180, frame.width - 24));
+      const left = Math.min(Math.max(8, frame.left + 12), window.innerWidth - width - 8);
+      const gap = 4;
+      const above = frame.top - height - gap >= 8;
+      setBox({
+        left,
+        top: above ? frame.top - gap - height : frame.bottom + gap,
+        width,
+      });
+    }
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, anchor, rows]);
+
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={panel}
+      role="listbox"
+      aria-label="Files"
+      style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width: box?.width ?? 320, visibility: box ? "visible" : "hidden" }}
+      className="fixed z-50 max-h-56 overflow-auto rounded-lg border border-line bg-canvas py-1 shadow-card"
+    >
+      {rows.map((file, row) => (
+        <button
+          key={file.path}
+          type="button"
+          role="option"
+          aria-selected={row === index}
+          onMouseEnter={() => onIndex(row)}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onPick(file);
+          }}
+          className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2 text-left transition-colors ${
+            row === index ? "bg-accent/10 text-accent" : "text-ink/80 hover:bg-accent/10 hover:text-accent"
+          }`}
+        >
+          <FileIcon name={file.name} className="size-3.5 shrink-0" />
+          <span className="shrink-0 truncate text-[12px] leading-none">{file.name}</span>
+          <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-none opacity-60">
+            {file.path}
+          </span>
+        </button>
+      ))}
+    </div>,
+    document.body,
   );
 }
 
@@ -1368,6 +1442,40 @@ function ChipSelect({
         ))}
       </PopMenu>
     </div>
+  );
+}
+
+function PlanToggle({
+  mode,
+  busy,
+  onToggle,
+}: {
+  mode: "off" | "pending" | "on";
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  const on = mode !== "off";
+  const title =
+    mode === "on"
+      ? busy
+        ? "Plan mode is on. Click to leave it after this turn."
+        : "Plan mode is on. Click to turn it off."
+      : mode === "pending"
+        ? "The next message will be planned. Click to cancel."
+        : "Plan the next message before Grok edits anything.";
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      title={title}
+      onClick={onToggle}
+      className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+        on ? "bg-accent/15 text-accent" : "text-muted hover:text-ink"
+      }`}
+    >
+      <Symbol name="doc.fill" className="size-3" />
+      <span>Plan</span>
+    </button>
   );
 }
 

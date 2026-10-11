@@ -69,7 +69,7 @@ export function LandingScreen() {
                 onClick={() => void startNewChat("terminal")}
                 className="text-[12px] text-muted hover:text-ink"
               >
-                Open a Grok terminal
+                Open a Grok terminal (deprecated)
               </button>
             </p>
           ) : null}

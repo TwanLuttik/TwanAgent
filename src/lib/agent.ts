@@ -6,6 +6,20 @@ import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
 import { parsePermissionMode, toolDeniedByPermission, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
+import {
+  isPlanTool,
+  isSessionPlanPath,
+  planModeBlockMessage,
+  planModeBlocksTool,
+  planModeEngaged,
+  planModeSystemLine,
+  planStateAfterDecision,
+  planTextFromMessages,
+  planToolResult,
+  type PlanDecision,
+  type PlanModeState,
+  type PlanPrompt,
+} from "./plan.ts";
 import { formatTodoWriteResult, parseTodoWriteArgs } from "./todo.ts";
 import {
   compactionPrompt,
@@ -38,7 +52,22 @@ import {
 
 export type ConfirmShell = (command: string) => Promise<boolean>;
 
+export type ConfirmPlan = (prompt: PlanPrompt) => Promise<{ decision: PlanDecision; note: string }>;
+
 export type ToolProgress = (detail: string) => void;
+
+export type PlanToolIO = {
+  sessionId: string;
+  enabled: boolean;
+  getState: () => PlanModeState;
+  setState: (state: PlanModeState, awaitingApproval: boolean) => Promise<void>;
+  readContent: () => Promise<string>;
+  writePlan: (contents: string) => Promise<void>;
+  editPlan: (oldString: string, newString: string) => Promise<void>;
+  /** Transcript so far, used when the model wrote plan.md through write_file. */
+  messages: () => { role: string; tool_calls?: { name: string; arguments: string }[] }[];
+  confirm: ConfirmPlan;
+};
 
 export async function executeTool(
   workspace: string,
@@ -49,6 +78,7 @@ export async function executeTool(
   signal?: AbortSignal,
   journeyId?: string,
   onProgress?: ToolProgress,
+  plan?: PlanToolIO,
 ): Promise<string> {
   const skipped = signal ? skipToolIfAborted(signal) : null;
   if (skipped) return skipped;
@@ -57,6 +87,13 @@ export async function executeTool(
   }
   const denied = toolDeniedByPermission(permission, call.name);
   if (denied) return denied;
+  if (isPlanTool(call.name)) {
+    if (!plan?.enabled) return `Error: ${call.name} is only available in a Grok chat.`;
+    return runPlanTool(call.name, plan, signal);
+  }
+  if (plan?.enabled && planModeEngaged(plan.getState()) && planModeBlocksTool(call.name)) {
+    return planModeBlockMessage(String(parseToolArgs(call.arguments).path ?? ""));
+  }
   if (call.name === "spawn_subagent") {
     return "Error: spawn_subagent must be started by the parent turn.";
   }
@@ -68,9 +105,23 @@ export async function executeTool(
       case "read_file":
         return await api.readFile(workspace, String(args.path ?? ""));
       case "write_file":
+        if (plan?.enabled && isSessionPlanPath(String(args.path ?? ""))) {
+          if (!planModeEngaged(plan.getState())) {
+            return "Error: plan.md is only writable while plan mode is active.";
+          }
+          await plan.writePlan(String(args.contents ?? ""));
+          return "Wrote plan.md";
+        }
         await api.writeFile(workspace, String(args.path ?? ""), String(args.contents ?? ""));
         return `Wrote ${args.path ?? ""}`;
       case "edit_file":
+        if (plan?.enabled && isSessionPlanPath(String(args.path ?? ""))) {
+          if (!planModeEngaged(plan.getState())) {
+            return "Error: plan.md is only writable while plan mode is active.";
+          }
+          await plan.editPlan(String(args.old_string ?? ""), String(args.new_string ?? ""));
+          return "Edited plan.md";
+        }
         await api.editFile(
           workspace,
           String(args.path ?? ""),
@@ -109,6 +160,36 @@ export async function executeTool(
   } catch (e) {
     return `Error: ${String(e)}`;
   }
+}
+
+async function runPlanTool(
+  name: "enter_plan_mode" | "exit_plan_mode",
+  plan: PlanToolIO,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) return "Skipped: stopped.";
+  const state = plan.getState();
+  if (name === "enter_plan_mode") {
+    if (planModeEngaged(state)) return "Plan mode is already active.";
+    const answer = await plan.confirm({ kind: "enter" });
+    if (signal?.aborted) return "Skipped: stopped.";
+    const next = planStateAfterDecision("enter", answer.decision);
+    await plan.setState(next, false);
+    return planToolResult("enter", answer.decision, answer.note);
+  }
+  if (state === "Inactive") return "Plan mode is not active.";
+  const saved = await plan.readContent();
+  const written = planTextFromMessages(plan.messages());
+  const content = written.trim() ? written : saved;
+  await plan.setState(state, true);
+  const answer = await plan.confirm({ kind: "exit", content });
+  if (signal?.aborted) {
+    await plan.setState(planModeEngaged(state) ? "Active" : state, false);
+    return "Skipped: stopped.";
+  }
+  const next = planStateAfterDecision("exit", answer.decision);
+  await plan.setState(next, false);
+  return planToolResult("exit", answer.decision, answer.note);
 }
 
 async function runWebSearch(
@@ -165,6 +246,8 @@ export type TurnOpts = {
   onError: (text: string) => void;
   confirmShell: ConfirmShell;
   getPermission?: () => PermissionMode;
+  /** Grok chats only. Claude never receives plan-mode tools. */
+  plan?: PlanToolIO;
   onTool?: (call: ToolCall) => void;
   /** Live detail for the tool call that is running now, such as websites found mid-search. */
   onToolProgress?: (callId: string, detail: string) => void;
@@ -185,6 +268,10 @@ export type TurnOpts = {
   skills?: DetectedSkill[];
   remote?: RemoteWorkspace | null;
 };
+
+function planModeLine(plan: PlanToolIO): string {
+  return planModeSystemLine(plan.getState(), `~/.grok/sessions/<workspace>/${plan.sessionId}/plan.md`);
+}
 
 function assistantMessage(
   text: string,
@@ -240,15 +327,16 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     if (opts.signal.aborted) return transcript;
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
+    const planLine = opts.plan?.enabled ? planModeLine(opts.plan) : "";
     let result = await streamCompletion(
-      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
+      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
       opts,
       imageCache,
     );
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
         opts,
         imageCache,
       );
@@ -277,7 +365,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
       result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model),
+        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
         opts,
         imageCache,
       );
@@ -340,6 +428,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
             opts.signal,
             opts.journeyId,
             (detail) => opts.onToolProgress?.(call.id, detail),
+            opts.plan,
           )) || UNFINISHED_TOOL;
       } catch (err) {
         contents[i] = `Error: ${String(err)}`;

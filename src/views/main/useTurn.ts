@@ -31,6 +31,16 @@ import { expandPasteTokens, type PasteBlock } from "../../lib/paste";
 import { fileBaseName } from "../../lib/file-icon";
 import type { DetectedMcpServer } from "../../lib/mcp";
 import { parsePermissionMode, shouldPromptShell, type PermissionMode, type RemoteWorkspace } from "../../lib/permission";
+import {
+  emptyGrokPlan,
+  grokPlanFromPayload,
+  planModeEngaged,
+  type GrokPlan,
+  type PlanDecision,
+  type PlanModeState,
+  type PlanPrompt,
+} from "../../lib/plan";
+import { providerFor } from "../../lib/provider";
 import type { DetectedSkill } from "../../lib/skill";
 import {
   applySubagentToChat,
@@ -75,6 +85,11 @@ import type { ConversationSummary, Model, Runtime } from "../../lib/tauri";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 type ShellRequest = { chatId: string; command: string; resolve: (ok: boolean) => void };
+type PlanRequest = {
+  chatId: string;
+  prompt: PlanPrompt;
+  resolve: (answer: { decision: PlanDecision; note: string }) => void;
+};
 
 export type TurnDeps = {
   workspace: string;
@@ -131,6 +146,9 @@ export type TurnDeps = {
   setUsageTick: Update<number>;
   bumpFiles: () => void;
   setShellQueue: Update<ShellRequest[]>;
+  setPlanQueue: Update<PlanRequest[]>;
+  planByChatRef: RefObject<Map<string, GrokPlan>>;
+  onPlanChange?: () => void;
   permissionRef: RefObject<PermissionMode>;
   modelRef: RefObject<string>;
   effortRef: RefObject<string>;
@@ -177,7 +195,7 @@ export function bindTurn(deps: TurnDeps) {
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
-    setShellQueue, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
+    setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
     deletedIdsRef, mcpServersRef, skillsRef, remoteRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
@@ -205,6 +223,39 @@ function answerShell(ok: boolean) {
     const [item] = next.splice(index, 1);
     item?.resolve(ok);
     return next;
+  });
+}
+
+function planForChat(chatId: string): GrokPlan {
+  return planByChatRef.current.get(chatId) ?? emptyGrokPlan();
+}
+
+function confirmPlan(prompt: PlanPrompt, chatId: string): Promise<{ decision: PlanDecision; note: string }> {
+  return new Promise((resolve) => setPlanQueue((q) => [...q, { chatId, prompt, resolve }]));
+}
+
+function answerPlan(decision: PlanDecision, note = "") {
+  const chatId = activeIdRef.current;
+  setPlanQueue((q) => {
+    const index = q.findIndex((item) => item.chatId === chatId);
+    if (index < 0) return q;
+    const next = q.slice();
+    const [item] = next.splice(index, 1);
+    item?.resolve({ decision, note });
+    return next;
+  });
+}
+
+function rejectPlans(chatId: string) {
+  setPlanQueue((q) => {
+    let changed = false;
+    const next = q.filter((item) => {
+      if (item.chatId !== chatId) return true;
+      item.resolve({ decision: item.prompt.kind === "exit" ? "quit" : "decline", note: "" });
+      changed = true;
+      return false;
+    });
+    return changed ? next : q;
   });
 }
 
@@ -312,6 +363,32 @@ function pickContextWindow(tokens: number) {
   const chatId = activeIdRef.current;
   if (!chatId || !workspace) return;
   rememberChatSettings(chatId, { contextWindow: tokens });
+}
+
+function rememberPlan(chatId: string, plan: GrokPlan) {
+  planByChatRef.current.set(chatId, plan);
+  onPlanChange?.();
+}
+
+function pickPlanMode(mode: "off" | "pending" | "on") {
+  const chatId = activeIdRef.current;
+  if (!chatId || !workspace || providerFor(modelRef.current) !== "xai") return;
+  const running = turnsRef.current.has(chatId);
+  const state: PlanModeState =
+    mode === "on"
+      ? "Active"
+      : mode === "pending"
+        ? "Pending"
+        : running && planModeEngaged(planForChat(chatId).state)
+          ? "ExitPending"
+          : "Inactive";
+  const current = planForChat(chatId);
+  rememberPlan(chatId, { ...current, found: true, state, awaitingApproval: false });
+  void api.grokPlanSet(workspace, chatId, state, false).then((row) => {
+    rememberPlan(chatId, grokPlanFromPayload(row));
+  }).catch((e) => {
+    setFlash({ kind: "err", text: String(e) });
+  });
 }
 
 function pickPermission(id: string) {
@@ -721,6 +798,14 @@ async function runTurn(
   );
   const journeyId = journeyIdOverride || chat?.journey_id || undefined;
   const kind = parseConversationKind(chat?.kind);
+  if (providerFor(turnSettings.model) === "xai" && planForChat(id).state === "Pending") {
+    try {
+      const armed = grokPlanFromPayload(await api.grokPlanSet(ws, id, "Active", false));
+      rememberPlan(id, armed);
+    } catch (e) {
+      if (visible()) setFlash({ kind: "err", text: String(e) });
+    }
+  }
   let knowledge = "";
   if (journeyId && kind === "chat") {
     try {
@@ -757,6 +842,26 @@ async function runTurn(
       },
       confirmShell: (command) => confirmShell(command, id),
       getPermission: () => permissionForChat(id),
+      plan: providerFor(turnSettings.model) === "xai"
+        ? {
+            sessionId: id,
+            enabled: true,
+            getState: () => planForChat(id).state,
+            setState: async (state: PlanModeState, awaitingApproval: boolean) => {
+              const next = grokPlanFromPayload(await api.grokPlanSet(ws, id, state, awaitingApproval));
+              rememberPlan(id, next);
+            },
+            readContent: async () => {
+              const next = grokPlanFromPayload(await api.grokPlan(ws, id));
+              rememberPlan(id, { ...planForChat(id), content: next.content, found: next.found });
+              return next.content;
+            },
+            writePlan: (contents: string) => api.grokPlanWrite(ws, id, contents),
+            editPlan: (oldString: string, newString: string) => api.grokPlanEdit(ws, id, oldString, newString),
+            messages: () => liveByChatRef.current.get(id)?.messages ?? next,
+            confirm: (prompt) => confirmPlan(prompt, id),
+          }
+        : undefined,
       priorPromptTokens: usageByChat[id]?.promptTokens,
       compaction: latestCompaction,
       onCompact: (state) => {
@@ -901,6 +1006,11 @@ async function runTurn(
       turnLiveRef.current = { streamText: "", streamReasoning: "", liveTools: [], activity: null };
     }
     rejectShells(id);
+    rejectPlans(id);
+    if (planForChat(id).state === "ExitPending") {
+      rememberPlan(id, { ...planForChat(id), state: "Inactive", awaitingApproval: false });
+      void api.grokPlanSet(ws, id, "Inactive", false).catch(() => undefined);
+    }
     syncRunningFromTurns();
     if (visible()) {
       setSubagents([]);
@@ -921,6 +1031,8 @@ function stop() {
   return {
     confirmShell,
     answerShell,
+    answerPlan,
+    pickPlanMode,
     pickModel,
     pickEffort,
     pickContextWindow,

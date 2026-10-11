@@ -1106,6 +1106,8 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /web_search/);
+    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6", "Plan mode is Active.").content), /Plan mode is Active/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /Plan mode is/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /You are a coding agent in TwanAgent/);
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /Only Grok is available/);
     assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6").content), /You are Grok \(grok-4\.6\), a coding agent/);

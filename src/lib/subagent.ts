@@ -53,6 +53,7 @@ export function parseSpawnArgs(raw: string): SpawnArgs {
 
 export function childCanUseTool(type: SubagentType, name: string): boolean {
   if (name === "spawn_subagent" || name === "update_journey_knowledge" || name === "todo_write") return false;
+  if (name === "enter_plan_mode" || name === "exit_plan_mode") return false;
   if (type === "explore" || type === "plan") {
     return name !== "write_file" && name !== "edit_file" && name !== "run_command";
   }
