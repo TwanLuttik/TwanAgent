@@ -477,7 +477,7 @@ const SortableRow = memo(function SortableRow({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`relative ${item.kind === "chat" ? "touch-none" : ""}`}
+      className={`group relative ${item.kind === "chat" ? "touch-none" : ""}`}
       role="listitem"
       {...drag}
       onContextMenu={(ev) => {
@@ -703,7 +703,7 @@ const ConversationCard = memo(function ConversationCard({
   const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
+      className={`group relative flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
@@ -730,51 +730,37 @@ const ConversationCard = memo(function ConversationCard({
           ) : null}
         </span>
       </button>
-      <span className="flex shrink-0 items-center transition-transform duration-150 ease-out group-hover:-translate-x-0.5">
+      <span className="flex shrink-0 items-center">
+        {age ? (
+          <span
+            className="mr-1.5 w-6 shrink-0 text-right text-[11px] leading-none tabular-nums text-muted"
+            title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
+          >
+            {age}
+          </span>
+        ) : null}
         {row.kind === "terminal" ? (
-          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted group-hover:mr-0.5" />
+          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
         ) : (
           <ModelMark model={row.model} />
         )}
         {running ? (
           <span
-            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent group-hover:mr-1"
+            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
             aria-label={preview || "Loading"}
           />
         ) : null}
       </span>
-      <span
-        className={`relative flex h-4 shrink-0 items-center justify-end overflow-hidden transition-[width,margin] duration-150 ease-out ${
-          onDelete && !overlay && !placeholder
-            ? "mr-1 w-0 group-hover:mr-1 group-hover:w-5"
-            : age
-              ? "mr-1.5 w-6"
-              : "w-0"
-        }`}
-      >
-        <span
-          className={`text-[11px] leading-none tabular-nums text-muted ${
-            onDelete && !overlay && !placeholder ? "group-hover:opacity-0" : ""
-          }`}
-          title={
-            age && Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined
-          }
+      {onDelete && !overlay && !placeholder ? (
+        <button
+          type="button"
+          aria-label="Delete conversation"
+          onClick={() => onDelete?.(rowId)}
+          className="flex w-0 shrink-0 items-center justify-center overflow-hidden text-muted opacity-0 transition-all duration-150 ease-out group-hover:mr-1 group-hover:w-4 group-hover:opacity-100 hover:text-ink"
         >
-          {age || ""}
-        </span>
-        {onDelete && !overlay ? (
-          <button
-            type="button"
-            aria-label="Delete conversation"
-            onClick={() => onDelete?.(rowId)}
-            className={`absolute inset-0 flex items-center justify-center text-muted opacity-0 hover:text-ink ${
-              placeholder ? "" : "group-hover:opacity-100"
-            }`}
-          >
-            <Symbol name="xmark" className="size-2.5" />
-          </button>
-        ) : null}
-      </span>
+          <Symbol name="xmark" className="size-2.5 shrink-0" />
+        </button>
+      ) : null}
     </div>
   );
 });
