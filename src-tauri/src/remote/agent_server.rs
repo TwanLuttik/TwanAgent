@@ -77,15 +77,15 @@ pub fn binary_version(bytes: &[u8]) -> String {
 
 /// macOS builds cannot run on the Linux machine. Pick the binary that matches `uname`.
 pub fn binary_for_target(arch: &str, os: &str) -> Result<std::path::PathBuf> {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
     let os = os.trim().to_ascii_lowercase();
     let arch = arch.trim();
-    let debug = root.join("debug/twanagent-server");
-    let release = root.join("release/twanagent-server");
-    let local = if debug.is_file() { debug } else { release };
     if os.contains("darwin") || os == "macos" {
-        if local.is_file() {
-            return Ok(local);
+        let found = newest_binary(&[
+            candidate_path(&["target", "debug", "twanagent-server"]),
+            candidate_path(&["target", "release", "twanagent-server"]),
+        ]);
+        if let Some(path) = found {
+            return Ok(path);
         }
         return Err(Error::Other(
             "twanagent-server is not built on this Mac yet. Build it, then install.".into(),
@@ -105,19 +105,54 @@ pub fn binary_for_target(arch: &str, os: &str) -> Result<std::path::PathBuf> {
             )))
         }
     };
-    for profile in ["release", "debug"] {
-        let path = root.join(triple).join(profile).join("twanagent-server");
-        if path.is_file() {
-            return Ok(path);
-        }
+    // Cargo only honours `target-dir` from the workspace root. A build that missed that
+    // config wrote the binary under the service crate instead, so check both.
+    let found = newest_binary(&[
+        candidate_path(&["target", triple, "release", "twanagent-server"]),
+        candidate_path(&["service", "target", triple, "release", "twanagent-server"]),
+        candidate_path(&["target", triple, "debug", "twanagent-server"]),
+        candidate_path(&["service", "target", triple, "debug", "twanagent-server"]),
+    ]);
+    if let Some(path) = found {
+        return Ok(path);
     }
     Err(Error::Other(format!(
         "the Linux server program is not built yet. Build twanagent-server for {triple}, then install."
     )))
 }
 
+fn candidate_path(parts: &[&str]) -> std::path::PathBuf {
+    parts.iter().fold(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        |path, part| path.join(part),
+    )
+}
+
+/// Prefer the highest baked version, then the newest file. A release build of the current
+/// version must beat an older one left behind in the other target folder.
+fn newest_binary(paths: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    let mut found: Vec<&std::path::PathBuf> = paths.iter().filter(|path| path.is_file()).collect();
+    found.sort_by(|left, right| binary_rank(right).cmp(&binary_rank(left)));
+    found.first().map(|path| (*path).clone())
+}
+
+fn binary_rank(path: &std::path::Path) -> (Vec<u64>, u8, u64, bool, std::time::SystemTime) {
+    let version = std::fs::read(path).map(|bytes| binary_version(&bytes)).unwrap_or_default();
+    let (numbers, pre) = split_version(&version);
+    // A release with no prerelease tag is newer than any beta of the same numbers.
+    let (pre_rank, pre_num) = match pre {
+        Some(num) => (0u8, num),
+        None if version.is_empty() => (0u8, 0),
+        None => (1u8, 0),
+    };
+    let release = path.components().any(|part| part.as_os_str() == "release");
+    let modified = path.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH);
+    (numbers, pre_rank, pre_num, release, modified)
+}
+
 /// The program this Mac would copy. `twanagent-server --version` prints `twanagent-server <this>`.
-pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This is the service crate version, not the desktop app version.
+pub const SERVER_VERSION: &str = twanagent_service::VERSION;
 
 /// `installed` is the text from `--version`, such as `twanagent-server 1.0.0-beta.1`.
 pub fn server_update_available(installed: &str) -> bool {
@@ -193,8 +228,11 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
 /// One SSH exec cannot carry the whole program. Each piece stays under a channel packet.
 const BINARY_CHUNK_BYTES: usize = 24_000;
 
-/// Prepare an empty file, append base64 pieces, then mark the program executable.
+/// Stop a copy that is still running, then prepare an empty file, append base64 pieces,
+/// and mark the program executable.
 /// One command with the whole binary is larger than an SSH channel will accept.
+/// A running `twanagent-server` keeps the old bytes mapped, so `--version` would still
+/// print the version that was there before the copy.
 pub fn binary_install_scripts(binary: &[u8]) -> Result<Vec<String>> {
     if binary.is_empty() {
         return Err(Error::Other("server binary is empty".into()));
@@ -203,7 +241,9 @@ pub fn binary_install_scripts(binary: &[u8]) -> Result<Vec<String>> {
         return Err(Error::Other("server binary is too large".into()));
     }
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, binary);
-    let mut scripts = vec![format!("mkdir -p \"$HOME/.twanagent/bin\" && : > {BINARY_PATH}.b64")];
+    let mut scripts = vec![format!(
+        "pkill -f {BINARY_PATH} >/dev/null 2>&1 || true; sleep 0.3; mkdir -p \"$HOME/.twanagent/bin\" && : > {BINARY_PATH}.b64"
+    )];
     for chunk in encoded.as_bytes().chunks(BINARY_CHUNK_BYTES) {
         let piece = std::str::from_utf8(chunk).expect("base64 is ascii");
         scripts.push(format!(
@@ -422,6 +462,7 @@ mod tests {
         );
         assert!(server_update_available("twanagent-server 1.0.0-beta.1"));
         assert!(!server_update_available(&format!("twanagent-server {SERVER_VERSION}")));
+        assert_ne!(SERVER_VERSION, env!("CARGO_PKG_VERSION"));
         assert!(!server_update_available("unknown"));
         assert!(!version_is_older("1.0.0", "1.0.0-beta.2"));
         let missing = parse_version_check("missing\n");
@@ -441,6 +482,8 @@ mod tests {
     fn binary_install_decodes_onto_the_server_path() {
         let scripts = binary_install_scripts(b"#!/bin/sh\necho hi\n").unwrap();
         assert!(scripts.len() >= 3);
+        assert!(scripts[0].contains("pkill -f"));
+        assert!(scripts[0].contains("|| true"));
         assert!(scripts[0].contains(": >"));
         assert!(scripts.iter().any(|script| script.contains("base64 -d")));
         assert!(scripts.last().unwrap().contains("chmod 755"));

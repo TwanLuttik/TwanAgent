@@ -141,7 +141,6 @@ export function AllProjectsList({
               <button
                 type="button"
                 onClick={() => onOpenProject(group.path)}
-                title={group.path}
                 className={`flex min-w-0 flex-1 items-center gap-1.5 py-[6px] pr-1 text-left text-[12px] font-medium ${
                   current ? "text-ink" : "text-muted"
                 }`}
@@ -363,7 +362,7 @@ export function ProjectMarks({
   };
 }) {
   const anchor = useRef<HTMLSpanElement>(null);
-  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+  const [box, setBox] = useState<{ top: number; right: number } | null>(null);
   if (!remote && !server) return null;
   const offline = server?.online === false;
   return (
@@ -373,7 +372,11 @@ export function ProjectMarks({
       onMouseEnter={() => {
         const rect = anchor.current?.getBoundingClientRect();
         if (!rect) return;
-        setBox({ top: rect.bottom + 6, left: Math.max(8, rect.right - 220) });
+        // Prefer the card's right edge near the icon, but never past the window.
+        // The card sizes to its text, so the right edge is what stays put.
+        const margin = 8;
+        const right = Math.min(window.innerWidth - margin, Math.max(rect.right + 8, margin));
+        setBox({ top: rect.bottom + 6, right });
       }}
       onMouseLeave={() => setBox(null)}
     >
@@ -384,8 +387,8 @@ export function ProjectMarks({
         ? createPortal(
             <span
               role="tooltip"
-              className="pointer-events-none fixed z-50 w-[240px] overflow-hidden rounded-lg border border-line/25 bg-canvas text-left font-normal shadow-card"
-              style={{ top: box.top, left: box.left }}
+              className="pointer-events-none fixed z-50 w-max max-w-[min(320px,calc(100vw-16px))] rounded-lg border border-line/25 bg-canvas text-left font-normal shadow-card"
+              style={{ top: box.top, right: window.innerWidth - box.right }}
             >
               <span className="flex items-center gap-2 border-b border-line/20 px-3 py-2.5">
                 <Symbol name="cloud.fill" className={`size-3.5 shrink-0 ${offline ? "text-err" : "text-[#3b82f6]"}`} />
@@ -399,7 +402,7 @@ export function ProjectMarks({
               {server ? (
                 <span className="grid gap-2 px-3 py-2.5">
                   <CloudFact label="Runs on" value={server.host} />
-                  <CloudFact label="Project folder" value={folderTail(server.remotePath)} title={server.remotePath} />
+                  <CloudFact label="Project folder" value={server.remotePath} />
                   <CloudFact label="Models" value={modelKeysLabel(server.providers)} />
                 </span>
               ) : (
@@ -413,21 +416,13 @@ export function ProjectMarks({
   );
 }
 
-function CloudFact({ label, value, title }: { label: string; value: string; title?: string }) {
+function CloudFact({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex items-baseline justify-between gap-3">
       <span className="shrink-0 text-[11px] text-muted">{label}</span>
-      <span className="min-w-0 truncate text-right text-[12px] text-ink" title={title ?? value}>
-        {value}
-      </span>
+      <span className="min-w-0 text-right text-[12px] leading-snug break-all text-ink">{value}</span>
     </span>
   );
-}
-
-function folderTail(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 2) return path;
-  return `…/${parts.slice(-2).join("/")}`;
 }
 
 const CLOUD_MODELS: { id: string; label: string }[] = [

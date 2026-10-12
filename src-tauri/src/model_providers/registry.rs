@@ -12,12 +12,10 @@ pub enum ProviderId {
 }
 
 pub fn find(model_id: &str) -> ProviderId {
-    if super::minimax::is_minimax_model(model_id) {
-        ProviderId::Minimax
-    } else if super::anthropic::provider_for(model_id) == super::anthropic::Provider::Anthropic {
-        ProviderId::Anthropic
-    } else {
-        ProviderId::Xai
+    match twanagent_service::registry::find(model_id) {
+        twanagent_service::registry::ProviderId::Minimax => ProviderId::Minimax,
+        twanagent_service::registry::ProviderId::Anthropic => ProviderId::Anthropic,
+        twanagent_service::registry::ProviderId::Xai => ProviderId::Xai,
     }
 }
 

@@ -11,14 +11,13 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use super::anthropic::to_messages_body;
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
 
 pub const PROVIDER_MINIMAX: &str = "minimax";
 pub const DEFAULT_MODEL: &str = "MiniMax-M3";
 pub const SIGN_IN_ERROR: &str =
     "MiniMax isn’t signed in. Run mmx auth login, or add a MiniMax API key in Settings.";
-pub const KEY_REJECTED: &str = "MiniMax rejected the API key.";
+pub const KEY_REJECTED: &str = twanagent_service::minimax::KEY_REJECTED;
 
 const OAUTH_CLIENT_ID: &str = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5";
 const REFRESH_BUFFER_MS: i64 = 5 * 60 * 1000;
@@ -128,20 +127,7 @@ pub fn minimax_model(id: &str) -> Option<&'static (&'static str, &'static str, u
 /// A MiniMax text model. The prefix is case-sensitive, matching the API ids.
 /// `sxs-MiniMax-…` stays on xAI, same as the Claude tutor ids.
 pub fn is_minimax_model(id: &str) -> bool {
-    let id = id.trim();
-    if id.starts_with("sxs-") {
-        return false;
-    }
-    if minimax_model(id).is_some() {
-        return true;
-    }
-    let Some(rest) = id.strip_prefix("MiniMax-") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+    twanagent_service::minimax::is_minimax_model(id)
 }
 
 pub fn max_tokens_for(id: &str) -> u32 {
@@ -162,19 +148,11 @@ pub fn context_window_for(id: &str) -> Option<u64> {
 
 /// `{base}/anthropic/v1/messages`. Empty base uses the global host.
 pub fn messages_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    let base = if base.is_empty() { REGIONS[0].1 } else { base };
-    format!("{base}/anthropic/v1/messages")
+    twanagent_service::minimax::messages_url(base_url)
 }
 
 pub fn http_error_message(status: u16, body: &str) -> String {
-    if status == 401 || status == 403 {
-        return KEY_REJECTED.into();
-    }
-    format!(
-        "MiniMax error {status}: {}",
-        body.chars().take(400).collect::<String>()
-    )
+    twanagent_service::minimax::http_error_message(status, body)
 }
 
 /// OpenAI-shaped messages become the Messages body `mmx text chat` sends.
@@ -184,19 +162,7 @@ pub fn to_minimax_body(
     model: &str,
     tools: &serde_json::Value,
 ) -> serde_json::Value {
-    let mut body = to_messages_body(messages, model, None, tools);
-    body["model"] = serde_json::Value::String(model.trim().to_string());
-    body["max_tokens"] = serde_json::Value::from(max_tokens_for(model));
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("output_config");
-        // `to_messages_body` only adds thinking for Claude ids. M3 sends adaptive thinking.
-        if is_minimax_model(model) {
-            obj.insert("thinking".into(), serde_json::json!({ "type": "adaptive" }));
-        } else {
-            obj.remove("thinking");
-        }
-    }
-    body
+    twanagent_service::minimax::to_minimax_body(messages, model, tools, max_tokens_for(model))
 }
 
 fn home_dir() -> Option<PathBuf> {

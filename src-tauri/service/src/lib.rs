@@ -10,11 +10,14 @@ mod files;
 mod keys;
 mod live;
 mod model;
+mod providers;
 mod realtime;
 mod session;
 mod store;
 mod tools;
 mod turn;
+
+pub use providers::{anthropic, minimax, registry, xai};
 
 pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 pub use error::{Error, Result};
@@ -24,6 +27,10 @@ pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use session::serve;
 pub use store::{Conversation, ConversationSummary};
 pub use turn::{ModelStep, ScriptedModel, TurnRequest};
+
+/// `twanagent-server --version` prints this. It is the service crate version, not the app version.
+/// Server binary updates can ship without a new GUI build, so the two numbers move separately.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// One line the GUI paints while a hosted turn runs. Tool results stay on the server.
 #[derive(Debug, Clone, PartialEq)]

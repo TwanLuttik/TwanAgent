@@ -1,0 +1,259 @@
+//! One model round on the machine that owns the project.
+//!
+//! The desktop does not call the model for a hosted turn. This module reads the
+//! provider keys copied onto the server and streams the reply itself. Each provider
+//! lives in its own file. The request body and SSE parsing come from `crate::providers`,
+//! which the desktop uses too.
+
+mod anthropic;
+mod minimax;
+mod xai;
+
+use std::io::BufRead;
+
+use serde_json::Value;
+
+use crate::error::{Error, Result};
+use crate::keys::ProviderKeys;
+use crate::providers::{self, ProviderId};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Round {
+    pub text: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Tools the server can run next to the project files. The GUI does not get these calls.
+pub fn tool_defs() -> Value {
+    serde_json::json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "list_dir",
+                "description": "List files and folders relative to the workspace root.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a UTF-8 text file in the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Create or overwrite a UTF-8 text file in the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "contents": { "type": "string" }
+                    },
+                    "required": ["path", "contents"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Replace one unique occurrence of old_string with new_string.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "old_string": { "type": "string" },
+                        "new_string": { "type": "string" }
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": "Run a shell command in the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["command", "description"]
+                }
+            }
+        }
+    ])
+}
+
+pub fn run_round(
+    keys: &ProviderKeys,
+    model: &str,
+    effort: &str,
+    messages: &[Value],
+    on_delta: &mut dyn FnMut(&str),
+) -> Result<Round> {
+    let provider = providers::find(model);
+    let token = key_for(keys, provider)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|err| Error::Other(format!("could not start the model request: {err}")))?;
+    let messages = Value::Array(messages.to_vec());
+    match provider {
+        ProviderId::Xai => xai::round(&client, &token, model, effort, &messages, &tool_defs(), on_delta),
+        ProviderId::Anthropic => anthropic::round(&client, &token, model, effort, &messages, &tool_defs(), on_delta),
+        ProviderId::Minimax => minimax::round(&client, &token, model, &messages, &tool_defs(), on_delta),
+    }
+}
+
+fn key_for(keys: &ProviderKeys, provider: ProviderId) -> Result<String> {
+    let value = match provider {
+        ProviderId::Xai => keys.xai.trim(),
+        ProviderId::Anthropic => keys.anthropic.trim(),
+        ProviderId::Minimax => keys.minimax.trim(),
+    };
+    if value.is_empty() || value == "local-try" {
+        return Err(Error::Other("Copy provider keys to this server in Settings.".into()));
+    }
+    Ok(value.to_string())
+}
+
+pub(super) struct OpenRound {
+    text: String,
+    pending: String,
+    calls: Vec<ToolCall>,
+    stop: bool,
+}
+
+impl Default for OpenRound {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            pending: String::new(),
+            calls: Vec::new(),
+            stop: false,
+        }
+    }
+}
+
+impl OpenRound {
+    fn push_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.text.push_str(text);
+        self.pending.push_str(text);
+    }
+
+    fn ensure_call(&mut self, index: usize) -> &mut ToolCall {
+        while self.calls.len() <= index {
+            let id = format!("tool_{}", self.calls.len());
+            self.calls.push(ToolCall { id, name: String::new(), arguments: String::new() });
+        }
+        &mut self.calls[index]
+    }
+
+    fn take_delta(&mut self) -> Option<String> {
+        if self.pending.is_empty() { None } else { Some(std::mem::take(&mut self.pending)) }
+    }
+
+    fn finish(self) -> Round {
+        Round {
+            text: self.text,
+            tool_calls: self.calls.into_iter().filter(|call| !call.name.is_empty()).collect(),
+            error: None,
+        }
+    }
+}
+
+pub(super) fn read_sse(
+    response: reqwest::blocking::Response,
+    on_delta: &mut dyn FnMut(&str),
+    parse: fn(&str, &mut OpenRound),
+) -> Result<Round> {
+    let mut open = OpenRound::default();
+    let mut buf = String::new();
+    let mut reader = std::io::BufReader::new(response);
+    loop {
+        buf.clear();
+        let read = reader
+            .read_line(&mut buf)
+            .map_err(|err| Error::Other(format!("model stream failed: {err}")))?;
+        if read == 0 {
+            break;
+        }
+        let line = buf.trim();
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            if data == "[DONE]" {
+                break;
+            }
+            continue;
+        }
+        parse(data, &mut open);
+        if let Some(text) = open.take_delta() {
+            on_delta(&text);
+        }
+        if open.stop {
+            break;
+        }
+    }
+    Ok(open.finish())
+}
+
+pub(super) fn failed(name: &str, status: reqwest::StatusCode, body: &str) -> Round {
+    let message = match name {
+        "xAI" => crate::providers::xai::http_error_message(status.as_u16(), body),
+        "MiniMax" => crate::providers::minimax::http_error_message(status.as_u16(), body),
+        _ => crate::providers::anthropic::http_error_message(status.as_u16(), body),
+    };
+    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_follows_the_model_id() {
+        assert_eq!(providers::find("grok-4.6"), ProviderId::Xai);
+        assert_eq!(providers::find("claude-sonnet-4-6"), ProviderId::Anthropic);
+        assert_eq!(providers::find("MiniMax-M3"), ProviderId::Minimax);
+        assert_eq!(providers::find("sxs-claude-opus-4-6"), ProviderId::Xai);
+    }
+
+    #[test]
+    fn a_missing_key_does_not_call_the_model() {
+        let err = key_for(&ProviderKeys::default(), ProviderId::Xai).unwrap_err();
+        assert!(err.to_string().contains("Copy provider keys"));
+        let marker = key_for(
+            &ProviderKeys { xai: "local-try".into(), ..ProviderKeys::default() },
+            ProviderId::Xai,
+        );
+        assert!(marker.is_err());
+    }
+}

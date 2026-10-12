@@ -57,6 +57,11 @@ textarea {
   font: inherit;
 }
 
+textarea.text-transparent::selection {
+  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: transparent;
+}
+
 .chrome-tab {
   position: relative;
   z-index: 0;

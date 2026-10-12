@@ -1,3 +1,4 @@
 [build]
-# The app looks for the Linux binary under src-tauri/target, not this crate's target.
+# The app installer looks for the Linux binary under src-tauri/target.
+# This path is relative to the service directory, the parent of this .cargo folder.
 target-dir = "../target"

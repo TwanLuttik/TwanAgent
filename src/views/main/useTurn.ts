@@ -24,8 +24,10 @@ import {
   fileToBase64,
   imagePathsFromDrop,
   imagesForChat,
+  insertImageToken,
   persistableImages,
   setImagesForChat,
+  uniqueImageTokenLabel,
 } from "../../lib/image";
 import { expandFileMentions, type MentionFile } from "../../lib/mention";
 import { expandPasteTokens, type PasteBlock } from "../../lib/paste";
@@ -56,6 +58,7 @@ import {
   closeDanglingToolCalls,
   clearUnseenFinished,
   composerSettingsForChat,
+  draftForChat,
   isTurnFailureMessage,
   modelForTurn,
   markUnseenFinished,
@@ -411,6 +414,68 @@ function pickPermission(id: string) {
   });
 }
 
+function imageSelection(): { start: number; end: number; value: string } {
+  const field = document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
+  if (!field) return { start: draft.length, end: draft.length, value: draft };
+  return {
+    start: field.selectionStart ?? field.value.length,
+    end: field.selectionEnd ?? field.value.length,
+    value: field.value,
+  };
+}
+
+/** Insert `[name]` into the draft that was open when the drop started. */
+function attachPreparedImages(
+  prepared: ChatImage[],
+  selection: { start: number; end: number; value: string },
+) {
+  const chatId = activeId;
+  let named: ChatImage[] = [];
+  let cursor = 0;
+  let nextDraft = "";
+  setDrafts((prev) => {
+    const current = draftForChat(prev, chatId);
+    const unchanged = selection.value === current;
+    const start = unchanged ? selection.start : current.length;
+    const end = unchanged ? selection.end : current.length;
+    const labels = new Set<string>();
+    const token = /\[([^\[\]\r\n]+)]/g;
+    let match: RegExpExecArray | null;
+    while ((match = token.exec(current))) {
+      const label = match[1]?.trim();
+      if (label) labels.add(label);
+    }
+    for (const image of promptImages) {
+      if (image.name.trim()) labels.add(image.name.trim());
+    }
+    let text = current;
+    let caret = start;
+    const rows: ChatImage[] = [];
+    for (const image of prepared) {
+      const label = uniqueImageTokenLabel(image.name || "image.png", labels);
+      labels.add(label);
+      const inserted = insertImageToken(text, caret, caret === start ? end : caret, label);
+      text = inserted.draft;
+      caret = inserted.cursor;
+      rows.push({ ...image, name: label });
+    }
+    named = rows;
+    cursor = caret;
+    nextDraft = text;
+    saveComposerDraft(chatId, text);
+    return setDraftForChat(prev, chatId, text);
+  });
+  setDraftImages((prev) =>
+    setImagesForChat(prev, chatId, appendPromptImages(imagesForChat(prev, chatId), named)),
+  );
+  requestAnimationFrame(() => {
+    const node = document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
+    if (!node || node.value !== nextDraft) return;
+    node.focus();
+    node.setSelectionRange(cursor, cursor);
+  });
+}
+
 async function addPromptImages(files: File[]) {
   if (!files.length) return;
   const room = MAX_PROMPT_IMAGES - promptImages.length;
@@ -419,6 +484,7 @@ async function addPromptImages(files: File[]) {
     return;
   }
   const take = files.slice(0, room);
+  const selection = imageSelection();
   try {
     const prepared: ChatImage[] = [];
     for (const file of take) {
@@ -426,9 +492,7 @@ async function addPromptImages(files: File[]) {
       const next = await api.prepareImage(bytes, file.name || "image.png", activeId || undefined);
       prepared.push(next);
     }
-    setDraftImages((prev) =>
-      setImagesForChat(prev, activeId, appendPromptImages(imagesForChat(prev, activeId), prepared)),
-    );
+    attachPreparedImages(prepared, selection);
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
   }
@@ -443,15 +507,14 @@ async function addPromptImagePaths(paths: string[]) {
     return;
   }
   const take = images.slice(0, room);
+  const selection = imageSelection();
   try {
     const prepared: ChatImage[] = [];
     for (const path of take) {
       const next = await api.prepareImagePath(path, activeId || undefined);
       prepared.push({ ...next, name: next.name || fileBaseName(path) });
     }
-    setDraftImages((prev) =>
-      setImagesForChat(prev, activeId, appendPromptImages(imagesForChat(prev, activeId), prepared)),
-    );
+    attachPreparedImages(prepared, selection);
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
   }

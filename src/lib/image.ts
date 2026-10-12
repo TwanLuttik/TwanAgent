@@ -97,6 +97,120 @@ export function canSendPrompt(text: string, images: ChatImage[]): boolean {
   return Boolean(text.trim() || images.length);
 }
 
+const IMAGE_TOKEN = /\[([^\[\]\r\n]+)]/g;
+
+/** Bracket token the composer inserts where an image was dropped. */
+export function imageToken(name: string): string {
+  return `[${imageTokenLabel(name)}]`;
+}
+
+/** A filename safe to sit inside `[...]`. Empty names become `image`. */
+export function imageTokenLabel(name: string): string {
+  const base = name.replace(/\\/g, "/").split("/").pop()?.trim() ?? "";
+  const cleaned = base.replace(/[\[\]\r\n]/g, "").trim();
+  return (cleaned || "image").slice(0, 160);
+}
+
+/**
+ * Unique label for a new image. A second `shot.png` becomes `shot-2.png`.
+ * `taken` is every label already used, including ones typed by hand.
+ */
+export function uniqueImageTokenLabel(name: string, taken: Iterable<string>): string {
+  const label = imageTokenLabel(name);
+  const used = new Set([...taken].map((item) => item.toLowerCase()));
+  if (!used.has(label.toLowerCase())) return label;
+  const dot = label.lastIndexOf(".");
+  const stem = dot > 0 ? label.slice(0, dot) : label;
+  const ext = dot > 0 ? label.slice(dot) : "";
+  let n = 2;
+  while (used.has(`${stem}-${n}${ext}`.toLowerCase())) n += 1;
+  return `${stem}-${n}${ext}`;
+}
+
+export type ImageSpan = { start: number; end: number; id: string; label: string };
+
+/** Ranges of `[name]` tokens that belong to an attached image. */
+export function imageSpans(text: string, images: ChatImage[]): ImageSpan[] {
+  if (!text.includes("[") || images.length === 0) return [];
+  const byLabel = new Map<string, string>();
+  for (const image of images) {
+    const label = imageTokenLabel(image.name);
+    const key = label.toLowerCase();
+    if (!byLabel.has(key)) byLabel.set(key, image.id);
+  }
+  const spans: ImageSpan[] = [];
+  const re = new RegExp(IMAGE_TOKEN.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const label = match[1] ?? "";
+    const id = byLabel.get(label.toLowerCase());
+    if (!id) continue;
+    spans.push({ start: match.index, end: match.index + match[0].length, id, label });
+  }
+  return spans;
+}
+
+/**
+ * Put `[name]` where the caret is. A selection is replaced.
+ * Spaces are added so the token does not glue onto surrounding words.
+ */
+export function insertImageToken(
+  draft: string,
+  start: number,
+  end: number,
+  name: string,
+): { draft: string; cursor: number; token: string } {
+  const from = Math.max(0, Math.min(start, end, draft.length));
+  const to = Math.max(0, Math.min(Math.max(start, end), draft.length));
+  const token = imageToken(name);
+  const lead = from > 0 && !/\s$/.test(draft.slice(0, from)) ? " " : "";
+  const tail = to < draft.length && !/^\s/.test(draft.slice(to)) ? " " : "";
+  const text = `${draft.slice(0, from)}${lead}${token}${tail}${draft.slice(to)}`;
+  return { draft: text, cursor: from + lead.length + token.length, token };
+}
+
+/** Drop image tokens from the text the model reads. The image bytes are sent separately. */
+export function stripImageTokens(text: string, images: ChatImage[]): string {
+  if (!text.includes("[") || images.length === 0) return text;
+  const spans = imageSpans(text, images);
+  if (!spans.length) return text;
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    out += text.slice(cursor, span.start);
+    cursor = span.end;
+  }
+  out += text.slice(cursor);
+  return out.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+$/gm, "").trim();
+}
+
+/**
+ * The image chip a collapsed caret is deleting. Anywhere inside the token counts,
+ * including the character just after `]`, so one backspace removes the whole name.
+ * A selection still deletes normally.
+ */
+export function imageBeforeCursor(
+  text: string,
+  start: number,
+  end: number,
+  images: ChatImage[],
+): ImageSpan | null {
+  if (start !== end) return null;
+  return imageSpans(text, images).find((span) => start > span.start && start <= span.end) ?? null;
+}
+
+export function removeImageSpan(text: string, span: ImageSpan): { text: string; cursor: number } {
+  return { text: `${text.slice(0, span.start)}${text.slice(span.end)}`, cursor: span.start };
+}
+
+/** Remove one image's `[name]` tokens. Other text, including a hand-typed lookalike, stays. */
+export function removeImageTokens(text: string, image: ChatImage): string {
+  return imageSpans(text, [image]).reduceRight(
+    (next, span) => `${next.slice(0, span.start)}${next.slice(span.end)}`,
+    text,
+  );
+}
+
 export function appendPromptImages(current: ChatImage[], extra: ChatImage[]): ChatImage[] {
   if (!extra.length) return current;
   return [...current, ...extra].slice(0, MAX_PROMPT_IMAGES);

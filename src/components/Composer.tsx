@@ -14,7 +14,15 @@ import {
   replacePasteToken,
   type PasteBlock,
 } from "../lib/paste";
-import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../lib/image";
+import {
+  canSendPrompt,
+  imageBeforeCursor,
+  imageFilesFromClipboard,
+  imageFilesFromDrop,
+  imageSpans,
+  removeImageSpan,
+  removeImageTokens,
+} from "../lib/image";
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
@@ -408,7 +416,23 @@ export function Composer({
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      const span = pasteBeforeCursor(draft, e.currentTarget.selectionStart ?? 0, e.currentTarget.selectionEnd ?? 0, pastes);
+      const start = e.currentTarget.selectionStart ?? 0;
+      const end = e.currentTarget.selectionEnd ?? 0;
+      const imageSpan = imageBeforeCursor(draft, start, end, images);
+      if (imageSpan) {
+        e.preventDefault();
+        const next = removeImageSpan(draft, imageSpan);
+        onImages?.(images.filter((img) => img.id !== imageSpan.id));
+        onDraft(next.text);
+        setCursor(next.cursor);
+        requestAnimationFrame(() => {
+          const el = area.current;
+          if (!el) return;
+          el.setSelectionRange(next.cursor, next.cursor);
+        });
+        return;
+      }
+      const span = pasteBeforeCursor(draft, start, end, pastes);
       if (span) {
         e.preventDefault();
         const next = removePasteSpan(draft, span);
@@ -490,7 +514,11 @@ export function Composer({
               images={images}
               onRemove={
                 onImages
-                  ? (id) => onImages(images.filter((img) => img.id !== id))
+                  ? (id) => {
+                      const image = images.find((img) => img.id === id);
+                      if (image) onDraft(removeImageTokens(draft, image));
+                      onImages(images.filter((img) => img.id !== id));
+                    }
                   : undefined
               }
             />
@@ -524,6 +552,7 @@ export function Composer({
             setMentionIndex(0);
           }}
           onPasteFiles={takeImageFiles}
+          images={images}
           pastes={pastes}
           onPastes={changePastes}
           onKey={onKey}
@@ -733,6 +762,7 @@ function MentionField({
   onCursor,
   onEdit,
   onPasteFiles,
+  images,
   pastes,
   onPastes,
   onKey,
@@ -750,6 +780,7 @@ function MentionField({
   onCursor: (cursor: number) => void;
   onEdit: () => void;
   onPasteFiles: (files: File[]) => void;
+  images: ChatImage[];
   pastes: PasteBlock[];
   onPastes: (pastes: PasteBlock[]) => void;
   onKey: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -758,13 +789,14 @@ function MentionField({
 }) {
   const pad = compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2";
   const type = "m-0 whitespace-pre-wrap break-words border-0 font-sans text-[14px] leading-relaxed";
-  const spans = draftHighlightSpans(draft, files, pastes);
+  const spans = draftHighlightSpans(draft, files, pastes, images);
+  const showImageText = spans.some((span) => span.kind === "image");
   let cursor = 0;
   const parts: ReactNode[] = [];
   spans.forEach((span, index) => {
     if (span.start > cursor) {
       parts.push(
-        <span key={`gap-${cursor}`} className="text-transparent">
+        <span key={`gap-${cursor}`} className={showImageText ? "text-ink" : "text-transparent"}>
           {draft.slice(cursor, span.start)}
         </span>,
       );
@@ -772,7 +804,15 @@ function MentionField({
     parts.push(
       <span
         key={`${span.start}-${index}`}
-        className={`rounded-[3px] ${span.kind === "paste" ? "bg-ok/15 text-ok" : "bg-panel text-accent"}`}
+        className={`rounded-[3px] ${
+          span.kind === "paste"
+            ? "bg-ok/15 text-ok"
+            : span.kind === "image"
+              ? "bg-accent/15 text-accent"
+              : showImageText
+                ? "text-accent"
+                : "bg-panel text-accent"
+        }`}
       >
         {draft.slice(span.start, span.end)}
       </span>,
@@ -781,7 +821,7 @@ function MentionField({
   });
   if (cursor < draft.length) {
     parts.push(
-      <span key={`tail-${cursor}`} className="text-transparent">
+      <span key={`tail-${cursor}`} className={showImageText ? "text-ink" : "text-transparent"}>
         {draft.slice(cursor)}
       </span>,
     );
@@ -883,6 +923,7 @@ function MentionField({
       />
       <textarea
         ref={area}
+        data-composer-input=""
         value={draft}
         onChange={(e) => {
           onEdit();
@@ -905,15 +946,22 @@ function MentionField({
         rows={1}
         autoFocus={autoFocus}
         placeholder={placeholder}
-        className={`relative z-[1] block w-full resize-none overflow-y-auto bg-transparent text-ink caret-ink outline-none placeholder:text-muted/80 ${type} ${pad}`}
+        className={`relative z-[1] block w-full resize-none overflow-y-auto bg-transparent caret-ink outline-none placeholder:text-muted/80 ${
+          showImageText ? "text-transparent" : "text-ink"
+        } ${type} ${pad}`}
       />
     </div>
   );
 }
 
-type HighlightSpan = { start: number; end: number; kind: "mention" | "paste" };
+type HighlightSpan = { start: number; end: number; kind: "mention" | "paste" | "image" };
 
-function draftHighlightSpans(draft: string, files: MentionFile[], pastes: PasteBlock[]): HighlightSpan[] {
+function draftHighlightSpans(
+  draft: string,
+  files: MentionFile[],
+  pastes: PasteBlock[],
+  images: ChatImage[],
+): HighlightSpan[] {
   const mentions = draftMentionSpans(draft, files).map((span) => ({
     start: span.start,
     end: span.end,
@@ -924,7 +972,12 @@ function draftHighlightSpans(draft: string, files: MentionFile[], pastes: PasteB
     end: span.end,
     kind: "paste" as const,
   }));
-  return [...mentions, ...pasted].sort((a, b) => a.start - b.start || a.end - b.end);
+  const pictures = imageSpans(draft, images).map((span) => ({
+    start: span.start,
+    end: span.end,
+    kind: "image" as const,
+  }));
+  return [...mentions, ...pasted, ...pictures].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function PasteHover({

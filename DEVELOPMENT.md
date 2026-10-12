@@ -66,8 +66,10 @@ npm run build
 Desktop bundle. On macOS this also signs the app:
 
 ```bash
-npm run tauri build
+npm run bundle
 ```
+
+`npm run tauri build` produces the same app. `npm run bundle` then renames the disk image and updater archives so the file name carries the build id, for example `TwanAgent_1.0.0-beta.2+0ab7051_aarch64.dmg`. The id is the short git commit. The app version inside the bundle stays `1.0.0-beta.2`. The `twanagent-server` version is separate and is not part of that name.
 
 The macOS app lands in `src-tauri/target/release/bundle/macos/TwanAgent.app`.
 

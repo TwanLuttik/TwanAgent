@@ -135,7 +135,37 @@ fn migrate_remote_tables(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+    ensure_provider_keys(conn)?;
     Ok(())
+}
+
+/// An earlier build created `provider_keys` without `value`. `CREATE TABLE IF NOT EXISTS` leaves that
+/// table in place, so saving a key fails. Recreate it when the column is missing. It held no secrets.
+fn ensure_provider_keys(conn: &Connection) -> Result<()> {
+    if provider_keys_has_value(conn)? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        DROP TABLE provider_keys;
+        CREATE TABLE provider_keys (
+            provider TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn provider_keys_has_value(conn: &Connection) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(provider_keys)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == "value" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// A model-provider API key saved in Settings. Not the settings table: that one is readable from the UI.
@@ -718,6 +748,20 @@ mod tests {
         let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
         assert!(chats.is_empty() && journeys.is_empty());
         assert!(sidebar_cached(&conn, "/app/beta").unwrap());
+    }
+
+    #[test]
+    fn an_old_provider_keys_table_gains_the_value_column() {
+        let data = tempdir().unwrap();
+        let path = data.path().join("app.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE provider_keys (provider TEXT PRIMARY KEY);")
+                .unwrap();
+        }
+        let conn = open(data.path()).unwrap();
+        set_provider_key(&conn, "xai", "xai-secret").unwrap();
+        assert_eq!(get_provider_key(&conn, "xai").unwrap().as_deref(), Some("xai-secret"));
     }
 
     #[test]

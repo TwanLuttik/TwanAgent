@@ -868,11 +868,7 @@ pub fn runtime(data_dir: &Path) -> DevRuntime {
 }
 
 pub fn endpoint(via_cli: bool) -> &'static str {
-    if via_cli {
-        "https://cli-chat-proxy.grok.com/v1/chat/completions"
-    } else {
-        "https://api.x.ai/v1/chat/completions"
-    }
+    twanagent_service::xai::endpoint(via_cli)
 }
 
 #[cfg(test)]

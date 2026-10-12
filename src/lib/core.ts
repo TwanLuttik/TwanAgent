@@ -1,4 +1,5 @@
 import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
+import { stripImageTokens } from "./image.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
@@ -1059,6 +1060,11 @@ export type ApiChatMessage = {
   thinking?: ThinkingBlock[];
 };
 
+function messageTextWithoutImageTokens(msg: ChatMessage): string {
+  const text = String(msg.content ?? "");
+  return msg.images?.length ? stripImageTokens(text, msg.images) : text;
+}
+
 export function toApiToolCall(call: ChatToolCall): ApiToolCall {
   return {
     id: call.id,
@@ -1094,7 +1100,7 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
     }
     if (msg.role === "user" && msg.images?.length) {
       const parts: ApiContentPart[] = [];
-      const text = (msg.content ?? "").trim();
+      const text = messageTextWithoutImageTokens(msg).trim();
       if (text) parts.push({ type: "text", text });
       for (const img of msg.images) {
         if (!img.dataUrl) continue;

@@ -12,7 +12,7 @@ On the machine:
 ~/.twanagent/bin/twanagent-server --version
 ```
 
-That prints `twanagent-server` and the version, for example `twanagent-server 1.0.0-beta.3`.
+That prints `twanagent-server` and the server version, for example `twanagent-server 1.0.0-beta.3`. The server version is not the desktop app version. A server binary can be updated on its own, without a new TwanAgent release.
 
 From this Mac, for the OrbStack test machine:
 
@@ -45,7 +45,8 @@ The Mac app binary cannot run on Linux. From the repo, for an arm64 machine such
 
 ```sh
 cargo zigbuild --manifest-path src-tauri/service/Cargo.toml \
+  --target-dir src-tauri/target \
   --release --target aarch64-unknown-linux-gnu --bin twanagent-server
 ```
 
-The binary is `src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`. Install in the app copies that file. For an x86_64 machine, use `x86_64-unknown-linux-gnu` instead. The service crate writes into `src-tauri/target`, which is the folder the installer checks.
+The binary is `src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`. Install in the app copies the newest build of that file. For an x86_64 machine, use `x86_64-unknown-linux-gnu` instead. `--target-dir` is required when the command starts at the repo root: Cargo then treats the service crate as its own workspace and would write `src-tauri/service/target` instead. The installer checks that folder too, but only the newest build. Rebuild before pressing Update. The app copies whatever is already built, and a stale binary keeps the old version on the machine.

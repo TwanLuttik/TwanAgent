@@ -1228,6 +1228,31 @@ describe("toApiMessages", () => {
       ],
     });
   });
+
+  it("drops an inline image token because the picture is sent beside the text", () => {
+    const out = toApiMessages([
+      {
+        role: "user",
+        content: "what is wrong in [shot.png] here",
+        images: [
+          {
+            id: "img-1",
+            path: "/tmp/a.jpg",
+            name: "shot.png",
+            mime: "image/jpeg",
+            width: 800,
+            height: 600,
+            resized: false,
+            dataUrl: "data:image/jpeg;base64,abc",
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(out[0]?.content, [
+      { type: "text", text: "what is wrong in here" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
+    ]);
+  });
 });
 
 describe("withSystem", () => {

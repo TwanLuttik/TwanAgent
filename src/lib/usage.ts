@@ -579,7 +579,7 @@ export function usageTrendRangeMs(range: UsageTrendRange): number {
 }
 
 /** 24h and 7d stay hourly. Longer ranges are one point per calendar day so 90 days still fits. */
-function trendByDay(range: UsageTrendRange): boolean {
+function trendByDay(range: UsageTrendRange): range is 30 | 90 {
   return range !== "24h" && range !== 7;
 }
 

@@ -513,7 +513,14 @@ fn copy_binary(work: &ServerWork, machine: &Machine) -> Result<super::agent_serv
         let _ = require_exec(work, machine, script, 120)?;
     }
     let stdout = require_exec(work, machine, &super::agent_server::version_check_script(), 20)?;
-    Ok(super::agent_server::parse_version_check(&stdout))
+    let status = super::agent_server::parse_version_check(&stdout);
+    if status.installed && !status.version.contains(&built) {
+        return Err(Error::Other(format!(
+            "copied {built} to {}, but it still reports {}. The old program was still running.",
+            machine.host, status.version
+        )));
+    }
+    Ok(status)
 }
 
 fn write_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<()> {
