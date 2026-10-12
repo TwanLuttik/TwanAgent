@@ -10,7 +10,6 @@ use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use base64::Engine;
 use twanagent_service::{key_file, open_server, serve_once, serve_stdio};
 
 fn expand_home(raw: String) -> PathBuf {
@@ -19,7 +18,7 @@ fn expand_home(raw: String) -> PathBuf {
     };
     match env::var_os("HOME") {
         Some(home) if !home.is_empty() => PathBuf::from(home).join(rest.trim_start_matches('/')),
-        None => PathBuf::from(raw),
+        Some(_) | None => PathBuf::from(raw),
     }
 }
 

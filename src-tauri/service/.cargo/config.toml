@@ -1,0 +1,3 @@
+[build]
+# The app looks for the Linux binary under src-tauri/target, not this crate's target.
+target-dir = "../target"

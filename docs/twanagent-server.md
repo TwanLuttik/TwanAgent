@@ -42,4 +42,4 @@ cargo zigbuild --manifest-path src-tauri/service/Cargo.toml \
   --release --target aarch64-unknown-linux-gnu --bin twanagent-server
 ```
 
-The binary is `src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`. Install in the app copies that file. For an x86_64 machine, use `x86_64-unknown-linux-gnu` instead.
+The binary is `src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`. Install in the app copies that file. For an x86_64 machine, use `x86_64-unknown-linux-gnu` instead. The service crate writes into `src-tauri/target`, which is the folder the installer checks.
