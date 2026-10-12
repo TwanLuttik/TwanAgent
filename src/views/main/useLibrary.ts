@@ -102,6 +102,8 @@ export type LibraryDeps = {
   setPermission: Update<PermissionMode>;
   openSettings: () => void;
   reloadConversations: (ws: string, preferId?: string) => Promise<void>;
+  /** The project whose chat list is on screen. Cleared when the project changes. */
+  sidebarLoadedForRef: RefObject<string>;
   runTurn: RunTurn;
   scroller: RefObject<HTMLDivElement | null>;
   runningWsRef: RefObject<string>;
@@ -181,7 +183,7 @@ export function useLibrary(deps: LibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef,
+    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -351,6 +353,16 @@ async function deleteProjectFromSidebar(path: string) {
 
 function applyWorkspace(path: string) {
   if (!isSameProject(path, workspace)) {
+    const entering = allProjectGroups.find((group) => isSameProject(group.path, path));
+    // Show the project we are opening from the rows it already has, in this same
+    // update. Clearing first would paint the empty gap onto the cloud project.
+    if (entering && (entering.conversations.length > 0 || entering.journeys.length > 0)) {
+      setConversations(entering.conversations);
+      setJourneys(entering.journeys);
+      sidebarLoadedForRef.current = entering.path;
+    } else {
+      sidebarLoadedForRef.current = "";
+    }
     openGeneration.current += 1;
     setStreamText("");
     setStreamReasoning("");
@@ -408,7 +420,6 @@ function applyWorkspace(path: string) {
   setPastesByChat({});
   setDraftImages({});
   setUsageByChat({});
-  setJourneys([]);
   setFolderOpen(false);
   expandProject(path);
 }

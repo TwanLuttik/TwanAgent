@@ -1,0 +1,460 @@
+//! A TwanAgent server is an SSH login plus an installed `twanagent-server` and a shared token.
+//! The token is stored beside the server row so a reload still shows Paired. It is not sent to the UI.
+
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use super::config::{validate_host, validate_port, validate_user};
+use crate::error::{Error, Result};
+
+pub const TOKEN_PREFIX: &str = "agent-token:";
+pub const BINARY_PATH: &str = "$HOME/.twanagent/bin/twanagent-server";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerInstallStatus {
+    pub installed: bool,
+    pub version: String,
+    pub path: String,
+    /// SSH port answered. False when the machine is off or unreachable, before any program check.
+    pub online: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentServer {
+    pub id: String,
+    pub name: String,
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub machine_id: Option<String>,
+    pub installed_at: String,
+    /// True when this client has a token for the server. The token itself is never sent to the UI.
+    pub paired: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewAgentServer {
+    pub name: String,
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub machine_id: Option<String>,
+}
+
+pub fn token_account(server_id: &str) -> String {
+    format!("{TOKEN_PREFIX}{server_id}")
+}
+
+/// 32 random bytes, hex. Long enough that a guess is not the threat. SSH still has to land the install.
+pub fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("token entropy");
+    hex::encode(bytes)
+}
+
+/// Ask the remote machine which binary it can run before the copy starts.
+pub fn target_probe_script() -> String {
+    "uname -m; uname -s".into()
+}
+
+/// macOS builds cannot run on the Linux machine. Pick the binary that matches `uname`.
+pub fn binary_for_target(arch: &str, os: &str) -> Result<std::path::PathBuf> {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let os = os.trim().to_ascii_lowercase();
+    let arch = arch.trim();
+    let debug = root.join("debug/twanagent-server");
+    let release = root.join("release/twanagent-server");
+    let local = if debug.is_file() { debug } else { release };
+    if os.contains("darwin") || os == "macos" {
+        if local.is_file() {
+            return Ok(local);
+        }
+        return Err(Error::Other(
+            "twanagent-server is not built on this Mac yet. Build it, then install.".into(),
+        ));
+    }
+    if !os.contains("linux") {
+        return Err(Error::Other(format!(
+            "this machine is {os} {arch}. Install supports macOS and Linux."
+        )));
+    }
+    let triple = match arch {
+        "aarch64" | "arm64" => "aarch64-unknown-linux-gnu",
+        "x86_64" | "amd64" => "x86_64-unknown-linux-gnu",
+        other => {
+            return Err(Error::Other(format!(
+                "this machine is Linux {other}. Install supports arm64 and x86_64."
+            )))
+        }
+    };
+    for profile in ["release", "debug"] {
+        let path = root.join(triple).join(profile).join("twanagent-server");
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err(Error::Other(format!(
+        "the Linux server program is not built yet. Build twanagent-server for {triple}, then install."
+    )))
+}
+
+/// Ask the remote shell whether `twanagent-server` is on disk and what version it prints.
+pub fn version_check_script() -> String {
+    format!(
+        "bin={BINARY_PATH}; if [ -x \"$bin\" ]; then printf 'installed '; \"$bin\" --version 2>/dev/null || printf 'unknown'; else printf 'missing'; fi"
+    )
+}
+
+pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
+    let text = stdout.trim();
+    let path = "~/.twanagent/bin/twanagent-server".into();
+    if let Some(rest) = text.trim().strip_prefix("installed") {
+        let version = rest.trim().to_string();
+        return ServerInstallStatus {
+            installed: true,
+            version,
+            path,
+            online: true,
+        };
+    }
+    ServerInstallStatus {
+        installed: false,
+        version: String::new(),
+        path,
+        online: true,
+    }
+}
+
+/// One SSH exec cannot carry the whole program. Each piece stays under a channel packet.
+const BINARY_CHUNK_BYTES: usize = 24_000;
+
+/// Prepare an empty file, append base64 pieces, then mark the program executable.
+/// One command with the whole binary is larger than an SSH channel will accept.
+pub fn binary_install_scripts(binary: &[u8]) -> Result<Vec<String>> {
+    if binary.is_empty() {
+        return Err(Error::Other("server binary is empty".into()));
+    }
+    if binary.len() > 80_000_000 {
+        return Err(Error::Other("server binary is too large".into()));
+    }
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, binary);
+    let mut scripts = vec![format!("mkdir -p \"$HOME/.twanagent/bin\" && : > {BINARY_PATH}.b64")];
+    for chunk in encoded.as_bytes().chunks(BINARY_CHUNK_BYTES) {
+        let piece = std::str::from_utf8(chunk).expect("base64 is ascii");
+        scripts.push(format!("printf '%s' '{piece}' >> {BINARY_PATH}.b64"));
+    }
+    scripts.push(format!(
+        "base64 -d < {BINARY_PATH}.b64 > {BINARY_PATH}.tmp && rm -f {BINARY_PATH}.b64 && mv {BINARY_PATH}.tmp {BINARY_PATH} && chmod 755 {BINARY_PATH} && echo installed"
+    ));
+    Ok(scripts)
+}
+
+/// Write `~/.twanagent/provider-keys.json` from the chosen providers. Unchecked providers are cleared.
+/// The values travel inside the SSH command. The reply is only `copied`, never the keys.
+pub fn provider_keys_script(keys: &twanagent_service::ProviderKeys) -> Result<String> {
+    let body = serde_json::to_vec_pretty(&keys.trimmed()).map_err(|err| Error::Other(err.to_string()))?;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body);
+    Ok(format!(
+        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf '%s' '{encoded}' | base64 -d > \"$HOME/.twanagent/provider-keys.json\" && chmod 600 \"$HOME/.twanagent/provider-keys.json\" && echo copied"
+    ))
+}
+
+pub fn install_script(token: &str) -> Result<String> {
+    let token = token.trim();
+    if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Other("agent token is invalid".into()));
+    }
+    let quoted = super::ssh::shell_single_quote(token);
+    Ok(format!(
+        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf '%s\\n' {quoted} > \"$HOME/.twanagent/auth-token\" && chmod 600 \"$HOME/.twanagent/auth-token\" && echo installed"
+    ))
+}
+
+pub fn insert_server(conn: &Connection, draft: NewAgentServer) -> Result<AgentServer> {
+    let name = draft.name.trim();
+    if name.is_empty() || name.chars().any(|c| c.is_control()) {
+        return Err(Error::Other("server name is empty".into()));
+    }
+    let user = validate_user(&draft.user)?;
+    let host = validate_host(&draft.host)?;
+    let port = validate_port(draft.port)?;
+    if server_by_host(conn, &host, port)?.is_some() {
+        return Err(Error::Conflict(format!("{host} is already a TwanAgent server")));
+    }
+    let id = Uuid::new_v4().to_string();
+    let installed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    conn.execute(
+        "INSERT INTO agent_servers (id, name, user, host, port, machine_id, installed_at, token)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+        params![id, name, user, host, port as i64, draft.machine_id, installed_at],
+    )?;
+    Ok(AgentServer {
+        id,
+        name: name.to_string(),
+        user,
+        host,
+        port,
+        machine_id: draft.machine_id,
+        installed_at,
+        paired: true,
+    })
+}
+
+pub fn list_servers(conn: &Connection, paired: impl Fn(&str) -> bool) -> Result<Vec<AgentServer>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, user, host, port, machine_id, installed_at, token
+         FROM agent_servers ORDER BY name COLLATE NOCASE ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let port: i64 = row.get(4)?;
+        let token: Option<String> = row.get(7)?;
+        Ok((
+            AgentServer {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                user: row.get(2)?,
+                host: row.get(3)?,
+                port: port.clamp(0, u16::MAX as i64) as u16,
+                machine_id: row.get(5)?,
+                installed_at: row.get(6)?,
+                paired: false,
+            },
+            token,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (mut server, token) = row?;
+        let stored = token.filter(|value| !value.trim().is_empty());
+        server.paired = stored.is_some() || paired(&token_account(&server.id));
+        out.push(server);
+    }
+    Ok(out)
+}
+
+/// Save the pairing token next to the server. A reload reads this, not the keychain.
+pub fn set_server_token(conn: &Connection, id: &str, token: &str) -> Result<()> {
+    let token = token.trim();
+    if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(Error::Other("agent token is invalid".into()));
+    }
+    let changed = conn.execute(
+        "UPDATE agent_servers SET token = ?1 WHERE id = ?2",
+        params![token, id],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound("server not found".into()));
+    }
+    Ok(())
+}
+
+pub fn server_by_host(conn: &Connection, host: &str, port: u16) -> Result<Option<AgentServer>> {
+    conn.query_row(
+        "SELECT id, name, user, host, port, machine_id, installed_at, token
+         FROM agent_servers WHERE host = ?1 COLLATE NOCASE AND port = ?2",
+        params![host, port as i64],
+        |row| {
+            let stored_port: i64 = row.get(4)?;
+            Ok(AgentServer {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                user: row.get(2)?,
+                host: row.get(3)?,
+                port: stored_port.clamp(0, u16::MAX as i64) as u16,
+                machine_id: row.get(5)?,
+                installed_at: row.get(6)?,
+                paired: false,
+            })
+        },
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+/// Which provider keys were copied to this server. The key text is not stored here.
+pub fn server_provider_keys(conn: &Connection, id: &str) -> Result<Vec<String>> {
+    let raw: Option<String> = conn
+        .query_row("SELECT provider_keys FROM agent_servers WHERE id = ?1", [id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    Ok(parse_provider_keys(raw.as_deref()))
+}
+
+pub fn set_server_provider_keys(conn: &Connection, id: &str, providers: &[String]) -> Result<Vec<String>> {
+    let names = normalize_provider_keys(providers);
+    let stored = if names.is_empty() { None } else { Some(names.join(",")) };
+    let changed = conn.execute(
+        "UPDATE agent_servers SET provider_keys = ?1 WHERE id = ?2",
+        params![stored, id],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound("server not found".into()));
+    }
+    Ok(names)
+}
+
+pub fn parse_provider_keys(raw: Option<&str>) -> Vec<String> {
+    let Some(raw) = raw else { return Vec::new() };
+    normalize_provider_keys(&raw.split(',').map(str::to_string).collect::<Vec<_>>())
+}
+
+fn normalize_provider_keys(providers: &[String]) -> Vec<String> {
+    const ORDER: &[&str] = &["xai", "anthropic", "minimax"];
+    let wanted: std::collections::HashSet<&str> = providers.iter().map(|name| name.trim()).collect();
+    ORDER
+        .iter()
+        .filter(|name| wanted.contains(**name))
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+pub fn delete_server(conn: &Connection, id: &str) -> Result<Option<String>> {
+    let existing = conn
+        .query_row("SELECT id FROM agent_servers WHERE id = ?1", [id], |row| row.get::<_, String>(0))
+        .optional()?;
+    let Some(id) = existing else {
+        return Ok(None);
+    };
+    conn.execute("DELETE FROM agent_servers WHERE id = ?1", [&id])?;
+    Ok(Some(token_account(&id)))
+}
+
+/// A frame is accepted only when the token matches. Empty and wrong tokens fail the same way.
+pub fn token_matches(stored: Option<&str>, presented: &str) -> bool {
+    let Some(stored) = stored.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    let presented = presented.trim();
+    if stored.len() != presented.len() {
+        return false;
+    }
+    stored.bytes().zip(presented.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::appdb;
+
+    #[test]
+    fn version_check_tells_missing_from_installed() {
+        let script = version_check_script();
+        assert!(script.contains("$HOME/.twanagent/bin/twanagent-server"));
+        assert!(!parse_version_check("missing\n").installed);
+        let found = parse_version_check(" installed twanagent-server 1.0.0-beta.1\n");
+        assert!(found.installed);
+        assert!(found.online);
+        assert_eq!(found.version, "twanagent-server 1.0.0-beta.1");
+        let missing = parse_version_check("missing\n");
+        assert!(!missing.installed);
+        assert!(missing.online);
+    }
+
+    #[test]
+    fn linux_arm_does_not_ask_for_the_mac_binary() {
+        let err = binary_for_target("i686", "Linux").unwrap_err().to_string();
+        assert!(err.contains("arm64 and x86_64"));
+        let other = binary_for_target("aarch64", "FreeBSD").unwrap_err().to_string();
+        assert!(other.contains("macOS and Linux"));
+    }
+
+    #[test]
+    fn binary_install_decodes_onto_the_server_path() {
+        let scripts = binary_install_scripts(b"#!/bin/sh\necho hi\n").unwrap();
+        assert!(scripts.len() >= 3);
+        assert!(scripts[0].contains(": >"));
+        assert!(scripts.iter().any(|script| script.contains("base64 -d")));
+        assert!(scripts.last().unwrap().contains("chmod 755"));
+        assert!(scripts.last().unwrap().contains("$HOME/.twanagent/bin/twanagent-server"));
+        assert!(binary_install_scripts(b"").is_err());
+        let large = binary_install_scripts(&vec![7u8; 80_000]).unwrap();
+        assert!(large.len() > 4);
+        assert!(large.iter().all(|script| script.len() < 40_000));
+    }
+
+    #[test]
+    fn install_writes_a_private_token_file() {
+        let token = new_token();
+        let script = install_script(&token).unwrap();
+        assert!(script.contains("mkdir -p \"$HOME/.twanagent\""));
+        assert!(script.contains("chmod 600"));
+        assert!(script.contains(&token));
+        assert!(install_script("short").is_err());
+        assert!(install_script(&"z".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn a_saved_token_stays_paired_after_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = appdb::open(dir.path()).unwrap();
+        let saved = insert_server(
+            &conn,
+            NewAgentServer {
+                name: "Office Mac".into(),
+                user: "twan".into(),
+                host: "10.0.0.219".into(),
+                port: 22,
+                machine_id: Some("machine-1".into()),
+            },
+        )
+        .unwrap();
+        assert!(saved.paired);
+        set_server_token(&conn, &saved.id, &new_token()).unwrap();
+        let listed = list_servers(&conn, |_| false).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].paired);
+        let wire = serde_json::to_string(&listed[0]).unwrap();
+        assert!(!wire.contains("token"));
+        let again = insert_server(
+            &conn,
+            NewAgentServer {
+                name: "Again".into(),
+                user: "twan".into(),
+                host: "10.0.0.219".into(),
+                port: 22,
+                machine_id: None,
+            },
+        );
+        assert!(again.is_err());
+        let account = delete_server(&conn, &saved.id).unwrap().unwrap();
+        assert_eq!(account, token_account(&saved.id));
+        assert!(list_servers(&conn, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_keys_record_presence_and_drop_unknown_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = appdb::open(dir.path()).unwrap();
+        let saved = insert_server(
+            &conn,
+            NewAgentServer {
+                name: "Box".into(),
+                user: "twan".into(),
+                host: "10.0.0.8".into(),
+                port: 22,
+                machine_id: None,
+            },
+        )
+        .unwrap();
+        assert!(server_provider_keys(&conn, &saved.id).unwrap().is_empty());
+        let stored = set_server_provider_keys(
+            &conn,
+            &saved.id,
+            &["minimax".into(), "nope".into(), "xai".into(), "xai".into()],
+        )
+        .unwrap();
+        assert_eq!(stored, vec!["xai", "minimax"]);
+        assert_eq!(server_provider_keys(&conn, &saved.id).unwrap(), vec!["xai", "minimax"]);
+        assert_eq!(parse_provider_keys(Some("anthropic,ssh")), vec!["anthropic"]);
+    }
+
+    #[test]
+    fn the_wrong_token_does_not_match() {
+        let token = new_token();
+        assert!(token_matches(Some(&token), &token));
+        assert!(!token_matches(Some(&token), &new_token()));
+        assert!(!token_matches(None, &token));
+        assert!(!token_matches(Some(""), &token));
+    }
+}

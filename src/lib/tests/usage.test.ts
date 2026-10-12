@@ -66,6 +66,11 @@ describe("rangeStartMs", () => {
     const spanDays = Math.round((now - start.getTime()) / 86_400_000);
     assert.ok(spanDays >= 6 && spanDays <= 7);
   });
+
+  it("starts 24 hours before now", () => {
+    const now = Date.parse("2026-09-17T18:00:00.000Z");
+    assert.equal(rangeStartMs("24h", now), now - 24 * 60 * 60 * 1000);
+  });
 });
 
 describe("buildUsageSnapshot", () => {
@@ -119,6 +124,37 @@ describe("buildUsageSnapshot", () => {
     );
     assert.equal(snap.projects[0].total, 1650);
     assert.equal(snap.projects[1].total, 110);
+  });
+
+  it("keeps only the last 24 hours and today's calendar cell", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 25 * 3600_000).toISOString(),
+        workspace_path: "/proj/alpha",
+        workspace_name: "alpha",
+        prompt_tokens: 900,
+        completion_tokens: 100,
+        total_tokens: 1000,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "c2",
+        recorded_at: new Date(now - 2 * 3600_000).toISOString(),
+        workspace_path: "/proj/alpha",
+        workspace_name: "alpha",
+        prompt_tokens: 40,
+        completion_tokens: 10,
+        total_tokens: 50,
+      }),
+    ];
+    const snap = buildUsageSnapshot(events, { range: "24h", nowMs: now });
+    assert.deepEqual(snap.totals, { prompt: 40, completion: 10, total: 50 });
+    assert.ok(snap.days.length === 1 || snap.days.length === 2);
+    assert.equal(
+      snap.days.reduce((sum, day) => sum + day.total, 0),
+      50,
+    );
   });
 
   it("filters to one project and ignores events outside the range", () => {

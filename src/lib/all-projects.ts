@@ -129,6 +129,29 @@ export function renameConversationInGroups(
   return { groups: found ? next : groups, found };
 }
 
+/**
+ * A startup pass loads projects one at a time. `incoming` is only the prefix
+ * that has finished. Projects not in that prefix keep the chats they already had,
+ * so a later pass does not flash "No chats yet" over them.
+ */
+export function mergeLoadedProjectGroups(
+  previous: ProjectChatGroup[],
+  incoming: ProjectChatGroup[],
+): ProjectChatGroup[] {
+  const seen = new Set(incoming.map((group) => projectKey(group.path)));
+  const kept = previous.filter((group) => !seen.has(projectKey(group.path)));
+  const filled = incoming.map((group) => {
+    if (group.conversations.length > 0 || group.journeys.length > 0) return group;
+    const before = previous.find((row) => isSameProject(row.path, group.path));
+    if (!before || (before.conversations.length === 0 && before.journeys.length === 0)) return group;
+    // The cloud list is not on this Mac. An empty read is the mount, not a deleted project.
+    // A local project can really be empty, so an empty read replaces it.
+    if (!group.remote && !before.remote) return group;
+    return { ...group, conversations: before.conversations, journeys: before.journeys };
+  });
+  return [...filled, ...kept];
+}
+
 /** Keep a project's in-memory chats on that project only after they have finished loading. */
 export function applyLiveProjectChats(
   groups: ProjectChatGroup[],
@@ -194,7 +217,10 @@ export function placeProjectChats(
   path: string,
   conversations: ConversationSummary[],
   journeys: JourneySummary[],
+  /** The project these chats were loaded for. Empty means they match `path`. */
+  loadedFor = "",
 ): ProjectChatGroup[] {
+  if (loadedFor && !isSameProject(loadedFor, path)) return groups;
   const own = new Set(conversations.map((row) => row.id));
   const patched = groups.map((group) => {
     if (isSameProject(group.path, path)) {

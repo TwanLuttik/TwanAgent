@@ -11,7 +11,7 @@ import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity
 import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
 import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isArchivedConversation, isSameProject, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
+import { applyLiveProjectChats, isArchivedConversation, isSameProject, mergeLoadedProjectGroups, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
@@ -260,6 +260,9 @@ export function MainView() {
     }
     const rows = await api.listConversations(ws);
     if (!isSameProject(ws, workspaceRef.current)) return;
+    if (conversationsRef.current.length === 0 && rows.length > 0) {
+      setConversations(rows);
+    }
     const nextJourneys = await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
     if (!isSameProject(ws, workspaceRef.current)) return;
     sidebarLoadedForRef.current = ws;
@@ -644,11 +647,21 @@ export function MainView() {
         const loaded: ProjectChatGroup[] = [];
         for (const row of ordered) {
           if (cancelled) return;
-          const [convs, nextJourneys] = await Promise.all([
-            api.listConversations(row.path).catch(() => [] as ConversationSummary[]),
-            api.listJourneys(row.path).catch(() => [] as JourneySummary[]),
+          const [listed, journeyListed] = await Promise.all([
+            api.listConversations(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as ConversationSummary[], failed: true })),
+            api.listJourneys(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as JourneySummary[], failed: true })),
           ]);
-          let next = { ...row, conversations: convs, journeys: nextJourneys };
+          if (cancelled) return;
+          // A cloud call that fails, or is still the empty index, must not replace chats
+          // the sidebar already showed. The next pass fills them in.
+          const convs = listed.failed && row.remote ? null : listed.rows;
+          const nextJourneys = journeyListed.failed && row.remote ? null : journeyListed.rows;
+          let next = {
+            ...row,
+            conversations: convs ?? [],
+            journeys: nextJourneys ?? [],
+            remote: row.remote || convs === null,
+          };
           if (next.remote && isSameProject(next.path, workspaceRef.current)) {
             try {
               const remote = await api.workspaceRemote(next.path);
@@ -671,9 +684,8 @@ export function MainView() {
           }
           loaded.push(next);
           if (!cancelled) {
-            setAllProjectGroups(
-              applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current),
-            );
+            const ready = applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current);
+            setAllProjectGroups((prev) => mergeLoadedProjectGroups(prev, ready));
           }
         }
       } catch (e) {
@@ -688,8 +700,10 @@ export function MainView() {
   useEffect(() => {
     if (!workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
+    // An empty list here is the gap between two projects, not a finished load.
+    if (conversations.length === 0) return;
     setAllProjectGroups((prev) => {
-      const placed = placeProjectChats(prev, workspace, conversations, journeys).map((group) =>
+      const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current).map((group) =>
         isSameProject(group.path, workspace)
           ? {
               ...group,
@@ -1024,6 +1038,7 @@ export function MainView() {
     stickToBottomRef,
     conversationsRef,
     openGeneration,
+    sidebarLoadedForRef,
     setWorkspace,
     setConversations,
     setJourneys,

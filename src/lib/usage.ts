@@ -1,7 +1,7 @@
 import { folderName, projectKey } from "./core.ts";
 import { providerFor } from "./provider.ts";
 
-export type UsageRange = 7 | 30 | 90;
+export type UsageRange = "24h" | 7 | 30 | 90;
 
 export type UsageEvent = {
   id: number;
@@ -61,10 +61,23 @@ export function dayKey(iso: string): string {
 }
 
 export function rangeStartMs(range: UsageRange, nowMs = Date.now()): number {
+  if (range === "24h") return nowMs - 24 * 60 * 60 * 1000;
   const end = new Date(nowMs);
   const start = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (range - 1));
   start.setHours(0, 0, 0, 0);
   return start.getTime();
+}
+
+/** Calendar cells the activity grid shows. 24 hours covers today and yesterday when it crosses midnight. */
+export function rangeDayCount(range: UsageRange, nowMs = Date.now()): number {
+  if (range !== "24h") return range;
+  const end = new Date(nowMs);
+  const start = new Date(nowMs - 24 * 60 * 60 * 1000);
+  const sameDay =
+    start.getFullYear() === end.getFullYear() &&
+    start.getMonth() === end.getMonth() &&
+    start.getDate() === end.getDate();
+  return sameDay ? 1 : 2;
 }
 
 function emptyTotals(): UsageTotals {
@@ -328,10 +341,11 @@ export function buildUsageSnapshot(
     return true;
   });
 
-  const start = new Date(startMs);
+  const dayAnchor = opts.range === "24h" ? nowMs - 24 * 60 * 60 * 1000 : startMs;
+  const start = new Date(dayAnchor);
   const days: UsageDay[] = [];
   const byDay = new Map<string, UsageDay>();
-  for (let i = 0; i < opts.range; i++) {
+  for (let i = 0; i < rangeDayCount(opts.range, nowMs); i++) {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
     const date = dayKey(d.toISOString());
     const row: UsageDay = { date, ...emptyTotals() };

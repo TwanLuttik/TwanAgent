@@ -4,7 +4,7 @@ Standalone Tauri app for the Grok coding workspace.
 
 - Frontend: `src/`
 - Rust: `src-tauri/src/`
-- Data: app data dir (conversations, `secrets.json`, `projects-location.json`)
+- Data: app data dir (conversations, `secrets.json`, `projects-location.json`). The sidebar reads one index in `app.db` instead of every project database. See `docs/sidebar-index.md`.
 - Projects: `~/twanagent/projects`. Existing app-support projects are migrated there and keep their conversations.
 - Keychain service: `app.twanagent.desktop`
 

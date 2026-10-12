@@ -47,6 +47,37 @@ fn init_schema(conn: &Connection) -> Result<()> {
             payload TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS sidebar_projects (
+            project_path TEXT PRIMARY KEY,
+            refreshed_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sidebar_conversations (
+            project_path TEXT NOT NULL,
+            id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
+            journey_id TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            effort TEXT,
+            model TEXT,
+            context_window INTEGER,
+            permission TEXT,
+            archived INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (project_path, id)
+        );
+        CREATE TABLE IF NOT EXISTS sidebar_journeys (
+            project_path TEXT NOT NULL,
+            id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            color TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (project_path, id)
+        );
         ",
     )?;
     migrate_remote_tables(conn)?;
@@ -212,11 +243,143 @@ pub fn reorder_projects(conn: &Connection, paths: &[String]) -> Result<Vec<Folde
     list_projects(conn)
 }
 
+fn project_key(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// True once this project's sidebar rows have been copied into the index.
+pub fn sidebar_cached(conn: &Connection, project: &str) -> Result<bool> {
+    let found: Option<String> = conn
+        .query_row(
+            "SELECT project_path FROM sidebar_projects WHERE project_path = ?1",
+            [project_key(project)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Replace one project's sidebar rows. The chat databases stay where they are.
+pub fn replace_sidebar(
+    conn: &Connection,
+    project: &str,
+    conversations: &[crate::dev::ConversationSummary],
+    journeys: &[crate::dev::Journey],
+) -> Result<()> {
+    let key = project_key(project);
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key])?;
+    tx.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key])?;
+    for row in conversations {
+        tx.execute(
+            "INSERT INTO sidebar_conversations (
+                project_path, id, title, created_at, updated_at, kind, journey_id, sort_order,
+                effort, model, context_window, permission, archived
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                key,
+                row.id,
+                row.title,
+                row.created_at,
+                row.updated_at,
+                if row.kind.is_empty() { "chat".to_string() } else { row.kind.clone() },
+                row.journey_id,
+                row.sort_order,
+                row.effort,
+                row.model,
+                row.context_window.map(|value| value as i64),
+                row.permission,
+                if row.archived { 1 } else { 0 },
+            ],
+        )?;
+    }
+    for row in journeys {
+        tx.execute(
+            "INSERT INTO sidebar_journeys (
+                project_path, id, title, created_at, updated_at, sort_order, collapsed, color
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                key,
+                row.id,
+                row.title,
+                row.created_at,
+                row.updated_at,
+                row.sort_order,
+                if row.collapsed { 1 } else { 0 },
+                row.color,
+            ],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO sidebar_projects (project_path, refreshed_at) VALUES (?1, ?2)
+         ON CONFLICT(project_path) DO UPDATE SET refreshed_at = excluded.refreshed_at",
+        params![key, now_iso()],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn sidebar_for(
+    conn: &Connection,
+    project: &str,
+) -> Result<(Vec<crate::dev::ConversationSummary>, Vec<crate::dev::Journey>)> {
+    let key = project_key(project);
+    let mut chats = conn.prepare(
+        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived
+         FROM sidebar_conversations WHERE project_path = ?1 ORDER BY sort_order ASC, id ASC",
+    )?;
+    let chat_rows = chats.query_map([&key], |row| {
+        let window: Option<i64> = row.get(9)?;
+        Ok(crate::dev::ConversationSummary {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+            kind: row.get(4)?,
+            journey_id: row.get(5)?,
+            sort_order: row.get(6)?,
+            effort: row.get(7)?,
+            model: row.get(8)?,
+            context_window: window.and_then(|value| u64::try_from(value).ok()),
+            permission: row.get(10)?,
+            archived: row.get::<_, i64>(11)? != 0,
+        })
+    })?;
+    let mut conversations = Vec::new();
+    for row in chat_rows {
+        conversations.push(row?);
+    }
+    let mut journeys_stmt = conn.prepare(
+        "SELECT id, title, created_at, updated_at, sort_order, collapsed, color
+         FROM sidebar_journeys WHERE project_path = ?1 ORDER BY sort_order ASC, id ASC",
+    )?;
+    let journey_rows = journeys_stmt.query_map([&key], |row| {
+        Ok(crate::dev::Journey {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            created_at: row.get(2)?,
+            updated_at: row.get(3)?,
+            sort_order: row.get(4)?,
+            collapsed: row.get::<_, i64>(5)? != 0,
+            color: row.get(6)?,
+        })
+    })?;
+    let mut journeys = Vec::new();
+    for row in journey_rows {
+        journeys.push(row?);
+    }
+    Ok((conversations, journeys))
+}
+
 pub fn remove_project(conn: &Connection, path: &str) -> Result<bool> {
     let Some(existing) = find_project(conn, path)? else {
         return Ok(false);
     };
     let n = conn.execute("DELETE FROM projects WHERE path = ?1", [&existing.path])?;
+    let key = project_key(&existing.path);
+    let _ = conn.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key]);
+    let _ = conn.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key]);
+    let _ = conn.execute("DELETE FROM sidebar_projects WHERE project_path = ?1", [&key]);
     Ok(n > 0)
 }
 
@@ -457,6 +620,48 @@ mod tests {
         );
         assert_eq!(list_settings(&conn).unwrap().len(), 1);
         assert!(set_setting(&conn, "  ", "x").is_err());
+    }
+
+    #[test]
+    fn sidebar_index_replaces_one_project_and_keeps_the_other() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        let chat = crate::dev::ConversationSummary {
+            id: "c1".into(),
+            title: "Hello".into(),
+            created_at: "t0".into(),
+            updated_at: "t1".into(),
+            kind: "chat".into(),
+            journey_id: None,
+            sort_order: 2,
+            effort: Some("low".into()),
+            model: Some("grok-4".into()),
+            context_window: Some(256_000),
+            permission: None,
+            archived: false,
+        };
+        let journey = crate::dev::Journey {
+            id: "j1".into(),
+            title: "Work".into(),
+            created_at: "t0".into(),
+            updated_at: "t1".into(),
+            sort_order: 1,
+            collapsed: true,
+            color: "blue".into(),
+        };
+        assert!(!sidebar_cached(&conn, "/app/Alpha").unwrap());
+        replace_sidebar(&conn, "/app/Alpha/", &[chat.clone()], &[journey]).unwrap();
+        replace_sidebar(&conn, "/app/beta", &[], &[]).unwrap();
+        let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].title, "Hello");
+        assert_eq!(chats[0].sort_order, 2);
+        assert_eq!(journeys[0].collapsed, true);
+        assert!(sidebar_cached(&conn, "/app/alpha").unwrap());
+        replace_sidebar(&conn, "/app/alpha", &[], &[]).unwrap();
+        let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
+        assert!(chats.is_empty() && journeys.is_empty());
+        assert!(sidebar_cached(&conn, "/app/beta").unwrap());
     }
 
     #[test]

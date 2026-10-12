@@ -20,6 +20,7 @@ import {
 import * as api from "../lib/tauri";
 
 const RANGES: { id: UsageRange; label: string }[] = [
+  { id: "24h", label: "24 hours" },
   { id: 7, label: "7 days" },
   { id: 30, label: "30 days" },
   { id: 90, label: "90 days" },
@@ -163,7 +164,9 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
         <section>
           <div className="mb-2 flex items-baseline justify-between gap-3">
             <div className="text-[12px] font-medium text-ink">Activity</div>
-            <div className="text-[11px] text-muted">{range} day calendar</div>
+            <div className="text-[11px] text-muted">
+              {range === "24h" ? "Last 24 hours" : `${range} day calendar`}
+            </div>
           </div>
           {snap.totals.total === 0 ? (
             <p className="m-0 py-4 text-[12px] text-muted">Token usage will show up here after you send messages.</p>
