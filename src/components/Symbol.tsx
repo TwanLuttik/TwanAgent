@@ -97,6 +97,15 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M9 20.4h6M12 15.8v4.6" {...stroke} />
     </>
   ),
+  "server.rack": (
+    <>
+      <rect x="3.2" y="3.2" width="17.6" height="6.2" rx="1.6" {...stroke} />
+      <rect x="3.2" y="14.6" width="17.6" height="6.2" rx="1.6" {...stroke} />
+      <circle cx="7" cy="6.3" r="0.9" fill="currentColor" />
+      <circle cx="7" cy="17.7" r="0.9" fill="currentColor" />
+      <path d="M10.2 6.3h6.4M10.2 17.7h6.4" {...stroke} />
+    </>
+  ),
   "desktopcomputer.fill": (
     <>
       <rect x="2.8" y="3.6" width="18.4" height="12.2" rx="2" fill="currentColor" />

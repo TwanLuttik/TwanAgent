@@ -733,6 +733,88 @@ export function workspaceRemote(workspace: string): Promise<WorkspaceRemote | nu
   return invoke("dev_workspace_remote", { workspace });
 }
 
+export type AgentServer = {
+  id: string;
+  name: string;
+  user: string;
+  host: string;
+  port: number;
+  machine_id?: string | null;
+  installed_at: string;
+  paired: boolean;
+};
+
+export type ServerInstallStatus = {
+  installed: boolean;
+  version: string;
+  path: string;
+  online: boolean;
+};
+
+export type ServerProviderKeys = {
+  xai: boolean;
+  anthropic: boolean;
+  minimax: boolean;
+};
+
+export type ServerStorage = {
+  bytes: number;
+  conversation_bytes: number;
+};
+
+export function listAgentServers(): Promise<AgentServer[]> {
+  return invoke("dev_list_agent_servers");
+}
+
+export function agentServerStatus(id: string): Promise<ServerInstallStatus> {
+  return invoke("dev_agent_server_status", { id });
+}
+
+export function installAgentBinary(id: string): Promise<ServerInstallStatus> {
+  return invoke("dev_install_agent_binary", { id });
+}
+
+export function installAgentServer(input: {
+  name: string;
+  user: string;
+  host: string;
+  port?: number;
+  auth: MachineAuth;
+  keyPath?: string;
+  secret?: string;
+}): Promise<AgentServer> {
+  return invoke("dev_install_agent_server", {
+    name: input.name,
+    user: input.user,
+    host: input.host,
+    port: input.port ?? 22,
+    auth: input.auth,
+    keyPath: input.keyPath ?? null,
+    key_path: input.keyPath ?? null,
+    secret: input.secret ?? null,
+  });
+}
+
+export function pairAgentServer(id: string): Promise<AgentServer> {
+  return invoke("dev_pair_agent_server", { id });
+}
+
+export function removeAgentServer(id: string): Promise<void> {
+  return invoke("dev_remove_agent_server", { id });
+}
+
+export function serverStorage(id: string): Promise<ServerStorage> {
+  return invoke("dev_server_storage", { id });
+}
+
+export function serverProviderKeys(id: string): Promise<ServerProviderKeys> {
+  return invoke("dev_server_provider_keys", { id });
+}
+
+export function copyServerProviderKeys(id: string, providers: string[]): Promise<ServerProviderKeys> {
+  return invoke("dev_copy_server_provider_keys", { id, providers });
+}
+
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
   return invoke("dev_list_conversations", { workspace });
 }

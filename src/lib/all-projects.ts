@@ -141,15 +141,30 @@ export function mergeLoadedProjectGroups(
   const seen = new Set(incoming.map((group) => projectKey(group.path)));
   const kept = previous.filter((group) => !seen.has(projectKey(group.path)));
   const filled = incoming.map((group) => {
-    if (group.conversations.length > 0 || group.journeys.length > 0) return group;
+    if (group.conversations.length > 0 || group.journeys.length > 0) {
+      return keepServerMark(group, previous);
+    }
     const before = previous.find((row) => isSameProject(row.path, group.path));
-    if (!before || (before.conversations.length === 0 && before.journeys.length === 0)) return group;
+    if (!before || (before.conversations.length === 0 && before.journeys.length === 0)) {
+      return keepServerMark(group, previous);
+    }
     // The cloud list is not on this Mac. An empty read is the mount, not a deleted project.
     // A local project can really be empty, so an empty read replaces it.
-    if (!group.remote && !before.remote) return group;
-    return { ...group, conversations: before.conversations, journeys: before.journeys };
+    if (!group.remote && !before.remote) return keepServerMark(group, previous);
+    return keepServerMark(
+      { ...group, conversations: before.conversations, journeys: before.journeys },
+      previous,
+    );
   });
   return [...filled, ...kept];
+}
+
+/** A list pass does not know whether the server is up. Keep the mark the open project already has. */
+function keepServerMark(group: ProjectChatGroup, previous: ProjectChatGroup[]): ProjectChatGroup {
+  if (group.server) return group;
+  const before = previous.find((row) => isSameProject(row.path, group.path));
+  if (!before?.server || Boolean(before.remote) !== Boolean(group.remote)) return group;
+  return { ...group, server: before.server };
 }
 
 /** Keep a project's in-memory chats on that project only after they have finished loading. */
@@ -241,6 +256,55 @@ export function placeProjectChats(
     },
     ...patched,
   ];
+}
+
+export type ProjectServerMark = NonNullable<ProjectChatGroup["server"]>;
+
+/**
+ * The cloud icon belongs to the project the lookup ran for.
+ * A local project opened while that lookup is still in flight must not inherit it,
+ * and a project that is no longer on a server must lose the mark.
+ */
+export function stampProjectServer(
+  groups: ProjectChatGroup[],
+  path: string,
+  remote: ProjectServerMark | null,
+  loadedFor: string,
+): ProjectChatGroup[] {
+  if (!path || !isSameProject(loadedFor, path)) return groups;
+  let changed = false;
+  const next = groups.map((group) => {
+    if (!isSameProject(group.path, path)) return group;
+    const server = remote ?? undefined;
+    const isRemote = Boolean(remote);
+    // `remote: undefined` still paints no icon, but it is not a finished answer.
+    // A local lookup stores `false` so a later pass cannot put the cloud icon back.
+    if (group.remote === isRemote && sameProjectServer(group.server, server)) return group;
+    changed = true;
+    return { ...group, remote: isRemote, server };
+  });
+  return changed ? next : groups;
+}
+
+function sameProjectServer(
+  a: ProjectServerMark | undefined,
+  b: ProjectServerMark | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.machineName === b.machineName &&
+    a.host === b.host &&
+    a.user === b.user &&
+    a.port === b.port &&
+    a.remotePath === b.remotePath &&
+    a.online === b.online
+  );
+}
+
+/** Two projects can reuse a chat id. The sidebar chip is keyed by both. */
+export function sidebarTodoKey(path: string, id: string): string {
+  return `${projectKey(path)}\t${id}`;
 }
 
 export function upsertProjectGroup(

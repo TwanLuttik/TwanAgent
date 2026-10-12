@@ -18,6 +18,8 @@ import {
   applyLiveProjectChats,
   mergeLoadedProjectGroups,
   placeProjectChats,
+  sidebarTodoKey,
+  stampProjectServer,
   upsertProjectGroup,
   visibleConversations,
   visibleJourneys,
@@ -170,6 +172,30 @@ describe("mergeLoadedProjectGroups", () => {
     assert.deepEqual(next[0]?.journeys.map((row) => row.id), ["j1"]);
     assert.equal(next[0]?.remote, true);
   });
+
+  it("keeps the server status when a later list pass does not include it", () => {
+    const server = {
+      machineName: "box",
+      host: "box.local",
+      user: "me",
+      port: 22,
+      remotePath: "/srv/cloud",
+      online: false,
+    };
+    const previous = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true, server }],
+      [],
+      { "/mounts/cloud": { conversations: [chat("c1")], journeys: [] } },
+    );
+    const incoming = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [],
+      { "/mounts/cloud": { conversations: [chat("c1"), chat("c2")], journeys: [] } },
+    );
+    const next = mergeLoadedProjectGroups(previous, incoming);
+    assert.equal(next[0]?.server?.online, false);
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["c1", "c2"]);
+  });
 });
 
 describe("placeProjectChats", () => {
@@ -213,6 +239,55 @@ describe("placeProjectChats", () => {
     assert.deepEqual(loaded[1]?.conversations, []);
   });
 
+});
+
+describe("stampProjectServer", () => {
+  const server = {
+    machineName: "box",
+    host: "box.local",
+    user: "me",
+    port: 22,
+    remotePath: "/srv/cloud",
+    online: true,
+  };
+
+  it("does not give a local project the cloud icon from the project that was just left", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "cloud", path: "/mounts/cloud", remote: true, server },
+        { name: "local", path: "/app/local" },
+      ],
+      [],
+      {},
+    );
+    const waiting = stampProjectServer(groups, "/app/local", server, "");
+    assert.equal(waiting, groups);
+    assert.equal(waiting[1]?.remote, undefined);
+    assert.equal(waiting[1]?.server, undefined);
+
+    const local = stampProjectServer(groups, "/app/local", null, "/app/local");
+    assert.equal(local[0]?.remote, true);
+    assert.equal(local[1]?.remote, false);
+    assert.notEqual(local[1], groups[1]);
+    assert.equal(local[1]?.server, undefined);
+    assert.equal(stampProjectServer(local, "/app/local", null, "/app/local"), local);
+  });
+
+  it("puts the cloud icon only on the project the lookup finished for", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "cloud", path: "/mounts/cloud" },
+        { name: "local", path: "/app/local" },
+      ],
+      [],
+      {},
+    );
+    const next = stampProjectServer(groups, "/mounts/cloud", server, "/mounts/cloud");
+    assert.equal(next[0]?.remote, true);
+    assert.equal(next[0]?.server?.machineName, "box");
+    assert.equal(next[1]?.remote, undefined);
+    assert.equal(sidebarTodoKey("/App/Local/", "chat-1"), "/app/local\tchat-1");
+  });
 });
 
 describe("upsertProjectGroup", () => {

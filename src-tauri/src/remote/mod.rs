@@ -1,3 +1,4 @@
+pub mod agent_server;
 pub mod client;
 pub mod discover;
 pub mod commands;

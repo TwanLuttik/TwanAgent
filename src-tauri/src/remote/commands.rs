@@ -9,6 +9,23 @@ fn open_db(state: &AppState) -> Result<rusqlite::Connection> {
     crate::appdb::open(&state.data_dir)
 }
 
+/// What a background server check needs. `AppState` itself is not moved off the command thread.
+struct ServerWork {
+    data_dir: std::path::PathBuf,
+    ssh_pool: std::sync::Arc<super::ssh::Pool>,
+}
+
+fn server_work(state: &AppState) -> ServerWork {
+    ServerWork {
+        data_dir: state.data_dir.clone(),
+        ssh_pool: state.ssh_pool.clone(),
+    }
+}
+
+fn work_db(work: &ServerWork) -> Result<rusqlite::Connection> {
+    crate::appdb::open(&work.data_dir)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_discover_ssh(app: AppHandle) -> Result<Vec<super::discover::LanHost>> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -315,4 +332,350 @@ pub fn machine_reachable(host: &str, port: u16) -> bool {
         return false;
     };
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok()
+}
+
+fn machine_secret(machine: &Machine) -> Option<String> {
+    machine
+        .secret_account
+        .as_deref()
+        .and_then(crate::secrets::get_ssh_secret)
+}
+
+fn exec_on(work: &ServerWork, machine: &Machine, command: &str, timeout_secs: u64) -> Result<super::ssh::ExecResult> {
+    let secret = machine_secret(machine);
+    work.ssh_pool.exec(
+        machine,
+        secret.as_deref(),
+        &super::ssh::ExecRequest {
+            cwd: "/".into(),
+            command: command.to_string(),
+            timeout_secs,
+        },
+    )
+}
+
+fn require_exec(work: &ServerWork, machine: &Machine, command: &str, timeout_secs: u64) -> Result<String> {
+    let made = exec_on(work, machine, command, timeout_secs)?;
+    if made.timed_out {
+        return Err(Error::Other(format!("timed out talking to {}", machine.host)));
+    }
+    if made.exit_code != Some(0) {
+        let detail = made.stderr.trim();
+        return Err(Error::Other(if detail.is_empty() {
+            format!("command failed on {}", machine.host)
+        } else {
+            format!("{detail}")
+        }));
+    }
+    Ok(made.stdout)
+}
+
+fn machine_for_server(work: &ServerWork, server: &super::agent_server::AgentServer) -> Result<Machine> {
+    let conn = work_db(work)?;
+    if let Some(id) = server.machine_id.as_deref() {
+        if let Some(machine) = config::machine_by_id(&conn, id)? {
+            return Ok(machine);
+        }
+    }
+    let rows = config::list_machines(&conn)?;
+    rows.into_iter()
+        .find(|row| row.host.eq_ignore_ascii_case(&server.host) && row.port == server.port)
+        .ok_or_else(|| Error::NotFound("sign in to this server again before installing".into()))
+}
+
+fn agent_server_by_id(conn: &rusqlite::Connection, id: &str) -> Result<super::agent_server::AgentServer> {
+    let rows = super::agent_server::list_servers(conn, |_| false)?;
+    rows.into_iter()
+        .find(|row| row.id == id)
+        .ok_or_else(|| Error::NotFound("server not found".into()))
+}
+
+fn offline_status() -> super::agent_server::ServerInstallStatus {
+    super::agent_server::ServerInstallStatus {
+        installed: false,
+        version: String::new(),
+        path: "~/.twanagent/bin/twanagent-server".into(),
+        online: false,
+    }
+}
+
+fn status_for(work: &ServerWork, server: &super::agent_server::AgentServer) -> Result<super::agent_server::ServerInstallStatus> {
+    if !machine_reachable(&server.host, server.port) {
+        return Ok(offline_status());
+    }
+    let machine = machine_for_server(work, server)?;
+    let stdout = require_exec(work, &machine, &super::agent_server::version_check_script(), 20)?;
+    Ok(super::agent_server::parse_version_check(&stdout))
+}
+
+fn copy_binary(work: &ServerWork, machine: &Machine) -> Result<super::agent_server::ServerInstallStatus> {
+    let probe = require_exec(work, machine, &super::agent_server::target_probe_script(), 15)?;
+    let mut lines = probe.lines();
+    let arch = lines.next().unwrap_or("").trim();
+    let os = lines.next().unwrap_or("").trim();
+    let path = super::agent_server::binary_for_target(arch, os)?;
+    let bytes = std::fs::read(&path).map_err(|err| Error::Other(format!("could not read {}: {err}", path.display())))?;
+    let scripts = super::agent_server::binary_install_scripts(&bytes)?;
+    for script in &scripts {
+        let _ = require_exec(work, machine, script, 120)?;
+    }
+    let stdout = require_exec(work, machine, &super::agent_server::version_check_script(), 20)?;
+    Ok(super::agent_server::parse_version_check(&stdout))
+}
+
+fn write_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<()> {
+    let conn = work_db(work)?;
+    let token = super::agent_server::new_token();
+    let script = super::agent_server::install_script(&token)?;
+    let _ = require_exec(work, machine, &script, 20)?;
+    super::agent_server::set_server_token(&conn, server_id, &token)?;
+    Ok(())
+}
+
+fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_service::ProviderKeys {
+    let wanted: std::collections::HashSet<&str> = providers.iter().map(|name| name.trim()).collect();
+    let pick = |name: &str, value: Option<String>| {
+        if wanted.contains(name) {
+            value.unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
+    twanagent_service::ProviderKeys {
+        xai: pick("xai", crate::secrets::resolve_xai_key_on_disk(&work.data_dir)),
+        anthropic: pick("anthropic", crate::secrets::resolve_anthropic_key_on_disk()),
+        minimax: pick("minimax", crate::secrets::resolve_minimax_key_on_disk()),
+    }
+}
+
+fn keys_view(names: &[String]) -> ServerProviderKeys {
+    let has = |name: &str| names.iter().any(|item| item == name);
+    ServerProviderKeys {
+        xai: has("xai"),
+        anthropic: has("anthropic"),
+        minimax: has("minimax"),
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ServerProviderKeys {
+    pub xai: bool,
+    pub anthropic: bool,
+    pub minimax: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ServerStorage {
+    pub bytes: u64,
+    pub conversation_bytes: u64,
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_list_agent_servers(state: State<'_, AppState>) -> Result<Vec<super::agent_server::AgentServer>> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        super::agent_server::list_servers(&conn, |_| false)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_agent_server_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::agent_server::ServerInstallStatus> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        status_for(&work, &server)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_install_agent_binary(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::agent_server::ServerInstallStatus> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        let machine = machine_for_server(&work, &server)?;
+        copy_binary(&work, &machine)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_install_agent_server(
+    state: State<'_, AppState>,
+    name: String,
+    user: String,
+    host: String,
+    port: Option<u16>,
+    auth: String,
+    key_path: Option<String>,
+    secret: Option<String>,
+) -> Result<super::agent_server::AgentServer> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        install_agent_server(&work, name, user, host, port, auth, key_path, secret)
+    })
+    .await
+}
+
+fn install_agent_server(
+    work: &ServerWork,
+    name: String,
+    user: String,
+    host: String,
+    port: Option<u16>,
+    auth: String,
+    key_path: Option<String>,
+    secret: Option<String>,
+) -> Result<super::agent_server::AgentServer> {
+    let method = AuthMethod::parse(if auth.trim().is_empty() { "agent" } else { &auth })?;
+    let secret = secret.filter(|value| !value.trim().is_empty());
+    let method = if secret.is_none() {
+        config::auth_without_secret(method, key_path.as_deref())
+    } else {
+        method
+    };
+    let conn = work_db(work)?;
+    let machine = config::upsert_machine(
+        &conn,
+        NewMachine {
+            name: name.clone(),
+            user,
+            host: host.clone(),
+            port: port.unwrap_or(22),
+            auth: method,
+            key_path,
+        },
+    )?;
+    if let Some(secret) = secret {
+        let account = machine
+            .secret_account
+            .clone()
+            .ok_or_else(|| Error::Other("this login does not take a secret".into()))?;
+        if let Err(err) = crate::secrets::set_ssh_secret(&account, &secret) {
+            let _ = config::delete_machine(&conn, &machine.id);
+            return Err(err);
+        }
+    }
+    let known = KnownHosts::load(&work.data_dir);
+    let trusted = known.rows.iter().any(|row| row.host == machine.host && row.port == machine.port);
+    if !trusted {
+        return Err(Error::Other("Confirm the host key before installing on this server.".into()));
+    }
+    let _status = copy_binary(work, &machine)?;
+    let already = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
+    let created = already.is_none();
+    let server = if let Some(already) = already {
+        already
+    } else {
+        super::agent_server::insert_server(
+            &conn,
+            super::agent_server::NewAgentServer {
+                name: if name.trim().is_empty() { host } else { name },
+                user: machine.user.clone(),
+                host: machine.host.clone(),
+                port: machine.port,
+                machine_id: Some(machine.id.clone()),
+            },
+        )?
+    };
+    if let Err(err) = write_token(work, &machine, &server.id) {
+        if created {
+            let _ = super::agent_server::delete_server(&conn, &server.id);
+        }
+        return Err(err);
+    }
+    agent_server_by_id(&conn, &server.id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_pair_agent_server(state: State<'_, AppState>, id: String) -> Result<super::agent_server::AgentServer> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        let machine = machine_for_server(&work, &server)?;
+        write_token(&work, &machine, &server.id)?;
+        agent_server_by_id(&conn, &server.id)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_remove_agent_server(state: State<'_, AppState>, id: String) -> Result<()> {
+    let conn = open_db(&state)?;
+    let _ = super::agent_server::delete_server(&conn, &id)?;
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_server_storage(state: State<'_, AppState>, id: String) -> Result<ServerStorage> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        let machine = machine_for_server(&work, &server)?;
+        server_storage(&work, &machine)
+    })
+    .await
+}
+
+fn server_storage(work: &ServerWork, machine: &Machine) -> Result<ServerStorage> {
+    let script = "data=\"$HOME/.twanagent\"; \
+if [ -d \"$data\" ]; then du -sk \"$data\" | awk '{print $1}'; else echo 0; fi; \
+find \"$data\" -name 'store.db' -type f -exec du -sk {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'";
+    let stdout = require_exec(work, machine, script, 20)?;
+    let mut lines = stdout.lines();
+    let total_kb: u64 = lines.next().unwrap_or("0").trim().parse().unwrap_or(0);
+    let conv_kb: u64 = lines.next().unwrap_or("0").trim().parse().unwrap_or(0);
+    Ok(ServerStorage {
+        bytes: total_kb.saturating_mul(1024),
+        conversation_bytes: conv_kb.saturating_mul(1024),
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_server_provider_keys(state: State<'_, AppState>, id: String) -> Result<ServerProviderKeys> {
+    let conn = open_db(&state)?;
+    let names = super::agent_server::server_provider_keys(&conn, &id)?;
+    Ok(keys_view(&names))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_copy_server_provider_keys(
+    state: State<'_, AppState>,
+    id: String,
+    providers: Vec<String>,
+) -> Result<ServerProviderKeys> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        let machine = machine_for_server(&work, &server)?;
+        copy_provider_keys(&work, &conn, &machine, &id, &providers)
+    })
+    .await
+}
+
+fn copy_provider_keys(
+    work: &ServerWork,
+    conn: &rusqlite::Connection,
+    machine: &Machine,
+    id: &str,
+    providers: &[String],
+) -> Result<ServerProviderKeys> {
+    let keys = provider_keys_for(work, providers);
+    let script = super::agent_server::provider_keys_script(&keys)?;
+    let _ = require_exec(work, machine, &script, 20)?;
+    let names = super::agent_server::set_server_provider_keys(&conn, &id, &providers)?;
+    Ok(keys_view(&names))
 }

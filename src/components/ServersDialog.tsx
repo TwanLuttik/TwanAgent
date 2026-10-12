@@ -240,19 +240,19 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [scanning, setScanning] = useState(false);
   const [installs, setInstalls] = useState<Record<string, InstallView>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   function reload() {
+    setLoading(true);
     void api
       .listAgentServers()
       .then((rows) => {
         setSaved(rows);
         setSelectedId((current) => (current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? null));
-        void rows.reduce(async (previous, row) => {
-          await previous;
-          await checkInstall(row.id);
-        }, Promise.resolve());
+        for (const row of rows) void checkInstall(row.id);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
     void api.listRemoteProjects().then(setProjects).catch(() => setProjects([]));
   }
 
@@ -484,7 +484,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-canvas">
-      <div className="min-h-0 flex-1 overflow-auto bg-canvas px-6 py-5">
+      <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
         <div className="grid max-w-[640px] gap-4">
           {step === "detail" && selected ? null : (
             <div>
@@ -494,7 +494,12 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">{intro}</p>
             </div>
           )}
-          {step === "list" && (
+          {step === "list" && loading ? (
+            <div className="flex items-center justify-center py-16" role="status" aria-label="Loading servers">
+              <span className="size-5 animate-spin rounded-full border-2 border-ink/25 border-t-ink" />
+            </div>
+          ) : null}
+          {step === "list" && !loading ? (
             <div className="grid gap-2">
               {saved.length === 0 ? (
                 <p className="m-0 rounded-xl border border-dashed border-line px-3 py-8 text-center text-[13px] text-muted">
@@ -522,7 +527,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
                 </Button>
               </div>
             </div>
-          )}
+          ) : null}
           {step === "detail" && selected ? (
             <ServerDetail
               row={selected}

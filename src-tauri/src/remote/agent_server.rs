@@ -142,7 +142,10 @@ pub fn binary_install_scripts(binary: &[u8]) -> Result<Vec<String>> {
     let mut scripts = vec![format!("mkdir -p \"$HOME/.twanagent/bin\" && : > {BINARY_PATH}.b64")];
     for chunk in encoded.as_bytes().chunks(BINARY_CHUNK_BYTES) {
         let piece = std::str::from_utf8(chunk).expect("base64 is ascii");
-        scripts.push(format!("printf '%s' '{piece}' >> {BINARY_PATH}.b64"));
+        scripts.push(format!(
+            "printf %s {} >> {BINARY_PATH}.b64",
+            super::ssh::shell_single_quote(piece)
+        ));
     }
     scripts.push(format!(
         "base64 -d < {BINARY_PATH}.b64 > {BINARY_PATH}.tmp && rm -f {BINARY_PATH}.b64 && mv {BINARY_PATH}.tmp {BINARY_PATH} && chmod 755 {BINARY_PATH} && echo installed"
@@ -156,7 +159,8 @@ pub fn provider_keys_script(keys: &twanagent_service::ProviderKeys) -> Result<St
     let body = serde_json::to_vec_pretty(&keys.trimmed()).map_err(|err| Error::Other(err.to_string()))?;
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body);
     Ok(format!(
-        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf '%s' '{encoded}' | base64 -d > \"$HOME/.twanagent/provider-keys.json\" && chmod 600 \"$HOME/.twanagent/provider-keys.json\" && echo copied"
+        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf %s {} | base64 -d > \"$HOME/.twanagent/provider-keys.json\" && chmod 600 \"$HOME/.twanagent/provider-keys.json\" && echo copied",
+        super::ssh::shell_single_quote(&encoded)
     ))
 }
 
@@ -321,6 +325,7 @@ pub fn delete_server(conn: &Connection, id: &str) -> Result<Option<String>> {
 }
 
 /// A frame is accepted only when the token matches. Empty and wrong tokens fail the same way.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn token_matches(stored: Option<&str>, presented: &str) -> bool {
     let Some(stored) = stored.map(str::trim).filter(|value| !value.is_empty()) else {
         return false;

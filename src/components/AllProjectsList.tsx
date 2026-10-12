@@ -63,7 +63,9 @@ export function AllProjectsList({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
-    function onDoc() {
+    function onDoc(ev: MouseEvent) {
+      const target = ev.target;
+      if (target instanceof Element && target.closest("[role='menu']")) return;
       setMenu(null);
       setGitMenu(null);
     }
@@ -74,10 +76,10 @@ export function AllProjectsList({
         setPendingDelete(null);
       }
     }
-    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("mousedown", onDoc, true);
     window.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("mousedown", onDoc, true);
       window.removeEventListener("keydown", onKey);
     };
   }, []);

@@ -118,6 +118,17 @@ fn migrate_remote_tables(conn: &Connection) -> Result<()> {
             mount_path TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS agent_servers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            user TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            machine_id TEXT,
+            installed_at TEXT NOT NULL,
+            token TEXT,
+            provider_keys TEXT
+        );
         ",
     )?;
     Ok(())

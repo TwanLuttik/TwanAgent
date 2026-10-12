@@ -11,7 +11,7 @@ import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity
 import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
 import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isArchivedConversation, isSameProject, mergeLoadedProjectGroups, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, type ProjectChatGroup } from "../lib/all-projects";
+import { applyLiveProjectChats, isArchivedConversation, isSameProject, mergeLoadedProjectGroups, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, stampProjectServer, type ProjectChatGroup } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
@@ -133,6 +133,7 @@ export function MainView() {
   const [recents, setRecents] = useState(loadRecentWorkspaces);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
+  const [showServers, setShowServers] = useState(false);
   const [showUsage, setShowUsage] = useState(false);
   const [projectSettings, setProjectSettings] = useState<{ path: string; name: string } | null>(null);
   const [usageTick, setUsageTick] = useState(0);
@@ -171,7 +172,7 @@ export function MainView() {
   activeIdRef.current = activeId;
   const viewingChatRef = useRef(true);
   viewingChatRef.current =
-    editor.focus === "chat" && !showSettings && !showUsage && !projectSettings;
+    editor.focus === "chat" && !showSettings && !showUsage && !showServers && !projectSettings;
   runningIdRef.current = runningId;
   const pendingRef = useRef(pendingByChat);
   pendingRef.current = pendingByChat;
@@ -184,6 +185,8 @@ export function MainView() {
   const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
   const remoteRef = useRef<RemoteWorkspace | null>(null);
   remoteRef.current = remoteWorkspace;
+  /** The project `remoteWorkspace` was loaded for. Empty until that lookup returns. */
+  const remoteForRef = useRef("");
   const sidebarSyncRef = useRef({ workspace, conversations, journeys });
   sidebarSyncRef.current = { workspace, conversations, journeys };
   const conversationsRef = useRef(conversations);
@@ -660,7 +663,7 @@ export function MainView() {
             ...row,
             conversations: convs ?? [],
             journeys: nextJourneys ?? [],
-            remote: row.remote || convs === null,
+            remote: Boolean(row.remote),
           };
           if (next.remote && isSameProject(next.path, workspaceRef.current)) {
             try {
@@ -703,27 +706,16 @@ export function MainView() {
     // An empty list here is the gap between two projects, not a finished load.
     if (conversations.length === 0) return;
     setAllProjectGroups((prev) => {
-      const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current).map((group) =>
-        isSameProject(group.path, workspace)
-          ? {
-              ...group,
-              remote: Boolean(remoteWorkspace) || group.remote,
-              server: remoteWorkspace
-                ? {
-                    machineName: remoteWorkspace.machineName,
-                    host: remoteWorkspace.host,
-                    user: remoteWorkspace.user,
-                    port: remoteWorkspace.port,
-                    remotePath: remoteWorkspace.remotePath,
-                    online: remoteWorkspace.online,
-                  }
-                : group.server,
-            }
-          : group,
+      const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current);
+      const stamped = stampProjectServer(
+        placed,
+        workspace,
+        remoteWorkspace,
+        remoteForRef.current,
       );
       if (
-        placed.length === prev.length &&
-        placed.every((group, i) => {
+        stamped.length === prev.length &&
+        stamped.every((group, i) => {
           const before = prev[i];
           return (
             before &&
@@ -737,7 +729,7 @@ export function MainView() {
       ) {
         return prev;
       }
-      return placed;
+      return stamped;
     });
   }, [workspace, conversations, journeys, remoteWorkspace]);
 
@@ -766,11 +758,17 @@ export function MainView() {
         setFlash({ kind: "err", text: String(e) });
       });
     let remoteTimer = 0;
+    // Drop the previous project's cloud mark before this lookup returns.
+    // Otherwise the project just opened inherits that icon.
+    remoteForRef.current = "";
+    setRemoteWorkspace(null);
     const watchRemote = () => {
+      const asked = workspace;
       void api
-        .workspaceRemote(workspace)
+        .workspaceRemote(asked)
         .then((row) => {
-          if (cancelled) return;
+          if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
+          remoteForRef.current = asked;
           setRemoteWorkspace(
             row
               ? {
@@ -785,7 +783,9 @@ export function MainView() {
           );
         })
         .catch(() => {
-          if (!cancelled) setRemoteWorkspace(null);
+          if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
+          remoteForRef.current = asked;
+          setRemoteWorkspace(null);
         })
         .finally(() => {
           if (!cancelled) remoteTimer = window.setTimeout(watchRemote, 15000);
@@ -883,7 +883,7 @@ export function MainView() {
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [editor.focus, showSettings, showUsage, activeId]);
+  }, [editor.focus, showSettings, showUsage, showServers, activeId]);
 
   const holdScrollForOlder = useCallback(() => {
     const el = scroller.current;
@@ -935,21 +935,31 @@ export function MainView() {
   }, [messages, pendingShell, openingId, pendingByChat, activeId, editor.focus, composerPad]);
 
   const closeSettings = useCallback(() => setShowSettings(false), []);
+  const closeServers = useCallback(() => setShowServers(false), []);
   const closeUsage = useCallback(() => setShowUsage(false), []);
   const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const openSettings = useCallback(() => {
     setShowUsage(false);
+    setShowServers(false);
     setProjectSettings(null);
     setShowSettings(true);
   }, []);
+  const openServers = useCallback(() => {
+    setShowSettings(false);
+    setShowUsage(false);
+    setProjectSettings(null);
+    setShowServers(true);
+  }, []);
   const openUsage = useCallback(() => {
     setShowSettings(false);
+    setShowServers(false);
     setProjectSettings(null);
     setShowUsage(true);
   }, []);
   const openProjectSettings = useCallback((path: string, name: string) => {
     setShowSettings(false);
     setShowUsage(false);
+    setShowServers(false);
     setProjectSettings({ path, name });
   }, []);
 
@@ -1052,6 +1062,7 @@ export function MainView() {
     setFolderOpen,
     setShowSettings,
     setShowUsage,
+    setShowServers,
     setProjectSettings,
     setCollapsedProjects,
     setRecents,
@@ -1244,6 +1255,7 @@ export function MainView() {
     (path: string, mode: "preview" | "pin" = "pin", view: "edit" | "diff" = "edit") => {
       setShowSettings(false);
       setShowUsage(false);
+      setShowServers(false);
       setProjectSettings(null);
       setEditor((prev) => {
         const next = mode === "preview" ? previewEditorTab(prev, path) : pinEditorTab(prev, path);
@@ -1272,6 +1284,7 @@ export function MainView() {
   const editMcpServer = useCallback((server: DetectedMcpServer) => {
     setShowSettings(false);
     setShowUsage(false);
+    setShowServers(false);
     setProjectSettings(null);
     setEditor((prev) => pinEditorTab(prev, mcpEditorPath(server.source)));
   }, []);
@@ -1326,7 +1339,7 @@ export function MainView() {
   const showLanding = false;
   const chatKind = parseConversationKind(conversations.find((c) => c.id === activeId)?.kind);
   const chatAcceptsDrop =
-    !showSettings && !showUsage && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
+    !showSettings && !showUsage && !showServers && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
   const addImagePathsRef = useRef(addPromptImagePaths);
   addImagePathsRef.current = addPromptImagePaths;
   const chatAcceptsDropRef = useRef(chatAcceptsDrop);
@@ -1367,7 +1380,7 @@ export function MainView() {
   }, []);
 
   useEffect(() => {
-    if (showLanding || showSettings || showUsage || editor.focus === "file") return;
+    if (showLanding || showSettings || showUsage || showServers || editor.focus === "file") return;
     const el = scroller.current;
     if (!el) return;
     const onScroll = () => {
@@ -1383,7 +1396,7 @@ export function MainView() {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [showLanding, showSettings, showUsage, editor.focus]);
+  }, [showLanding, showSettings, showUsage, showServers, editor.focus]);
 
   const sidebarRef = useRef<SidebarSlice | null>(null);
   if (!sidebarRef.current) sidebarRef.current = {
@@ -1518,6 +1531,7 @@ export function MainView() {
     closeFileTab,
     closePendingEdit,
     closeProjectSettings,
+    closeServers,
     closeSettings,
     closeUsage,
     collapsedProjects,
@@ -1556,6 +1570,7 @@ export function MainView() {
     openJourneyKnowledge,
     openProjectFromSidebar,
     openProjectSettings,
+    openServers,
     openSettings,
     openSidebarChat,
     openUsage,
@@ -1628,6 +1643,7 @@ export function MainView() {
     setSidebarWidth,
     bumpFiles,
     showLanding,
+    showServers,
     showSettings,
     showUsage,
     sidebarDragging,

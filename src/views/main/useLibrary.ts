@@ -156,6 +156,7 @@ export type LibraryDeps = {
   setFolderOpen: Update<boolean>;
   setShowSettings: Update<boolean>;
   setShowUsage: Update<boolean>;
+  setShowServers: Update<boolean>;
   setProjectSettings: Update<{ path: string; name: string } | null>;
   setCollapsedProjects: Update<string[]>;
   setRecents: Update<string[]>;
@@ -185,7 +186,7 @@ export function useLibrary(deps: LibraryDeps) {
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
     runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
-    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setProjectSettings,
+    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowServers, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
@@ -443,6 +444,7 @@ async function ensureChatPlan(path: string, id: string, modelId: string | null |
 async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowServers(false);
   setProjectSettings(null);
   if (!runningWsRef.current) hideSubagents();
   if (!path) {
@@ -512,6 +514,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
 async function openSidebarChat(path: string, id: string) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowServers(false);
   setProjectSettings(null);
   if (!path) return;
   if (isSameProject(path, workspace)) {
@@ -597,6 +600,7 @@ async function openChat(id: string) {
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
   setShowUsage(false);
+  setShowServers(false);
   setProjectSettings(null);
   if (!workspace) return;
   stickToBottomRef.current = true;
@@ -1022,6 +1026,7 @@ async function createJourneyFromChat(id: string, path = workspace) {
 async function openJourneyKnowledge(id: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowServers(false);
   setProjectSettings(null);
   if (path && !isSameProject(path, workspace)) {
     applyWorkspace(path);
