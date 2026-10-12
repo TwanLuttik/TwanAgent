@@ -802,6 +802,57 @@ export function MainView() {
   useEffect(() => {
     let cancelled = false;
     const loadMcp = () => {
+      if (remoteWorkspace && workspace) {
+        void api
+          .workspaceCapabilities(workspace)
+          .then(async (remote) => {
+            if (!remote) {
+              if (!cancelled) {
+                setMcpServers([]);
+                setSkills([]);
+              }
+              return;
+            }
+            const home = new Map<string, string>();
+            for (const entry of remote.mcp) {
+              const split = entry.indexOf("\n");
+              if (split <= 0) continue;
+              home.set(entry.slice(0, split), entry.slice(split + 1));
+            }
+            const rows = await detectMcp({
+              readHome: async (path) => home.get(path) ?? null,
+              readWorkspace: workspace
+                ? async (path) => {
+                    try {
+                      return await api.readFile(workspace, path);
+                    } catch {
+                      return null;
+                    }
+                  }
+                : undefined,
+            });
+            if (cancelled) return;
+            setMcpServers(withMcpAuth(rows, remote.auth));
+            const grokToml = home.get(".grok/config.toml") ?? null;
+            setSkills(
+              detectSkills(
+                remote.skills.map((file) => ({
+                  source: file.path,
+                  origin: parseSkillOrigin(file.origin, file.path),
+                  contents: file.contents,
+                })),
+                grokToml,
+              ),
+            );
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setMcpServers([]);
+              setSkills([]);
+            }
+          });
+        return;
+      }
       void detectMcp({
         readHome: async (path) => {
           try {
@@ -831,6 +882,12 @@ export function MainView() {
     };
     loadMcp();
     const stopRefresh = subscribeFileRefresh(loadMcp);
+    if (remoteWorkspace) {
+      return () => {
+        cancelled = true;
+        stopRefresh();
+      };
+    }
     void (async () => {
       try {
         const files = await api.listSkillFiles(workspace || null);
@@ -867,7 +924,7 @@ export function MainView() {
       cancelled = true;
       stopRefresh();
     };
-  }, [workspace]);
+  }, [workspace, remoteWorkspace]);
 
   const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
   const pendingPlan = planQueue.find((item) => item.chatId === activeId) ?? null;
@@ -1294,6 +1351,15 @@ export function MainView() {
     async (server: DetectedMcpServer) => {
       setMcpBusy(server.name);
       try {
+        if (remoteWorkspace && workspace) {
+          const remoteId = await api.workspaceServerId(workspace);
+          if (remoteId) {
+            await api.syncServerCapabilities(remoteId, server.name);
+            bumpFiles();
+            setFlash({ kind: "ok", text: `Signed in to ${server.name} and sent it to the server.` });
+            return;
+          }
+        }
         if (server.authed) await api.mcpClearAuth(server.name);
         await api.mcpSignIn(server.name);
         bumpFiles();
@@ -1305,7 +1371,7 @@ export function MainView() {
         setMcpBusy(null);
       }
     },
-    [setFlash],
+    [remoteWorkspace, workspace, setFlash],
   );
 
   const toggleSkill = useCallback(

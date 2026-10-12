@@ -328,6 +328,13 @@ fn classify_git(x: char, y: char) -> (String, bool, bool) {
     ("modified".into(), staged, unstaged)
 }
 
+fn git_missing(err: &str) -> bool {
+    let text = err.to_ascii_lowercase();
+    text.contains("git: command not found")
+        || text.contains("git: not found")
+        || text.contains("no such file or directory") && text.contains("git")
+}
+
 fn git_text(target: &GitTarget, args: &[&str]) -> Result<GitText> {
     let text = match &target.remote {
         Some(remote) => remote_git(remote, args)?,
@@ -335,7 +342,7 @@ fn git_text(target: &GitTarget, args: &[&str]) -> Result<GitText> {
     };
     if text.starts_with("ERR\n") {
         let err = text.trim_start_matches("ERR\n");
-        if err.contains("not a git repository") {
+        if err.contains("not a git repository") || git_missing(err) {
             return Ok(GitText::NotRepo);
         }
         return Err(Error::Other(clip(err)));

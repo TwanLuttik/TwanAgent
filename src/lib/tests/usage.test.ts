@@ -603,12 +603,12 @@ describe("buildUsageTrend", () => {
         completion_tokens: 10,
       }),
     ];
-    const all = buildUsageTrend(events, { range: "30d", nowMs: now });
+    const all = buildUsageTrend(events, { range: 30, nowMs: now });
     assert.equal(all.points.length, 30);
     assert.equal(all.points[0].total, 50);
     assert.equal(all.points[29].total, 70);
     assert.equal(all.totals.total, 120);
-    const alpha = buildUsageTrend(events, { range: "30d", nowMs: now, workspacePath: "/proj/alpha/" });
+    const alpha = buildUsageTrend(events, { range: 30, nowMs: now, workspacePath: "/proj/alpha/" });
     assert.equal(alpha.totals.total, 50);
     assert.equal(alpha.points[29].total, 0);
   });
@@ -674,13 +674,14 @@ describe("buildUsageTrend", () => {
     const next = new Date(at.getTime() + 60 * 60 * 1000).toLocaleTimeString(undefined, { hour: "numeric" });
     assert.equal(trendBucketSpan("24h", at.getTime()), `${hour} – ${next}`);
     assert.equal(
-      trendBucketSpan("7d", at.getTime()),
+      trendBucketSpan(7, at.getTime()),
       `${at.toLocaleDateString(undefined, { weekday: "short" })}, ${hour} – ${next}`,
     );
     assert.equal(
-      trendBucketSpan("30d", at.getTime()),
+      trendBucketSpan(30, at.getTime()),
       at.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }),
     );
+    assert.equal(trendBucketSpan(90, at.getTime()), trendBucketSpan(30, at.getTime()));
   });
 
   it("sums an inclusive dragged span and ignores the order of the ends", () => {
@@ -733,13 +734,35 @@ describe("buildUsageTrend", () => {
         total_tokens: 1550,
       }),
     ];
-    const trend = buildUsageTrend(events, { range: "7d", nowMs: now });
+    const trend = buildUsageTrend(events, { range: 7, nowMs: now });
     assert.equal(trend.points.length, 7 * 24);
     assert.equal(trend.totals.total, 1550);
     assert.equal(
       trend.points.reduce((sum, point) => sum + point.total, 0),
       1550,
     );
+  });
+
+  it("uses one point per day for 90 days", () => {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 89);
+    const trend = buildUsageTrend(
+      [
+        ev({
+          id: 1,
+          recorded_at: new Date(start.getTime() + 3600_000).toISOString(),
+          workspace_path: "/a",
+          prompt_tokens: 10,
+          completion_tokens: 5,
+          total_tokens: 15,
+        }),
+      ],
+      { range: 90, nowMs: now },
+    );
+    assert.equal(trend.points.length, 90);
+    assert.equal(trend.points[0].total, 15);
+    assert.equal(trend.totals.total, 15);
   });
 });
 

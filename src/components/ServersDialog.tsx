@@ -3,6 +3,7 @@ import { Button } from "./Button";
 import { Symbol } from "./Symbol";
 import * as api from "../lib/tauri";
 import type { AgentServer, HostPrompt, KeyStatus, LanHost, RemoteProject, ServerInstallStatus, ServerProviderKeys, ServerStorage } from "../lib/tauri";
+import { detectMcp, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { formatBytes } from "../lib/usage";
 
 type Step = "list" | "detail" | "connect" | "trust" | "install" | "keys";
@@ -101,6 +102,7 @@ function ServerDetail({
   status,
   projects,
   storage,
+  git,
   keys,
   copyProviders,
   localKeys,
@@ -112,11 +114,17 @@ function ServerDetail({
   onRecheck,
   onToggleProvider,
   onCopyKeys,
+  onInstallGit,
+  onSyncCapabilities,
+  mcpName,
+  localMcp,
+  onMcpName,
 }: {
   row: AgentServer;
   status: InstallView | undefined;
   projects: RemoteProject[];
   storage: ServerStorage | null;
+  git: boolean | "checking";
   keys: ServerProviderKeys | null;
   copyProviders: ProviderId[];
   localKeys: LocalKeys;
@@ -128,6 +136,11 @@ function ServerDetail({
   onRecheck: () => void;
   onToggleProvider: (id: ProviderId) => void;
   onCopyKeys: (id: ProviderId) => void;
+  onInstallGit: () => void;
+  onSyncCapabilities: () => void;
+  mcpName: string;
+  localMcp: DetectedMcpServer[];
+  onMcpName: (name: string) => void;
 }) {
   const { label, online } = reachOf(status);
   const copying = status === "copying";
@@ -163,6 +176,7 @@ function ServerDetail({
         <Fact label="Version" value={version} />
         <Fact label="Pairing" value={row.paired ? "Paired" : needsToken ? "Needs a token" : "Not paired"} />
         <Fact label="Program" value={known?.path || "~/.twanagent/bin/twanagent-server"} mono />
+        <Fact label="Git" value={git === "checking" ? "Checking…" : git ? "Installed" : "Not installed"} />
         <Fact label="Added" value={row.installed_at ? row.installed_at.slice(0, 10) : "—"} />
         <Fact
           label="SQLite"
@@ -187,6 +201,11 @@ function ServerDetail({
             Pair
           </Button>
         ) : null}
+        {known?.online && git === false ? (
+          <Button disabled={busy} onClick={onInstallGit}>
+            {busy ? "Installing…" : "Install git"}
+          </Button>
+        ) : null}
       </div>
       <ProviderKeys
         keys={keys}
@@ -196,6 +215,23 @@ function ServerDetail({
         onSync={known?.online ? onCopyKeys : undefined}
         busy={busy}
       />
+      {known?.online ? (
+        <div className="grid gap-2">
+          <CapabilitySync
+            checked
+            disabled={busy}
+            mcpName={mcpName}
+            mcpServers={localMcp}
+            onChange={() => undefined}
+            onMcp={onMcpName}
+          />
+          <div className="flex justify-end">
+            <Button disabled={busy} onClick={onSyncCapabilities}>
+              {busy ? "Syncing…" : "Sync MCP and skills"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div className="grid gap-1.5">
         <div className="text-[11px] font-semibold tracking-wide text-muted uppercase">Projects</div>
         {projects.length === 0 ? (
@@ -224,6 +260,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [saved, setSaved] = useState<AgentServer[]>([]);
   const [projects, setProjects] = useState<RemoteProject[]>([]);
   const [storageById, setStorageById] = useState<Record<string, ServerStorage>>({});
+  const [gitById, setGitById] = useState<Record<string, boolean | "checking">>({});
   const [keysById, setKeysById] = useState<Record<string, ServerProviderKeys>>({});
   const [copyProviders, setCopyProviders] = useState<ProviderId[]>([]);
   const [localKeys, setLocalKeys] = useState<LocalKeys>(NO_LOCAL_KEYS);
@@ -242,6 +279,9 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [probe, setProbe] = useState<ServerInstallStatus | "checking" | null>(null);
+  const [syncMcp, setSyncMcp] = useState(false);
+  const [mcpName, setMcpName] = useState("");
+  const [localMcp, setLocalMcp] = useState<DetectedMcpServer[]>([]);
 
   function reload() {
     setLoading(true);
@@ -258,6 +298,11 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   }
 
   function loadStorage(id: string) {
+    setGitById((prev) => ({ ...prev, [id]: "checking" }));
+    void api
+      .serverGit(id)
+      .then((row) => setGitById((prev) => ({ ...prev, [id]: row.installed })))
+      .catch(() => setGitById((prev) => ({ ...prev, [id]: false })));
     void api
       .serverStorage(id)
       .then((row) => setStorageById((prev) => ({ ...prev, [id]: row })))
@@ -325,6 +370,25 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
         setKeyPath(defaults.key_path ?? null);
       })
       .catch(() => undefined);
+    void detectMcp({
+      readHome: async (path) => {
+        try {
+          return await api.readUserMcp(path);
+        } catch {
+          return null;
+        }
+      },
+    })
+      .then(async (rows) => {
+        let authed: string[] = [];
+        try {
+          authed = await api.mcpAuthNames();
+        } catch {
+          authed = [];
+        }
+        setLocalMcp(withMcpAuth(rows, authed));
+      })
+      .catch(() => setLocalMcp([]));
   }, []);
 
   useEffect(() => {
@@ -465,6 +529,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
         const keys = await api.copyServerProviderKeys(server.id, copyProviders);
         setKeysById((prev) => ({ ...prev, [server.id]: keys }));
       }
+      if (syncMcp) await api.syncServerCapabilities(server.id, mcpName || undefined);
       setHost("");
       setPassword("");
       setStep("detail");
@@ -598,6 +663,16 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               status={installs[selected.id]}
               projects={projects.filter((project) => project.machine_id === selected.machine_id)}
               storage={storageById[selected.id] ?? null}
+              git={gitById[selected.id] ?? "checking"}
+              onInstallGit={() => {
+                setBusy(true);
+                setError(null);
+                void api
+                  .installServerGit(selected.id)
+                  .then((row) => setGitById((prev) => ({ ...prev, [selected.id]: row.installed })))
+                  .catch((err) => setError(String(err)))
+                  .finally(() => setBusy(false));
+              }}
               keys={keysById[selected.id] ?? null}
               copyProviders={copyProviders}
               localKeys={localKeys}
@@ -608,6 +683,18 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               onRemove={() => void forget(selected)}
               onRecheck={() => void checkInstall(selected.id)}
               onToggleProvider={toggleProvider}
+              mcpName={mcpName}
+              localMcp={localMcp}
+              onMcpName={setMcpName}
+              onSyncCapabilities={() => {
+                setBusy(true);
+                setError(null);
+                void api
+                  .syncServerCapabilities(selected.id, mcpName || undefined)
+                  .then(() => setError(null))
+                  .catch((err) => setError(String(err)))
+                  .finally(() => setBusy(false));
+              }}
               onCopyKeys={(id) => {
                 setBusy(true);
                 setError(null);
@@ -659,6 +746,11 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               localKeys={localKeys}
               busy={busy}
               onToggle={toggleProvider}
+              syncMcp={syncMcp}
+              onSyncMcp={setSyncMcp}
+              mcpName={mcpName}
+              mcpServers={localMcp}
+              onMcp={setMcpName}
               onBack={() => setStep("install")}
               onSkip={() => void finishKeys(false)}
               onCopy={() => void finishKeys(true)}
@@ -865,7 +957,12 @@ function KeysStep({
   copyProviders,
   localKeys,
   busy,
+  syncMcp,
+  mcpName,
+  mcpServers,
   onToggle,
+  onSyncMcp,
+  onMcp,
   onBack,
   onSkip,
   onCopy,
@@ -873,7 +970,12 @@ function KeysStep({
   copyProviders: ProviderId[];
   localKeys: LocalKeys;
   busy: boolean;
+  syncMcp: boolean;
+  mcpName: string;
+  mcpServers: DetectedMcpServer[];
   onToggle: (id: ProviderId) => void;
+  onSyncMcp: (next: boolean) => void;
+  onMcp: (name: string) => void;
   onBack: () => void;
   onSkip: () => void;
   onCopy: () => void;
@@ -886,6 +988,14 @@ function KeysStep({
         selected={copyProviders}
         onToggle={onToggle}
         hint="Only a provider with a saved key can be copied. Models without a key stay off for projects on this server."
+      />
+      <CapabilitySync
+        checked={syncMcp}
+        disabled={busy}
+        mcpName={mcpName}
+        mcpServers={mcpServers}
+        onChange={onSyncMcp}
+        onMcp={onMcp}
       />
       <div className="flex justify-between gap-2">
         <Button onClick={onBack} disabled={busy}>
@@ -900,6 +1010,59 @@ function KeysStep({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CapabilitySync({
+  checked,
+  disabled,
+  mcpName,
+  mcpServers,
+  onChange,
+  onMcp,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  mcpName: string;
+  mcpServers: DetectedMcpServer[];
+  onChange: (next: boolean) => void;
+  onMcp: (name: string) => void;
+}) {
+  const http = mcpServers.filter((row) => row.transport === "http");
+  return (
+    <div className={`grid gap-2 rounded-xl border px-3 py-3 ${checked ? "border-accent/70 bg-wash" : "border-ink/10 bg-panel"}`}>
+      <button
+        type="button"
+        aria-pressed={checked}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className="grid gap-1 text-left disabled:opacity-50"
+      >
+        <span className="text-[13px] font-medium text-ink">{checked ? "Sync MCP and skills" : "Skip MCP and skills"}</span>
+        <span className="text-[12px] leading-relaxed text-muted">
+          Copies the MCP configs and skills from this Mac. Pick an HTTP server to sign in here first. That login is what gets sent.
+        </span>
+      </button>
+      {checked && http.length ? (
+        <label className="grid gap-1">
+          <span className="text-[12px] text-muted">Sign in on this Mac</span>
+          <select
+            value={mcpName}
+            disabled={disabled}
+            onChange={(event) => onMcp(event.target.value)}
+            className="h-9 rounded-lg border border-line bg-canvas px-2 text-[13px] outline-none"
+          >
+            <option value="">Already signed in</option>
+            {http.map((row) => (
+              <option key={row.name} value={row.name}>
+                {row.name}
+                {row.authed ? " · signed in" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
     </div>
   );
 }

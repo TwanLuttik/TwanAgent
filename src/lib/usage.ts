@@ -543,7 +543,7 @@ export function teaserIndex(nowMs: number, startedMs = 0, intervalMs = 5000): nu
   return ((step % len) + len) % len;
 }
 
-export type UsageTrendRange = "24h" | "7d" | "30d";
+export type UsageTrendRange = UsageRange;
 
 export type UsageTrendModel = UsageTotals & {
   model: string;
@@ -575,20 +575,24 @@ const DAY = 24 * HOUR;
 
 export function usageTrendRangeMs(range: UsageTrendRange): number {
   if (range === "24h") return DAY;
-  if (range === "7d") return 7 * DAY;
-  return 30 * DAY;
+  return range * DAY;
+}
+
+/** 24h and 7d stay hourly. Longer ranges are one point per calendar day so 90 days still fits. */
+function trendByDay(range: UsageTrendRange): boolean {
+  return range !== "24h" && range !== 7;
 }
 
 function trendBucketCount(range: UsageTrendRange): number {
   if (range === "24h") return 24;
-  if (range === "7d") return 7 * 24;
-  return 30;
+  if (range === 7) return 7 * 24;
+  return range;
 }
 
 function trendBucketStart(range: UsageTrendRange, nowMs: number): number {
-  if (range === "30d") {
+  if (trendByDay(range)) {
     const end = new Date(nowMs);
-    return new Date(end.getFullYear(), end.getMonth(), end.getDate() - 29).setHours(0, 0, 0, 0);
+    return new Date(end.getFullYear(), end.getMonth(), end.getDate() - (range - 1)).setHours(0, 0, 0, 0);
   }
   // Clock hours, not a slice of "now minus 24h". The last bucket is the hour we are in.
   const hour = new Date(nowMs);
@@ -597,13 +601,12 @@ function trendBucketStart(range: UsageTrendRange, nowMs: number): number {
   return hour.getTime() - (count - 1) * HOUR;
 }
 
-function trendBucketAt(range: UsageTrendRange, startMs: number, index: number, size: number): number {
-  if (range === "30d") {
+function trendBucketAt(range: UsageTrendRange, startMs: number, index: number): number {
+  if (trendByDay(range)) {
     const start = new Date(startMs);
     return new Date(start.getFullYear(), start.getMonth(), start.getDate() + index).setHours(0, 0, 0, 0);
   }
   return startMs + index * HOUR;
-  void size;
 }
 
 function dayIndex(startMs: number, atMs: number): number {
@@ -616,10 +619,10 @@ function dayIndex(startMs: number, atMs: number): number {
 
 function trendLabel(range: UsageTrendRange, atMs: number): string {
   const d = new Date(atMs);
-  if (range === "30d") {
+  if (trendByDay(range)) {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
-  if (range === "7d") {
+  if (range === 7) {
     return d.toLocaleString(undefined, { weekday: "short", hour: "numeric" });
   }
   return d.toLocaleTimeString(undefined, { hour: "numeric" });
@@ -633,15 +636,15 @@ function hourName(atMs: number): string {
 
 /**
  * The window a chart point covers.
- * 24h and 7d are one hour. 30d is the whole calendar day.
+ * 24h and 7 days are one hour. 30 and 90 days are the whole calendar day.
  */
 export function trendBucketSpan(range: UsageTrendRange, atMs: number): string {
-  if (range === "30d") {
+  if (trendByDay(range)) {
     const start = new Date(atMs);
     return start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   }
   const end = atMs + HOUR_MS;
-  if (range === "7d") {
+  if (range === 7) {
     const day = new Date(atMs).toLocaleDateString(undefined, { weekday: "short" });
     return `${day}, ${hourName(atMs)} – ${hourName(end)}`;
   }
@@ -659,10 +662,10 @@ export function buildUsageTrend(
   const nowMs = opts.nowMs ?? Date.now();
   const count = trendBucketCount(opts.range);
   const startMs = trendBucketStart(opts.range, nowMs);
-  const size = opts.range === "30d" ? DAY : HOUR;
+  const byDay = trendByDay(opts.range);
   const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
   const points: UsageTrendPoint[] = Array.from({ length: count }, (_, i) => {
-    const atMs = trendBucketAt(opts.range, startMs, i, size);
+    const atMs = trendBucketAt(opts.range, startMs, i);
     return { atMs, label: trendLabel(opts.range, atMs), models: [], ...emptyTotals() };
   });
   const totals = emptyTotals();
@@ -671,7 +674,7 @@ export function buildUsageTrend(
     (row, t) => t >= startMs && t <= nowMs && (!want || projectKey(row.workspace_path) === want),
   )) {
     addTotals(totals, delta);
-    let i = opts.range === "30d" ? dayIndex(startMs, atMs) : Math.floor((atMs - startMs) / size);
+    let i = byDay ? dayIndex(startMs, atMs) : Math.floor((atMs - startMs) / HOUR);
     if (i >= count) i = count - 1;
     if (i < 0) continue;
     addTotals(points[i], delta);

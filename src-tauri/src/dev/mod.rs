@@ -5,12 +5,12 @@ pub mod conv;
 mod files;
 mod git;
 pub mod keys;
-mod mcp;
-mod mcp_oauth;
+pub mod mcp;
+pub mod mcp_oauth;
 pub(crate) mod paths;
 pub(crate) mod project_location;
 mod projects;
-mod skills;
+pub mod skills;
 pub(crate) mod types;
 
 pub use types::{

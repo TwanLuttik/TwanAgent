@@ -108,6 +108,7 @@ export const Workspace = memo(function Workspace({
   const [switching, setSwitching] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gitMissing, setGitMissing] = useState(false);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
   const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
@@ -126,11 +127,22 @@ export const Workspace = memo(function Workspace({
     setError(null);
     try {
       const open = dirsToList(expanded, fileStructureDirs(workspace));
-      const [nextChanges, listings] = await Promise.all([
-        api.gitStatus(workspace, pane.tabs.some((tab) => tab.kind === "git")),
+      const [gitResult, listings] = await Promise.all([
+        api.gitStatus(workspace, pane.tabs.some((tab) => tab.kind === "git")).then(
+          (rows) => ({ rows, missing: false }),
+          (err: unknown) => {
+            const text = String(err).toLowerCase();
+            if (text.includes("git: command not found") || text.includes("git: not found") || text.includes("git is not available")) {
+              return { rows: [] as GitChange[], missing: true };
+            }
+            throw err;
+          },
+        ),
         Promise.all(open.map(async (path) => ({ path, rows: await api.listDir(workspace, path) }))),
       ]);
+      const nextChanges = gitResult.rows;
       if (gen !== refreshGen.current) return;
+      setGitMissing(gitResult.missing);
       setChanges(nextChanges);
       setChildren((prev) => {
         const next = { ...prev };
@@ -480,6 +492,7 @@ export const Workspace = memo(function Workspace({
               {tab.kind === "files" ? (
                 <FilesPane
                   error={error}
+                  gitMissing={gitMissing}
                   expanded={expanded}
                   childrenOf={children}
                   selected={picked}
@@ -781,6 +794,7 @@ function openTreePaths(state: Record<string, boolean>): string[] {
 
 function FilesPane({
   error,
+  gitMissing = false,
   expanded,
   childrenOf,
   selected,
@@ -803,6 +817,7 @@ function FilesPane({
   onNewFileCancel,
 }: {
   error: string | null;
+  gitMissing?: boolean;
   expanded: Record<string, boolean>;
   childrenOf: Record<string, Entry[]>;
   selected: string[];
@@ -958,6 +973,17 @@ function FilesPane({
       }}
     >
       {error && <p className="px-2 text-[11px] text-err">{error}</p>}
+      {gitMissing ? (
+        <span className="group/git relative mx-2 mb-1 flex w-fit items-center" title="Git is not installed on this server">
+          <Symbol name="exclamationmark.triangle.fill" className="size-3.5 text-warn" />
+          <span
+            role="tooltip"
+            className="pointer-events-none absolute top-full left-0 z-10 mt-1 hidden w-max rounded-md border border-line/25 bg-canvas px-2 py-1 text-[11px] text-ink shadow-card group-hover/git:block"
+          >
+            Git is not installed on this server
+          </span>
+        </span>
+      ) : null}
       {dropTarget === "" ? (
         <div className="sticky top-0 z-10 mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/20 px-2 py-[5px] text-[12px] font-medium text-accent ring-1 ring-inset ring-accent">
           <Symbol name="arrow.down.to.line" className="size-3.5" />

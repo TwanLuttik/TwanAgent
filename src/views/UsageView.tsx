@@ -11,11 +11,9 @@ import {
   modelColorIndex,
   buildUsageTrend,
   rangeStartMs,
-  usageTrendRangeMs,
   type UsageEvent,
   type UsageModel,
   type UsageRange,
-  type UsageTrendRange,
 } from "../lib/usage";
 import * as api from "../lib/tauri";
 
@@ -26,15 +24,8 @@ const RANGES: { id: UsageRange; label: string }[] = [
   { id: 90, label: "90 days" },
 ];
 
-const TREND_RANGES: { id: UsageTrendRange; label: string }[] = [
-  { id: "24h", label: "24 hours" },
-  { id: "7d", label: "7 days" },
-  { id: "30d", label: "30 days" },
-];
-
 export function UsageView({ onClose }: { onClose?: () => void } = {}) {
   const [range, setRange] = useState<UsageRange>(30);
-  const [trendRange, setTrendRange] = useState<UsageTrendRange>("24h");
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [events, setEvents] = useState<UsageEvent[]>([]);
   const [error, setError] = useState("");
@@ -54,8 +45,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 
   useEffect(() => {
     let gone = false;
-    const sinceMs = Math.min(rangeStartMs(range), Date.now() - usageTrendRangeMs(trendRange));
-    const since = new Date(sinceMs).toISOString();
+    const since = new Date(rangeStartMs(range)).toISOString();
     void api
       .usageList(since)
       .then((rows) => {
@@ -70,7 +60,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     return () => {
       gone = true;
     };
-  }, [range, trendRange]);
+  }, [range]);
 
   const all = useMemo(() => buildUsageSnapshot(events, { range }), [events, range]);
   const snap = useMemo(
@@ -78,8 +68,8 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     [events, range, workspacePath],
   );
   const trend = useMemo(
-    () => buildUsageTrend(events, { range: trendRange, workspacePath }),
-    [events, trendRange, workspacePath],
+    () => buildUsageTrend(events, { range, workspacePath }),
+    [events, range, workspacePath],
   );
   const cost = useMemo(
     () => estimateUsageCost(events, { range, workspacePath }),
@@ -133,16 +123,11 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
         </div>
 
         <section>
-          <div className="mb-1 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-[12px] font-medium text-ink">Tokens over time</div>
-              <div className="text-[11px] text-muted">
-                Drag a range to total it. Double-click to clear.
-              </div>
-            </div>
-            <Segmented label="Usage graph range" value={trendRange} options={TREND_RANGES} onChange={setTrendRange} />
+          <div className="mb-1">
+            <div className="text-[12px] font-medium text-ink">Tokens over time</div>
+            <div className="text-[11px] text-muted">Drag a range to total it. Double-click to clear.</div>
           </div>
-          <UsageLineChart trend={trend} range={trendRange} focusModel={focusModel} />
+          <UsageLineChart trend={trend} range={range} focusModel={focusModel} />
           {snap.models.length > 0 ? (
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 px-1">
               {snap.models.map((row) => {

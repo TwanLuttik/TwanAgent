@@ -821,6 +821,45 @@ export function copyServerProviderKeys(id: string, providers: string[]): Promise
   return invoke("dev_copy_server_provider_keys", { id, providers });
 }
 
+export type RemoteSkillFile = {
+  path: string;
+  read_path: string;
+  origin: string;
+  contents: string;
+};
+
+export type RemoteCapabilities = {
+  /** Config text keyed as `relative path\\ncontents`. */
+  mcp: string[];
+  auth: string[];
+  skills: RemoteSkillFile[];
+};
+
+export function serverGit(id: string): Promise<{ installed: boolean }> {
+  return invoke("dev_server_git", { id });
+}
+
+export function installServerGit(id: string): Promise<{ installed: boolean }> {
+  return invoke("dev_install_server_git", { id });
+}
+
+export function serverCapabilities(id: string): Promise<RemoteCapabilities> {
+  return invoke("dev_server_capabilities", { id });
+}
+
+export function workspaceCapabilities(workspace: string): Promise<RemoteCapabilities | null> {
+  return invoke("dev_workspace_capabilities", { workspace });
+}
+
+export function workspaceServerId(workspace: string): Promise<string | null> {
+  return invoke("dev_workspace_server_id", { workspace });
+}
+
+/** Copy MCP configs and skills. `mcpName` signs in through the browser on this Mac first. */
+export function syncServerCapabilities(id: string, mcpName?: string): Promise<RemoteCapabilities> {
+  return invoke("dev_sync_server_capabilities", { id, mcpName: mcpName ?? null, mcp_name: mcpName ?? null });
+}
+
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
   return invoke("dev_list_conversations", { workspace });
 }
