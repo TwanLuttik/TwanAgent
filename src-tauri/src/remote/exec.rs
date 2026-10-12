@@ -110,6 +110,7 @@ mod tests {
             Ok(ExecResult {
                 stdout: "ok".into(),
                 stderr: String::new(),
+                stdout_bytes: b"ok".to_vec(),
                 exit_code: Some(0),
                 timed_out: false,
             })
@@ -176,6 +177,7 @@ mod tests {
         let result = ExecResult {
             stdout: "x".repeat(CMD_OUTPUT_LIMIT + 50),
             stderr: String::new(),
+            stdout_bytes: Vec::new(),
             exit_code: Some(0),
             timed_out: false,
         };

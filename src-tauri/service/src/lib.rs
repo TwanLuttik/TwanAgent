@@ -8,7 +8,9 @@ mod codec;
 mod error;
 mod files;
 mod keys;
+mod live;
 mod model;
+mod realtime;
 mod session;
 mod store;
 mod tools;
@@ -16,6 +18,8 @@ mod turn;
 
 pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 pub use error::{Error, Result};
+pub use live::LiveFrame;
+pub use realtime::{ensure_started, subscribe_text, LIVE_PORT};
 pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use session::serve;
 pub use store::{Conversation, ConversationSummary};

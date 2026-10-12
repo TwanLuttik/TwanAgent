@@ -129,8 +129,53 @@ fn migrate_remote_tables(conn: &Connection) -> Result<()> {
             token TEXT,
             provider_keys TEXT
         );
+        CREATE TABLE IF NOT EXISTS provider_keys (
+            provider TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         ",
     )?;
+    Ok(())
+}
+
+/// A model-provider API key saved in Settings. Not the settings table: that one is readable from the UI.
+pub fn get_provider_key(conn: &Connection, provider: &str) -> Result<Option<String>> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT value FROM provider_keys WHERE provider = ?1",
+        [provider],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+pub fn set_provider_key(conn: &Connection, provider: &str, value: &str) -> Result<()> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Err(Error::Other("provider key name is empty".into()));
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return delete_provider_key(conn, provider);
+    }
+    conn.execute(
+        "INSERT INTO provider_keys (provider, value) VALUES (?1, ?2)
+         ON CONFLICT(provider) DO UPDATE SET value = excluded.value",
+        params![provider, value],
+    )?;
+    Ok(())
+}
+
+pub fn delete_provider_key(conn: &Connection, provider: &str) -> Result<()> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Ok(());
+    }
+    conn.execute("DELETE FROM provider_keys WHERE provider = ?1", [provider])?;
     Ok(())
 }
 
@@ -673,6 +718,26 @@ mod tests {
         let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
         assert!(chats.is_empty() && journeys.is_empty());
         assert!(sidebar_cached(&conn, "/app/beta").unwrap());
+    }
+
+    #[test]
+    fn provider_keys_roundtrip_and_stay_out_of_settings() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        assert!(get_provider_key(&conn, "xai").unwrap().is_none());
+        set_provider_key(&conn, "xai", " xai-secret ").unwrap();
+        set_provider_key(&conn, "anthropic", "anthropic-secret").unwrap();
+        assert_eq!(get_provider_key(&conn, "xai").unwrap().as_deref(), Some("xai-secret"));
+        set_provider_key(&conn, "xai", "").unwrap();
+        assert!(get_provider_key(&conn, "xai").unwrap().is_none());
+        assert_eq!(
+            get_provider_key(&conn, "anthropic").unwrap().as_deref(),
+            Some("anthropic-secret")
+        );
+        delete_provider_key(&conn, "anthropic").unwrap();
+        assert!(get_provider_key(&conn, "anthropic").unwrap().is_none());
+        assert!(list_settings(&conn).unwrap().is_empty());
+        assert!(set_provider_key(&conn, "  ", "nope").is_err());
     }
 
     #[test]

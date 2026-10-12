@@ -396,7 +396,11 @@ fn api_base(region: &str, base_url: Option<&str>, resource_url: Option<&str>) ->
 /// Saved key, then `MINIMAX_API_KEY`, then the `mmx` OAuth login.
 /// An OAuth token near expiry is refreshed and written back, matching the CLI.
 pub async fn resolve_minimax_auth_fresh() -> Option<MinimaxAuth> {
-    if let Some(key) = crate::secrets::resolve_minimax_key_on_disk() {
+    resolve_minimax_auth_fresh_in(&crate::state::app_data_dir()).await
+}
+
+pub async fn resolve_minimax_auth_fresh_in(data_dir: &Path) -> Option<MinimaxAuth> {
+    if let Some(key) = crate::secrets::resolve_minimax_key_on_disk(data_dir) {
         let base = mmx_home()
             .and_then(|home| read_config(&home))
             .map(|config| api_base(&config.region, config.base_url.as_deref(), None))
@@ -443,7 +447,7 @@ pub fn minimax_cli_info() -> MinimaxCliInfo {
         .as_ref()
         .map(|row| row.api_key.is_some() || row.oauth.is_some())
         .unwrap_or(false)
-        || crate::secrets::resolve_minimax_key_on_disk().is_some();
+        || crate::secrets::resolve_minimax_key_on_disk(&crate::state::app_data_dir()).is_some();
     MinimaxCliInfo {
         installed: bin.is_some(),
         path: bin.map(|path| path.display().to_string()).unwrap_or_default(),

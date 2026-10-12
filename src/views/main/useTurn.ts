@@ -1,6 +1,6 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
 import { completeTurn } from "../../lib/agent";
-import { hostedTurnStaysOnServer } from "../../lib/hosted";
+import { cloudSendWaiting, hostedTurnStaysOnServer } from "../../lib/hosted";
 import {
   activityFromToolCall,
   conversationTitleFrom,
@@ -169,6 +169,8 @@ export type TurnDeps = {
   mcpServersRef: RefObject<DetectedMcpServer[]>;
   skillsRef: RefObject<DetectedSkill[]>;
   remoteRef: RefObject<RemoteWorkspace | null>;
+  remoteKnownRef: RefObject<boolean>;
+  linkReadyRef: RefObject<boolean>;
   turnMessagesRef: RefObject<ChatMessage[] | null>;
   turnLiveRef: RefObject<{
     streamText: string;
@@ -199,7 +201,7 @@ export function bindTurn(deps: TurnDeps) {
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
     setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
-    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
+    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
 function permissionForChat(chatId: string): PermissionMode {
@@ -642,6 +644,10 @@ async function send() {
   const text = expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(promptImages);
   if (!canSendPrompt(text, images)) return;
+  if (cloudSendWaiting(remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
+    setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
+    return;
+  }
   if (remoteRef.current && remoteRef.current.online === false) {
     setFlash({
       kind: "err",

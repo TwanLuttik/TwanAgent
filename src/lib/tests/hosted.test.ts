@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, type HostedEvent, type HostedServer } from "../hosted.ts";
+import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, type HostedEvent, type HostedServer } from "../hosted.ts";
 import type { ChatMessage } from "../core.ts";
 
 describe("hosted turns", () => {
@@ -55,6 +55,15 @@ describe("hosted turns", () => {
     assert.equal(hostedTurnStaysOnServer({ paired: true, online: true }), true);
     assert.equal(hostedTurnStaysOnServer({ paired: false, online: true }), false);
     assert.equal(hostedTurnStaysOnServer(null), false);
+  });
+
+  it("holds send until a cloud project has connected", () => {
+    assert.equal(cloudSendWaiting(false, null, false), true);
+    assert.equal(cloudSendWaiting(true, null, false), false);
+    assert.equal(cloudSendWaiting(true, { paired: true, online: true }, false), true);
+    assert.equal(cloudSendWaiting(true, { paired: true, online: true }, true), false);
+    assert.equal(cloudSendWaiting(true, { paired: true, online: false }, false), false);
+    assert.equal(cloudSendWaiting(true, { paired: false, online: true }, false), false);
   });
 
   it("does not keep a local transcript when the server refuses", async () => {

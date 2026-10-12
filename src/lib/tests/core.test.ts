@@ -1058,7 +1058,10 @@ describe("folder command helpers", () => {
     assert.equal(folderActionEnabled("clone", "https://github.com/acme/app.git"), true);
     assert.equal(folderActionEnabled("open", ""), true);
     assert.match(folderActionHint("create", "demo"), /demo/);
+    assert.match(folderActionHint("create", "demo"), /this Mac/);
+    assert.match(folderActionHint("create", "demo", "Build"), /Build/);
     assert.match(folderActionHint("clone", "https://github.com/acme/app.git"), /app/);
+    assert.match(folderActionHint("clone", "https://github.com/acme/app.git", "Build"), /Build/);
     assert.equal(pathWithSlash("/projects"), "/projects/");
     assert.equal(pathWithSlash("/projects/"), "/projects/");
   });

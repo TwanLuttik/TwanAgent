@@ -95,6 +95,8 @@ export type MainModel = {
   recents: any;
   reloadRuntime: MainFn;
   remoteWorkspace: any;
+  /** True while a cloud project is still opening its server. Send stays off. */
+  cloudConnecting: boolean;
   archiveChat: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;

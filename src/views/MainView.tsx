@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
+import { cloudSendWaiting } from "../lib/hosted";
 import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
 import { detectMcp, setMcpEnabledInToml, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
@@ -183,11 +184,17 @@ export function MainView() {
   const skillsRef = useRef(skills);
   skillsRef.current = skills;
   const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
-  const hostedChats = Boolean(remoteWorkspace?.paired);
+  const [remoteKnown, setRemoteKnown] = useState(false);
+  const [linkReady, setLinkReady] = useState(false);
+  const hostedChats = Boolean(remoteWorkspace?.paired && linkReady);
   const remoteRef = useRef<RemoteWorkspace | null>(null);
   remoteRef.current = remoteWorkspace;
   /** The project `remoteWorkspace` was loaded for. Empty until that lookup returns. */
   const remoteForRef = useRef("");
+  const remoteKnownRef = useRef(false);
+  remoteKnownRef.current = remoteKnown;
+  const linkReadyRef = useRef(false);
+  linkReadyRef.current = linkReady;
   const sidebarSyncRef = useRef({ workspace, conversations, journeys });
   sidebarSyncRef.current = { workspace, conversations, journeys };
   const conversationsRef = useRef(conversations);
@@ -557,11 +564,12 @@ export function MainView() {
 
   useEffect(() => {
     if (!pathsReady || !workspace) return;
+    if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
     void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
-  }, [pathsReady, workspace, reloadConversations, setFlash]);
+  }, [pathsReady, workspace, remoteKnown, remoteWorkspace, linkReady, reloadConversations, setFlash]);
 
   useEffect(() => {
-    if (!workspace || !opened) return;
+    if (!workspace || !opened || cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
     let gone = false;
     let timer = 0;
     const watch = () => {
@@ -595,7 +603,7 @@ export function MainView() {
       gone = true;
       window.clearTimeout(timer);
     };
-  }, [workspace, opened]);
+  }, [workspace, opened, remoteKnown, remoteWorkspace, linkReady]);
 
   useEffect(() => {
     if (!workspace || !opened) {
@@ -762,6 +770,10 @@ export function MainView() {
     // Drop the previous project's cloud mark before this lookup returns.
     // Otherwise the project just opened inherits that icon.
     remoteForRef.current = "";
+    remoteKnownRef.current = false;
+    linkReadyRef.current = false;
+    setRemoteKnown(false);
+    setLinkReady(false);
     setRemoteWorkspace(null);
     const watchRemote = () => {
       const asked = workspace;
@@ -770,24 +782,47 @@ export function MainView() {
         .then((row) => {
           if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
           remoteForRef.current = asked;
-          setRemoteWorkspace(
-            row
-              ? {
-                  machineName: row.machine_name,
-                  host: row.host,
-                  user: row.user,
-                  port: row.port,
-                  remotePath: row.remote_path,
-                  online: row.online,
-                  providers: row.providers ?? [],
-                  paired: row.paired,
-                }
-              : null,
-          );
+          const next = row
+            ? {
+                machineName: row.machine_name,
+                host: row.host,
+                user: row.user,
+                port: row.port,
+                remotePath: row.remote_path,
+                online: row.online,
+                providers: row.providers ?? [],
+                paired: row.paired,
+              }
+            : null;
+          setRemoteWorkspace(next);
+          remoteKnownRef.current = true;
+          setRemoteKnown(true);
+          if (!next?.paired || !next.online) {
+            linkReadyRef.current = false;
+            setLinkReady(false);
+            return;
+          }
+          if (linkReadyRef.current) return;
+          void api
+            .warmWorkspaceLink(asked)
+            .then((ready) => {
+              if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
+              linkReadyRef.current = ready;
+              setLinkReady(ready);
+            })
+            .catch(() => {
+              if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
+              linkReadyRef.current = false;
+              setLinkReady(false);
+            });
         })
         .catch(() => {
           if (cancelled || !isSameProject(asked, workspaceRef.current)) return;
           remoteForRef.current = asked;
+          remoteKnownRef.current = true;
+          linkReadyRef.current = false;
+          setRemoteKnown(true);
+          setLinkReady(false);
           setRemoteWorkspace(null);
         })
         .finally(() => {
@@ -804,6 +839,7 @@ export function MainView() {
   useEffect(() => {
     let cancelled = false;
     const loadMcp = () => {
+      if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
       if (remoteWorkspace && workspace) {
         void api
           .workspaceCapabilities(workspace)
@@ -926,7 +962,7 @@ export function MainView() {
       cancelled = true;
       stopRefresh();
     };
-  }, [workspace, remoteWorkspace]);
+  }, [workspace, remoteWorkspace, remoteKnown, linkReady]);
 
   const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
   const pendingPlan = planQueue.find((item) => item.chatId === activeId) ?? null;
@@ -1089,6 +1125,7 @@ export function MainView() {
     setPermission,
     openSettings,
     reloadConversations,
+    hostedChats,
     runTurn: (ws, id, next, after, journeyIdOverride) => runTurnRef.current(ws, id, next, after, journeyIdOverride),
     scroller,
     runningWsRef,
@@ -1214,6 +1251,8 @@ export function MainView() {
     mcpServersRef,
     skillsRef,
     remoteRef,
+    remoteKnownRef,
+    linkReadyRef,
     turnMessagesRef,
     turnLiveRef,
     liveByChatRef,
@@ -1679,6 +1718,7 @@ export function MainView() {
     recents,
     reloadRuntime,
     remoteWorkspace,
+    cloudConnecting: cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady),
     archiveChat,
     removeChat,
     removePendingAt,

@@ -1,6 +1,6 @@
 [package]
 name = "twanagent"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 edition = "2021"
 license = "MIT"
 description = "TwanAgent desktop"
@@ -25,6 +25,7 @@ twanagent-service = { path = "service" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3"
+tokio-tungstenite = "0.26"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 keyring = "3"

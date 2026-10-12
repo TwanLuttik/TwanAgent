@@ -9,7 +9,7 @@ pub mod mcp;
 pub mod mcp_oauth;
 pub(crate) mod paths;
 pub(crate) mod project_location;
-mod projects;
+pub(crate) mod projects;
 pub mod skills;
 pub(crate) mod types;
 

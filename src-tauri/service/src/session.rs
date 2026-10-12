@@ -26,6 +26,7 @@ pub(crate) fn handle_frame(
             Ok(conversation) => ServerFrame::Conversation(conversation),
             Err(err) => ServerFrame::Error { message: err.to_string() },
         },
+        ClientFrame::Follow { id, cursor } => follow_live(service, &id, cursor),
         ClientFrame::SaveConversation(conversation) => match service.save_conversation(&conversation) {
             Ok(()) => ServerFrame::Conversation(conversation),
             Err(err) => ServerFrame::Error { message: err.to_string() },
@@ -53,6 +54,24 @@ pub(crate) fn handle_frame(
             Ok(()) => ServerFrame::Keys { present: false },
             Err(err) => ServerFrame::Error { message: err.to_string() },
         },
+    }
+}
+
+fn follow_live(service: &ProjectService, id: &str, cursor: u64) -> ServerFrame {
+    let data_dir = service.store_dir.parent().unwrap_or(service.store_dir.as_path());
+    match crate::live::read_since(data_dir, id, cursor) {
+        Ok((frames, next)) => {
+            let ended = frames
+                .iter()
+                .any(|frame| matches!(frame, crate::live::LiveFrame::Done { .. } | crate::live::LiveFrame::Error { .. }));
+            let fresh = crate::live::active(data_dir, id, std::time::Duration::from_secs(20)).unwrap_or(false);
+            ServerFrame::Live {
+                cursor: next,
+                active: fresh && !ended,
+                frames,
+            }
+        }
+        Err(err) => ServerFrame::Error { message: err.to_string() },
     }
 }
 
@@ -110,6 +129,9 @@ pub fn submit_streaming<W: Write>(
     }
     let workspace = LocalWorkspace { root: service.project.clone() };
     let (tx, rx) = std::sync::mpsc::channel();
+    let id = request.conversation_id.clone();
+    let data_dir = service.store_dir.parent().unwrap_or(service.store_dir.as_path()).to_path_buf();
+    let _ = crate::live::begin(&data_dir, &id);
     let result = crate::turn::run_live_turn(service, &request, &workspace, &resolved, |event| {
         let frame = match event {
             TurnEvent::Status(text) => ServerFrame::Status { text },
@@ -117,6 +139,8 @@ pub fn submit_streaming<W: Write>(
             TurnEvent::Done(conversation) => ServerFrame::Done { conversation },
             TurnEvent::Error(message) => ServerFrame::Error { message },
         };
+        let _ = crate::live::append_server(&data_dir, &id, &frame);
+        crate::realtime::publish_server(&id, &frame);
         let _ = tx.send(frame);
     });
     drop(tx);
@@ -229,6 +253,26 @@ mod tests {
         assert!(matches!(done, ServerFrame::Done { .. }));
         let store_bytes = std::fs::read(root.path().join("store/store.db")).unwrap_or_default();
         assert!(!String::from_utf8_lossy(&store_bytes).contains("xai-secret"));
+    }
+
+    #[test]
+    fn a_follow_reads_frames_written_while_the_turn_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let data = service.store_dir.parent().unwrap().to_path_buf();
+        crate::live::begin(&data, "c1").unwrap();
+        crate::live::append(&data, "c1", &crate::live::LiveFrame::Delta { text: "Hel".into() }).unwrap();
+        let first = follow_live(&service, "c1", 0);
+        let ServerFrame::Live { cursor, frames, .. } = first else {
+            panic!("expected a live frame");
+        };
+        assert_eq!(frames.len(), 1);
+        crate::live::append(&data, "c1", &crate::live::LiveFrame::Delta { text: "lo".into() }).unwrap();
+        let second = follow_live(&service, "c1", cursor);
+        let ServerFrame::Live { frames: more, .. } = second else {
+            panic!("expected the next live frame");
+        };
+        assert_eq!(more, vec![crate::live::LiveFrame::Delta { text: "lo".into() }]);
     }
 
     #[test]

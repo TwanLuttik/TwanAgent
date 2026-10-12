@@ -35,6 +35,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     promptImages,
     ready,
     remoteWorkspace,
+    cloudConnecting,
     runtime,
     runningTurns,
     send,
@@ -76,9 +77,17 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       onSend={() => void send()}
       onStop={stop}
       busy={chatHasRunningTurn(runningTurns, activeId)}
-      ready={providerReady}
+      ready={providerReady && !cloudConnecting}
       placeholder={
-        providerReady ? (landing ? ask : message) : landing ? `${signIn} to start` : `${signIn} to continue`
+        cloudConnecting
+          ? "Connecting…"
+          : providerReady
+            ? landing
+              ? ask
+              : message
+            : landing
+              ? `${signIn} to start`
+              : `${signIn} to continue`
       }
       workspace={workspace}
       projects={allProjectGroups}

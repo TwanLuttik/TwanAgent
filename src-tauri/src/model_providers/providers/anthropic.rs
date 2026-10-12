@@ -355,15 +355,23 @@ pub struct ClaudeAuth {
 /// Saved API key first, then the same Claude CLI login the settings screen shows as signed in.
 /// The token is not returned to the UI. An expired CLI token is not refreshed here.
 pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
-    resolve_claude_auth_with(false)
+    resolve_claude_auth_in(&crate::state::app_data_dir())
 }
 
 /// Like `resolve_claude_auth`, but renews the CLI OAuth token when it is near expiry.
 /// A saved API key is used for chat. It does not skip renewing the CLI login, because
 /// session usage can only be read with that OAuth token.
 pub async fn resolve_claude_auth_fresh() -> Option<ClaudeAuth> {
+    resolve_claude_auth_fresh_in(&crate::state::app_data_dir()).await
+}
+
+pub async fn resolve_claude_auth_fresh_in(data_dir: &std::path::Path) -> Option<ClaudeAuth> {
     let _ = refresh_claude_cli_login().await;
-    resolve_claude_auth()
+    resolve_claude_auth_in(data_dir)
+}
+
+fn resolve_claude_auth_in(data_dir: &std::path::Path) -> Option<ClaudeAuth> {
+    resolve_claude_auth_with(data_dir, false)
 }
 
 /// Renew `~/.config/anthropic/credentials` when the access token is near expiry.
@@ -373,8 +381,8 @@ pub async fn refresh_claude_cli_login() -> Option<String> {
     read_cli_access_token_fresh(&home).await
 }
 
-fn resolve_claude_auth_with(allow_expired_cli: bool) -> Option<ClaudeAuth> {
-    if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk() {
+fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool) -> Option<ClaudeAuth> {
+    if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk(data_dir) {
         return Some(ClaudeAuth {
             token: key,
             via_cli: false,

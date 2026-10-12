@@ -75,6 +75,7 @@ impl SshSession for LiveSession {
         Ok(ExecResult {
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            stdout_bytes: stdout,
             exit_code,
             timed_out,
         })
@@ -211,6 +212,8 @@ async fn connect_with_system_ssh(
         .arg(port.to_string())
         .arg("-o")
         .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("ConnectTimeout=8")
         .arg("-o")
         .arg("StrictHostKeyChecking=accept-new")
         .arg(format!("{user}@{host}"))

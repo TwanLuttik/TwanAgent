@@ -34,6 +34,17 @@ fn main() -> ExitCode {
             "--data" => data = args.next().map(expand_home),
             "--call" => once = true,
             "--frame" => frame = args.next(),
+            "--live" => {
+                let data = data.get_or_insert_with(|| expand_home("$HOME/.twanagent".into()));
+                if let Err(err) = twanagent_service::ensure_started(data) {
+                    eprintln!("{err}");
+                    return ExitCode::from(1);
+                }
+                eprintln!("twanagent-server live on 127.0.0.1:{}", twanagent_service::LIVE_PORT);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                }
+            }
             "--version" => {
                 println!("twanagent-server {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
@@ -55,6 +66,9 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    // A turn publishes on the socket. Starting it here means the process that runs the turn
+    // is also the process the desktop connects to.
+    let _ = twanagent_service::ensure_started(&data);
     let keys = key_file(&data);
     let ran = if once {
         // The SSH session runs this through a shell, so a pipe never reaches this program.

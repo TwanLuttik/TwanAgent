@@ -12,7 +12,7 @@ On the machine:
 ~/.twanagent/bin/twanagent-server --version
 ```
 
-That prints `twanagent-server` and the version, for example `twanagent-server 1.0.0-beta.2`.
+That prints `twanagent-server` and the version, for example `twanagent-server 1.0.0-beta.3`.
 
 From this Mac, for the OrbStack test machine:
 
@@ -32,6 +32,12 @@ ssh -p 22 twanluttik@192.168.139.200 ~/.twanagent/bin/twanagent-server --version
 Both flags are required. Without them the program prints the usage line and exits with status 2.
 
 The process then reads frames from stdin and writes frames to stdout. Each frame is a 4-byte big-endian length followed by JSON. The first frame the app sends is `hello`. Leave this process running for the session. Closing stdin stops it.
+
+## Live socket
+
+A running turn also publishes on a WebSocket at `127.0.0.1:8731`. The process binds that address only, so it is not reachable from another machine except through SSH. The desktop app opens `ssh -N -L` to that port and sends `{"type":"subscribe","id":"<conversation>"}`. Each later text frame is `status`, `delta`, `done`, or `error`.
+
+`--live` starts the socket and waits. A turn also starts it in the process that is answering the prompt, which is the process that publishes. Rebuild and install `twanagent-server` on the machine before the socket exists there.
 
 ## Build it for a Linux machine
 

@@ -733,8 +733,23 @@ export function createRemoteProject(name: string, machineId: string, remotePath:
   });
 }
 
+export function cloneRemoteRepo(url: string, machineId: string, remotePath: string): Promise<string> {
+  return invoke("dev_clone_remote_repo", {
+    url,
+    machineId,
+    machine_id: machineId,
+    remotePath,
+    remote_path: remotePath,
+  });
+}
+
 export function workspaceRemote(workspace: string): Promise<WorkspaceRemote | null> {
   return invoke("dev_workspace_remote", { workspace });
+}
+
+/** Open the SSH session for a cloud project. False when it is local or the server did not answer. */
+export function warmWorkspaceLink(workspace: string): Promise<boolean> {
+  return invoke("dev_warm_workspace_link", { workspace });
 }
 
 export type AgentServer = {
@@ -1141,6 +1156,21 @@ export function hostedTurn(input: {
 
 export function hostedCancel(streamId: string): Promise<void> {
   return invoke("dev_hosted_cancel", { streamId, stream_id: streamId });
+}
+
+/** Follow a turn that is already running on the paired server. Events arrive on `dev-chat`. */
+export function hostedFollow(workspace: string, streamId: string, conversationId: string): Promise<void> {
+  return invoke("dev_hosted_follow", {
+    workspace,
+    streamId,
+    stream_id: streamId,
+    conversationId,
+    conversation_id: conversationId,
+  });
+}
+
+export function hostedUnfollow(streamId: string): Promise<void> {
+  return invoke("dev_hosted_unfollow", { streamId, stream_id: streamId });
 }
 
 /** One conversation frame on the paired server. The reply is the server frame as JSON. */

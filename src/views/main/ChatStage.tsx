@@ -48,6 +48,7 @@ export function ChatStage() {
     folderOpen,
     journeys,
     opened,
+    cloudConnecting,
     openChat,
     openWorkspaceFile,
     pendingClosePath,
@@ -196,7 +197,7 @@ export function ChatStage() {
           )}
           </div>
         </div>
-        {paneWorkspace && !fullPage ? (
+        {paneWorkspace && !fullPage && !cloudConnecting ? (
           <Workspace
             workspace={paneWorkspace}
             selectedPath={editor.activePath}

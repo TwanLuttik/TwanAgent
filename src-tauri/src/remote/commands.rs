@@ -228,7 +228,35 @@ pub fn dev_accept_host(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_create_remote_project(
+pub async fn dev_clone_remote_repo(
+    app: AppHandle,
+    url: String,
+    machine_id: String,
+    remote_path: String,
+) -> Result<String> {
+    let state = app.state::<AppState>();
+    let work = server_work(&state);
+    let url = crate::dev::projects::validate_git_url_public(&url)?.to_string();
+    let remote_path = config::validate_remote_path(&remote_path)?;
+    let name = remote_path
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or("project")
+        .to_string();
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let machine = config::machine_by_id(&conn, &machine_id)?
+            .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+        require_trusted_host(&work, &machine)?;
+        let command = super::mount::clone_remote_command(&remote_path, &url)?;
+        let _ = require_exec(&work, &machine, &command, 600)?;
+        register_remote_project(&app, &machine, &name, &remote_path)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_create_remote_project(
     app: AppHandle,
     name: String,
     machine_id: String,
@@ -237,82 +265,103 @@ pub fn dev_create_remote_project(
     let state = app.state::<AppState>();
     let remote_path = config::validate_remote_path(&remote_path)?;
     let name = config::validate_name(&name)?;
-    let conn = open_db(&state)?;
-    let machine = config::machine_by_id(&conn, &machine_id)?
-        .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let known = KnownHosts::load(&state.data_dir);
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let machine = config::machine_by_id(&conn, &machine_id)?
+            .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+        require_trusted_host(&work, &machine)?;
+        let _ = require_exec(&work, &machine, &super::mount::mkdir_remote_command(&remote_path)?, 30)?;
+        register_remote_project(&app, &machine, &name, &remote_path)
+    })
+    .await
+}
+
+fn require_trusted_host(work: &ServerWork, machine: &config::Machine) -> Result<()> {
+    let known = KnownHosts::load(&work.data_dir);
     let trusted = known.rows.iter().any(|row| row.host == machine.host && row.port == machine.port);
-    if !trusted {
-        return Err(Error::Other(
-            "Confirm the host key before creating a project on this server.".into(),
-        ));
+    if trusted {
+        return Ok(());
     }
+    Err(Error::Other(
+        "Confirm the host key before creating a project on this server.".into(),
+    ))
+}
+
+fn register_remote_project(app: &AppHandle, machine: &config::Machine, name: &str, remote_path: &str) -> Result<String> {
+    let state = app.state::<AppState>();
+    let conn = open_db(&state)?;
     let id = uuid::Uuid::new_v4().to_string();
     let mount = super::mount::mount_dir(&state.data_dir, &id);
     super::mount::ensure_mount_point(&mount)?;
-    let secret = machine
-        .secret_account
-        .as_deref()
-        .and_then(crate::secrets::get_ssh_secret);
-    let mkdir = super::mount::mkdir_remote_command(&remote_path)?;
-    let made = state.ssh_pool.exec(
-        &machine,
-        secret.as_deref(),
-        &super::ssh::ExecRequest {
-            cwd: "/".into(),
-            command: mkdir,
-            timeout_secs: 30,
-        },
-    )?;
-    if made.timed_out || made.exit_code != Some(0) {
-        let detail = made.stderr.trim();
-        return Err(Error::Other(if detail.is_empty() {
-            format!("could not create {remote_path} on {}", machine.host)
-        } else {
-            format!("could not create {remote_path} on {}: {detail}", machine.host)
-        }));
-    }
     // The project stays on the server. File tools use SSH, so macOS does not get a mounted drive.
     let _ = super::mount::unmount(&mount);
-    let _project = config::insert_remote_project(&conn, &machine.id, &name, &remote_path, &mount)?;
-    let canon = state.register_workspace(&app, &mount)?;
+    let _project = config::insert_remote_project(&conn, &machine.id, name, remote_path, &mount)?;
+    let canon = state.register_workspace(app, &mount)?;
     let conn = open_db(&state)?;
-    let _ = crate::appdb::add_project_named(&conn, &canon, Some(&name));
+    let _ = crate::appdb::add_project_named(&conn, &canon, Some(name));
     Ok(crate::dev::path_string(&canon))
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_workspace_remote(
+pub async fn dev_workspace_remote(
     state: State<'_, AppState>,
     workspace: String,
 ) -> Result<Option<WorkspaceRemote>> {
-    let root = state.require_workspace(&workspace)?;
-    let conn = open_db(&state)?;
-    let Some(project) = config::remote_project_by_mount(&conn, &root)? else {
-        return Ok(None);
-    };
-    let machine = config::machine_by_id(&conn, &project.machine_id)?
-        .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let online = machine_reachable(&machine.host, machine.port);
-    let paired_server = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
-    let providers = paired_server
-        .as_ref()
-        .map(|server| super::agent_server::server_provider_keys(&conn, &server.id))
-        .transpose()?
-        .unwrap_or_default();
-    let paired = paired_server.as_ref().is_some_and(|server| server.paired);
-    Ok(Some(WorkspaceRemote {
-        machine_id: machine.id,
-        machine_name: machine.name,
-        host: machine.host,
-        user: machine.user,
-        port: machine.port,
-        remote_path: project.remote_path,
-        project_name: project.name,
-        online,
-        providers,
-        paired,
-    }))
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let root = crate::dev::paths::expand_folder_path(&workspace)?;
+        let conn = work_db(&work)?;
+        let Some(project) = config::remote_project_by_mount(&conn, &root)? else {
+            return Ok(None);
+        };
+        let machine = config::machine_by_id(&conn, &project.machine_id)?
+            .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+        let online = machine_reachable(&machine.host, machine.port);
+        let paired_server = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
+        let providers = paired_server
+            .as_ref()
+            .map(|server| super::agent_server::server_provider_keys(&conn, &server.id))
+            .transpose()?
+            .unwrap_or_default();
+        let paired = paired_server.as_ref().is_some_and(|server| server.paired);
+        Ok(Some(WorkspaceRemote {
+            machine_id: machine.id,
+            machine_name: machine.name,
+            host: machine.host,
+            user: machine.user,
+            port: machine.port,
+            remote_path: project.remote_path,
+            project_name: project.name,
+            online,
+            providers,
+            paired,
+        }))
+    })
+    .await
+}
+
+/// Open the SSH session before the file tree asks for it.
+/// File tools share one channel, so the first login would otherwise stall the window.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_warm_workspace_link(state: State<'_, AppState>, workspace: String) -> Result<bool> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let root = crate::dev::paths::expand_folder_path(&workspace)?;
+        let conn = work_db(&work)?;
+        let Some(project) = config::remote_project_by_mount(&conn, &root)? else {
+            return Ok(false);
+        };
+        let machine = config::machine_by_id(&conn, &project.machine_id)?
+            .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+        if !machine_reachable(&machine.host, machine.port) {
+            return Ok(false);
+        }
+        let secret = machine_secret(&machine);
+        let _session = work.ssh_pool.session(&machine, secret.as_deref())?;
+        Ok(true)
+    })
+    .await
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -333,16 +382,25 @@ pub struct WorkspaceRemote {
 }
 
 /// Port check only. A full SSH login would block file tools that share the connection.
+/// DNS lookup has no timeout of its own, so the whole check is capped.
 pub fn machine_reachable(host: &str, port: u16) -> bool {
     use std::net::ToSocketAddrs;
-    let host = host.trim();
+    let host = host.trim().to_string();
     if host.is_empty() || port == 0 {
         return false;
     }
-    let Ok(mut addrs) = format!("{host}:{port}").to_socket_addrs() else {
-        return false;
-    };
-    let Some(addr) = addrs.next() else {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("twanagent-reach".into())
+        .spawn(move || {
+            let found = format!("{host}:{port}")
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut addrs| addrs.next());
+            let _ = tx.send(found);
+        })
+        .ok();
+    let Ok(Some(addr)) = rx.recv_timeout(std::time::Duration::from_millis(1200)) else {
         return false;
     };
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok()
@@ -478,8 +536,14 @@ fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_servi
     };
     twanagent_service::ProviderKeys {
         xai: pick("xai", crate::secrets::resolve_xai_key_on_disk(&work.data_dir)),
-        anthropic: pick("anthropic", crate::secrets::resolve_anthropic_key_on_disk()),
-        minimax: pick("minimax", crate::secrets::resolve_minimax_key_on_disk()),
+        anthropic: pick(
+            "anthropic",
+            crate::secrets::resolve_anthropic_key_on_disk(&work.data_dir),
+        ),
+        minimax: pick(
+            "minimax",
+            crate::secrets::resolve_minimax_key_on_disk(&work.data_dir),
+        ),
     }
 }
 

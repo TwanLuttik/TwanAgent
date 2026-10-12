@@ -111,6 +111,8 @@ pub struct ExecRequest {
 pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
+    /// Stdout before it was turned into text. A hosted frame is binary, so the string form drops bytes.
+    pub stdout_bytes: Vec<u8>,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
 }
@@ -294,6 +296,7 @@ mod tests {
             Ok(ExecResult {
                 stdout: format!("{}:{}", self.id, request.command),
                 stderr: String::new(),
+                stdout_bytes: Vec::new(),
                 exit_code: Some(0),
                 timed_out: false,
             })

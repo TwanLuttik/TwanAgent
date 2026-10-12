@@ -14,6 +14,8 @@ pub enum ClientFrame {
     Hello { version: u32 },
     ListConversations,
     GetConversation { id: String },
+    /// Frames written since `cursor` for a turn that is still running.
+    Follow { id: String, cursor: u64 },
     SaveConversation(Conversation),
     DeleteConversation { id: String },
     ReorderConversations { ids: Vec<String> },
@@ -30,6 +32,12 @@ pub enum ServerFrame {
     Hello { version: u32 },
     Conversations { rows: Vec<ConversationSummary> },
     Conversation(Conversation),
+    /// `active` is true while the turn has not written done or error.
+    Live {
+        cursor: u64,
+        active: bool,
+        frames: Vec<crate::live::LiveFrame>,
+    },
     Ok,
     Status { text: String },
     Delta { text: String },

@@ -102,6 +102,8 @@ export type LibraryDeps = {
   setPermission: Update<PermissionMode>;
   openSettings: () => void;
   reloadConversations: (ws: string, preferId?: string) => Promise<void>;
+  /** True while the open project keeps its chats on the paired server. */
+  hostedChats: boolean;
   /** The project whose chat list is on screen. Cleared when the project changes. */
   sidebarLoadedForRef: RefObject<string>;
   runTurn: RunTurn;
@@ -181,7 +183,7 @@ export type LibraryDeps = {
 
 export function useLibrary(deps: LibraryDeps) {
   const {
-    workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, projectsRoot,
+    workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
     runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef, sidebarLoadedForRef,
@@ -192,6 +194,9 @@ export function useLibrary(deps: LibraryDeps) {
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
   } = deps;
 
+  const hostedChatsRef = useRef(hostedChats);
+  hostedChatsRef.current = hostedChats;
+  const followRef = useRef("");
   const persistGen = useRef(new Map<string, number>());
   const persistTrail = useRef<ReturnType<typeof createPersistQueue<PersistPayload>> | null>(null);
   const shownMessages = useRef(new Map<string, ChatMessage[]>());
@@ -662,7 +667,9 @@ async function openChat(id: string) {
   setActiveId(id);
   setOpeningId(cached ? "" : id);
   try {
-    const full = await api.getConversation(workspace, id);
+    const full = hostedChatsRef.current
+      ? await api.getHostedConversation(workspace, id)
+      : await api.getConversation(workspace, id);
     if (generation !== openGeneration.current) return;
     const known = conversations.find((row) => row.id === id);
     setConversations((rows) =>
@@ -707,8 +714,62 @@ async function openChat(id: string) {
     saveConversation(workspace, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
     void ensureChatPlan(workspace, id, opened?.model);
+    if (hostedChatsRef.current && !turnsRef.current.has(id)) {
+      void watchHosted(workspace, id);
+    }
   } finally {
     setOpeningId("");
+  }
+}
+
+/** Follow a turn that is already running on the server. This window did not start it. */
+async function watchHosted(ws: string, id: string) {
+  if (followRef.current) void api.hostedUnfollow(followRef.current);
+  const streamId = crypto.randomUUID();
+  followRef.current = streamId;
+  let unlisten: (() => void) | undefined;
+  try {
+    unlisten = await api.onChat((ev) => {
+      if (ev.stream_id !== streamId || followRef.current !== streamId) return;
+      if (ev.kind === "delta" && ev.text) {
+        const live = liveByChatRef.current.get(id);
+        const streamText = `${live?.streamText ?? ""}` + ev.text;
+        liveByChatRef.current.set(id, {
+          messages: live?.messages ?? [],
+          streamText,
+          streamReasoning: live?.streamReasoning ?? "",
+          liveTools: live?.liveTools ?? [],
+          activity: live?.activity ?? null,
+        });
+        if (shownId.current === id) setStreamText(streamText);
+      } else if (ev.kind === "status" && ev.text) {
+        const activity = { kind: "tool" as const, label: ev.text };
+        const live = liveByChatRef.current.get(id);
+        liveByChatRef.current.set(id, {
+          messages: live?.messages ?? [],
+          streamText: live?.streamText ?? "",
+          streamReasoning: live?.streamReasoning ?? "",
+          liveTools: live?.liveTools ?? [],
+          activity,
+        });
+        if (shownId.current === id) setRunningActivity(activity);
+      } else if (ev.kind === "done" && ev.conversation) {
+        const messages = (ev.conversation.messages as ChatMessage[]) ?? [];
+        if (messages.length && shownId.current === id) {
+          setMessages(messages);
+          setStreamText("");
+          setRunningActivity(null);
+        }
+        liveByChatRef.current.delete(id);
+      } else if (ev.kind === "idle" || ev.kind === "error") {
+        if (shownId.current === id) setRunningActivity(null);
+      }
+    });
+    await api.hostedFollow(ws, streamId, id);
+  } catch {
+    if (followRef.current === streamId) followRef.current = "";
+  } finally {
+    unlisten?.();
   }
 }
 

@@ -20,6 +20,21 @@ export function hostedTurnStaysOnServer(remote: { paired?: boolean; online?: boo
   return Boolean(remote && remote.paired !== false && remote.online !== false);
 }
 
+/**
+ * The composer waits while a cloud project is still opening its server.
+ * `known` is false until the lookup for this folder has returned.
+ * A local project, or a server that is already up, does not wait.
+ */
+export function cloudSendWaiting(
+  known: boolean,
+  remote: { paired?: boolean; online?: boolean } | null | undefined,
+  linkReady: boolean,
+): boolean {
+  if (!known) return true;
+  if (!remote?.paired || remote.online === false) return false;
+  return !linkReady;
+}
+
 export type HostedServer = {
   submit(prompt: HostedPrompt): Promise<HostedEvent[]>;
   getConversation(id: string): Promise<ChatMessage[]>;
