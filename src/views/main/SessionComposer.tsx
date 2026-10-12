@@ -34,6 +34,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     planMode,
     promptImages,
     ready,
+    remoteWorkspace,
     runtime,
     runningTurns,
     send,
@@ -86,6 +87,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       models={models}
       model={model}
       onModel={pickModel}
+      lockedProviders={remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
       effort={effort}
       onEffort={pickEffort}
       contextWindow={contextWindow}

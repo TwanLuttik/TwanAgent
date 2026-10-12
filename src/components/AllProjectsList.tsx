@@ -359,15 +359,13 @@ export function ProjectMarks({
     port: number;
     remotePath: string;
     online: boolean;
+    providers?: string[];
   };
 }) {
   const anchor = useRef<HTMLSpanElement>(null);
   const [box, setBox] = useState<{ top: number; left: number } | null>(null);
   if (!remote && !server) return null;
   const offline = server?.online === false;
-  const address = server
-    ? `${server.user}@${server.host}${server.port === 22 ? "" : `:${server.port}`}`
-    : "";
   return (
     <span
       ref={anchor}
@@ -379,41 +377,33 @@ export function ProjectMarks({
       }}
       onMouseLeave={() => setBox(null)}
     >
-      <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Server offline" : "On a server"}>
-        <Symbol name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"} className="size-4" />
+      <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Cloud project offline" : "Cloud project"}>
+        <Symbol name="cloud.fill" className="size-3.5" />
       </span>
       {box
         ? createPortal(
             <span
               role="tooltip"
-              className="pointer-events-none fixed z-50 w-[220px] overflow-hidden rounded-xl border border-line bg-canvas text-left font-normal shadow-card"
+              className="pointer-events-none fixed z-50 w-[240px] overflow-hidden rounded-lg border border-line/25 bg-canvas text-left font-normal shadow-card"
               style={{ top: box.top, left: box.left }}
             >
-              <span className={`flex items-center gap-2 px-3 py-2 ${offline ? "bg-err/10" : "bg-[#3b82f6]/10"}`}>
-                <Symbol
-                  name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"}
-                  className={`size-4 ${offline ? "text-err" : "text-[#3b82f6]"}`}
-                />
+              <span className="flex items-center gap-2 border-b border-line/20 px-3 py-2.5">
+                <Symbol name="cloud.fill" className={`size-3.5 shrink-0 ${offline ? "text-err" : "text-[#3b82f6]"}`} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold text-ink">{server?.machineName ?? "Server"}</span>
-                  <span className={`block text-[11px] font-medium ${offline ? "text-err" : "text-[#3b82f6]"}`}>
-                    {offline ? "Offline" : "Reachable"}
+                  <span className="block truncate text-[13px] font-medium text-ink">Cloud project</span>
+                  <span className={`block truncate text-[11px] ${offline ? "text-err" : "text-muted"}`}>
+                    {offline ? "This machine is not answering" : "Files and chats stay on this machine"}
                   </span>
                 </span>
               </span>
               {server ? (
-                <span className="grid gap-1.5 px-3 py-2.5">
-                  <span className="block">
-                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Login</span>
-                    <span className="block truncate font-mono text-[11px] text-ink">{address}</span>
-                  </span>
-                  <span className="block">
-                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Folder</span>
-                    <span className="block truncate font-mono text-[11px] text-ink">{server.remotePath}</span>
-                  </span>
+                <span className="grid gap-2 px-3 py-2.5">
+                  <CloudFact label="Runs on" value={server.host} />
+                  <CloudFact label="Project folder" value={folderTail(server.remotePath)} title={server.remotePath} />
+                  <CloudFact label="Models" value={modelKeysLabel(server.providers)} />
                 </span>
               ) : (
-                <span className="block px-3 py-2 text-[12px] text-muted">On a server</span>
+                <span className="block px-3 py-2.5 text-[12px] text-muted">Checking this machine…</span>
               )}
             </span>,
             document.body,
@@ -421,6 +411,35 @@ export function ProjectMarks({
         : null}
     </span>
   );
+}
+
+function CloudFact({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <span className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-[11px] text-muted">{label}</span>
+      <span className="min-w-0 truncate text-right text-[12px] text-ink" title={title ?? value}>
+        {value}
+      </span>
+    </span>
+  );
+}
+
+function folderTail(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length <= 2) return path;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
+const CLOUD_MODELS: { id: string; label: string }[] = [
+  { id: "xai", label: "Grok" },
+  { id: "anthropic", label: "Claude" },
+  { id: "minimax", label: "MiniMax" },
+];
+
+function modelKeysLabel(providers: string[] | undefined): string {
+  if (!providers) return "Checking…";
+  const names = CLOUD_MODELS.filter((row) => providers.includes(row.id)).map((row) => row.label);
+  return names.length ? names.join(", ") : "No keys copied";
 }
 
 export function ProjectContextMenu({

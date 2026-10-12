@@ -294,6 +294,10 @@ pub fn dev_workspace_remote(
     let machine = config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
     let online = machine_reachable(&machine.host, machine.port);
+    let providers = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+        .map(|server| super::agent_server::server_provider_keys(&conn, &server.id))
+        .transpose()?
+        .unwrap_or_default();
     Ok(Some(WorkspaceRemote {
         machine_id: machine.id,
         machine_name: machine.name,
@@ -303,6 +307,7 @@ pub fn dev_workspace_remote(
         remote_path: project.remote_path,
         project_name: project.name,
         online,
+        providers,
     }))
 }
 
@@ -316,6 +321,8 @@ pub struct WorkspaceRemote {
     pub remote_path: String,
     pub project_name: String,
     pub online: bool,
+    /// Provider ids whose keys were copied onto the paired TwanAgent server. Empty when none were.
+    pub providers: Vec<String>,
 }
 
 /// Port check only. A full SSH login would block file tools that share the connection.
@@ -480,6 +487,30 @@ pub async fn dev_list_agent_servers(state: State<'_, AppState>) -> Result<Vec<su
     .await
 }
 
+/// SSH in and report whether `twanagent-server` is on that machine. Does not copy or pair.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_probe_agent_server(
+    state: State<'_, AppState>,
+    host: String,
+    port: Option<u16>,
+) -> Result<super::agent_server::ServerInstallStatus> {
+    let work = server_work(&state);
+    let port = port.unwrap_or(22);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let machine = config::list_machines(&conn)?
+            .into_iter()
+            .find(|row| row.host.eq_ignore_ascii_case(host.trim()) && row.port == port)
+            .ok_or_else(|| Error::NotFound("sign in to this server again before checking".into()))?;
+        if !machine_reachable(&machine.host, machine.port) {
+            return Ok(offline_status());
+        }
+        let stdout = require_exec(&work, &machine, &super::agent_server::version_check_script(), 20)?;
+        Ok(super::agent_server::parse_version_check(&stdout))
+    })
+    .await
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_agent_server_status(
     state: State<'_, AppState>,
@@ -571,7 +602,7 @@ fn install_agent_server(
     if !trusted {
         return Err(Error::Other("Confirm the host key before installing on this server.".into()));
     }
-    let _status = copy_binary(work, &machine)?;
+    // Connecting only saves the machine and a pairing token. The program is copied when it is missing.
     let already = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
     let created = already.is_none();
     let server = if let Some(already) = already {

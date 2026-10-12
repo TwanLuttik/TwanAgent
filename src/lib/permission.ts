@@ -62,6 +62,8 @@ export type RemoteWorkspace = {
   port: number;
   remotePath: string;
   online: boolean;
+  /** Provider ids whose keys were copied to this server. Missing until that lookup returns. */
+  providers?: string[];
 };
 
 export function remoteWorkspaceLine(remote: RemoteWorkspace | null | undefined): string {

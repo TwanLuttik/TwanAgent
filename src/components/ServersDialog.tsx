@@ -5,7 +5,7 @@ import * as api from "../lib/tauri";
 import type { AgentServer, HostPrompt, KeyStatus, LanHost, RemoteProject, ServerInstallStatus, ServerProviderKeys, ServerStorage } from "../lib/tauri";
 import { formatBytes } from "../lib/usage";
 
-type Step = "list" | "detail" | "connect" | "trust";
+type Step = "list" | "detail" | "connect" | "trust" | "install" | "keys";
 type ProviderId = "xai" | "anthropic" | "minimax";
 
 const PROVIDERS: { id: ProviderId; label: string; logo: string; mark: string }[] = [
@@ -241,6 +241,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [installs, setInstalls] = useState<Record<string, InstallView>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [probe, setProbe] = useState<ServerInstallStatus | "checking" | null>(null);
 
   function reload() {
     setLoading(true);
@@ -363,13 +364,19 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     setError(null);
   }
 
-  async function install() {
+  function loginFields() {
     const address = host.trim();
     const login = user.trim();
     const parsedPort = Number(port);
+    return { address, login, parsedPort };
+  }
+
+  async function connect() {
+    const { address, login, parsedPort } = loginFields();
     if (!address || !login || !Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) return;
     setBusy(true);
     setError(null);
+    setProbe("checking");
     try {
       const machine = await api.saveMachine({
         name: address,
@@ -389,9 +396,41 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
       }
       if (!tested.ok) {
         setError(tested.message);
+        setProbe(null);
         return;
       }
-      await finishInstall(address, login, parsedPort);
+      await lookForProgram();
+    } catch (err) {
+      setError(String(err));
+      setProbe(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function lookForProgram() {
+    const { address, parsedPort } = loginFields();
+    setProbe("checking");
+    setStep("install");
+    try {
+      const status = await api.probeAgentServer(address, parsedPort);
+      setProbe(status);
+    } catch (err) {
+      setProbe(null);
+      setError(String(err));
+    }
+  }
+
+  async function installProgram() {
+    const { address, login, parsedPort } = loginFields();
+    setBusy(true);
+    setError(null);
+    try {
+      const server = await rememberServer(address, login, parsedPort);
+      const status = await api.installAgentBinary(server.id);
+      setProbe(status);
+      setInstalls((prev) => ({ ...prev, [server.id]: status }));
+      if (status.installed) setStep("keys");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -399,7 +438,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function finishInstall(address = host.trim(), login = user.trim(), parsedPort = Number(port)) {
+  async function rememberServer(address = host.trim(), login = user.trim(), parsedPort = Number(port)) {
     const server = await api.installAgentServer({
       name: address,
       user: login,
@@ -411,19 +450,31 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     });
     setSaved((rows) => [server, ...rows.filter((row) => row.id !== server.id)]);
     setSelectedId(server.id);
-    setHost("");
-    setPassword("");
-    setStep("detail");
-    void checkInstall(server.id);
-    if (copyProviders.length) {
-      try {
+    return server;
+  }
+
+  async function finishKeys(copy: boolean) {
+    const { address, login, parsedPort } = loginFields();
+    setBusy(true);
+    setError(null);
+    try {
+      const server = selectedId
+        ? saved.find((row) => row.id === selectedId) ?? (await rememberServer(address, login, parsedPort))
+        : await rememberServer(address, login, parsedPort);
+      if (copy && copyProviders.length) {
         const keys = await api.copyServerProviderKeys(server.id, copyProviders);
         setKeysById((prev) => ({ ...prev, [server.id]: keys }));
-      } catch (err) {
-        setError(String(err));
       }
+      setHost("");
+      setPassword("");
+      setStep("detail");
+      void checkInstall(server.id);
+      loadStorage(server.id);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
     }
-    loadStorage(server.id);
   }
 
   async function trust() {
@@ -433,7 +484,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     try {
       await api.acceptHost(prompt.machine_id, prompt.fingerprint, prompt.key_type);
       setPrompt(null);
-      await finishInstall();
+      await lookForProgram();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -474,13 +525,26 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   }
 
   const selected = saved.find((row) => row.id === selectedId) ?? null;
-  const title = step === "trust" ? "Trust this server" : step === "connect" ? "Add server" : "Servers";
+  const title =
+    step === "trust"
+      ? "Trust this server"
+      : step === "connect"
+        ? "Connect"
+        : step === "install"
+          ? "Server program"
+          : step === "keys"
+            ? "Provider keys"
+            : "Servers";
   const intro =
     step === "trust"
       ? "First time connecting. Check the fingerprint."
       : step === "connect"
-        ? "Pick a machine on this network, or type its address. Install puts the server program on it."
-        : "A server runs the TwanAgent program. Open one to see its version and the projects that live there.";
+        ? "Pick a machine on this network, or type its address."
+        : step === "install"
+          ? "Connected. This checks whether the TwanAgent program is already on that machine."
+          : step === "keys"
+            ? "Copy a key so that provider can run on this server. Skip any you do not want there."
+            : "A server runs the TwanAgent program. Open one to see its version and the projects that live there.";
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-canvas">
@@ -573,12 +637,31 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               onUser={setUser}
               onPort={setPort}
               onPassword={setPassword}
-              copyProviders={copyProviders}
-              localKeys={localKeys}
-              onToggleProvider={toggleProvider}
               onChoose={chooseFound}
               onBack={() => setStep("list")}
-              onSubmit={() => void install()}
+              onSubmit={() => void connect()}
+            />
+          )}
+          {step === "install" && (
+            <InstallStep
+              host={host.trim()}
+              user={user.trim()}
+              probe={probe}
+              busy={busy}
+              onBack={() => setStep("connect")}
+              onInstall={() => void installProgram()}
+              onContinue={() => setStep("keys")}
+            />
+          )}
+          {step === "keys" && (
+            <KeysStep
+              copyProviders={copyProviders}
+              localKeys={localKeys}
+              busy={busy}
+              onToggle={toggleProvider}
+              onBack={() => setStep("install")}
+              onSkip={() => void finishKeys(false)}
+              onCopy={() => void finishKeys(true)}
             />
           )}
           {step === "trust" && prompt && (
@@ -587,16 +670,12 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
                 <div className="text-[12px] text-muted">{prompt.changed ? "This key changed" : "Server fingerprint"}</div>
                 <div className="mt-1 break-all font-mono text-[12px]">{prompt.fingerprint}</div>
               </div>
-              <div className="grid gap-1.5">
-                <span className="text-[12px] text-muted">Copy provider keys</span>
-                <ProviderKeys keys={null} localKeys={localKeys} selected={copyProviders} onToggle={toggleProvider} />
-              </div>
               <div className="flex justify-end gap-2">
                 <Button onClick={() => setStep("connect")} disabled={busy}>
                   Back
                 </Button>
                 <Button variant="primary" disabled={busy} onClick={() => void trust()}>
-                  {busy ? "Installing…" : "Trust and install"}
+                  {busy ? "Connecting…" : "Trust and connect"}
                 </Button>
               </div>
             </div>
@@ -616,10 +695,7 @@ function ConnectForm({
   port,
   password,
   keyPath,
-  copyProviders,
-  localKeys,
   busy,
-  onToggleProvider,
   onHost,
   onUser,
   onPort,
@@ -635,10 +711,7 @@ function ConnectForm({
   port: string;
   password: string;
   keyPath: string | null;
-  copyProviders: ProviderId[];
-  localKeys: LocalKeys;
   busy: boolean;
-  onToggleProvider: (id: ProviderId) => void;
   onHost: (value: string) => void;
   onUser: (value: string) => void;
   onPort: (value: string) => void;
@@ -718,25 +791,116 @@ function ConnectForm({
           className="h-9 rounded-lg border border-line bg-canvas px-3 text-[13px] outline-none focus:border-accent"
         />
       </Field>
-      <ProviderKeys
-        keys={null}
-        localKeys={localKeys}
-        selected={copyProviders}
-        onToggle={onToggleProvider}
-        hint="Only a provider with a saved key can be copied."
-      />
       <p className="m-0 text-[12px] text-muted">
-        Connects over SSH, installs TwanAgent, and saves a token on this Mac. The password is not the token.
+        Connects over SSH. The password is not saved as the server token.
       </p>
       <div className="flex justify-between gap-2">
         <Button type="button" onClick={onBack} disabled={busy}>
           Back
         </Button>
         <Button type="submit" variant="primary" disabled={busy || !host.trim() || !user.trim()}>
-          {busy ? "Installing…" : "Install"}
+          {busy ? "Connecting…" : "Connect"}
         </Button>
       </div>
     </form>
+  );
+}
+
+function InstallStep({
+  host,
+  user,
+  probe,
+  busy,
+  onBack,
+  onInstall,
+  onContinue,
+}: {
+  host: string;
+  user: string;
+  probe: ServerInstallStatus | "checking" | null;
+  busy: boolean;
+  onBack: () => void;
+  onInstall: () => void;
+  onContinue: () => void;
+}) {
+  const known = probe && probe !== "checking" ? probe : null;
+  const checking = !known;
+  const installed = Boolean(known?.installed);
+  const offline = Boolean(known && !known.online);
+  const version = known && installed ? versionLabel(known) : "";
+  return (
+    <div className="grid gap-3">
+      <div className="rounded-xl border border-line px-3 py-3">
+        <div className="text-[13px] font-medium text-ink">{host}</div>
+        <div className="mt-0.5 text-[12px] text-muted">{user}@{host}</div>
+        <div className="mt-2 text-[12px] text-ink">
+          {checking
+            ? "Checking for the TwanAgent program…"
+            : offline
+              ? "This machine stopped answering."
+              : installed
+                ? `TwanAgent is installed${version && version !== "Installed" ? ` (${version})` : ""}.`
+                : "TwanAgent is not installed on this machine."}
+        </div>
+      </div>
+      <div className="flex justify-between gap-2">
+        <Button onClick={onBack} disabled={busy}>
+          Back
+        </Button>
+        {installed ? (
+          <Button variant="primary" disabled={busy || checking} onClick={onContinue}>
+            Continue
+          </Button>
+        ) : (
+          <Button variant="primary" disabled={busy || checking || offline} onClick={onInstall}>
+            {busy ? "Installing…" : "Install TwanAgent"}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function KeysStep({
+  copyProviders,
+  localKeys,
+  busy,
+  onToggle,
+  onBack,
+  onSkip,
+  onCopy,
+}: {
+  copyProviders: ProviderId[];
+  localKeys: LocalKeys;
+  busy: boolean;
+  onToggle: (id: ProviderId) => void;
+  onBack: () => void;
+  onSkip: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <div className="grid gap-3">
+      <ProviderKeys
+        keys={null}
+        localKeys={localKeys}
+        selected={copyProviders}
+        onToggle={onToggle}
+        hint="Only a provider with a saved key can be copied. Models without a key stay off for projects on this server."
+      />
+      <div className="flex justify-between gap-2">
+        <Button onClick={onBack} disabled={busy}>
+          Back
+        </Button>
+        <div className="flex gap-2">
+          <Button onClick={onSkip} disabled={busy}>
+            Skip
+          </Button>
+          <Button variant="primary" disabled={busy || copyProviders.length === 0} onClick={onCopy}>
+            {busy ? "Copying…" : "Copy keys"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

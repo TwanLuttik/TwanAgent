@@ -70,6 +70,8 @@ export type ProjectServer = {
   port: number;
   remotePath: string;
   online: boolean;
+  /** Provider ids whose keys were copied to this server. */
+  providers?: string[];
 };
 
 export type ProjectRow = { name: string; path: string; remote?: boolean; server?: ProjectServer };

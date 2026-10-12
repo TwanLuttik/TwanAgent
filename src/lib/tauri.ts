@@ -650,6 +650,7 @@ export type WorkspaceRemote = {
   remote_path: string;
   project_name: string;
   online: boolean;
+  providers?: string[];
 };
 
 export type LanHost = { host: string; port: number; label: string };
@@ -768,6 +769,11 @@ export function listAgentServers(): Promise<AgentServer[]> {
 
 export function agentServerStatus(id: string): Promise<ServerInstallStatus> {
   return invoke("dev_agent_server_status", { id });
+}
+
+/** SSH to a machine that was just saved and see if the server program is there. Does not install it. */
+export function probeAgentServer(host: string, port = 22): Promise<ServerInstallStatus> {
+  return invoke("dev_probe_agent_server", { host, port });
 }
 
 export function installAgentBinary(id: string): Promise<ServerInstallStatus> {

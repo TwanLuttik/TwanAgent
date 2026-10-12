@@ -324,6 +324,7 @@ pub fn run() {
             remote::commands::dev_create_remote_project,
             remote::commands::dev_workspace_remote,
             remote::commands::dev_list_agent_servers,
+            remote::commands::dev_probe_agent_server,
             remote::commands::dev_agent_server_status,
             remote::commands::dev_install_agent_binary,
             remote::commands::dev_install_agent_server,

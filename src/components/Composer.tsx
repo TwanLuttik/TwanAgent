@@ -53,6 +53,8 @@ export function Composer({
   models,
   model,
   onModel,
+  /** A cloud project only runs a model when that provider key was copied to the server. */
+  lockedProviders,
   effort,
   onEffort,
   contextWindow,
@@ -91,6 +93,8 @@ export function Composer({
   models: Model[];
   model: string;
   onModel: (id: string) => void;
+  /** Set on a cloud project. Models outside this list cannot run there. */
+  lockedProviders?: string[] | null;
   effort: string;
   onEffort: (id: string) => void;
   contextWindow?: number;
@@ -529,7 +533,7 @@ export function Composer({
           onMouseLeave={() => setUsageHover(false)}
         />
         <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
-          <ModelSelect models={ordered} value={model} onChange={onModel} />
+          <ModelSelect models={ordered} value={model} onChange={onModel} lockedProviders={lockedProviders} />
           {windows.length > 1 && onContextWindow ? (
             <ChipSelect
               label={windowLabel || "Context"}
@@ -1188,6 +1192,11 @@ function filterModels(models: Model[], query: string): Model[] {
   });
 }
 
+function modelLocked(model: Model, providers: string[] | null): boolean {
+  if (!providers) return false;
+  return !providers.includes(modelProvider(model));
+}
+
 function modelProvider(model: Model): ProviderId {
   if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax") return model.provider;
   return providerProfile(model.id).id;
@@ -1204,10 +1213,12 @@ function ModelSelect({
   models,
   value,
   onChange,
+  lockedProviders = null,
 }: {
   models: Model[];
   value: string;
   onChange: (id: string) => void;
+  lockedProviders?: string[] | null;
 }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState<ProviderId | null>(() => {
@@ -1340,7 +1351,7 @@ function ModelSelect({
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
                     event.preventDefault();
-                    const first = shown[0];
+                    const first = shown.find((row) => !modelLocked(row, lockedProviders));
                     if (!first) return;
                     onChange(first.id);
                     setOpen(false);
@@ -1376,6 +1387,7 @@ function ModelSelect({
                       ) : null}
                       {family.models.map((row) => {
                         const current = row.id === value;
+                        const locked = modelLocked(row, lockedProviders);
                         const context = contextWindowLabel(row.context_window ?? 0);
                         const label = versions ? modelFamilyName(row.name).version || row.name : row.name;
                         return (
@@ -1384,14 +1396,22 @@ function ModelSelect({
                             type="button"
                             role="menuitemradio"
                             aria-checked={current}
+                            aria-disabled={locked}
                             aria-label={row.name}
+                            disabled={locked}
+                            title={locked ? "This server does not have this provider key" : undefined}
                             onClick={() => {
+                              if (locked) return;
                               onChange(row.id);
                               setOpen(false);
                             }}
-                            className={`flex h-7 w-full cursor-pointer items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                            className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 ${
                               versions ? "pr-2.5 pl-6" : "px-2.5"
-                            } ${current ? "font-medium text-ink" : "text-ink/80"}`}
+                            } ${
+                              locked
+                                ? "cursor-not-allowed text-muted/45"
+                                : `cursor-pointer hover:bg-wash ${current ? "font-medium text-ink" : "text-ink/80"}`
+                            }`}
                           >
                             <ModelIcon model={row} className="size-3.5" />
                             <span className="min-w-0 flex-1 truncate">{label}</span>

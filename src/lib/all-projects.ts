@@ -286,6 +286,12 @@ export function stampProjectServer(
   return changed ? next : groups;
 }
 
+function sameProviders(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
 function sameProjectServer(
   a: ProjectServerMark | undefined,
   b: ProjectServerMark | undefined,
@@ -298,7 +304,8 @@ function sameProjectServer(
     a.user === b.user &&
     a.port === b.port &&
     a.remotePath === b.remotePath &&
-    a.online === b.online
+    a.online === b.online &&
+    sameProviders(a.providers, b.providers)
   );
 }
 

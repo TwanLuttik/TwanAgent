@@ -78,6 +78,18 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  "cloud.server": (
+    <>
+      <path
+        d="M8.2 11.4h7.2a2.7 2.7 0 0 0 .4-5.3 3.6 3.6 0 0 0-6.9-.9 2.5 2.5 0 0 0-.7 6.2Z"
+        {...stroke}
+      />
+      <rect x="6.2" y="13.2" width="11.6" height="3.2" rx="0.9" {...stroke} />
+      <rect x="6.2" y="17.6" width="11.6" height="3.2" rx="0.9" {...stroke} />
+      <circle cx="8.4" cy="14.8" r="0.55" fill="currentColor" />
+      <circle cx="8.4" cy="19.2" r="0.55" fill="currentColor" />
+    </>
+  ),
   link: (
     <path
       d="M9.2 14.8 7.6 16.4a3.2 3.2 0 1 1-4.5-4.5l3.2-3.2a3.2 3.2 0 0 1 4.5 0M14.8 9.2l1.6-1.6a3.2 3.2 0 1 1 4.5 4.5l-3.2 3.2a3.2 3.2 0 0 1-4.5 0M9.8 14.2l4.4-4.4"

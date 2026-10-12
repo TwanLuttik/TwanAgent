@@ -778,6 +778,7 @@ export function MainView() {
                   port: row.port,
                   remotePath: row.remote_path,
                   online: row.online,
+                  providers: row.providers ?? [],
                 }
               : null,
           );
