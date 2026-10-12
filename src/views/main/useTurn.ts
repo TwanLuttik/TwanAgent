@@ -1,5 +1,6 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
 import { completeTurn } from "../../lib/agent";
+import { hostedTurnStaysOnServer } from "../../lib/hosted";
 import {
   activityFromToolCall,
   conversationTitleFrom,
@@ -648,6 +649,13 @@ async function send() {
     });
     return;
   }
+  if (remoteRef.current && remoteRef.current.paired === false) {
+    setFlash({
+      kind: "err",
+      text: `Pair ${remoteRef.current.machineName} before sending. Cloud chats run on that server.`,
+    });
+    return;
+  }
   if (!ready) {
     setFlash({ kind: "err", text: runtime?.hint || "Grok isn’t signed in." });
     return;
@@ -784,6 +792,85 @@ async function runTurn(
   );
   const journeyId = journeyIdOverride || chat?.journey_id || undefined;
   const kind = parseConversationKind(chat?.kind);
+  if (hostedTurnStaysOnServer(remoteRef.current)) {
+    const prompt = [...next].reverse().find((message) => message.role === "user");
+    const text = String(prompt?.content ?? "").trim();
+    if (!text) {
+      if (visible()) setFlash({ kind: "err", text: "prompt is empty" });
+      turnsRef.current.delete(id);
+      syncRunningFromTurns();
+      return;
+    }
+    const streamId = crypto.randomUUID();
+    let unlisten: (() => void) | undefined;
+    let finishWait: (() => void) | undefined;
+    const onAbort = () => {
+      void api.hostedCancel(streamId);
+      finishWait?.();
+    };
+    ac.signal.addEventListener("abort", onAbort);
+    try {
+      const finished = new Promise<void>((resolve) => {
+        finishWait = resolve;
+      });
+      unlisten = await api.onChat((ev) => {
+        if (ev.stream_id !== streamId) return;
+        if (ev.kind === "delta" && ev.text) {
+          const live = liveByChatRef.current.get(id);
+          const streamText = `${live?.streamText ?? ""}` + ev.text;
+          rememberLive(id, { streamText });
+          if (visible()) setStreamText(streamText);
+        } else if (ev.kind === "status" && ev.text) {
+          const activity = { kind: "tool" as const, label: ev.text };
+          rememberLive(id, { activity });
+          markRunning(id, { activity });
+          if (visible()) setRunningActivity(activity);
+        } else if (ev.kind === "error") {
+          if (visible()) setFlash({ kind: "err", text: ev.text || "the server could not finish the turn" });
+          finishWait?.();
+        } else if (ev.kind === "done") {
+          const saved = ev.conversation;
+          const messages = (saved?.messages as ChatMessage[] | undefined) ?? [];
+          if (messages.length) {
+            latestMessages = messages;
+            rememberLive(id, { messages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
+            if (visible()) {
+              setMessages(messages);
+              setStreamText("");
+              setRunningActivity(null);
+            }
+          }
+          finishWait?.();
+        }
+      });
+      await api.hostedTurn({
+        workspace: ws,
+        streamId,
+        conversationId: id,
+        prompt: text,
+        model: turnSettings.model,
+        effort: turnSettings.effort,
+        permission: turnSettings.permission,
+      });
+      await finished;
+    } catch (e) {
+      if (visible()) setFlash({ kind: "err", text: String(e) });
+    } finally {
+      ac.signal.removeEventListener("abort", onAbort);
+      unlisten?.();
+      if (turnsRef.current.get(id) === ac) turnsRef.current.delete(id);
+      clearRunning(id);
+      syncRunningFromTurns();
+      if (visible()) {
+        setRunningActivity(null);
+        setStreamText("");
+        setTurnStartedAt(0);
+        runningIdRef.current = "";
+        setRunningId("");
+      }
+    }
+    return;
+  }
   if (providerProfile(turnSettings.model).planMode && planForChat(id).state === "Pending") {
     try {
       const armed = grokPlanFromPayload(await api.grokPlanSet(ws, id, "Active", false));

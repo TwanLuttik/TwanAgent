@@ -8,6 +8,7 @@ mod codec;
 mod error;
 mod files;
 mod keys;
+mod model;
 mod session;
 mod store;
 mod tools;
@@ -19,6 +20,15 @@ pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use session::serve;
 pub use store::{Conversation, ConversationSummary};
 pub use turn::{ModelStep, ScriptedModel, TurnRequest};
+
+/// One line the GUI paints while a hosted turn runs. Tool results stay on the server.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TurnEvent {
+    Status(String),
+    Delta(String),
+    Done(Conversation),
+    Error(String),
+}
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -85,6 +95,10 @@ pub fn serve_frame(service: &ProjectService, keys: &KeyFile, bytes: &[u8]) -> Re
         return Err(Error::Other("frame header is short".into()));
     }
     let (frame, _) = decode_frame(bytes)?;
+    if let ClientFrame::SubmitPrompt(request) = frame {
+        let mut output = std::io::stdout().lock();
+        return session::submit_streaming(service, keys, request, &mut output);
+    }
     let response = session::handle_frame(service, keys, frame, None);
     let mut output = std::io::stdout().lock();
     output.write_all(&encode_frame(&response)?)?;

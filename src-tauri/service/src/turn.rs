@@ -4,9 +4,11 @@ use serde_json::json;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
+use crate::keys::ProviderKeys;
+use crate::model;
 use crate::store::Conversation;
-use crate::tools::{dispatch, ToolHost, Workspace};
-use crate::ProjectService;
+use crate::tools::{dispatch, tool_status, ToolHost, Workspace};
+use crate::{ProjectService, TurnEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnRequest {
@@ -86,6 +88,122 @@ pub fn run_scripted_turn(
     }
     service.save_conversation(&conversation)?;
     Ok(conversation)
+}
+
+const MAX_ROUNDS: usize = 24;
+
+/// Call the model on this machine, run tools here, and save the transcript here.
+/// `on_event` is display only. The GUI does not receive tool calls to execute.
+pub fn run_live_turn(
+    service: &ProjectService,
+    request: &TurnRequest,
+    workspace: &dyn Workspace,
+    keys: &ProviderKeys,
+    mut on_event: impl FnMut(TurnEvent),
+) -> Result<Conversation> {
+    let prompt = request.prompt.trim();
+    if prompt.is_empty() {
+        return Err(Error::Other("prompt is empty".into()));
+    }
+    let id = request.conversation_id.trim();
+    if id.is_empty() {
+        return Err(Error::Other("conversation id is empty".into()));
+    }
+    let mut conversation = match service.get_conversation(id) {
+        Ok(existing) => existing,
+        Err(Error::NotFound(_)) => new_conversation(id, prompt, request),
+        Err(err) => return Err(err),
+    };
+    conversation.messages.push(json!({ "role": "user", "content": prompt }));
+    if conversation.title.is_empty() || conversation.title == "New chat" {
+        conversation.title = title_from(prompt);
+    }
+    conversation.updated_at = now();
+    let host = PermissionHost {
+        permission: request.permission.clone(),
+    };
+    let model_name = if request.model.trim().is_empty() {
+        "grok-4.6"
+    } else {
+        request.model.trim()
+    };
+    for _ in 0..MAX_ROUNDS {
+        let mut saw_delta = false;
+        let round = match model::run_round(keys, model_name, &request.effort, &conversation.messages, &mut |text| {
+            if !text.is_empty() {
+                saw_delta = true;
+                on_event(TurnEvent::Delta(text.to_string()));
+            }
+        }) {
+            Ok(round) => round,
+            Err(err) => {
+                on_event(TurnEvent::Error(err.to_string()));
+                return Err(err);
+            }
+        };
+        if let Some(message) = round.error {
+            on_event(TurnEvent::Error(message.clone()));
+            return Err(Error::Other(message));
+        }
+        if round.tool_calls.is_empty() {
+            let text = if round.text.trim().is_empty() && !saw_delta {
+                "Done.".to_string()
+            } else {
+                round.text
+            };
+            conversation.messages.push(json!({ "role": "assistant", "content": text }));
+            conversation.updated_at = now();
+            service.save_conversation(&conversation)?;
+            let mut shown = conversation.clone();
+            shown.messages = public_messages(&conversation);
+            on_event(TurnEvent::Done(shown));
+            return Ok(conversation);
+        }
+        let calls: Vec<serde_json::Value> = round
+            .tool_calls
+            .iter()
+            .map(|call| json!({ "id": call.id, "name": call.name, "arguments": call.arguments }))
+            .collect();
+        conversation.messages.push(json!({
+            "role": "assistant",
+            "content": round.text,
+            "tool_calls": calls,
+        }));
+        for call in &round.tool_calls {
+            on_event(TurnEvent::Status(tool_status(&call.name, &call.arguments)));
+            let result = dispatch(workspace, &host, &request.permission, &call.name, &call.arguments)?;
+            conversation.messages.push(json!({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": result,
+            }));
+        }
+        conversation.updated_at = now();
+        service.save_conversation(&conversation)?;
+    }
+    Err(Error::Other("the turn ran too many tool rounds".into()))
+}
+
+/// Keep only the text the GUI is allowed to see. Tool arguments stay on the server.
+pub fn public_messages(conversation: &Conversation) -> Vec<serde_json::Value> {
+    conversation
+        .messages
+        .iter()
+        .filter_map(|message| {
+            let role = message.get("role").and_then(|value| value.as_str()).unwrap_or("");
+            match role {
+                "user" | "assistant" => {
+                    let text = message.get("content").and_then(|value| value.as_str()).unwrap_or("");
+                    if text.trim().is_empty() {
+                        None
+                    } else {
+                        Some(json!({ "role": role, "content": text }))
+                    }
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn new_conversation(id: &str, prompt: &str, request: &TurnRequest) -> Conversation {

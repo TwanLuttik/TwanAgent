@@ -2,6 +2,7 @@ pub mod agent_server;
 pub mod client;
 pub mod discover;
 pub mod commands;
+pub mod hosted;
 pub mod config;
 pub mod exec;
 pub mod files;

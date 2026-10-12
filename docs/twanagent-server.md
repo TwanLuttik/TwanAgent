@@ -12,7 +12,7 @@ On the machine:
 ~/.twanagent/bin/twanagent-server --version
 ```
 
-That prints `twanagent-server` and the version, for example `twanagent-server 1.0.0-beta.1`.
+That prints `twanagent-server` and the version, for example `twanagent-server 1.0.0-beta.2`.
 
 From this Mac, for the OrbStack test machine:
 

@@ -3,9 +3,9 @@ use std::io::{Read, Write};
 use crate::codec::{version_ok, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 use crate::error::{Error, Result};
 use crate::keys::{provider_keys_from_env, KeyFile};
-use crate::tools::{tool_status, LocalWorkspace};
-use crate::turn::{ModelStep, ScriptedModel, TurnRequest};
-use crate::ProjectService;
+use crate::tools::LocalWorkspace;
+use crate::turn::{ScriptedModel, TurnRequest};
+use crate::{ProjectService, TurnEvent};
 
 pub(crate) fn handle_frame(
     service: &ProjectService,
@@ -63,26 +63,76 @@ fn submit(
     model: Option<&dyn ScriptedModel>,
 ) -> ServerFrame {
     let stored = keys.load().unwrap_or_default();
-    if !provider_keys_from_env(&stored).any() {
+    let resolved = provider_keys_from_env(&stored);
+    if !resolved.any() {
         return ServerFrame::Error {
             message: "Copy provider keys to this server in Settings.".into(),
         };
     }
-    let Some(model) = model else {
-        return ServerFrame::Error {
-            message: "This server build cannot call a model yet.".into(),
-        };
-    };
-    for step in model.steps() {
-        if let ModelStep::Tool { name, arguments, .. } = step {
-            let _status = ServerFrame::Status { text: tool_status(&name, &arguments) };
-        }
-    }
     let workspace = LocalWorkspace { root: service.project.clone() };
-    match crate::turn::run_scripted_turn(service, &request, &workspace, model) {
-        Ok(conversation) => ServerFrame::Done { conversation },
+    if model.is_some() {
+        // Tests inject a scripted model. A real turn calls the provider from the copied keys.
+        let Some(model) = model else {
+            return ServerFrame::Error { message: "model is missing".into() };
+        };
+        return match crate::turn::run_scripted_turn(service, &request, &workspace, model) {
+            Ok(conversation) => ServerFrame::Done { conversation },
+            Err(err) => ServerFrame::Error { message: err.to_string() },
+        };
+    }
+    match crate::turn::run_live_turn(service, &request, &workspace, &resolved, |_| {}) {
+        Ok(conversation) => {
+            let mut shown = conversation;
+            shown.messages = crate::turn::public_messages(&shown);
+            ServerFrame::Done { conversation: shown }
+        }
         Err(err) => ServerFrame::Error { message: err.to_string() },
     }
+}
+
+/// Stream status, text, and the saved conversation. One request, many frames.
+pub fn submit_streaming<W: Write>(
+    service: &ProjectService,
+    keys: &KeyFile,
+    request: TurnRequest,
+    output: &mut W,
+) -> Result<()> {
+    let stored = keys.load().unwrap_or_default();
+    let resolved = provider_keys_from_env(&stored);
+    if !resolved.any() {
+        write_server(
+            output,
+            &ServerFrame::Error {
+                message: "Copy provider keys to this server in Settings.".into(),
+            },
+        )?;
+        return Ok(());
+    }
+    let workspace = LocalWorkspace { root: service.project.clone() };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let result = crate::turn::run_live_turn(service, &request, &workspace, &resolved, |event| {
+        let frame = match event {
+            TurnEvent::Status(text) => ServerFrame::Status { text },
+            TurnEvent::Delta(text) => ServerFrame::Delta { text },
+            TurnEvent::Done(conversation) => ServerFrame::Done { conversation },
+            TurnEvent::Error(message) => ServerFrame::Error { message },
+        };
+        let _ = tx.send(frame);
+    });
+    drop(tx);
+    for frame in rx {
+        write_server(output, &frame)?;
+    }
+    if let Err(err) = result {
+        write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+    }
+    Ok(())
+}
+
+fn write_server<W: Write>(output: &mut W, frame: &ServerFrame) -> Result<()> {
+    output.write_all(&crate::codec::encode_frame(frame)?)?;
+    output.flush()?;
+    Ok(())
 }
 
 pub fn serve<R: Read, W: Write>(
@@ -105,6 +155,12 @@ pub fn serve<R: Read, W: Write>(
         let mut body = vec![0u8; len];
         input.read_exact(&mut body)?;
         let frame: ClientFrame = serde_json::from_slice(&body)?;
+        if model.is_none() {
+            if let ClientFrame::SubmitPrompt(request) = frame {
+                submit_streaming(service, keys, request, output)?;
+                continue;
+            }
+        }
         let response = handle_frame(service, keys, frame, model);
         output.write_all(&crate::codec::encode_frame(&response)?)?;
         output.flush()?;

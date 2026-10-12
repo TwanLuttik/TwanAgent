@@ -15,6 +15,11 @@ export type HostedEvent =
   | { type: "done"; messages: ChatMessage[] }
   | { type: "error"; message: string };
 
+/** A paired cloud project never runs the model or tools in the GUI. */
+export function hostedTurnStaysOnServer(remote: { paired?: boolean; online?: boolean } | null | undefined): boolean {
+  return Boolean(remote && remote.paired !== false && remote.online !== false);
+}
+
 export type HostedServer = {
   submit(prompt: HostedPrompt): Promise<HostedEvent[]>;
   getConversation(id: string): Promise<ChatMessage[]>;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { frameRunsToolsOnClient, hostedPromptFrame, runHostedTurn, type HostedEvent, type HostedServer } from "../hosted.ts";
+import { frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, type HostedEvent, type HostedServer } from "../hosted.ts";
 import type { ChatMessage } from "../core.ts";
 
 describe("hosted turns", () => {
@@ -49,6 +49,12 @@ describe("hosted turns", () => {
     assert.deepEqual(calls, ["hello from the mac"]);
     assert.equal(result.messages.length, 2);
     assert.equal(result.events[0]?.type, "status");
+  });
+
+  it("keeps a paired cloud turn off the client", () => {
+    assert.equal(hostedTurnStaysOnServer({ paired: true, online: true }), true);
+    assert.equal(hostedTurnStaysOnServer({ paired: false, online: true }), false);
+    assert.equal(hostedTurnStaysOnServer(null), false);
   });
 
   it("does not keep a local transcript when the server refuses", async () => {

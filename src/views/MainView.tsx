@@ -183,6 +183,7 @@ export function MainView() {
   const skillsRef = useRef(skills);
   skillsRef.current = skills;
   const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
+  const hostedChats = Boolean(remoteWorkspace?.paired);
   const remoteRef = useRef<RemoteWorkspace | null>(null);
   remoteRef.current = remoteWorkspace;
   /** The project `remoteWorkspace` was loaded for. Empty until that lookup returns. */
@@ -261,7 +262,7 @@ export function MainView() {
       setMessages([]);
       return;
     }
-    const rows = await api.listConversations(ws);
+    const rows = hostedChats ? await api.listHostedConversations(ws) : await api.listConversations(ws);
     if (!isSameProject(ws, workspaceRef.current)) return;
     if (conversationsRef.current.length === 0 && rows.length > 0) {
       setConversations(rows);
@@ -299,7 +300,7 @@ export function MainView() {
       setMessages([]);
       return;
     }
-    const full = await api.getConversation(ws, found.id);
+    const full = hostedChats ? await api.getHostedConversation(ws, found.id) : await api.getConversation(ws, found.id);
     if (!isSameProject(ws, workspaceRef.current)) return;
     stickToBottomRef.current = true;
     setActiveId(found.id);
@@ -378,7 +379,7 @@ export function MainView() {
       setContextWindow(next.contextWindow);
     }
     setPermission(parsePermissionMode(next.permission));
-  }, [models]);
+  }, [models, hostedChats]);
 
   const applyRuntime = useCallback((next: Runtime) => {
     setRuntime(next);
@@ -779,6 +780,7 @@ export function MainView() {
                   remotePath: row.remote_path,
                   online: row.online,
                   providers: row.providers ?? [],
+                  paired: row.paired,
                 }
               : null,
           );

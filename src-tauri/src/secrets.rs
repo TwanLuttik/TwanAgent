@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use keyring::Entry;
+use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -10,10 +10,6 @@ const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
 const ANTHROPIC_ACCOUNT: &str = "anthropic";
 const MINIMAX_ACCOUNT: &str = "minimax";
-
-fn ssh_entry(account: &str) -> std::result::Result<Entry, String> {
-    Entry::new(keychain_service(), account).map_err(|e| e.to_string())
-}
 
 pub fn set_ssh_secret(account: &str, value: &str) -> Result<()> {
     set_ssh_secret_in(account, value, &SystemKeychain)
@@ -67,21 +63,15 @@ pub trait SshSecretStore {
 
 impl SshSecretStore for SystemKeychain {
     fn set(&self, account: &str, value: &str) -> std::result::Result<(), String> {
-        ssh_entry(account)?.set_password(value).map_err(|e| e.to_string())
+        write_account(keychain_service(), account, value)
     }
 
     fn get(&self, account: &str) -> std::result::Result<Option<String>, String> {
-        match ssh_entry(account)?.get_password() {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
+        read_account(keychain_service(), account)
     }
 
     fn delete(&self, account: &str) {
-        if let Ok(entry) = ssh_entry(account) {
-            let _ = entry.delete_credential();
-        }
+        let _ = remove_account(keychain_service(), account);
     }
 }
 
@@ -165,13 +155,11 @@ pub struct SystemKeychain;
 
 impl SecretStore for SystemKeychain {
     fn set(&self, value: &str) -> std::result::Result<(), String> {
-        Entry::new(keychain_service(), XAI_ACCOUNT)
-            .and_then(|entry| entry.set_password(value))
-            .map_err(|e| e.to_string())
+        write_account(keychain_service(), XAI_ACCOUNT, value)
     }
 
     fn get(&self) -> std::result::Result<Option<String>, String> {
-        match read_service(keychain_service())? {
+        match read_account(keychain_service(), XAI_ACCOUNT)? {
             Some(value) => Ok(Some(value)),
             None if cfg!(debug_assertions) => copy_release_key_into_dev(),
             None => Ok(None),
@@ -179,35 +167,45 @@ impl SecretStore for SystemKeychain {
     }
 
     fn delete(&self) {
-        if let Ok(entry) = Entry::new(keychain_service(), XAI_ACCOUNT) {
-            let _ = entry.delete_credential();
-        }
+        let _ = remove_account(keychain_service(), XAI_ACCOUNT);
     }
 
     fn set_account(&self, account: &str, value: &str) -> std::result::Result<(), String> {
-        Entry::new(keychain_service(), account)
-            .and_then(|entry| entry.set_password(value))
-            .map_err(|e| e.to_string())
+        write_account(keychain_service(), account, value)
     }
 
     fn get_account(&self, account: &str) -> std::result::Result<Option<String>, String> {
-        match Entry::new(keychain_service(), account).and_then(|entry| entry.get_password()) {
-            Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => {
-                if cfg!(debug_assertions) && account == ANTHROPIC_ACCOUNT {
-                    copy_release_account_into_dev(account)
-                } else {
-                    Ok(None)
-                }
+        match read_account(keychain_service(), account)? {
+            Some(value) => Ok(Some(value)),
+            None if cfg!(debug_assertions) && (account == ANTHROPIC_ACCOUNT || account == MINIMAX_ACCOUNT) => {
+                // Dev uses its own keychain item. Copy a release key the first time it is read.
+                copy_release_account_into_dev(account)
             }
-            Err(e) => Err(e.to_string()),
+            None => Ok(None),
         }
     }
 
     fn delete_account(&self, account: &str) {
-        if let Ok(entry) = Entry::new(keychain_service(), account) {
-            let _ = entry.delete_credential();
-        }
+        let _ = remove_account(keychain_service(), account);
+    }
+}
+
+/// Write a generic password and read it back. `keyring` can report success while the
+/// login keychain never stores the item, so the settings page keeps saying nothing is saved.
+fn write_account(service: &str, account: &str, value: &str) -> std::result::Result<(), String> {
+    set_generic_password(service, account, value.as_bytes()).map_err(|err| err.to_string())?;
+    match read_account(service, account)? {
+        Some(stored) if stored == value => Ok(()),
+        Some(_) => Err("the keychain stored a different value".into()),
+        None => Err("the keychain did not keep the key".into()),
+    }
+}
+
+fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
+    match delete_generic_password(service, account) {
+        Ok(()) => Ok(()),
+        Err(err) if err.code() == -25300 => Ok(()),
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -219,26 +217,22 @@ fn copy_release_account_into_dev(account: &str) -> std::result::Result<Option<St
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Entry::new(DEV_SERVICE, account)
-        .and_then(|entry| entry.set_password(trimmed))
-        .map_err(|e| e.to_string())?;
+    write_account(DEV_SERVICE, account, trimmed)?;
     Ok(Some(trimmed.to_string()))
 }
 
 fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
-    match Entry::new(service, account).and_then(|entry| entry.get_password()) {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+    match get_generic_password(service, account) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "keychain item is not text".to_string()),
+        Err(err) if err.code() == -25300 => Ok(None),
+        Err(err) => Err(err.to_string()),
     }
 }
 
 fn read_service(service: &str) -> std::result::Result<Option<String>, String> {
-    match Entry::new(service, XAI_ACCOUNT).and_then(|entry| entry.get_password()) {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    read_account(service, XAI_ACCOUNT)
 }
 
 /// Dev has its own keychain item. The first lookup copies the release key so clearing it later
@@ -251,9 +245,7 @@ fn copy_release_key_into_dev() -> std::result::Result<Option<String>, String> {
     if trimmed.is_empty() {
         return Ok(None);
     }
-    Entry::new(DEV_SERVICE, XAI_ACCOUNT)
-        .and_then(|entry| entry.set_password(trimmed))
-        .map_err(|e| e.to_string())?;
+    write_account(DEV_SERVICE, XAI_ACCOUNT, trimmed)?;
     Ok(Some(trimmed.to_string()))
 }
 
@@ -497,6 +489,18 @@ mod xai_key_tests {
     }
 
     #[test]
+    fn a_missing_dev_minimax_key_is_copied_from_the_release_item() {
+        let mut release = MemKeychain::with_release("minimax", "minimax-secret");
+        let found = release.get_account("minimax").unwrap();
+        assert_eq!(found.as_deref(), Some("minimax-secret"));
+        assert_eq!(
+            release.dev.get("minimax").map(String::as_str),
+            Some("minimax-secret")
+        );
+        assert_eq!(release.get_account("anthropic").unwrap(), None);
+    }
+
+    #[test]
     fn minimax_key_does_not_read_the_other_keys() {
         let store = MemStore::default();
         set_xai_key_in(std::path::Path::new("/tmp/unused"), "xai-secret", &store).unwrap();
@@ -614,6 +618,38 @@ mod xai_key_tests {
         assert_eq!(store.get().unwrap().as_deref(), Some("file-secret"));
         let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
         assert!(!raw.contains("file-secret"), "{raw}");
+    }
+
+    /// Dev item first. A miss copies from the release item, matching `SystemKeychain` in a debug build.
+    struct MemKeychain {
+        dev: std::collections::HashMap<String, String>,
+        release: std::collections::HashMap<String, String>,
+    }
+
+    impl MemKeychain {
+        fn with_release(account: &str, value: &str) -> Self {
+            let mut release = std::collections::HashMap::new();
+            release.insert(account.to_string(), value.to_string());
+            Self {
+                dev: std::collections::HashMap::new(),
+                release,
+            }
+        }
+
+        fn get_account(&mut self, account: &str) -> std::result::Result<Option<String>, String> {
+            if let Some(value) = self.dev.get(account).cloned() {
+                return Ok(Some(value));
+            }
+            let Some(value) = self.release.get(account).cloned() else {
+                return Ok(None);
+            };
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            self.dev.insert(account.to_string(), trimmed.clone());
+            Ok(Some(trimmed))
+        }
     }
 
     #[derive(Default)]

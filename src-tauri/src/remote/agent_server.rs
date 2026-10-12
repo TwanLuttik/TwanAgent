@@ -18,6 +18,9 @@ pub struct ServerInstallStatus {
     pub path: String,
     /// SSH port answered. False when the machine is off or unreachable, before any program check.
     pub online: bool,
+    /// This Mac has a newer `twanagent-server` than the one on that machine.
+    #[serde(default)]
+    pub update: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +59,20 @@ pub fn new_token() -> String {
 /// Ask the remote machine which binary it can run before the copy starts.
 pub fn target_probe_script() -> String {
     "uname -m; uname -s".into()
+}
+
+/// The version string baked into a built `twanagent-server`, or empty when it cannot be read.
+pub fn binary_version(bytes: &[u8]) -> String {
+    let marker = b"twanagent-server ";
+    let Some(start) = bytes.windows(marker.len()).position(|window| window == marker) else {
+        return String::new();
+    };
+    let rest = &bytes[start + marker.len()..];
+    let end = rest
+        .iter()
+        .position(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-'))
+        .unwrap_or(rest.len());
+    String::from_utf8_lossy(&rest[..end]).trim_matches('-').trim().to_string()
 }
 
 /// macOS builds cannot run on the Linux machine. Pick the binary that matches `uname`.
@@ -99,6 +116,51 @@ pub fn binary_for_target(arch: &str, os: &str) -> Result<std::path::PathBuf> {
     )))
 }
 
+/// The program this Mac would copy. `twanagent-server --version` prints `twanagent-server <this>`.
+pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `installed` is the text from `--version`, such as `twanagent-server 1.0.0-beta.1`.
+pub fn server_update_available(installed: &str) -> bool {
+    let installed = installed.trim().strip_prefix("twanagent-server").unwrap_or(installed).trim();
+    if installed.is_empty() || installed == "unknown" {
+        return false;
+    }
+    version_is_older(installed, SERVER_VERSION)
+}
+
+/// Numeric pieces, then the prerelease tag. `1.0.0-beta.1` is older than `1.0.0-beta.2`.
+fn version_is_older(installed: &str, current: &str) -> bool {
+    let (installed_num, installed_pre) = split_version(installed);
+    let (current_num, current_pre) = split_version(current);
+    let len = installed_num.len().max(current_num.len());
+    for i in 0..len {
+        let left = installed_num.get(i).copied().unwrap_or(0);
+        let right = current_num.get(i).copied().unwrap_or(0);
+        if left != right {
+            return left < right;
+        }
+    }
+    match (installed_pre, current_pre) {
+        (Some(left), Some(right)) => left < right,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn split_version(raw: &str) -> (Vec<u64>, Option<u64>) {
+    let (head, tail) = raw.split_once('-').unwrap_or((raw, ""));
+    let numbers = head
+        .split('.')
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect();
+    let pre = tail
+        .rsplit(|ch: char| !ch.is_ascii_digit())
+        .next()
+        .filter(|part| !part.is_empty())
+        .and_then(|part| part.parse().ok());
+    (numbers, pre)
+}
+
 /// Ask the remote shell whether `twanagent-server` is on disk and what version it prints.
 pub fn version_check_script() -> String {
     format!(
@@ -113,6 +175,7 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         let version = rest.trim().to_string();
         return ServerInstallStatus {
             installed: true,
+            update: server_update_available(&version),
             version,
             path,
             online: true,
@@ -123,6 +186,7 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         version: String::new(),
         path,
         online: true,
+        update: false,
     }
 }
 
@@ -260,6 +324,7 @@ pub fn server_by_host(conn: &Connection, host: &str, port: u16) -> Result<Option
         params![host, port as i64],
         |row| {
             let stored_port: i64 = row.get(4)?;
+            let token: Option<String> = row.get(7)?;
             Ok(AgentServer {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -268,7 +333,7 @@ pub fn server_by_host(conn: &Connection, host: &str, port: u16) -> Result<Option
                 port: stored_port.clamp(0, u16::MAX as i64) as u16,
                 machine_id: row.get(5)?,
                 installed_at: row.get(6)?,
-                paired: false,
+                paired: token.is_some_and(|value| !value.trim().is_empty()),
             })
         },
     )
@@ -351,6 +416,14 @@ mod tests {
         assert!(found.installed);
         assert!(found.online);
         assert_eq!(found.version, "twanagent-server 1.0.0-beta.1");
+        assert_eq!(
+            binary_version(b"prefix twanagent-server 1.0.0-beta.2\0tail"),
+            "1.0.0-beta.2"
+        );
+        assert!(server_update_available("twanagent-server 1.0.0-beta.1"));
+        assert!(!server_update_available(&format!("twanagent-server {SERVER_VERSION}")));
+        assert!(!server_update_available("unknown"));
+        assert!(!version_is_older("1.0.0", "1.0.0-beta.2"));
         let missing = parse_version_check("missing\n");
         assert!(!missing.installed);
         assert!(missing.online);
@@ -409,6 +482,8 @@ mod tests {
         let listed = list_servers(&conn, |_| false).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].paired);
+        let found = server_by_host(&conn, "10.0.0.219", 22).unwrap().unwrap();
+        assert!(found.paired);
         let wire = serde_json::to_string(&listed[0]).unwrap();
         assert!(!wire.contains("token"));
         let again = insert_server(

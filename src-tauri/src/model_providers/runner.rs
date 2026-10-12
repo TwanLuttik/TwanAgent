@@ -154,6 +154,7 @@ impl<'a> StreamSession<'a> {
                         tool_calls: None,
                         usage: Some(usage),
                         thinking: None,
+                        conversation: None,
                     });
                 }
             }
@@ -177,6 +178,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
             usage: self.last_usage.clone(),
             thinking: if thinking.is_empty() { None } else { Some(thinking) },
+            conversation: None,
         });
     }
 
@@ -192,6 +194,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: None,
             usage: None,
             thinking: None,
+            conversation: None,
         });
     }
 
@@ -207,6 +210,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: None,
             usage: None,
             thinking: None,
+            conversation: None,
         });
     }
 
@@ -240,6 +244,7 @@ pub async fn consume_sse(
                     tool_calls: None,
                     usage: None,
                     thinking: None,
+                    conversation: None,
                 },
             );
             return Ok(());

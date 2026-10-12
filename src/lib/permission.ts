@@ -64,6 +64,8 @@ export type RemoteWorkspace = {
   online: boolean;
   /** Provider ids whose keys were copied to this server. Missing until that lookup returns. */
   providers?: string[];
+  /** True when this Mac has paired twanagent-server on that machine. Chats then run there. */
+  paired?: boolean;
 };
 
 export function remoteWorkspaceLine(remote: RemoteWorkspace | null | undefined): string {

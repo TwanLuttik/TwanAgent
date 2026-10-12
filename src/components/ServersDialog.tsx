@@ -60,7 +60,9 @@ function ServerRow({
     : !known.online
       ? "SSH did not answer"
       : known.installed
-        ? versionLabel(known)
+        ? known.update
+          ? `${versionLabel(known)} · update`
+          : versionLabel(known)
         : "Not installed";
   return (
     <button
@@ -149,6 +151,7 @@ function ServerDetail({
   const needsToken = Boolean(known && online && installed && !row.paired);
   const address = `${row.user}@${row.host}${row.port === 22 ? "" : `:${row.port}`}`;
   const version = !known ? "Checking…" : !known.online ? "Unreachable" : installed ? versionLabel(known as ServerInstallStatus) : "Not installed";
+  const update = Boolean(known?.online && installed && known.update);
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -173,10 +176,9 @@ function ServerDetail({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3 rounded-xl bg-inset/70 px-3 py-3">
-        <Fact label="Version" value={version} />
+        <Fact label="Version" value={update ? `${version} · update ready` : version} />
         <Fact label="Pairing" value={row.paired ? "Paired" : needsToken ? "Needs a token" : "Not paired"} />
         <Fact label="Program" value={known?.path || "~/.twanagent/bin/twanagent-server"} mono />
-        <Fact label="Git" value={git === "checking" ? "Checking…" : git ? "Installed" : "Not installed"} />
         <Fact label="Added" value={row.installed_at ? row.installed_at.slice(0, 10) : "—"} />
         <Fact
           label="SQLite"
@@ -196,17 +198,18 @@ function ServerDetail({
             Install
           </Button>
         ) : null}
+        {update ? (
+          <Button variant="primary" disabled={busy || copying} onClick={onInstall}>
+            {copying ? "Updating…" : "Update"}
+          </Button>
+        ) : null}
         {needsToken ? (
           <Button variant="primary" disabled={busy} onClick={onPair}>
             Pair
           </Button>
         ) : null}
-        {known?.online && git === false ? (
-          <Button disabled={busy} onClick={onInstallGit}>
-            {busy ? "Installing…" : "Install git"}
-          </Button>
-        ) : null}
       </div>
+      <GitSection git={git} online={Boolean(known?.online)} busy={busy} onInstall={onInstallGit} />
       <ProviderKeys
         keys={keys}
         localKeys={localKeys}
@@ -1076,6 +1079,42 @@ function providerStatus(onServer: boolean, here: boolean, known: boolean): { tex
   if (onServer) return { text: "On server", ok: true };
   if (here) return { text: "Not copied", ok: false };
   return { text: "No key", ok: false };
+}
+
+function GitSection({
+  git,
+  online,
+  busy,
+  onInstall,
+}: {
+  git: boolean | "checking";
+  online: boolean;
+  busy: boolean;
+  onInstall: () => void;
+}) {
+  const installed = git === true;
+  const checking = git === "checking";
+  return (
+    <div className="grid gap-2">
+      <div className="text-[11px] font-semibold tracking-wide text-muted uppercase">Git</div>
+      <div className="flex items-center gap-3 rounded-xl border border-ink/10 bg-panel px-3 py-3">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-wash text-ink">
+          <Symbol name="arrow.triangle.branch" className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-medium text-ink">Git</span>
+          <span className={`block text-[11px] ${installed ? "text-ok" : "text-muted"}`}>
+            {checking ? "Checking…" : installed ? "Installed" : online ? "Not installed" : "Unreachable"}
+          </span>
+        </span>
+        {online && !installed && !checking ? (
+          <Button disabled={busy} onClick={onInstall}>
+            {busy ? "Installing…" : "Install git"}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 function ProviderKeys({

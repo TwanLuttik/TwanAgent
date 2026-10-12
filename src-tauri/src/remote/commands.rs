@@ -294,10 +294,13 @@ pub fn dev_workspace_remote(
     let machine = config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
     let online = machine_reachable(&machine.host, machine.port);
-    let providers = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+    let paired_server = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
+    let providers = paired_server
+        .as_ref()
         .map(|server| super::agent_server::server_provider_keys(&conn, &server.id))
         .transpose()?
         .unwrap_or_default();
+    let paired = paired_server.as_ref().is_some_and(|server| server.paired);
     Ok(Some(WorkspaceRemote {
         machine_id: machine.id,
         machine_name: machine.name,
@@ -308,6 +311,7 @@ pub fn dev_workspace_remote(
         project_name: project.name,
         online,
         providers,
+        paired,
     }))
 }
 
@@ -323,6 +327,9 @@ pub struct WorkspaceRemote {
     pub online: bool,
     /// Provider ids whose keys were copied onto the paired TwanAgent server. Empty when none were.
     pub providers: Vec<String>,
+    /// The machine has a paired `twanagent-server`. Chats for this project run there.
+    #[serde(default)]
+    pub paired: bool,
 }
 
 /// Port check only. A full SSH login would block file tools that share the connection.
@@ -403,6 +410,7 @@ fn offline_status() -> super::agent_server::ServerInstallStatus {
         version: String::new(),
         path: "~/.twanagent/bin/twanagent-server".into(),
         online: false,
+        update: false,
     }
 }
 
@@ -422,6 +430,26 @@ fn copy_binary(work: &ServerWork, machine: &Machine) -> Result<super::agent_serv
     let os = lines.next().unwrap_or("").trim();
     let path = super::agent_server::binary_for_target(arch, os)?;
     let bytes = std::fs::read(&path).map_err(|err| Error::Other(format!("could not read {}: {err}", path.display())))?;
+    let built = super::agent_server::binary_version(&bytes);
+    if built.is_empty() {
+        return Err(Error::Other(format!(
+            "{} has no version. Build twanagent-server again, then update.",
+            path.display()
+        )));
+    }
+    let current = super::agent_server::parse_version_check(&require_exec(
+        work,
+        machine,
+        &super::agent_server::version_check_script(),
+        20,
+    )?);
+    if current.installed && !super::agent_server::server_update_available(&current.version) && current.version.contains(&built)
+    {
+        return Err(Error::Other(format!(
+            "{built} is already on {}. Build a newer twanagent-server before updating.",
+            machine.host
+        )));
+    }
     let scripts = super::agent_server::binary_install_scripts(&bytes)?;
     for script in &scripts {
         let _ = require_exec(work, machine, script, 120)?;

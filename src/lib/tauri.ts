@@ -275,6 +275,8 @@ export type ChatEvent = {
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
   thinking?: ApiThinkingBlock[] | null;
+  /** Saved by the paired server. The GUI replaces its copy with this. */
+  conversation?: Conversation | null;
 };
 
 export type WebSearchEvent = {
@@ -651,6 +653,7 @@ export type WorkspaceRemote = {
   project_name: string;
   online: boolean;
   providers?: string[];
+  paired?: boolean;
 };
 
 export type LanHost = { host: string; port: number; label: string };
@@ -750,6 +753,7 @@ export type ServerInstallStatus = {
   version: string;
   path: string;
   online: boolean;
+  update?: boolean;
 };
 
 export type ServerProviderKeys = {
@@ -858,6 +862,44 @@ export function workspaceServerId(workspace: string): Promise<string | null> {
 /** Copy MCP configs and skills. `mcpName` signs in through the browser on this Mac first. */
 export function syncServerCapabilities(id: string, mcpName?: string): Promise<RemoteCapabilities> {
   return invoke("dev_sync_server_capabilities", { id, mcpName: mcpName ?? null, mcp_name: mcpName ?? null });
+}
+
+async function hostedFrame(workspace: string, frame: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const raw = await hostedCall(workspace, frame);
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+function summaryFromHosted(row: Record<string, unknown>): ConversationSummary {
+  return {
+    id: String(row.id ?? ""),
+    title: String(row.title ?? "Chat"),
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+    kind: String(row.kind ?? "chat"),
+    journey_id: (row.journey_id as string | null | undefined) ?? null,
+    sort_order: Number(row.sort_order ?? 0),
+    effort: (row.effort as string | null | undefined) ?? null,
+    model: (row.model as string | null | undefined) ?? null,
+    context_window: (row.context_window as number | null | undefined) ?? null,
+    permission: (row.permission as string | null | undefined) ?? null,
+    archived: Boolean(row.archived),
+  };
+}
+
+/** Cloud chats live on the paired server. The local mount database is not used. */
+export async function listHostedConversations(workspace: string): Promise<ConversationSummary[]> {
+  const frame = await hostedFrame(workspace, { type: "list_conversations" });
+  const rows = Array.isArray(frame.rows) ? frame.rows : [];
+  return rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
+}
+
+export async function getHostedConversation(workspace: string, id: string): Promise<Conversation> {
+  const frame = await hostedFrame(workspace, { type: "get_conversation", id });
+  const row = frame;
+  return {
+    ...summaryFromHosted(row),
+    messages: Array.isArray(row.messages) ? row.messages : [],
+  };
 }
 
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
@@ -1072,6 +1114,41 @@ export function transcribe(bytesBase64: string, filename: string): Promise<strin
     bytesBase64,
     bytes_base64: bytesBase64,
     filename,
+  });
+}
+
+export function hostedTurn(input: {
+  workspace: string;
+  streamId: string;
+  conversationId: string;
+  prompt: string;
+  model?: string;
+  effort?: string;
+  permission?: string;
+}): Promise<void> {
+  return invoke("dev_hosted_turn", {
+    workspace: input.workspace,
+    streamId: input.streamId,
+    stream_id: input.streamId,
+    conversationId: input.conversationId,
+    conversation_id: input.conversationId,
+    prompt: input.prompt,
+    model: input.model ?? null,
+    effort: input.effort ?? null,
+    permission: input.permission ?? null,
+  });
+}
+
+export function hostedCancel(streamId: string): Promise<void> {
+  return invoke("dev_hosted_cancel", { streamId, stream_id: streamId });
+}
+
+/** One conversation frame on the paired server. The reply is the server frame as JSON. */
+export function hostedCall(workspace: string, frame: Record<string, unknown>): Promise<string> {
+  return invoke("dev_hosted_call", {
+    workspace,
+    frameJson: JSON.stringify(frame),
+    frame_json: JSON.stringify(frame),
   });
 }
 

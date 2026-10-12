@@ -413,6 +413,7 @@ pub async fn dev_chat_start(
                     tool_calls: None,
                     usage: None,
                     thinking: None,
+                    conversation: None,
                 },
             );
         }
@@ -606,6 +607,7 @@ async fn stream_chat(
                         tool_calls: None,
                         usage: None,
                         thinking: None,
+                        conversation: None,
                     },
                 );
             }

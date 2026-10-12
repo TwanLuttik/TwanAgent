@@ -39,60 +39,91 @@ pub struct LiveSession {
 
 impl SshSession for LiveSession {
     fn exec_channel(&self, request: &ExecRequest) -> Result<ExecResult> {
-        let command = ssh::remote_shell_command(&request.cwd, &request.command)?;
-        let timeout = Duration::from_secs(request.timeout_secs.max(1));
-        let handle = self.handle.clone();
-        // One command at a time. The guard stays on this thread so it is not sent into the runtime.
-        let _turn = self.channel.lock().unwrap_or_else(|err| err.into_inner());
-        // A file tool can run while another SSH call is already on this runtime.
-        // spawn blocks the caller without nesting block_on inside the runtime.
-        let (tx, rx) = std::sync::mpsc::channel();
-        ssh_runtime().spawn(async move {
-            let handle = handle.lock().await;
-            let result = run_exec(&handle, &command, timeout).await;
-            let _ = tx.send(result);
-        });
-        rx.recv()
-            .map_err(|_| Error::Other("SSH command stopped".into()))?
+        self.exec_stream(request, &mut |_| {})
     }
 
     fn alive(&self) -> bool {
         true
     }
+
+    fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+        let command = ssh::remote_shell_command(&request.cwd, &request.command)?;
+        let timeout = Duration::from_secs(request.timeout_secs.max(1));
+        let handle = self.handle.clone();
+        let _turn = self.channel.lock().unwrap_or_else(|err| err.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        ssh_runtime().spawn(async move {
+            let handle = handle.lock().await;
+            run_exec_stream(&handle, &command, timeout, tx).await;
+        });
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        let mut timed_out = false;
+        while let Ok(piece) = rx.recv() {
+            match piece {
+                StreamPiece::Out(chunk) => {
+                    on_stdout(&chunk);
+                    stdout.extend_from_slice(&chunk);
+                }
+                StreamPiece::Err(chunk) => stderr.extend_from_slice(&chunk),
+                StreamPiece::Exit(code) => exit_code = Some(code),
+                StreamPiece::TimedOut => timed_out = true,
+                StreamPiece::Failed(message) => return Err(Error::Other(message)),
+            }
+        }
+        Ok(ExecResult {
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_code,
+            timed_out,
+        })
+    }
 }
 
-async fn run_exec(
+enum StreamPiece {
+    Out(Vec<u8>),
+    Err(Vec<u8>),
+    Exit(i32),
+    TimedOut,
+    Failed(String),
+}
+
+async fn run_exec_stream(
     handle: &client::Handle<AcceptHandler>,
     command: &str,
     timeout: Duration,
-) -> Result<ExecResult> {
-    let mut channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|e| Error::Other(format!("could not open SSH channel: {e}")))?;
-    channel
-        .exec(true, command)
-        .await
-        .map_err(|e| Error::Other(format!("could not run command: {e}")))?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    tx: std::sync::mpsc::Sender<StreamPiece>,
+) {
+    let mut channel = match handle.channel_open_session().await {
+        Ok(channel) => channel,
+        Err(err) => {
+            let _ = tx.send(StreamPiece::Failed(format!("could not open SSH channel: {err}")));
+            return;
+        }
+    };
+    if let Err(err) = channel.exec(true, command).await {
+        let _ = tx.send(StreamPiece::Failed(format!("could not run command: {err}")));
+        return;
+    }
     let mut exit_code = None;
     let mut stdout_done = false;
     let started = std::time::Instant::now();
-    let mut timed_out = false;
     loop {
         if started.elapsed() > timeout {
-            timed_out = true;
-            let _ = channel
-                .close()
-                .await;
+            let _ = tx.send(StreamPiece::TimedOut);
+            let _ = channel.close().await;
             break;
         }
         let remaining = timeout.saturating_sub(started.elapsed());
         let msg = tokio::time::timeout(remaining.min(Duration::from_secs(1)), channel.wait()).await;
         match msg {
-            Ok(Some(ChannelMsg::Data { data })) => stdout.extend_from_slice(&data),
-            Ok(Some(ChannelMsg::ExtendedData { data, ext: _ })) => stderr.extend_from_slice(&data),
+            Ok(Some(ChannelMsg::Data { data })) => {
+                let _ = tx.send(StreamPiece::Out(data.to_vec()));
+            }
+            Ok(Some(ChannelMsg::ExtendedData { data, ext: _ })) => {
+                let _ = tx.send(StreamPiece::Err(data.to_vec()));
+            }
             Ok(Some(ChannelMsg::ExitStatus { exit_status })) => {
                 exit_code = Some(exit_status as i32);
                 if stdout_done {
@@ -110,12 +141,9 @@ async fn run_exec(
             Err(_) => continue,
         }
     }
-    Ok(ExecResult {
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
-        exit_code,
-        timed_out,
-    })
+    if let Some(code) = exit_code {
+        let _ = tx.send(StreamPiece::Exit(code));
+    }
 }
 
 pub struct LiveConnector;

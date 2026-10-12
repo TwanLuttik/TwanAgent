@@ -119,6 +119,14 @@ pub struct ExecResult {
 pub trait SshSession: Send + Sync {
     fn exec_channel(&self, request: &ExecRequest) -> Result<ExecResult>;
     fn alive(&self) -> bool;
+    /// Run a command whose stdout arrives as it is written. Stderr is kept until the end.
+    fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+        let result = self.exec_channel(request)?;
+        if !result.stdout.is_empty() {
+            on_stdout(result.stdout.as_bytes());
+        }
+        Ok(result)
+    }
 }
 
 pub trait SshConnector: Send + Sync {
