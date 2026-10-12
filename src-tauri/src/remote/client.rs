@@ -174,7 +174,8 @@ async fn connect_live(
         presented: presented_slot.clone(),
     };
     // System ssh applies ~/.ssh/config, keys, and ProxyJump. A raw TCP connect does not.
-    let mut handle = connect_with_system_ssh(config, &machine.user, &machine.host, machine.port, handler).await?;
+    let (ssh_user, ssh_host) = super::config::ssh_login(&machine.user, &machine.host);
+    let mut handle = connect_with_system_ssh(config, &ssh_user, &ssh_host, machine.port, handler).await?;
     authenticate(&mut handle, machine, &auth).await?;
     let presented = presented_slot
         .lock()

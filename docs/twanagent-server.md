@@ -14,11 +14,13 @@ On the machine:
 
 That prints `twanagent-server` and the server version, for example `twanagent-server 1.0.0-beta.3`. The server version is not the desktop app version. A server binary can be updated on its own, without a new TwanAgent release.
 
-From this Mac, for the OrbStack test machine:
+From this Mac, for an OrbStack machine. The VM's bridge address is not reachable from the Mac. `<machine>@orb` is the login OrbStack publishes:
 
 ```sh
-ssh -p 22 twanluttik@192.168.139.200 ~/.twanagent/bin/twanagent-server --version
+ssh <user>@<machine>@orb ~/.twanagent/bin/twanagent-server --version
 ```
+
+The add-server check looks for that binary and for `~/.twanagent/auth-token`. A token of 32 or more hex characters means the machine is already paired. Connecting then keeps that token instead of writing a new one.
 
 ## Run it
 

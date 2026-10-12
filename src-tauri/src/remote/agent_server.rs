@@ -21,6 +21,9 @@ pub struct ServerInstallStatus {
     /// This Mac has a newer `twanagent-server` than the one on that machine.
     #[serde(default)]
     pub update: bool,
+    /// `~/.twanagent/auth-token` is a pairing token. The token itself stays on the machine.
+    #[serde(default)]
+    pub paired: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,17 +199,36 @@ fn split_version(raw: &str) -> (Vec<u64>, Option<u64>) {
     (numbers, pre)
 }
 
-/// Ask the remote shell whether `twanagent-server` is on disk and what version it prints.
+/// Ask the remote shell whether `twanagent-server` is on disk, what version it prints,
+/// and whether a pairing token is already there.
+/// A file that exists but is not marked executable still counts. The copy step sets the bit.
+/// `-x` alone hid a real install when the bit was missing or the shell could not see it.
 pub fn version_check_script() -> String {
     format!(
-        "bin={BINARY_PATH}; if [ -x \"$bin\" ]; then printf 'installed '; \"$bin\" --version 2>/dev/null || printf 'unknown'; else printf 'missing'; fi"
+        "bin={BINARY_PATH}; \
+if [ -f \"$bin\" ] || [ -x \"$bin\" ]; then \
+  if [ ! -x \"$bin\" ]; then chmod 755 \"$bin\" 2>/dev/null || true; fi; \
+  printf 'installed '; \"$bin\" --version 2>/dev/null || printf 'unknown'; \
+else printf 'missing'; fi; \
+printf '\\n'; \
+token=\"$HOME/.twanagent/auth-token\"; \
+if [ -f \"$token\" ]; then \
+  tok=$(tr -d '[:space:]' < \"$token\"); \
+  case \"$tok\" in \
+    *[!0-9A-Fa-f]*|'') printf 'token no\\n' ;; \
+    ????????????????????????????????*) printf 'token yes\\n' ;; \
+    *) printf 'token no\\n' ;; \
+  esac; \
+else printf 'token no\\n'; fi"
     )
 }
 
 pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
-    let text = stdout.trim();
     let path = "~/.twanagent/bin/twanagent-server".into();
-    if let Some(rest) = text.trim().strip_prefix("installed") {
+    let mut lines = stdout.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or("");
+    let paired = stdout.lines().any(|line| line.trim() == "token yes");
+    if let Some(rest) = first.strip_prefix("installed") {
         let version = rest.trim().to_string();
         return ServerInstallStatus {
             installed: true,
@@ -214,6 +236,7 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
             version,
             path,
             online: true,
+            paired,
         };
     }
     ServerInstallStatus {
@@ -222,6 +245,7 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         path,
         online: true,
         update: false,
+        paired,
     }
 }
 
@@ -452,10 +476,17 @@ mod tests {
         let script = version_check_script();
         assert!(script.contains("$HOME/.twanagent/bin/twanagent-server"));
         assert!(!parse_version_check("missing\n").installed);
-        let found = parse_version_check(" installed twanagent-server 1.0.0-beta.1\n");
+        let found = parse_version_check(" installed twanagent-server 1.0.0-beta.1\ntoken no\n");
         assert!(found.installed);
         assert!(found.online);
+        assert!(!found.paired);
         assert_eq!(found.version, "twanagent-server 1.0.0-beta.1");
+        let paired = parse_version_check("installed twanagent-server 1.0.0-beta.3\ntoken yes\n");
+        assert!(paired.installed);
+        assert!(paired.paired);
+        let token_only = parse_version_check("missing\ntoken yes\n");
+        assert!(!token_only.installed);
+        assert!(token_only.paired);
         assert_eq!(
             binary_version(b"prefix twanagent-server 1.0.0-beta.2\0tail"),
             "1.0.0-beta.2"

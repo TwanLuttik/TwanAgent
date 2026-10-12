@@ -43,7 +43,7 @@ import {
   SPEECH_MODELS,
   loadMicDevice,
   micAudioConstraints,
-  micLevel,
+  meterLevel,
   saveMicDevice,
   speechModel,
   speechNote,
@@ -51,7 +51,6 @@ import {
   type MicDevice,
   type SpeechModelInfo,
 } from "../lib/speech";
-import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
 import type { SpeechModelStatus } from "../lib/tauri";
 
 export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "permissions";
@@ -739,32 +738,37 @@ function MicTest() {
       return;
     }
     const ctx = new AudioCtx();
-    try {
-      await ctx.audioWorklet.addModule(pcmCaptureUrl);
-    } catch {
-      stream.getTracks().forEach((track) => track.stop());
-      void ctx.close();
-      setFlash({ kind: "err", text: "This browser cannot test the microphone." });
-      return;
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        /* the meter still reads once the context starts */
+      }
     }
     const source = ctx.createMediaStreamSource(stream);
-    const processor = new AudioWorkletNode(ctx, "pcm-capture");
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.35;
+    const samples = new Float32Array(analyser.fftSize);
+    source.connect(analyser);
     let peak = 0;
-    processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      if (!(event.data instanceof Float32Array)) return;
-      const next = micLevel(event.data);
-      peak = Math.max(peak * 0.85, next);
+    let frame = 0;
+    const tick = () => {
+      analyser.getFloatTimeDomainData(samples);
+      const next = meterLevel(samples);
+      peak = Math.max(peak * 0.82, next);
       setLevel(peak);
-      if (next > 0.08) setHeard(true);
+      if (next > 0.12) setHeard(true);
+      frame = requestAnimationFrame(tick);
     };
-    source.connect(processor);
     setHeard(false);
     setLevel(0);
     setTesting(true);
+    frame = requestAnimationFrame(tick);
     stopRef.current = () => {
-      processor.port.onmessage = null;
+      cancelAnimationFrame(frame);
       source.disconnect();
-      processor.disconnect();
+      analyser.disconnect();
       stream.getTracks().forEach((track) => track.stop());
       void ctx.close();
       stopRef.current = null;
@@ -800,8 +804,11 @@ function MicTest() {
       </label>
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="h-1.5 overflow-hidden rounded-full bg-wash">
-            <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
+          <div className="h-2 overflow-hidden rounded-full bg-wash">
+            <div
+              className={`h-full rounded-full ${heard ? "bg-ok" : "bg-accent"}`}
+              style={{ width: `${Math.round(level * 100)}%` }}
+            />
           </div>
           <p className="mt-1 mb-0 text-[12px] text-muted">
             {testing ? (heard ? "Hearing you." : "Speak to see the level move.") : "Check that the selected mic hears you."}

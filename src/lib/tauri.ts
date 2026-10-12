@@ -769,6 +769,8 @@ export type ServerInstallStatus = {
   path: string;
   online: boolean;
   update?: boolean;
+  /** `~/.twanagent/auth-token` on that machine is a real pairing token. */
+  paired?: boolean;
 };
 
 export type ServerProviderKeys = {

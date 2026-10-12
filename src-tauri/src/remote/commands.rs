@@ -469,6 +469,7 @@ fn offline_status() -> super::agent_server::ServerInstallStatus {
         path: "~/.twanagent/bin/twanagent-server".into(),
         online: false,
         update: false,
+        paired: false,
     }
 }
 
@@ -1010,7 +1011,8 @@ fn install_agent_server(
     if !trusted {
         return Err(Error::Other("Confirm the host key before installing on this server.".into()));
     }
-    // Connecting only saves the machine and a pairing token. The program is copied when it is missing.
+    // Connecting saves the machine. The program is copied only when it is missing.
+    // A token already on the machine is the pairing. Replacing it would drop the one the server uses.
     let already = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
     let created = already.is_none();
     let server = if let Some(already) = already {
@@ -1027,6 +1029,23 @@ fn install_agent_server(
             },
         )?
     };
+    let present = super::agent_server::parse_version_check(&require_exec(
+        work,
+        &machine,
+        &super::agent_server::version_check_script(),
+        20,
+    )?);
+    if present.paired {
+        if !server.paired {
+            if let Err(err) = adopt_remote_token(work, &machine, &server.id) {
+                if created {
+                    let _ = super::agent_server::delete_server(&conn, &server.id);
+                }
+                return Err(err);
+            }
+        }
+        return agent_server_by_id(&conn, &server.id);
+    }
     if let Err(err) = write_token(work, &machine, &server.id) {
         if created {
             let _ = super::agent_server::delete_server(&conn, &server.id);
@@ -1034,6 +1053,18 @@ fn install_agent_server(
         return Err(err);
     }
     agent_server_by_id(&conn, &server.id)
+}
+
+/// Read the token that is already on the machine into this app. The file is not rewritten.
+fn adopt_remote_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<()> {
+    let stdout = require_exec(
+        work,
+        machine,
+        "tr -d '[:space:]' < \"$HOME/.twanagent/auth-token\"",
+        15,
+    )?;
+    let conn = work_db(work)?;
+    super::agent_server::set_server_token(&conn, server_id, stdout.trim())
 }
 
 #[tauri::command(rename_all = "snake_case")]

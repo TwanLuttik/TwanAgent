@@ -782,6 +782,23 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Named machines first, then bare addresses. A named VM is the one you meant to pick. */
+function networkOrder(rows: LanHost[]): LanHost[] {
+  return [...rows].sort((a, b) => {
+    const namedA = a.label !== a.host ? 0 : 1;
+    const namedB = b.label !== b.host ? 0 : 1;
+    if (namedA !== namedB) return namedA - namedB;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function machineKind(row: LanHost): { symbol: string; place: string } {
+  if (row.host.endsWith("@orb") || row.label.includes("OrbStack")) return { symbol: "desktopcomputer", place: "OrbStack" };
+  if (row.label.includes("Tailscale") || row.host.startsWith("100.")) return { symbol: "globe", place: "Tailscale" };
+  if (row.label === "Gateway") return { symbol: "wifi", place: "Gateway" };
+  return { symbol: "server.rack", place: "Local" };
+}
+
 function ConnectForm({
   found,
   scanning,
@@ -815,6 +832,7 @@ function ConnectForm({
   onBack: () => void;
   onSubmit: () => void;
 }) {
+  const machines = networkOrder(found);
   return (
     <form
       className="grid gap-3"
@@ -823,35 +841,42 @@ function ConnectForm({
         onSubmit();
       }}
     >
-      <Field label={scanning ? "Looking for SSH and Tailscale…" : "On this network"}>
-        {found.length === 0 ? (
+      <div className="grid gap-1.5">
+        <span className="text-[12px] text-muted">
+          {scanning ? "Looking for SSH, OrbStack, and Tailscale…" : "On this network"}
+        </span>
+        {machines.length === 0 ? (
           <p className="m-0 text-[12px] text-muted">
-            {scanning ? "Checking port 22 on the local network and Tailscale peers." : "Nothing answered on port 22. Type an address below."}
+            {scanning ? "Checking machines that answer on SSH." : "Nothing answered on port 22. Type an address below."}
           </p>
         ) : (
-          <div className="grid max-h-36 gap-1 overflow-auto">
-            {found.map((row) => {
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {machines.map((row) => {
               const selected = host === row.host;
+              const kind = machineKind(row);
+              const titled = row.label !== row.host;
               return (
                 <button
                   key={row.host}
                   type="button"
+                  aria-pressed={selected}
                   onClick={() => onChoose(row)}
-                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left ${
-                    selected ? "border-accent bg-wash" : "border-line hover:bg-wash"
+                  className={`grid min-h-[76px] content-start gap-1 rounded-xl border px-3 py-2.5 text-left ${
+                    selected ? "border-accent bg-wash" : "border-line bg-panel hover:border-ink/30 hover:bg-wash"
                   }`}
                 >
-                  <Symbol name={row.label.includes("Tailscale") ? "globe" : "server.rack"} className="size-3.5 text-accent" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px]">{row.label}</span>
-                    {row.label !== row.host ? <span className="block truncate text-[11px] text-muted">{row.host}</span> : null}
+                  <span className="flex items-center gap-1.5">
+                    <Symbol name={kind.symbol} className={`size-3.5 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
+                    <span className="truncate text-[11px] text-muted">{kind.place}</span>
                   </span>
+                  <span className="truncate text-[13px] font-medium text-ink">{titled ? row.label.replace(/ · OrbStack$/, "") : row.host}</span>
+                  {titled ? <span className="truncate font-mono text-[11px] text-muted">{row.host}</span> : null}
                 </button>
               );
             })}
           </div>
         )}
-      </Field>
+      </div>
       <Field label="Address">
         <input
           autoFocus
@@ -921,22 +946,29 @@ function InstallStep({
   const known = probe && probe !== "checking" ? probe : null;
   const checking = !known;
   const installed = Boolean(known?.installed);
+  const paired = Boolean(known?.paired);
   const offline = Boolean(known && !known.online);
   const version = known && installed ? versionLabel(known) : "";
+  const versionText = version && version !== "Installed" ? ` ${version}` : "";
+  const program = installed
+    ? `TwanAgent${versionText} is installed on this machine.`
+    : "TwanAgent is not installed on this machine.";
+  const pairing = !installed && paired
+    ? "A pairing token is already on this machine, but the program is missing."
+    : paired
+      ? "It is already paired. Connecting keeps the token that is on the machine."
+      : installed
+        ? "It is not paired yet."
+        : "";
   return (
     <div className="grid gap-3">
       <div className="rounded-xl border border-line px-3 py-3">
         <div className="text-[13px] font-medium text-ink">{host}</div>
         <div className="mt-0.5 text-[12px] text-muted">{user}@{host}</div>
         <div className="mt-2 text-[12px] text-ink">
-          {checking
-            ? "Checking for the TwanAgent program…"
-            : offline
-              ? "This machine stopped answering."
-              : installed
-                ? `TwanAgent is installed${version && version !== "Installed" ? ` (${version})` : ""}.`
-                : "TwanAgent is not installed on this machine."}
+          {checking ? "Checking for the TwanAgent program…" : offline ? "This machine stopped answering." : program}
         </div>
+        {!checking && !offline && pairing ? <div className="mt-1 text-[12px] text-muted">{pairing}</div> : null}
       </div>
       <div className="flex justify-between gap-2">
         <Button onClick={onBack} disabled={busy}>

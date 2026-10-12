@@ -242,6 +242,8 @@ export function Composer({
     }
     const source = ctx.createMediaStreamSource(stream);
     const processor = new AudioWorkletNode(ctx, "pcm-capture");
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
     recordChunks.current = [];
     processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (!recordingRef.current || !(event.data instanceof Float32Array)) return;
@@ -250,6 +252,8 @@ export function Composer({
       voiceLevelRef.current = Math.max(voiceLevelRef.current * 0.72, next);
     };
     source.connect(processor);
+    processor.connect(sink);
+    sink.connect(ctx.destination);
     const el = area.current;
     recordSelection.current = {
       start: el?.selectionStart ?? draft.length,
