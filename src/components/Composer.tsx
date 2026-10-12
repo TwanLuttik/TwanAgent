@@ -535,7 +535,8 @@ export function Composer({
         ) : null}
         <MentionMenu
           open={Boolean(mention && mentionRows.length)}
-          anchor={box}
+          anchor={area}
+          cursor={cursor}
           rows={mentionRows}
           index={mentionIndex}
           onIndex={setMentionIndex}
@@ -673,16 +674,60 @@ export function Composer({
   );
 }
 
+/** Caret box inside a textarea, so the mention menu can sit just above it. */
+function caretRect(node: HTMLTextAreaElement, cursor: number): DOMRect {
+  const frame = node.getBoundingClientRect();
+  const mirror = document.createElement("div");
+  const cs = getComputedStyle(node);
+  mirror.style.position = "fixed";
+  mirror.style.left = `${frame.left}px`;
+  mirror.style.top = `${frame.top}px`;
+  mirror.style.visibility = "hidden";
+  mirror.style.pointerEvents = "none";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "anywhere";
+  mirror.style.wordBreak = "break-word";
+  mirror.style.boxSizing = cs.boxSizing;
+  mirror.style.width = `${node.clientWidth}px`;
+  mirror.style.font = cs.font;
+  mirror.style.lineHeight = cs.lineHeight;
+  mirror.style.letterSpacing = cs.letterSpacing;
+  mirror.style.wordSpacing = cs.wordSpacing;
+  mirror.style.paddingTop = cs.paddingTop;
+  mirror.style.paddingRight = cs.paddingRight;
+  mirror.style.paddingBottom = cs.paddingBottom;
+  mirror.style.paddingLeft = cs.paddingLeft;
+  mirror.style.borderTopWidth = cs.borderTopWidth;
+  mirror.style.borderRightWidth = cs.borderRightWidth;
+  mirror.style.borderBottomWidth = cs.borderBottomWidth;
+  mirror.style.borderLeftWidth = cs.borderLeftWidth;
+  mirror.style.textIndent = cs.textIndent;
+  mirror.style.tabSize = cs.tabSize;
+  const at = Math.max(0, Math.min(cursor, node.value.length));
+  mirror.textContent = node.value.slice(0, at);
+  const mark = document.createElement("span");
+  mark.textContent = node.value.slice(at, at + 1) || "\u200b";
+  mirror.appendChild(mark);
+  document.body.appendChild(mirror);
+  mirror.scrollTop = node.scrollTop;
+  mirror.scrollLeft = node.scrollLeft;
+  const caret = mark.getBoundingClientRect();
+  document.body.removeChild(mirror);
+  return caret;
+}
+
 function MentionMenu({
   open,
   anchor,
+  cursor,
   rows,
   index,
   onIndex,
   onPick,
 }: {
   open: boolean;
-  anchor: RefObject<HTMLElement | null>;
+  anchor: RefObject<HTMLTextAreaElement | null>;
+  cursor: number;
   rows: MentionFile[];
   index: number;
   onIndex: (index: number) => void;
@@ -690,6 +735,8 @@ function MentionMenu({
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  const active = useRef<HTMLButtonElement>(null);
+  const placed = useRef(false);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -697,59 +744,90 @@ function MentionMenu({
       const node = anchor.current;
       const menu = panel.current;
       if (!node || !menu) return;
+      const caret = caretRect(node, cursor);
       const frame = node.getBoundingClientRect();
       const height = menu.getBoundingClientRect().height;
-      const width = Math.min(352, Math.max(180, frame.width - 24));
-      const left = Math.min(Math.max(8, frame.left + 12), window.innerWidth - width - 8);
-      const gap = 4;
-      const above = frame.top - height - gap >= 8;
-      setBox({
+      const width = Math.min(352, Math.max(220, frame.width - 24));
+      const left = Math.min(Math.max(8, caret.left), window.innerWidth - width - 8);
+      const gap = 6;
+      const aboveTop = caret.top - gap - height;
+      const belowTop = caret.bottom + gap;
+      const above = aboveTop >= 8 || belowTop + height > window.innerHeight - 8;
+      const next = {
         left,
-        top: above ? frame.top - gap - height : frame.bottom + gap,
+        top: above ? Math.max(8, aboveTop) : belowTop,
         width,
-      });
+      };
+      if (!placed.current) {
+        placed.current = true;
+        setBox(next);
+        return;
+      }
+      setBox((prev) =>
+        prev && prev.left === next.left && prev.top === next.top && prev.width === next.width ? prev : next,
+      );
     }
     place();
+    const node = anchor.current;
+    node?.addEventListener("scroll", place);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      node?.removeEventListener("scroll", place);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, anchor, rows]);
+  }, [open, anchor, cursor, rows]);
+
+  useLayoutEffect(() => {
+    const row = active.current;
+    const menu = panel.current;
+    if (!row || !menu) return;
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+  }, [index, open, rows]);
 
   if (!open || typeof document === "undefined") return null;
   return createPortal(
-    <div
+    <motion.div
       ref={panel}
       role="listbox"
       aria-label="Files"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
       style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width: box?.width ?? 320, visibility: box ? "visible" : "hidden" }}
-      className="fixed z-50 max-h-56 overflow-auto rounded-lg border border-line bg-canvas py-1 shadow-card"
+      className="fixed z-50 max-h-56 origin-bottom overflow-auto rounded-lg border border-line/25 bg-canvas py-1 shadow-card"
     >
-      {rows.map((file, row) => (
-        <button
-          key={file.path}
-          type="button"
-          role="option"
-          aria-selected={row === index}
-          onMouseEnter={() => onIndex(row)}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onPick(file);
-          }}
-          className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2 text-left transition-colors ${
-            row === index ? "bg-accent/10 text-accent" : "text-ink/80 hover:bg-accent/10 hover:text-accent"
-          }`}
-        >
-          <FileIcon name={file.name} className="size-3.5 shrink-0" />
-          <span className="shrink-0 truncate text-[12px] leading-none">{file.name}</span>
-          <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-none opacity-60">
-            {file.path}
-          </span>
-        </button>
-      ))}
-    </div>,
+      {rows.map((file, row) => {
+        const current = row === index;
+        return (
+          <button
+            key={file.path}
+            ref={current ? active : undefined}
+            type="button"
+            role="option"
+            aria-selected={current}
+            onMouseEnter={() => onIndex(row)}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              onPick(file);
+            }}
+            className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+              current ? "bg-wash font-medium text-ink" : "text-ink/80"
+            }`}
+          >
+            <FileIcon name={file.name} className="size-3.5 shrink-0" />
+            <span className="shrink-0 truncate">{file.name}</span>
+            <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-muted">
+              {file.path}
+            </span>
+          </button>
+        );
+      })}
+    </motion.div>,
     document.body,
   );
 }

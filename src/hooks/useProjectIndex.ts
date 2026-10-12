@@ -104,8 +104,23 @@ export function useProjectIndex({
         const rows = sidebarProjects(fromDisk).map((row) =>
           remoteMounts.has(projectKey(row.path)) ? { ...row, remote: true } : row,
         );
+        // Names paint before any chat database opens. The open project goes first
+        // so its chats arrive before the rest of the list.
+        if (!cancelled) {
+          setAllProjectGroups((prev) =>
+            mergeLoadedProjectGroups(
+              prev,
+              rows.map((row) => ({ ...row, conversations: [], journeys: [] })),
+            ),
+          );
+        }
+        const openPath = workspaceRef.current;
+        const ordered = [
+          ...rows.filter((row) => isSameProject(row.path, openPath)),
+          ...rows.filter((row) => !isSameProject(row.path, openPath)),
+        ];
         const loaded: ProjectChatGroup[] = [];
-        for (const row of rows) {
+        for (const row of ordered) {
           if (cancelled) return;
           const [listed, journeyListed] = await Promise.all([
             api.listConversations(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as ConversationSummary[], failed: true })),
@@ -145,7 +160,13 @@ export function useProjectIndex({
           loaded.push(next);
           if (!cancelled) {
             const ready = applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current);
-            setAllProjectGroups((prev) => mergeLoadedProjectGroups(prev, ready));
+            // `loaded` is open-project-first. Paint it back in the sidebar's own order.
+            const byPath = new Map(ready.map((group) => [projectKey(group.path), group]));
+            const inOrder = rows.flatMap((item) => {
+              const group = byPath.get(projectKey(item.path));
+              return group ? [group] : [];
+            });
+            setAllProjectGroups((prev) => mergeLoadedProjectGroups(prev, inOrder));
           }
         }
       } catch (e) {

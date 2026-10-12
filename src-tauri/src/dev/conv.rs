@@ -177,20 +177,30 @@ fn remote_workspace(state: &AppState, workspace: &str) -> bool {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_list_conversations(
+pub async fn dev_list_conversations(
     state: State<'_, AppState>,
     workspace: String,
 ) -> Result<Vec<ConversationSummary>> {
-    let conn = crate::appdb::open(&state.data_dir)?;
-    if crate::appdb::sidebar_cached(&conn, &workspace)? {
-        return Ok(crate::appdb::sidebar_for(&conn, &workspace)?.0);
+    let data_dir = state.data_dir.clone();
+    let remote = remote_workspace(&state, &workspace);
+    crate::dev::commands::off_main(move || list_conversations_blocking(&data_dir, &workspace, remote)).await
+}
+
+fn list_conversations_blocking(
+    data_dir: &Path,
+    workspace: &str,
+    remote: bool,
+) -> Result<Vec<ConversationSummary>> {
+    let conn = crate::appdb::open(data_dir)?;
+    if crate::appdb::sidebar_cached(&conn, workspace)? {
+        return Ok(crate::appdb::sidebar_for(&conn, workspace)?.0);
     }
-    if remote_workspace(&state, &workspace) {
+    if remote {
         return Ok(Vec::new());
     }
-    let rows = load_summaries(&state.data_dir, &workspace)?;
-    let journeys = store::with_conn(&conv_store_dir(&state.data_dir, &workspace), store::list_journeys).unwrap_or_default();
-    let _ = crate::appdb::replace_sidebar(&conn, &workspace, &rows, &journeys);
+    let rows = load_summaries(data_dir, workspace)?;
+    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys).unwrap_or_default();
+    let _ = crate::appdb::replace_sidebar(&conn, workspace, &rows, &journeys);
     Ok(rows)
 }
 
@@ -343,17 +353,23 @@ pub fn dev_delete_conversation(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
-    let conn = crate::appdb::open(&state.data_dir)?;
-    if crate::appdb::sidebar_cached(&conn, &workspace)? {
-        return Ok(crate::appdb::sidebar_for(&conn, &workspace)?.1);
+pub async fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
+    let data_dir = state.data_dir.clone();
+    let remote = remote_workspace(&state, &workspace);
+    crate::dev::commands::off_main(move || list_journeys_blocking(&data_dir, &workspace, remote)).await
+}
+
+fn list_journeys_blocking(data_dir: &Path, workspace: &str, remote: bool) -> Result<Vec<Journey>> {
+    let conn = crate::appdb::open(data_dir)?;
+    if crate::appdb::sidebar_cached(&conn, workspace)? {
+        return Ok(crate::appdb::sidebar_for(&conn, workspace)?.1);
     }
-    if remote_workspace(&state, &workspace) {
+    if remote {
         return Ok(Vec::new());
     }
-    let journeys = with_store(&state.data_dir, &workspace, store::list_journeys)?;
-    let conversations = load_summaries(&state.data_dir, &workspace).unwrap_or_default();
-    let _ = crate::appdb::replace_sidebar(&conn, &workspace, &conversations, &journeys);
+    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys)?;
+    let conversations = load_summaries(data_dir, workspace).unwrap_or_default();
+    let _ = crate::appdb::replace_sidebar(&conn, workspace, &conversations, &journeys);
     Ok(journeys)
 }
 

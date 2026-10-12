@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -125,7 +126,6 @@ pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u6
 }
 
 /// A chat model id from Anthropic. Dated snapshots (`claude-sonnet-4-5-20250929`) count.
-/// Grok's side-by-side tutor ids (`sxs-claude-…`) do not.
 pub fn is_claude_model(id: &str) -> bool {
     twanagent_service::anthropic::is_claude_model(id)
 }
@@ -485,9 +485,9 @@ fn read_profile_client_id(path: &Path) -> Option<String> {
 }
 
 fn claude_cli_user_agent() -> String {
-    let version = home_dir()
-        .and_then(|home| claude_bin_version(&home))
-        .or_else(|| claude_bin().as_deref().and_then(claude_version));
+    let version = cached_claude_version(claude_bin().as_deref()).or_else(|| {
+        home_dir().and_then(|home| claude_bin_version(&home))
+    });
     match version {
         Some(version) => format!("claude-code/{version}"),
         None => "claude-code".into(),
@@ -868,9 +868,20 @@ pub async fn dev_account_usage(state: tauri::State<'_, crate::state::AppState>) 
     Ok(usage)
 }
 
+/// `claude --version` is a process spawn. A detected version is reused; a miss is tried again.
+fn cached_claude_version(bin: Option<&Path>) -> Option<String> {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    if let Some(found) = VERSION.get() {
+        return Some(found.clone());
+    }
+    let version = bin.and_then(claude_version)?;
+    let _ = VERSION.set(version.clone());
+    Some(version)
+}
+
 pub fn claude_cli_info() -> ClaudeCliInfo {
     let bin = claude_bin();
-    let version = bin.as_ref().and_then(|path| claude_version(path));
+    let version = cached_claude_version(bin.as_deref());
     let account = home_dir().and_then(|home| read_claude_account(&home));
     ClaudeCliInfo {
         installed: bin.is_some(),
@@ -1616,12 +1627,10 @@ mod tests {
         assert!(is_claude_model("claude-haiku-4-5"));
         assert!(is_claude_model("claude-opus-4-8-latest"));
         assert!(is_claude_model("claude-sonnet-4-5-20250929"));
-        assert!(!is_claude_model("sxs-claude-opus-4-6"));
         assert!(!is_claude_model("grok-4.6"));
         assert!(!is_claude_model(""));
         assert_eq!(provider_for("grok-4.6"), Provider::Xai);
         assert_eq!(provider_for(""), Provider::Xai);
-        assert_eq!(provider_for("sxs-claude-opus-4-6"), Provider::Xai);
     }
 
     #[test]
@@ -1632,7 +1641,7 @@ mod tests {
                 {"type":"model","id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","max_input_tokens":200000},
                 {"type":"model","id":"claude-3-haiku-20240307","display_name":"Claude Haiku 3"},
                 {"type":"model","id":"claude-retired","display_name":"Gone","lifecycle":"retired"},
-                {"type":"model","id":"sxs-claude-opus-4-6","display_name":"Tutor"}
+                {"type":"model","id":"not-a-claude","display_name":"Tutor"}
             ],
             "has_more": true,
             "last_id": "claude-3-haiku-20240307"

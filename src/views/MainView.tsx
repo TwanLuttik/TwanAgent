@@ -332,6 +332,8 @@ export function MainView() {
     if (!workspace || !opened || cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
     let gone = false;
     let timer = 0;
+    // The file pane lists the top folder itself. The full walk feeds @ mentions,
+    // so it waits until the window has had a chance to take a click.
     const watch = () => {
       const again = () => {
         if (!gone) timer = window.setTimeout(watch, remoteRef.current ? 15000 : 8000);
@@ -358,9 +360,10 @@ export function MainView() {
         .catch(() => undefined)
         .finally(again);
     };
-    watch();
+    const start = window.setTimeout(watch, 1500);
     return () => {
       gone = true;
+      window.clearTimeout(start);
       window.clearTimeout(timer);
     };
   }, [workspace, opened, remoteKnown, remoteWorkspace, linkReady]);

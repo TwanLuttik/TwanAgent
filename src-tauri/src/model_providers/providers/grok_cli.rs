@@ -439,15 +439,19 @@ pub fn grok_version(bin: &Path) -> Option<String> {
     parse_cli_version(line)
 }
 
-/// `grok --version` is a process spawn. Chat rounds reuse the first answer.
+/// `grok --version` is a process spawn. A detected version is reused; a miss is tried again
+/// so installing the CLI after launch still shows up.
 pub fn cached_cli_version() -> String {
     static VERSION: OnceLock<String> = OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let detected = grok_bin().as_ref().and_then(|path| grok_version(path));
-            cli_proxy_version(detected.as_deref())
-        })
-        .clone()
+    if let Some(found) = VERSION.get() {
+        return found.clone();
+    }
+    let detected = grok_bin().as_ref().and_then(|path| grok_version(path));
+    let version = cli_proxy_version(detected.as_deref());
+    if detected.is_some() {
+        let _ = VERSION.set(version.clone());
+    }
+    version
 }
 
 pub fn parse_cli_version(text: &str) -> Option<String> {
@@ -688,6 +692,13 @@ fn fallback_models() -> Vec<DevModel> {
         .collect()
 }
 
+/// Grok rows from the CLI cache, or the bundled fallback when that cache is missing.
+pub fn load_models_public(home: Option<&Path>) -> Vec<DevModel> {
+    home.map(load_models)
+        .filter(|rows| !rows.is_empty())
+        .unwrap_or_else(fallback_models)
+}
+
 fn load_models(home: &Path) -> Vec<DevModel> {
     let path = home.join("models_cache.json");
     if let Ok(src) = fs::read_to_string(path) {
@@ -787,6 +798,7 @@ pub fn resolve_auth(data_dir: &Path) -> Option<GrokAuth> {
 }
 
 pub fn cli_info(data_dir: &Path) -> GrokCliInfo {
+    // Settings reads this after launch. Reuse the version `runtime` already spawned.
     let status = runtime(data_dir);
     let path = grok_bin()
         .map(|bin| bin.display().to_string())
@@ -804,13 +816,16 @@ pub fn runtime(data_dir: &Path) -> DevRuntime {
     let has_key = secrets::resolve_xai_key_on_disk(data_dir).is_some();
     let bin = grok_bin();
     let installed = bin.is_some();
-    let version = bin.as_ref().and_then(|p| grok_version(p));
+    // `grok --version` is a process spawn. A version found earlier in this process is reused.
+    // The fallback string means the binary was missing, so it is not reported as a version.
+    let version = if installed {
+        let cached = cached_cli_version();
+        (cached != FALLBACK_PROXY_VERSION).then_some(cached)
+    } else {
+        None
+    };
     let home = grok_home();
-    let models = home
-        .as_ref()
-        .map(|h| load_models(h))
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(fallback_models);
+    let models = load_models_public(home.as_deref());
     let (default_model, default_effort) = home
         .as_ref()
         .map(|h| load_defaults(h, &models))
@@ -893,10 +908,10 @@ mod tests {
                 "context_windows": [256000, 500000, 256000]
               }
             },
-            "sxs-claude-opus-4-6": {
+            "other-claude-opus-4-6": {
               "info": {
-                "id": "sxs-claude-opus-4-6",
-                "name": "Tutor Claude",
+                "id": "other-claude-opus-4-6",
+                "name": "Other Claude",
                 "model_family": "anthropic"
               }
             }
@@ -989,7 +1004,7 @@ mod tests {
             .collect();
         assert!(providers.iter().any(|(id, provider)| *id == "grok-4.5" && *provider == "xai"));
         assert!(!providers.iter().any(|(id, _)| id.starts_with("claude-")));
-        assert!(!providers.iter().any(|(id, _)| id.starts_with("sxs-")));
+        assert!(!providers.iter().any(|(id, _)| id.starts_with("other-")));
     }
 
     #[test]

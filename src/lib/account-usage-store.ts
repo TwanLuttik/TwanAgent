@@ -71,8 +71,8 @@ function reload(id: ProviderId, load: () => Promise<api.ApiAccountUsage>) {
  */
 export function startAccountUsage() {
   if (typeof window === "undefined") return;
-  // Replacing the timer keeps a double call (React strict mode) to one poll.
-  if (pollTimer) window.clearInterval(pollTimer);
+  // React strict mode mounts twice. The first call already owns the poll.
+  if (pollTimer) return;
   for (const provider of PROVIDERS) {
     void provider
       .loadCached()

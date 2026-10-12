@@ -218,6 +218,7 @@ pub fn run() {
             perf::app_perf_snapshot,
             dev::keys::dev_key_status,
             dev::keys::dev_runtime,
+            dev::keys::dev_runtime_cached,
             dev::keys::dev_cli_info,
             dev::keys::dev_claude_cli_info,
             dev::keys::dev_minimax_cli_info,

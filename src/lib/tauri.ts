@@ -71,6 +71,11 @@ export function runtime(): Promise<Runtime> {
   return invoke("dev_runtime");
 }
 
+/** The runtime painted last launch. Null until one probe has finished. */
+export function runtimeCached(): Promise<Runtime | null> {
+  return invoke("dev_runtime_cached");
+}
+
 export type GrokCliInfo = {
   installed: boolean;
   path: string;

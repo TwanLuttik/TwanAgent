@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -125,7 +126,6 @@ pub fn minimax_model(id: &str) -> Option<&'static (&'static str, &'static str, u
 }
 
 /// A MiniMax text model. The prefix is case-sensitive, matching the API ids.
-/// `sxs-MiniMax-…` stays on xAI, same as the Claude tutor ids.
 pub fn is_minimax_model(id: &str) -> bool {
     twanagent_service::minimax::is_minimax_model(id)
 }
@@ -405,9 +405,20 @@ pub async fn resolve_minimax_auth_fresh_in(data_dir: &Path) -> Option<MinimaxAut
 }
 
 /// Login state for settings. Does not refresh and does not return the token.
+/// `mmx --version` is a process spawn. A detected version is reused; a miss is tried again.
+fn cached_mmx_version(bin: Option<&Path>) -> Option<String> {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    if let Some(found) = VERSION.get() {
+        return Some(found.clone());
+    }
+    let version = bin.and_then(mmx_version)?;
+    let _ = VERSION.set(version.clone());
+    Some(version)
+}
+
 pub fn minimax_cli_info() -> MinimaxCliInfo {
     let bin = mmx_bin();
-    let version = bin.as_ref().and_then(|path| mmx_version(path));
+    let version = cached_mmx_version(bin.as_deref());
     let config = mmx_home().and_then(|home| read_config(&home));
     let logged_in = config
         .as_ref()
@@ -874,7 +885,6 @@ mod tests {
         assert!(is_minimax_model("MiniMax-M3.1-Flash-Preview"));
         assert!(is_minimax_model("MiniMax-Future-1"));
         assert!(!is_minimax_model("minimax-m3"));
-        assert!(!is_minimax_model("sxs-MiniMax-M3"));
         assert!(!is_minimax_model("claude-sonnet-4-6"));
         assert!(!is_minimax_model("grok-4.6"));
         assert!(!is_minimax_model(""));

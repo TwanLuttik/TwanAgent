@@ -20,7 +20,9 @@ use crate::error::{Error, Result};
 use crate::state::AppState;
 
 /// Git and file reads block. Run them off the webview thread so a refresh does not freeze the UI.
-async fn off_main<T: Send + 'static>(work: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
+pub(crate) async fn off_main<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
     match tauri::async_runtime::spawn_blocking(work).await {
         Ok(result) => result,
         Err(err) => Err(Error::Other(format!("background task failed: {err}"))),
@@ -49,8 +51,14 @@ pub fn dev_projects_location(state: State<'_, AppState>) -> ProjectsLocation {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_list_projects(state: State<'_, AppState>) -> Vec<FolderSuggestion> {
-    match crate::appdb::open(&state.data_dir).and_then(|conn| {
+pub async fn dev_list_projects(state: State<'_, AppState>) -> Result<Vec<FolderSuggestion>> {
+    let data_dir = state.data_dir.clone();
+    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    off_main(move || Ok(list_projects_from(&data_dir, &roots))).await
+}
+
+fn list_projects_from(data_dir: &std::path::Path, roots: &[std::path::PathBuf; 2]) -> Vec<FolderSuggestion> {
+    match crate::appdb::open(data_dir).and_then(|conn| {
         let mut rows = crate::appdb::list_projects(&conn)?;
         if let Ok(remotes) = crate::remote::config::list_remote_projects(&conn) {
             for remote in remotes {
@@ -66,7 +74,7 @@ pub fn dev_list_projects(state: State<'_, AppState>) -> Vec<FolderSuggestion> {
         Ok(rows) => rows,
         Err(err) => {
             eprintln!("app database project list failed: {err}");
-            list_projects(&project_roots(&state))
+            list_projects(&[roots[0].as_path(), roots[1].as_path()])
         }
     }
 }
@@ -96,12 +104,15 @@ fn remember_project(state: &AppState, root: &Path) {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_open_folder(app: AppHandle, path: String) -> Result<String> {
-    let root = expand_folder_path(&path)?;
-    let state = app.state::<AppState>();
-    let canon = state.register_workspace(&app, &root)?;
-    remember_project(&state, &canon);
-    Ok(path_string(&canon))
+pub async fn dev_open_folder(app: AppHandle, path: String) -> Result<String> {
+    off_main(move || {
+        let root = expand_folder_path(&path)?;
+        let state = app.state::<AppState>();
+        let canon = state.register_workspace(&app, &root)?;
+        remember_project(&state, &canon);
+        Ok(path_string(&canon))
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]

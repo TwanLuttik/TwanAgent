@@ -9,12 +9,8 @@ pub const KEY_REJECTED: &str = "MiniMax rejected the API key.";
 const GLOBAL_HOST: &str = "https://api.minimax.io";
 
 /// A MiniMax text model. The prefix is case-sensitive, matching the API ids.
-/// `sxs-MiniMax-…` stays on xAI, same as the Claude tutor ids.
 pub fn is_minimax_model(id: &str) -> bool {
     let id = id.trim();
-    if id.starts_with("sxs-") {
-        return false;
-    }
     let Some(rest) = id.strip_prefix("MiniMax-") else {
         return false;
     };
@@ -62,7 +58,6 @@ mod tests {
         assert!(is_minimax_model(" MiniMax-M2.7 "));
         assert!(is_minimax_model("MiniMax-Future-1"));
         assert!(!is_minimax_model("minimax-m3"));
-        assert!(!is_minimax_model("sxs-MiniMax-M3"));
         assert!(!is_minimax_model("MiniMax-"));
         assert!(!is_minimax_model(""));
     }

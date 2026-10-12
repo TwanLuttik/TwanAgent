@@ -26,6 +26,10 @@ A view or component that keeps growing gets split into files. `MainView.tsx` wir
 
 Hooks live in `src/hooks/`. A new `use*` file goes there, not next to a view. The shell already shares state through `MainProvider`, so do not add a second state library for the same data.
 
+## Git
+
+Do not commit or push unless the user asks. Finish the change and leave it in the working tree.
+
 ## Public repo
 
 This repository is public. Do not commit anything that comes from the machine it was written on. That includes home paths, usernames, email addresses, SSH hosts, LAN addresses, machine names, signing identities, and tokens. Docs and tests use placeholders such as `<user>`, `<machine>`, and `dev@example`. Build output stays out of git, including `src-tauri/patches/**/target`.

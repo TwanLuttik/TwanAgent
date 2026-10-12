@@ -243,7 +243,7 @@ mod tests {
         assert_eq!(providers::find("grok-4.6"), ProviderId::Xai);
         assert_eq!(providers::find("claude-sonnet-4-6"), ProviderId::Anthropic);
         assert_eq!(providers::find("MiniMax-M3"), ProviderId::Minimax);
-        assert_eq!(providers::find("sxs-claude-opus-4-6"), ProviderId::Xai);
+        assert_eq!(providers::find("not-a-model"), ProviderId::Xai);
     }
 
     #[test]

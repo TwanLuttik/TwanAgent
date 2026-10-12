@@ -36,6 +36,7 @@ import {
   setProviderDb,
   setProviderFolders,
   setProviderKeyStatus,
+  startProviderStatusCached,
   useProviderStatus,
 } from "../lib/provider-status";
 import { useApp } from "../state/app-state";
@@ -97,6 +98,9 @@ export function SettingsView({
 } = {}) {
   const { setFlash } = useApp();
   const providerStatus = useProviderStatus();
+  useEffect(() => {
+    if (active) startProviderStatusCached();
+  }, [active]);
   const [theme, setThemeSel] = useState<ThemeSelection>(() => loadTheme());
   const [spaceArt, setSpaceArt] = useState(() => loadSpaceCorner());
   const [spaceScene, setSpaceScene] = useState<SceneId>(() => {

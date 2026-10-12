@@ -32,8 +32,11 @@ pub fn plan_mode(id: ProviderId) -> bool {
 }
 
 /// Fallback rows from every provider, with a signed-in provider's live list replacing its fallback.
-pub async fn list_models(data_dir: &Path) -> Vec<DevModel> {
-    let mut rows = grok_cli::runtime(data_dir).models;
+pub async fn list_models(_data_dir: &Path) -> Vec<DevModel> {
+    // The caller already paid for `grok --version`. Take the model rows without spawning it again.
+    let mut rows = grok_cli::load_models_public(
+        grok_cli::grok_home().as_deref(),
+    );
     rows.retain(|row| {
         row.provider != super::anthropic::PROVIDER_ANTHROPIC
             && row.provider != super::minimax::PROVIDER_MINIMAX
@@ -52,14 +55,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matcher_keeps_tutor_ids_on_xai() {
+    fn matcher_keeps_unknown_ids_on_xai() {
         assert_eq!(find("grok-4.6"), ProviderId::Xai);
         assert_eq!(find("claude-sonnet-4-6"), ProviderId::Anthropic);
         assert_eq!(find("claude-sonnet-4-5-20250929"), ProviderId::Anthropic);
-        assert_eq!(find("sxs-claude-opus-4-6"), ProviderId::Xai);
         assert_eq!(find("MiniMax-M3"), ProviderId::Minimax);
         assert_eq!(find("MiniMax-M2.7"), ProviderId::Minimax);
-        assert_eq!(find("sxs-MiniMax-M3"), ProviderId::Xai);
         assert_eq!(find(""), ProviderId::Xai);
         assert!(plan_mode(ProviderId::Xai));
         assert!(!plan_mode(ProviderId::Anthropic));

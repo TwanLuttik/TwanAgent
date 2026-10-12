@@ -27,12 +27,8 @@ pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u6
 }
 
 /// A chat model id from Anthropic. Dated snapshots (`claude-sonnet-4-5-20250929`) count.
-/// Grok's side-by-side tutor ids (`sxs-claude-…`) do not.
 pub fn is_claude_model(id: &str) -> bool {
     let id = id.trim();
-    if id.starts_with("sxs-") {
-        return false;
-    }
     if claude_model(id).is_some() {
         return true;
     }
@@ -461,7 +457,6 @@ mod tests {
         assert!(is_claude_model("claude-sonnet-4-6"));
         assert!(is_claude_model(" claude-opus-4-8 "));
         assert!(is_claude_model("claude-sonnet-4-5-20250929"));
-        assert!(!is_claude_model("sxs-claude-opus-4-6"));
         assert!(!is_claude_model("grok-4.6"));
         assert!(!is_claude_model(""));
         assert!(!is_claude_model("claude-"));
