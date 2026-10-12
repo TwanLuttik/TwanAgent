@@ -2,6 +2,7 @@ node_modules
 dist
 src/build-stamp.ts
 src-tauri/target
+src-tauri/service/target
 src-tauri/gen
 .DS_Store
 *.log
