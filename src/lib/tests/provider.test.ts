@@ -10,13 +10,13 @@ describe("providerFor", () => {
     assert.equal(isClaudeModel("claude-haiku-4-5"), true);
   });
 
-  it("keeps grok, empty, and side-by-side ids on xai", () => {
+  it("keeps grok and empty ids on xai", () => {
     assert.equal(providerFor("grok-4.6"), "xai");
     assert.equal(providerFor(""), "xai");
     assert.equal(providerFor("claude-opus-4-8-latest"), "anthropic");
     assert.equal(providerFor("claude-sonnet-4-5-20250929"), "anthropic");
-    assert.equal(providerFor("sxs-claude-opus-4-6"), "xai");
-    assert.equal(isClaudeModel("sxs-claude-opus-4-6"), false);
+    assert.equal(providerFor("not-a-model"), "xai");
+    assert.equal(isClaudeModel("not-a-model"), false);
   });
 
   it("classifies MiniMax text ids and leaves lookalikes on xai", () => {
@@ -25,8 +25,8 @@ describe("providerFor", () => {
     assert.equal(providerFor("MiniMax-M3.1-Flash-Preview"), "minimax");
     assert.equal(isMinimaxModel("MiniMax-M2.7-highspeed"), true);
     assert.equal(providerFor("minimax-m3"), "xai");
-    assert.equal(providerFor("sxs-MiniMax-M3"), "xai");
-    assert.equal(isMinimaxModel("sxs-MiniMax-M3"), false);
+    assert.equal(providerFor("not-a-model"), "xai");
+    assert.equal(isMinimaxModel("not-a-model"), false);
     assert.equal(isMinimaxModel(""), false);
   });
 });

@@ -81,6 +81,19 @@ pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec
     }
 }
 
+/// Copy the rows the sidebar paints into app.db. The project database stays the source.
+fn remember_sidebar(state: &AppState, workspace: &str) {
+    let Ok(conn) = crate::appdb::open(&state.data_dir) else {
+        return;
+    };
+    let conversations = load_summaries(&state.data_dir, workspace);
+    let journeys = store::with_conn(&conv_store_dir(&state.data_dir, workspace), store::list_journeys);
+    let (Ok(conversations), Ok(journeys)) = (conversations, journeys) else {
+        return;
+    };
+    let _ = crate::appdb::replace_sidebar(&conn, workspace, &conversations, &journeys);
+}
+
 fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(data_dir, workspace);
     match store::with_conn(&dir, store::list_conversation_summaries) {
@@ -151,12 +164,44 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
     }
 }
 
+/// A cloud project's chats live on the server. Its local mount has an empty database.
+/// Caching that empty database would make the sidebar say "No chats yet" forever.
+fn remote_workspace(state: &AppState, workspace: &str) -> bool {
+    let Ok(root) = state.require_workspace(workspace) else {
+        return false;
+    };
+    crate::remote::project_for_workspace(state, &root)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_list_conversations(
+pub async fn dev_list_conversations(
     state: State<'_, AppState>,
     workspace: String,
 ) -> Result<Vec<ConversationSummary>> {
-    load_summaries(&state.data_dir, &workspace)
+    let data_dir = state.data_dir.clone();
+    let remote = remote_workspace(&state, &workspace);
+    crate::dev::commands::off_main(move || list_conversations_blocking(&data_dir, &workspace, remote)).await
+}
+
+fn list_conversations_blocking(
+    data_dir: &Path,
+    workspace: &str,
+    remote: bool,
+) -> Result<Vec<ConversationSummary>> {
+    let conn = crate::appdb::open(data_dir)?;
+    if crate::appdb::sidebar_cached(&conn, workspace)? {
+        return Ok(crate::appdb::sidebar_for(&conn, workspace)?.0);
+    }
+    if remote {
+        return Ok(Vec::new());
+    }
+    let rows = load_summaries(data_dir, workspace)?;
+    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys).unwrap_or_default();
+    let _ = crate::appdb::replace_sidebar(&conn, workspace, &rows, &journeys);
+    Ok(rows)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -189,7 +234,10 @@ pub fn dev_save_conversation(
 ) -> Result<Conversation> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
     match store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation)) {
-        Ok(()) => Ok(conversation),
+        Ok(()) => {
+            remember_sidebar(&state, &workspace);
+            Ok(conversation)
+        }
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -234,7 +282,10 @@ pub fn dev_reorder_conversations(
 ) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
     match store::with_conn(&dir, |conn| store::reorder_conversations(conn, &ids)) {
-        Ok(rows) => Ok(rows),
+        Ok(rows) => {
+            remember_sidebar(&state, &workspace);
+            Ok(rows)
+        }
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -260,7 +311,10 @@ pub fn dev_archive_conversation(
     match store::with_conn(&dir, |conn| {
         store::set_conversation_archived(conn, &id, archived)
     }) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            remember_sidebar(&state, &workspace);
+            Ok(())
+        }
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -283,7 +337,10 @@ pub fn dev_delete_conversation(
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
     match store::with_conn(&dir, |conn| store::delete_conversation(conn, &id)) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            remember_sidebar(&state, &workspace);
+            Ok(())
+        }
         Err(e) => {
             if store::db_path(&dir).exists() {
                 return Err(e);
@@ -296,8 +353,24 @@ pub fn dev_delete_conversation(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
-    with_store(&state.data_dir, &workspace, store::list_journeys)
+pub async fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
+    let data_dir = state.data_dir.clone();
+    let remote = remote_workspace(&state, &workspace);
+    crate::dev::commands::off_main(move || list_journeys_blocking(&data_dir, &workspace, remote)).await
+}
+
+fn list_journeys_blocking(data_dir: &Path, workspace: &str, remote: bool) -> Result<Vec<Journey>> {
+    let conn = crate::appdb::open(data_dir)?;
+    if crate::appdb::sidebar_cached(&conn, workspace)? {
+        return Ok(crate::appdb::sidebar_for(&conn, workspace)?.1);
+    }
+    if remote {
+        return Ok(Vec::new());
+    }
+    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys)?;
+    let conversations = load_summaries(data_dir, workspace).unwrap_or_default();
+    let _ = crate::appdb::replace_sidebar(&conn, workspace, &conversations, &journeys);
+    Ok(journeys)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -307,7 +380,9 @@ pub fn dev_create_journey(
     conversation_id: String,
 ) -> Result<Journey> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    store::with_conn(&dir, |conn| store::create_journey(conn, &dir, &conversation_id))
+    let journey = store::with_conn(&dir, |conn| store::create_journey(conn, &dir, &conversation_id))?;
+    remember_sidebar(&state, &workspace);
+    Ok(journey)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -317,9 +392,11 @@ pub fn dev_rename_journey(
     id: String,
     title: String,
 ) -> Result<Journey> {
-    with_store(&state.data_dir, &workspace, |conn| {
+    let journey = with_store(&state.data_dir, &workspace, |conn| {
         store::rename_journey(conn, &id, &title)
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(journey)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -332,7 +409,9 @@ pub fn dev_delete_journey(
     let dir = conv_store_dir(&state.data_dir, &workspace);
     store::with_conn(&dir, |conn| {
         store::delete_journey(conn, &dir, &id, delete_chats)
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -344,7 +423,9 @@ pub fn dev_set_journey_collapsed(
 ) -> Result<()> {
     with_store(&state.data_dir, &workspace, |conn| {
         store::set_journey_collapsed(conn, &id, collapsed)
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -354,9 +435,11 @@ pub fn dev_set_journey_color(
     id: String,
     color: String,
 ) -> Result<Journey> {
-    with_store(&state.data_dir, &workspace, |conn| {
+    let journey = with_store(&state.data_dir, &workspace, |conn| {
         store::set_journey_color(conn, &id, &color)
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(journey)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -366,9 +449,11 @@ pub fn dev_move_conversation(
     id: String,
     journey_id: Option<String>,
 ) -> Result<Conversation> {
-    with_store(&state.data_dir, &workspace, |conn| {
+    let conversation = with_store(&state.data_dir, &workspace, |conn| {
         store::move_conversation(conn, &id, journey_id.as_deref())
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(conversation)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -377,10 +462,12 @@ pub fn dev_reorder_sidebar(
     workspace: String,
     items: Vec<SidebarItem>,
 ) -> Result<Vec<ConversationSummary>> {
-    with_store(&state.data_dir, &workspace, |conn| {
+    let rows = with_store(&state.data_dir, &workspace, |conn| {
         store::reorder_sidebar(conn, &items)?;
         store::list_conversation_summaries(conn)
-    })
+    })?;
+    remember_sidebar(&state, &workspace);
+    Ok(rows)
 }
 
 #[tauri::command(rename_all = "snake_case")]

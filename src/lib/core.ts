@@ -1,4 +1,5 @@
 import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
+import { stripImageTokens } from "./image.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
@@ -70,6 +71,8 @@ export type ProjectServer = {
   port: number;
   remotePath: string;
   online: boolean;
+  /** Provider ids whose keys were copied to this server. */
+  providers?: string[];
 };
 
 export type ProjectRow = { name: string; path: string; remote?: boolean; server?: ProjectServer };
@@ -120,7 +123,7 @@ export const FOLDER_ACTIONS: FolderAction[] = [
   {
     id: "create",
     label: "New project",
-    hint: "Create a folder in the app directory",
+    hint: "Create a folder on this Mac",
     icon: "plus",
   },
   { id: "clone", label: "Clone from Git", hint: "Clone a repository", icon: "square.and.arrow.down" },
@@ -180,19 +183,19 @@ export function folderActionEnabled(id: FolderActionId, query: string): boolean 
   return looksLikeGitUrl(query);
 }
 
-export function folderActionHint(id: FolderActionId, query: string): string {
+export function folderActionHint(id: FolderActionId, query: string, place = "this Mac"): string {
   if (id === "open") {
     const path = query.trim();
     return path && looksLikePath(path) ? path : "Type a folder location";
   }
   if (id === "create") {
     const name = sanitizeProjectName(query);
-    return name ? `Create ${name} in the app directory` : "Create a folder in the app directory";
+    return name ? `Create ${name} on ${place}` : `Create a folder on ${place}`;
   }
   const url = query.trim();
   if (!looksLikeGitUrl(url)) return "Paste a git URL to clone";
   const name = repoNameFromUrl(url);
-  return name ? `Clone into the app directory as ${name}` : "Paste a git URL to clone";
+  return name ? `Clone ${name} onto ${place}` : `Paste a git URL to clone onto ${place}`;
 }
 
 export function pathWithSlash(path: string): string {
@@ -1057,6 +1060,11 @@ export type ApiChatMessage = {
   thinking?: ThinkingBlock[];
 };
 
+function messageTextWithoutImageTokens(msg: ChatMessage): string {
+  const text = String(msg.content ?? "");
+  return msg.images?.length ? stripImageTokens(text, msg.images) : text;
+}
+
 export function toApiToolCall(call: ChatToolCall): ApiToolCall {
   return {
     id: call.id,
@@ -1092,7 +1100,7 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
     }
     if (msg.role === "user" && msg.images?.length) {
       const parts: ApiContentPart[] = [];
-      const text = (msg.content ?? "").trim();
+      const text = messageTextWithoutImageTokens(msg).trim();
       if (text) parts.push({ type: "text", text });
       for (const img of msg.images) {
         if (!img.dataUrl) continue;

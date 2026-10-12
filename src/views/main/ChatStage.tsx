@@ -25,6 +25,7 @@ import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
 import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
+import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
@@ -38,6 +39,7 @@ export function ChatStage() {
     activeId,
     closeFileTab,
     closeProjectSettings,
+    closeServers,
     closeSettings,
     closeUsage,
     conversations,
@@ -46,6 +48,7 @@ export function ChatStage() {
     folderOpen,
     journeys,
     opened,
+    cloudConnecting,
     openChat,
     openWorkspaceFile,
     pendingClosePath,
@@ -70,11 +73,12 @@ export function ChatStage() {
     chatTabs,
     closeChatTab,
     runningTurns,
+    showServers,
     showSettings,
     showUsage,
     workspace,
   } = useMain();
-  const fullPage = Boolean(showSettings || showUsage || projectSettings);
+  const fullPage = Boolean(showSettings || showUsage || showServers || projectSettings);
   const [settingsAlive, setSettingsAlive] = useState(showSettings);
   if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
@@ -130,15 +134,18 @@ export function ChatStage() {
               />
             </div>
           ) : null}
-          {projectSettings && !showSettings ? (
+          {projectSettings && !showSettings && !showServers ? (
             <ProjectSettingsView
               name={projectSettings.name}
               path={projectSettings.path}
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
           ) : null}
-          {showUsage && !showSettings && !projectSettings ? (
+          {showUsage && !showSettings && !showServers ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
+          ) : null}
+          {showServers && !showSettings ? (
+            <ServersDialog onClose={folderOpen ? () => undefined : closeServers} />
           ) : null}
           {/* Chat and the file editor stay mounted under settings. Closing with
               Escape only hides the page, so it does not have to rebuild them. */}
@@ -173,6 +180,7 @@ export function ChatStage() {
               onSendToChat={(snippet) => {
                 setShowSettings(false);
                 setShowUsage(false);
+                closeServers();
                 closeProjectSettings();
                 setEditor((prev: typeof editor) => selectChatTab(prev));
                 setDrafts((prev: Record<string, string>) => {
@@ -189,7 +197,7 @@ export function ChatStage() {
           )}
           </div>
         </div>
-        {paneWorkspace && !fullPage ? (
+        {paneWorkspace && !fullPage && !cloudConnecting ? (
           <Workspace
             workspace={paneWorkspace}
             selectedPath={editor.activePath}

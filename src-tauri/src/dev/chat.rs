@@ -413,6 +413,7 @@ pub async fn dev_chat_start(
                     tool_calls: None,
                     usage: None,
                     thinking: None,
+                    conversation: None,
                 },
             );
         }
@@ -531,17 +532,7 @@ async fn stream_chat(
     include_journey: bool,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut body = serde_json::json!({
-        "model": model,
-        "stream": true,
-        "stream_options": { "include_usage": true },
-        "messages": messages,
-        "tools": tools_json(include_journey),
-        "tool_choice": "auto",
-    });
-    if let Some(effort) = effort {
-        body["reasoning_effort"] = serde_json::Value::String(effort);
-    }
+    let body = twanagent_service::xai::chat_body(&model, effort.as_deref(), &messages, &tools_json(include_journey));
     // SSE breaks when the body is gzip-decoded mid-stream: reqwest then reports
     // "error decoding response body" and the turn stops after the last tool.
     let mut req = http_client()
@@ -570,17 +561,10 @@ async fn stream_chat(
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        let msg = if status.as_u16() == 401 {
-            if auth.via_cli {
-                "Grok CLI login expired. Run grok login, or add an API key in Settings.".to_string()
-            } else {
-                "xAI rejected the API key.".to_string()
-            }
+        let msg = if status.as_u16() == 401 && auth.via_cli {
+            "Grok CLI login expired. Run grok login, or add an API key in Settings.".to_string()
         } else {
-            format!(
-                "xAI error {status}: {}",
-                text.chars().take(400).collect::<String>()
-            )
+            twanagent_service::xai::http_error_message(status.as_u16(), &text)
         };
         return Err(Error::Other(msg));
     }
@@ -606,6 +590,7 @@ async fn stream_chat(
                         tool_calls: None,
                         usage: None,
                         thinking: None,
+                        conversation: None,
                     },
                 );
             }
@@ -638,157 +623,45 @@ fn parse_xai_data(
         return pieces;
     };
     let delta = choice.get("delta").cloned().unwrap_or(serde_json::Value::Null);
-    let text = delta.get("content").map(text_from_content).unwrap_or_default();
+    let text = delta
+        .get("content")
+        .map(twanagent_service::xai::text_from_content)
+        .unwrap_or_default();
     if !text.is_empty() {
         pieces.push(StreamPiece::Delta(text));
     }
-    let thought = reasoning_from_delta(&delta);
+    let thought = twanagent_service::xai::reasoning_from_delta(&delta);
     if !thought.is_empty() {
         pieces.push(StreamPiece::Reasoning(thought));
     }
-    let fallback = fallback_choice_text(choice);
+    let fallback = twanagent_service::xai::fallback_choice_text(choice);
     if !fallback.is_empty() {
         if let Ok(mut slot) = fallback_text.lock() {
             *slot = fallback;
         }
     }
-    let thought_fallback = message_reasoning(choice);
+    let thought_fallback = twanagent_service::xai::message_reasoning(choice);
     if !thought_fallback.is_empty() {
         if let Ok(mut slot) = fallback_reasoning.lock() {
             *slot = thought_fallback;
         }
     }
-    if let Some(calls) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-        for call in calls {
-            let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            let id = call.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-            let name = call
-                .get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("")
-                .to_string();
-            let arguments = call
-                .get("function")
-                .and_then(|f| f.get("arguments"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("")
-                .to_string();
-            if !id.is_empty() || !name.is_empty() {
-                pieces.push(StreamPiece::ToolStart { index, id, name });
-            }
-            if !arguments.is_empty() {
-                pieces.push(StreamPiece::ToolDelta {
-                    index,
-                    partial: arguments,
-                });
-            }
+    for call in twanagent_service::xai::tool_fragments(&delta) {
+        if !call.id.is_empty() || !call.name.is_empty() {
+            pieces.push(StreamPiece::ToolStart {
+                index: call.index,
+                id: call.id,
+                name: call.name,
+            });
+        }
+        if !call.arguments.is_empty() {
+            pieces.push(StreamPiece::ToolDelta {
+                index: call.index,
+                partial: call.arguments,
+            });
         }
     }
     pieces
-}
-
-fn is_reasoning_part(kind: &str) -> bool {
-    matches!(
-        kind,
-        "reasoning" | "thinking" | "reasoning_text" | "reasoning_summary"
-    )
-}
-
-fn text_from_content(value: &serde_json::Value) -> String {
-    if let Some(s) = value.as_str() {
-        return s.to_string();
-    }
-    let Some(parts) = value.as_array() else {
-        return String::new();
-    };
-    let mut out = String::new();
-    for part in parts {
-        if let Some(s) = part.as_str() {
-            out.push_str(s);
-            continue;
-        }
-        let kind = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        if is_reasoning_part(kind) {
-            continue;
-        }
-        if let Some(s) = part.get("text").and_then(|t| t.as_str()) {
-            out.push_str(s);
-        }
-    }
-    out
-}
-
-fn part_text(part: &serde_json::Value) -> String {
-    part.get("text")
-        .or_else(|| part.get("content"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-fn reasoning_text(value: &serde_json::Value) -> String {
-    if let Some(s) = value.as_str() {
-        return s.to_string();
-    }
-    if let Some(parts) = value.as_array() {
-        let mut out = String::new();
-        for part in parts {
-            let kind = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if is_reasoning_part(kind) {
-                out.push_str(&part_text(part));
-            }
-        }
-        return out;
-    }
-    let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if kind.is_empty() || is_reasoning_part(kind) {
-        return part_text(value);
-    }
-    String::new()
-}
-
-fn reasoning_from_delta(delta: &serde_json::Value) -> String {
-    let mut out = String::new();
-    if let Some(value) = delta.get("reasoning_content").filter(|v| !v.is_null()) {
-        out.push_str(&reasoning_text(value));
-    } else if let Some(value) = delta.get("reasoning").filter(|v| !v.is_null()) {
-        out.push_str(&reasoning_text(value));
-    }
-    if let Some(content) = delta.get("content").filter(|v| v.is_array()) {
-        out.push_str(&reasoning_text(content));
-    }
-    out
-}
-
-fn message_reasoning(choice: &serde_json::Value) -> String {
-    let Some(message) = choice.get("message") else {
-        return String::new();
-    };
-    if let Some(value) = message.get("reasoning_content").filter(|v| !v.is_null()) {
-        let text = reasoning_text(value);
-        if !text.is_empty() {
-            return text;
-        }
-    }
-    if let Some(value) = message.get("reasoning").filter(|v| !v.is_null()) {
-        let text = reasoning_text(value);
-        if !text.is_empty() {
-            return text;
-        }
-    }
-    message
-        .get("content")
-        .map(reasoning_text)
-        .unwrap_or_default()
-}
-
-fn fallback_choice_text(choice: &serde_json::Value) -> String {
-    choice
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .map(text_from_content)
-        .unwrap_or_default()
 }
 
 fn fallback_done_text(emitted_text: bool, fallback: &str) -> Option<String> {
@@ -800,47 +673,12 @@ fn fallback_done_text(emitted_text: bool, fallback: &str) -> Option<String> {
 }
 
 fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
-    let usage = json.get("usage")?;
-    let reported_prompt = usage
-        .get("prompt_tokens")
-        .or_else(|| usage.get("input_tokens"))
-        .and_then(|v| v.as_u64())?;
-    let cached = usage
-        .get("prompt_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    // xAI already counts cached tokens inside prompt_tokens. Keep the breakdown anyway.
-    let prompt_tokens = reported_prompt;
-    let mut completion_tokens = usage
-        .get("completion_tokens")
-        .or_else(|| usage.get("output_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let reasoning = usage
-        .get("completion_tokens_details")
-        .and_then(|d| d.get("reasoning_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    if reasoning > 0 && completion_tokens < reasoning {
-        completion_tokens = completion_tokens.saturating_add(reasoning);
-    }
-    let mut total_tokens = usage
-        .get("total_tokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(prompt_tokens.saturating_add(completion_tokens));
-    let sum = prompt_tokens.saturating_add(completion_tokens);
-    if total_tokens < sum {
-        total_tokens = sum;
-    }
-    if total_tokens > prompt_tokens.saturating_add(completion_tokens) {
-        completion_tokens = total_tokens.saturating_sub(prompt_tokens);
-    }
+    let usage = twanagent_service::xai::parse_usage(json)?;
     Some(DevChatUsage {
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        cache_read_tokens: cached,
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
         cache_creation_tokens: 0,
     })
 }
@@ -904,15 +742,15 @@ mod tests {
 
     #[test]
     fn text_from_content_reads_string_and_text_parts() {
-        assert_eq!(text_from_content(&serde_json::json!("Hello")), "Hello");
+        assert_eq!(twanagent_service::xai::text_from_content(&serde_json::json!("Hello")), "Hello");
         assert_eq!(
-            text_from_content(&serde_json::json!([
+            twanagent_service::xai::text_from_content(&serde_json::json!([
                 { "type": "text", "text": "Hi " },
                 { "type": "output_text", "text": "there" }
             ])),
             "Hi there"
         );
-        assert_eq!(text_from_content(&serde_json::json!(null)), "");
+        assert_eq!(twanagent_service::xai::text_from_content(&serde_json::json!(null)), "");
     }
 
     #[test]
@@ -921,7 +759,7 @@ mod tests {
             "delta": { "content": null },
             "message": { "role": "assistant", "content": "Saved." }
         });
-        assert_eq!(fallback_choice_text(&choice), "Saved.");
+        assert_eq!(twanagent_service::xai::fallback_choice_text(&choice), "Saved.");
     }
 
     #[test]
@@ -934,7 +772,7 @@ mod tests {
     #[test]
     fn reasoning_from_delta_reads_reasoning_content() {
         let delta = serde_json::json!({ "reasoning_content": "The ", "role": "assistant" });
-        assert_eq!(reasoning_from_delta(&delta), "The ");
+        assert_eq!(twanagent_service::xai::reasoning_from_delta(&delta), "The ");
     }
 
     #[test]
@@ -945,8 +783,8 @@ mod tests {
                 { "type": "text", "text": "Hi" }
             ]
         });
-        assert_eq!(text_from_content(delta.get("content").unwrap()), "Hi");
-        assert_eq!(reasoning_from_delta(&delta), "secret");
+        assert_eq!(twanagent_service::xai::text_from_content(delta.get("content").unwrap()), "Hi");
+        assert_eq!(twanagent_service::xai::reasoning_from_delta(&delta), "secret");
     }
 
     #[test]
@@ -978,6 +816,6 @@ mod tests {
         let choice = serde_json::json!({
             "message": { "reasoning_content": "Thought.", "content": "Answer" }
         });
-        assert_eq!(message_reasoning(&choice), "Thought.");
+        assert_eq!(twanagent_service::xai::message_reasoning(&choice), "Thought.");
     }
 }

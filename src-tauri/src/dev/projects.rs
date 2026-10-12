@@ -117,6 +117,10 @@ pub fn repo_name_from_url(url: &str) -> Result<String> {
     sanitize_project_name(part)
 }
 
+pub fn validate_git_url_public(url: &str) -> Result<&str> {
+    validate_git_url(url)
+}
+
 fn validate_git_url(url: &str) -> Result<&str> {
     let url = url.trim();
     if url.is_empty() {

@@ -14,7 +14,15 @@ import {
   replacePasteToken,
   type PasteBlock,
 } from "../lib/paste";
-import { canSendPrompt, imageFilesFromClipboard, imageFilesFromDrop } from "../lib/image";
+import {
+  canSendPrompt,
+  imageBeforeCursor,
+  imageFilesFromClipboard,
+  imageFilesFromDrop,
+  imageSpans,
+  removeImageSpan,
+  removeImageTokens,
+} from "../lib/image";
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
@@ -53,6 +61,8 @@ export function Composer({
   models,
   model,
   onModel,
+  /** A cloud project only runs a model when that provider key was copied to the server. */
+  lockedProviders,
   effort,
   onEffort,
   contextWindow,
@@ -91,6 +101,8 @@ export function Composer({
   models: Model[];
   model: string;
   onModel: (id: string) => void;
+  /** Set on a cloud project. Models outside this list cannot run there. */
+  lockedProviders?: string[] | null;
   effort: string;
   onEffort: (id: string) => void;
   contextWindow?: number;
@@ -230,6 +242,8 @@ export function Composer({
     }
     const source = ctx.createMediaStreamSource(stream);
     const processor = new AudioWorkletNode(ctx, "pcm-capture");
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
     recordChunks.current = [];
     processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
       if (!recordingRef.current || !(event.data instanceof Float32Array)) return;
@@ -238,6 +252,8 @@ export function Composer({
       voiceLevelRef.current = Math.max(voiceLevelRef.current * 0.72, next);
     };
     source.connect(processor);
+    processor.connect(sink);
+    sink.connect(ctx.destination);
     const el = area.current;
     recordSelection.current = {
       start: el?.selectionStart ?? draft.length,
@@ -404,7 +420,23 @@ export function Composer({
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      const span = pasteBeforeCursor(draft, e.currentTarget.selectionStart ?? 0, e.currentTarget.selectionEnd ?? 0, pastes);
+      const start = e.currentTarget.selectionStart ?? 0;
+      const end = e.currentTarget.selectionEnd ?? 0;
+      const imageSpan = imageBeforeCursor(draft, start, end, images);
+      if (imageSpan) {
+        e.preventDefault();
+        const next = removeImageSpan(draft, imageSpan);
+        onImages?.(images.filter((img) => img.id !== imageSpan.id));
+        onDraft(next.text);
+        setCursor(next.cursor);
+        requestAnimationFrame(() => {
+          const el = area.current;
+          if (!el) return;
+          el.setSelectionRange(next.cursor, next.cursor);
+        });
+        return;
+      }
+      const span = pasteBeforeCursor(draft, start, end, pastes);
       if (span) {
         e.preventDefault();
         const next = removePasteSpan(draft, span);
@@ -486,7 +518,11 @@ export function Composer({
               images={images}
               onRemove={
                 onImages
-                  ? (id) => onImages(images.filter((img) => img.id !== id))
+                  ? (id) => {
+                      const image = images.find((img) => img.id === id);
+                      if (image) onDraft(removeImageTokens(draft, image));
+                      onImages(images.filter((img) => img.id !== id));
+                    }
                   : undefined
               }
             />
@@ -499,7 +535,8 @@ export function Composer({
         ) : null}
         <MentionMenu
           open={Boolean(mention && mentionRows.length)}
-          anchor={box}
+          anchor={area}
+          cursor={cursor}
           rows={mentionRows}
           index={mentionIndex}
           onIndex={setMentionIndex}
@@ -520,6 +557,7 @@ export function Composer({
             setMentionIndex(0);
           }}
           onPasteFiles={takeImageFiles}
+          images={images}
           pastes={pastes}
           onPastes={changePastes}
           onKey={onKey}
@@ -529,7 +567,7 @@ export function Composer({
           onMouseLeave={() => setUsageHover(false)}
         />
         <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
-          <ModelSelect models={ordered} value={model} onChange={onModel} />
+          <ModelSelect models={ordered} value={model} onChange={onModel} lockedProviders={lockedProviders} />
           {windows.length > 1 && onContextWindow ? (
             <ChipSelect
               label={windowLabel || "Context"}
@@ -636,16 +674,60 @@ export function Composer({
   );
 }
 
+/** Caret box inside a textarea, so the mention menu can sit just above it. */
+function caretRect(node: HTMLTextAreaElement, cursor: number): DOMRect {
+  const frame = node.getBoundingClientRect();
+  const mirror = document.createElement("div");
+  const cs = getComputedStyle(node);
+  mirror.style.position = "fixed";
+  mirror.style.left = `${frame.left}px`;
+  mirror.style.top = `${frame.top}px`;
+  mirror.style.visibility = "hidden";
+  mirror.style.pointerEvents = "none";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.overflowWrap = "anywhere";
+  mirror.style.wordBreak = "break-word";
+  mirror.style.boxSizing = cs.boxSizing;
+  mirror.style.width = `${node.clientWidth}px`;
+  mirror.style.font = cs.font;
+  mirror.style.lineHeight = cs.lineHeight;
+  mirror.style.letterSpacing = cs.letterSpacing;
+  mirror.style.wordSpacing = cs.wordSpacing;
+  mirror.style.paddingTop = cs.paddingTop;
+  mirror.style.paddingRight = cs.paddingRight;
+  mirror.style.paddingBottom = cs.paddingBottom;
+  mirror.style.paddingLeft = cs.paddingLeft;
+  mirror.style.borderTopWidth = cs.borderTopWidth;
+  mirror.style.borderRightWidth = cs.borderRightWidth;
+  mirror.style.borderBottomWidth = cs.borderBottomWidth;
+  mirror.style.borderLeftWidth = cs.borderLeftWidth;
+  mirror.style.textIndent = cs.textIndent;
+  mirror.style.tabSize = cs.tabSize;
+  const at = Math.max(0, Math.min(cursor, node.value.length));
+  mirror.textContent = node.value.slice(0, at);
+  const mark = document.createElement("span");
+  mark.textContent = node.value.slice(at, at + 1) || "\u200b";
+  mirror.appendChild(mark);
+  document.body.appendChild(mirror);
+  mirror.scrollTop = node.scrollTop;
+  mirror.scrollLeft = node.scrollLeft;
+  const caret = mark.getBoundingClientRect();
+  document.body.removeChild(mirror);
+  return caret;
+}
+
 function MentionMenu({
   open,
   anchor,
+  cursor,
   rows,
   index,
   onIndex,
   onPick,
 }: {
   open: boolean;
-  anchor: RefObject<HTMLElement | null>;
+  anchor: RefObject<HTMLTextAreaElement | null>;
+  cursor: number;
   rows: MentionFile[];
   index: number;
   onIndex: (index: number) => void;
@@ -653,6 +735,8 @@ function MentionMenu({
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
+  const active = useRef<HTMLButtonElement>(null);
+  const placed = useRef(false);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -660,59 +744,90 @@ function MentionMenu({
       const node = anchor.current;
       const menu = panel.current;
       if (!node || !menu) return;
+      const caret = caretRect(node, cursor);
       const frame = node.getBoundingClientRect();
       const height = menu.getBoundingClientRect().height;
-      const width = Math.min(352, Math.max(180, frame.width - 24));
-      const left = Math.min(Math.max(8, frame.left + 12), window.innerWidth - width - 8);
-      const gap = 4;
-      const above = frame.top - height - gap >= 8;
-      setBox({
+      const width = Math.min(352, Math.max(220, frame.width - 24));
+      const left = Math.min(Math.max(8, caret.left), window.innerWidth - width - 8);
+      const gap = 6;
+      const aboveTop = caret.top - gap - height;
+      const belowTop = caret.bottom + gap;
+      const above = aboveTop >= 8 || belowTop + height > window.innerHeight - 8;
+      const next = {
         left,
-        top: above ? frame.top - gap - height : frame.bottom + gap,
+        top: above ? Math.max(8, aboveTop) : belowTop,
         width,
-      });
+      };
+      if (!placed.current) {
+        placed.current = true;
+        setBox(next);
+        return;
+      }
+      setBox((prev) =>
+        prev && prev.left === next.left && prev.top === next.top && prev.width === next.width ? prev : next,
+      );
     }
     place();
+    const node = anchor.current;
+    node?.addEventListener("scroll", place);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      node?.removeEventListener("scroll", place);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, anchor, rows]);
+  }, [open, anchor, cursor, rows]);
+
+  useLayoutEffect(() => {
+    const row = active.current;
+    const menu = panel.current;
+    if (!row || !menu) return;
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+  }, [index, open, rows]);
 
   if (!open || typeof document === "undefined") return null;
   return createPortal(
-    <div
+    <motion.div
       ref={panel}
       role="listbox"
       aria-label="Files"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
       style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width: box?.width ?? 320, visibility: box ? "visible" : "hidden" }}
-      className="fixed z-50 max-h-56 overflow-auto rounded-lg border border-line bg-canvas py-1 shadow-card"
+      className="fixed z-50 max-h-56 origin-bottom overflow-auto rounded-lg border border-line/25 bg-canvas py-1 shadow-card"
     >
-      {rows.map((file, row) => (
-        <button
-          key={file.path}
-          type="button"
-          role="option"
-          aria-selected={row === index}
-          onMouseEnter={() => onIndex(row)}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            onPick(file);
-          }}
-          className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2 text-left transition-colors ${
-            row === index ? "bg-accent/10 text-accent" : "text-ink/80 hover:bg-accent/10 hover:text-accent"
-          }`}
-        >
-          <FileIcon name={file.name} className="size-3.5 shrink-0" />
-          <span className="shrink-0 truncate text-[12px] leading-none">{file.name}</span>
-          <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] leading-none opacity-60">
-            {file.path}
-          </span>
-        </button>
-      ))}
-    </div>,
+      {rows.map((file, row) => {
+        const current = row === index;
+        return (
+          <button
+            key={file.path}
+            ref={current ? active : undefined}
+            type="button"
+            role="option"
+            aria-selected={current}
+            onMouseEnter={() => onIndex(row)}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              onPick(file);
+            }}
+            className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+              current ? "bg-wash font-medium text-ink" : "text-ink/80"
+            }`}
+          >
+            <FileIcon name={file.name} className="size-3.5 shrink-0" />
+            <span className="shrink-0 truncate">{file.name}</span>
+            <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-muted">
+              {file.path}
+            </span>
+          </button>
+        );
+      })}
+    </motion.div>,
     document.body,
   );
 }
@@ -729,6 +844,7 @@ function MentionField({
   onCursor,
   onEdit,
   onPasteFiles,
+  images,
   pastes,
   onPastes,
   onKey,
@@ -746,6 +862,7 @@ function MentionField({
   onCursor: (cursor: number) => void;
   onEdit: () => void;
   onPasteFiles: (files: File[]) => void;
+  images: ChatImage[];
   pastes: PasteBlock[];
   onPastes: (pastes: PasteBlock[]) => void;
   onKey: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -754,13 +871,14 @@ function MentionField({
 }) {
   const pad = compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2";
   const type = "m-0 whitespace-pre-wrap break-words border-0 font-sans text-[14px] leading-relaxed";
-  const spans = draftHighlightSpans(draft, files, pastes);
+  const spans = draftHighlightSpans(draft, files, pastes, images);
+  const showImageText = spans.some((span) => span.kind === "image");
   let cursor = 0;
   const parts: ReactNode[] = [];
   spans.forEach((span, index) => {
     if (span.start > cursor) {
       parts.push(
-        <span key={`gap-${cursor}`} className="text-transparent">
+        <span key={`gap-${cursor}`} className={showImageText ? "text-ink" : "text-transparent"}>
           {draft.slice(cursor, span.start)}
         </span>,
       );
@@ -768,7 +886,15 @@ function MentionField({
     parts.push(
       <span
         key={`${span.start}-${index}`}
-        className={`rounded-[3px] ${span.kind === "paste" ? "bg-ok/15 text-ok" : "bg-panel text-accent"}`}
+        className={`rounded-[3px] ${
+          span.kind === "paste"
+            ? "bg-ok/15 text-ok"
+            : span.kind === "image"
+              ? "bg-accent/15 text-accent"
+              : showImageText
+                ? "text-accent"
+                : "bg-panel text-accent"
+        }`}
       >
         {draft.slice(span.start, span.end)}
       </span>,
@@ -777,7 +903,7 @@ function MentionField({
   });
   if (cursor < draft.length) {
     parts.push(
-      <span key={`tail-${cursor}`} className="text-transparent">
+      <span key={`tail-${cursor}`} className={showImageText ? "text-ink" : "text-transparent"}>
         {draft.slice(cursor)}
       </span>,
     );
@@ -879,6 +1005,7 @@ function MentionField({
       />
       <textarea
         ref={area}
+        data-composer-input=""
         value={draft}
         onChange={(e) => {
           onEdit();
@@ -901,15 +1028,22 @@ function MentionField({
         rows={1}
         autoFocus={autoFocus}
         placeholder={placeholder}
-        className={`relative z-[1] block w-full resize-none overflow-y-auto bg-transparent text-ink caret-ink outline-none placeholder:text-muted/80 ${type} ${pad}`}
+        className={`relative z-[1] block w-full resize-none overflow-y-auto bg-transparent caret-ink outline-none placeholder:text-muted/80 ${
+          showImageText ? "text-transparent" : "text-ink"
+        } ${type} ${pad}`}
       />
     </div>
   );
 }
 
-type HighlightSpan = { start: number; end: number; kind: "mention" | "paste" };
+type HighlightSpan = { start: number; end: number; kind: "mention" | "paste" | "image" };
 
-function draftHighlightSpans(draft: string, files: MentionFile[], pastes: PasteBlock[]): HighlightSpan[] {
+function draftHighlightSpans(
+  draft: string,
+  files: MentionFile[],
+  pastes: PasteBlock[],
+  images: ChatImage[],
+): HighlightSpan[] {
   const mentions = draftMentionSpans(draft, files).map((span) => ({
     start: span.start,
     end: span.end,
@@ -920,7 +1054,12 @@ function draftHighlightSpans(draft: string, files: MentionFile[], pastes: PasteB
     end: span.end,
     kind: "paste" as const,
   }));
-  return [...mentions, ...pasted].sort((a, b) => a.start - b.start || a.end - b.end);
+  const pictures = imageSpans(draft, images).map((span) => ({
+    start: span.start,
+    end: span.end,
+    kind: "image" as const,
+  }));
+  return [...mentions, ...pasted, ...pictures].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function PasteHover({
@@ -1188,6 +1327,11 @@ function filterModels(models: Model[], query: string): Model[] {
   });
 }
 
+function modelLocked(model: Model, providers: string[] | null): boolean {
+  if (!providers) return false;
+  return !providers.includes(modelProvider(model));
+}
+
 function modelProvider(model: Model): ProviderId {
   if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax") return model.provider;
   return providerProfile(model.id).id;
@@ -1204,10 +1348,12 @@ function ModelSelect({
   models,
   value,
   onChange,
+  lockedProviders = null,
 }: {
   models: Model[];
   value: string;
   onChange: (id: string) => void;
+  lockedProviders?: string[] | null;
 }) {
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState<ProviderId | null>(() => {
@@ -1340,7 +1486,7 @@ function ModelSelect({
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
                     event.preventDefault();
-                    const first = shown[0];
+                    const first = shown.find((row) => !modelLocked(row, lockedProviders));
                     if (!first) return;
                     onChange(first.id);
                     setOpen(false);
@@ -1376,6 +1522,7 @@ function ModelSelect({
                       ) : null}
                       {family.models.map((row) => {
                         const current = row.id === value;
+                        const locked = modelLocked(row, lockedProviders);
                         const context = contextWindowLabel(row.context_window ?? 0);
                         const label = versions ? modelFamilyName(row.name).version || row.name : row.name;
                         return (
@@ -1384,14 +1531,22 @@ function ModelSelect({
                             type="button"
                             role="menuitemradio"
                             aria-checked={current}
+                            aria-disabled={locked}
                             aria-label={row.name}
+                            disabled={locked}
+                            title={locked ? "This server does not have this provider key" : undefined}
                             onClick={() => {
+                              if (locked) return;
                               onChange(row.id);
                               setOpen(false);
                             }}
-                            className={`flex h-7 w-full cursor-pointer items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                            className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 ${
                               versions ? "pr-2.5 pl-6" : "px-2.5"
-                            } ${current ? "font-medium text-ink" : "text-ink/80"}`}
+                            } ${
+                              locked
+                                ? "cursor-not-allowed text-muted/45"
+                                : `cursor-pointer hover:bg-wash ${current ? "font-medium text-ink" : "text-ink/80"}`
+                            }`}
                           >
                             <ModelIcon model={row} className="size-3.5" />
                             <span className="min-w-0 flex-1 truncate">{label}</span>

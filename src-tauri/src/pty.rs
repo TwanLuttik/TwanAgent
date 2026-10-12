@@ -344,9 +344,9 @@ mod tests {
 
     #[test]
     fn remote_shell_creates_the_project_before_cd() {
-        let quoted = crate::remote::ssh::shell_single_quote("/home/twanluttik/BOZO_BUCKOS");
+        let quoted = crate::remote::ssh::shell_single_quote("/home/dev/project");
         let remote = format!("mkdir -p {quoted} && cd {quoted} && exec ${{SHELL:-/bin/bash}} -l");
-        assert!(remote.starts_with("mkdir -p '/home/twanluttik/BOZO_BUCKOS' && cd "));
+        assert!(remote.starts_with("mkdir -p '/home/dev/project' && cd "));
         assert!(!remote.contains("&& cd") || remote.contains("mkdir -p"));
     }
 

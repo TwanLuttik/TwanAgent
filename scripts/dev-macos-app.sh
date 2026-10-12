@@ -5,7 +5,7 @@ root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 bin="$root/src-tauri/target/debug/twanagent"
 entitlements="$root/src-tauri/Entitlements.plist"
 app="$root/src-tauri/target/debug/TwanAgent Dev.app"
-identity="Apple Development: twanluttik1@gmail.com (VY9SMFW8WJ)"
+identity="${TWANAGENT_SIGN_IDENTITY:-Apple Development}"
 
 if [ ! -x "$bin" ]; then
   echo "Debug binary is missing. Run npm run tauri dev once so it can compile." >&2

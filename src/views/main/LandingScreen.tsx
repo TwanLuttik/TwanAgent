@@ -1,6 +1,7 @@
 import { DropImagesHint } from "../../components/ChatTranscript";
 import { Flash } from "../../components/Flash";
 import { FolderDialog } from "../../components/FolderDialog";
+import { ServersDialog } from "../../components/ServersDialog";
 import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
@@ -10,9 +11,12 @@ import { SessionComposer } from "./SessionComposer";
 export function LandingScreen() {
   const {
     applyWorkspace,
+    closeServers,
     fileDrag,
     folderOpen,
+    openServers,
     openSettings,
+    showServers,
     openUsage,
     recents,
     runtime,
@@ -20,7 +24,6 @@ export function LandingScreen() {
     startNewChat,
     workspace,
   } = useMain();
-
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-canvas">
       <Flash />
@@ -28,6 +31,18 @@ export function LandingScreen() {
       <div className={`relative z-10 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         <WindowButtons />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
+        <button
+          type="button"
+          aria-label="Servers"
+          aria-pressed={showServers}
+          title="Servers"
+          onClick={showServers ? closeServers : openServers}
+          className={`mr-1 flex size-7 items-center justify-center rounded-[6px] hover:bg-wash hover:text-ink ${
+            showServers ? "bg-wash-strong text-ink" : "text-muted"
+          }`}
+        >
+          <Symbol name="server.rack" className="size-3.5" />
+        </button>
         <button
           type="button"
           aria-label="Usage"
@@ -55,7 +70,12 @@ export function LandingScreen() {
           recents={recents}
         />
       ) : null}
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-16">
+      {showServers ? (
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+          <ServersDialog onClose={closeServers} />
+        </div>
+      ) : (
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-16">
         {fileDrag ? <DropImagesHint /> : null}
         <div className="w-full max-w-[640px]">
           <SessionComposer placement="landing" />
@@ -74,7 +94,8 @@ export function LandingScreen() {
             </p>
           ) : null}
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 }

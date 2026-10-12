@@ -71,6 +71,11 @@ export function runtime(): Promise<Runtime> {
   return invoke("dev_runtime");
 }
 
+/** The runtime painted last launch. Null until one probe has finished. */
+export function runtimeCached(): Promise<Runtime | null> {
+  return invoke("dev_runtime_cached");
+}
+
 export type GrokCliInfo = {
   installed: boolean;
   path: string;
@@ -275,6 +280,8 @@ export type ChatEvent = {
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
   thinking?: ApiThinkingBlock[] | null;
+  /** Saved by the paired server. The GUI replaces its copy with this. */
+  conversation?: Conversation | null;
 };
 
 export type WebSearchEvent = {
@@ -650,6 +657,8 @@ export type WorkspaceRemote = {
   remote_path: string;
   project_name: string;
   online: boolean;
+  providers?: string[];
+  paired?: boolean;
 };
 
 export type LanHost = { host: string; port: number; label: string };
@@ -729,8 +738,190 @@ export function createRemoteProject(name: string, machineId: string, remotePath:
   });
 }
 
+export function cloneRemoteRepo(url: string, machineId: string, remotePath: string): Promise<string> {
+  return invoke("dev_clone_remote_repo", {
+    url,
+    machineId,
+    machine_id: machineId,
+    remotePath,
+    remote_path: remotePath,
+  });
+}
+
 export function workspaceRemote(workspace: string): Promise<WorkspaceRemote | null> {
   return invoke("dev_workspace_remote", { workspace });
+}
+
+/** Open the SSH session for a cloud project. False when it is local or the server did not answer. */
+export function warmWorkspaceLink(workspace: string): Promise<boolean> {
+  return invoke("dev_warm_workspace_link", { workspace });
+}
+
+export type AgentServer = {
+  id: string;
+  name: string;
+  user: string;
+  host: string;
+  port: number;
+  machine_id?: string | null;
+  installed_at: string;
+  paired: boolean;
+};
+
+export type ServerInstallStatus = {
+  installed: boolean;
+  version: string;
+  path: string;
+  online: boolean;
+  update?: boolean;
+  /** `~/.twanagent/auth-token` on that machine is a real pairing token. */
+  paired?: boolean;
+};
+
+export type ServerProviderKeys = {
+  xai: boolean;
+  anthropic: boolean;
+  minimax: boolean;
+};
+
+export type ServerStorage = {
+  bytes: number;
+  conversation_bytes: number;
+};
+
+export function listAgentServers(): Promise<AgentServer[]> {
+  return invoke("dev_list_agent_servers");
+}
+
+export function agentServerStatus(id: string): Promise<ServerInstallStatus> {
+  return invoke("dev_agent_server_status", { id });
+}
+
+/** SSH to a machine that was just saved and see if the server program is there. Does not install it. */
+export function probeAgentServer(host: string, port = 22): Promise<ServerInstallStatus> {
+  return invoke("dev_probe_agent_server", { host, port });
+}
+
+export function installAgentBinary(id: string): Promise<ServerInstallStatus> {
+  return invoke("dev_install_agent_binary", { id });
+}
+
+export function installAgentServer(input: {
+  name: string;
+  user: string;
+  host: string;
+  port?: number;
+  auth: MachineAuth;
+  keyPath?: string;
+  secret?: string;
+}): Promise<AgentServer> {
+  return invoke("dev_install_agent_server", {
+    name: input.name,
+    user: input.user,
+    host: input.host,
+    port: input.port ?? 22,
+    auth: input.auth,
+    keyPath: input.keyPath ?? null,
+    key_path: input.keyPath ?? null,
+    secret: input.secret ?? null,
+  });
+}
+
+export function pairAgentServer(id: string): Promise<AgentServer> {
+  return invoke("dev_pair_agent_server", { id });
+}
+
+export function removeAgentServer(id: string): Promise<void> {
+  return invoke("dev_remove_agent_server", { id });
+}
+
+export function serverStorage(id: string): Promise<ServerStorage> {
+  return invoke("dev_server_storage", { id });
+}
+
+export function serverProviderKeys(id: string): Promise<ServerProviderKeys> {
+  return invoke("dev_server_provider_keys", { id });
+}
+
+export function copyServerProviderKeys(id: string, providers: string[]): Promise<ServerProviderKeys> {
+  return invoke("dev_copy_server_provider_keys", { id, providers });
+}
+
+export type RemoteSkillFile = {
+  path: string;
+  read_path: string;
+  origin: string;
+  contents: string;
+};
+
+export type RemoteCapabilities = {
+  /** Config text keyed as `relative path\\ncontents`. */
+  mcp: string[];
+  auth: string[];
+  skills: RemoteSkillFile[];
+};
+
+export function serverGit(id: string): Promise<{ installed: boolean }> {
+  return invoke("dev_server_git", { id });
+}
+
+export function installServerGit(id: string): Promise<{ installed: boolean }> {
+  return invoke("dev_install_server_git", { id });
+}
+
+export function serverCapabilities(id: string): Promise<RemoteCapabilities> {
+  return invoke("dev_server_capabilities", { id });
+}
+
+export function workspaceCapabilities(workspace: string): Promise<RemoteCapabilities | null> {
+  return invoke("dev_workspace_capabilities", { workspace });
+}
+
+export function workspaceServerId(workspace: string): Promise<string | null> {
+  return invoke("dev_workspace_server_id", { workspace });
+}
+
+/** Copy MCP configs and skills. `mcpName` signs in through the browser on this Mac first. */
+export function syncServerCapabilities(id: string, mcpName?: string): Promise<RemoteCapabilities> {
+  return invoke("dev_sync_server_capabilities", { id, mcpName: mcpName ?? null, mcp_name: mcpName ?? null });
+}
+
+async function hostedFrame(workspace: string, frame: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const raw = await hostedCall(workspace, frame);
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+function summaryFromHosted(row: Record<string, unknown>): ConversationSummary {
+  return {
+    id: String(row.id ?? ""),
+    title: String(row.title ?? "Chat"),
+    created_at: String(row.created_at ?? ""),
+    updated_at: String(row.updated_at ?? ""),
+    kind: String(row.kind ?? "chat"),
+    journey_id: (row.journey_id as string | null | undefined) ?? null,
+    sort_order: Number(row.sort_order ?? 0),
+    effort: (row.effort as string | null | undefined) ?? null,
+    model: (row.model as string | null | undefined) ?? null,
+    context_window: (row.context_window as number | null | undefined) ?? null,
+    permission: (row.permission as string | null | undefined) ?? null,
+    archived: Boolean(row.archived),
+  };
+}
+
+/** Cloud chats live on the paired server. The local mount database is not used. */
+export async function listHostedConversations(workspace: string): Promise<ConversationSummary[]> {
+  const frame = await hostedFrame(workspace, { type: "list_conversations" });
+  const rows = Array.isArray(frame.rows) ? frame.rows : [];
+  return rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
+}
+
+export async function getHostedConversation(workspace: string, id: string): Promise<Conversation> {
+  const frame = await hostedFrame(workspace, { type: "get_conversation", id });
+  const row = frame;
+  return {
+    ...summaryFromHosted(row),
+    messages: Array.isArray(row.messages) ? row.messages : [],
+  };
 }
 
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
@@ -945,6 +1136,56 @@ export function transcribe(bytesBase64: string, filename: string): Promise<strin
     bytesBase64,
     bytes_base64: bytesBase64,
     filename,
+  });
+}
+
+export function hostedTurn(input: {
+  workspace: string;
+  streamId: string;
+  conversationId: string;
+  prompt: string;
+  model?: string;
+  effort?: string;
+  permission?: string;
+}): Promise<void> {
+  return invoke("dev_hosted_turn", {
+    workspace: input.workspace,
+    streamId: input.streamId,
+    stream_id: input.streamId,
+    conversationId: input.conversationId,
+    conversation_id: input.conversationId,
+    prompt: input.prompt,
+    model: input.model ?? null,
+    effort: input.effort ?? null,
+    permission: input.permission ?? null,
+  });
+}
+
+export function hostedCancel(streamId: string): Promise<void> {
+  return invoke("dev_hosted_cancel", { streamId, stream_id: streamId });
+}
+
+/** Follow a turn that is already running on the paired server. Events arrive on `dev-chat`. */
+export function hostedFollow(workspace: string, streamId: string, conversationId: string): Promise<void> {
+  return invoke("dev_hosted_follow", {
+    workspace,
+    streamId,
+    stream_id: streamId,
+    conversationId,
+    conversation_id: conversationId,
+  });
+}
+
+export function hostedUnfollow(streamId: string): Promise<void> {
+  return invoke("dev_hosted_unfollow", { streamId, stream_id: streamId });
+}
+
+/** One conversation frame on the paired server. The reply is the server frame as JSON. */
+export function hostedCall(workspace: string, frame: Record<string, unknown>): Promise<string> {
+  return invoke("dev_hosted_call", {
+    workspace,
+    frameJson: JSON.stringify(frame),
+    frame_json: JSON.stringify(frame),
   });
 }
 

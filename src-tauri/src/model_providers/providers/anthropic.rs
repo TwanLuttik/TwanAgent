@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -125,18 +126,8 @@ pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u6
 }
 
 /// A chat model id from Anthropic. Dated snapshots (`claude-sonnet-4-5-20250929`) count.
-/// Grok's side-by-side tutor ids (`sxs-claude-…`) do not.
 pub fn is_claude_model(id: &str) -> bool {
-    let id = id.trim();
-    if claude_model(id).is_some() {
-        return true;
-    }
-    let rest = id.strip_prefix("claude-").unwrap_or("");
-    if rest.is_empty() {
-        return false;
-    }
-    rest.chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+    twanagent_service::anthropic::is_claude_model(id)
 }
 
 pub fn provider_for(id: &str) -> Provider {
@@ -149,44 +140,18 @@ pub fn provider_for(id: &str) -> Provider {
 
 /// Output cap for the Messages API. Not the context window.
 pub fn max_tokens_for(id: &str) -> u32 {
-    let id = id.trim();
-    if let Some(row) = claude_model(id) {
-        return row.3;
-    }
-    let family = id.strip_suffix("-latest").unwrap_or(id);
-    if let Some(row) = claude_model(family) {
-        return row.3;
-    }
-    if id.contains("haiku") && !id.contains("haiku-5") {
-        64_000
-    } else if is_claude_model(id) {
-        128_000
-    } else {
-        16_000
-    }
+    twanagent_service::anthropic::max_tokens_for(id)
 }
 
 /// Opus and Sonnet use adaptive thinking. Haiku keeps a fixed budget.
 pub fn supports_adaptive_thinking(id: &str) -> bool {
-    let id = id.trim();
-    is_claude_model(id) && !id.contains("haiku")
+    twanagent_service::anthropic::supports_adaptive_thinking(id)
 }
 
 /// Manual thinking budget for a model that cannot use adaptive thinking.
 /// Must stay below the output cap. `None` means send no thinking field.
 pub fn manual_thinking_budget(id: &str, effort: Option<&str>) -> Option<u32> {
-    if supports_adaptive_thinking(id) {
-        return None;
-    }
-    let effort = effort.map(str::trim).filter(|value| !value.is_empty())?;
-    let cap = max_tokens_for(id);
-    let budget = match effort {
-        "low" => 1_024,
-        "medium" => 4_096,
-        "high" | "xhigh" | "max" => 8_192,
-        _ => return None,
-    };
-    Some(budget.min(cap.saturating_sub(1)).max(1_024).min(cap.saturating_sub(1)))
+    twanagent_service::anthropic::manual_thinking_budget(id, effort)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -355,15 +320,23 @@ pub struct ClaudeAuth {
 /// Saved API key first, then the same Claude CLI login the settings screen shows as signed in.
 /// The token is not returned to the UI. An expired CLI token is not refreshed here.
 pub fn resolve_claude_auth() -> Option<ClaudeAuth> {
-    resolve_claude_auth_with(false)
+    resolve_claude_auth_in(&crate::state::app_data_dir())
 }
 
 /// Like `resolve_claude_auth`, but renews the CLI OAuth token when it is near expiry.
 /// A saved API key is used for chat. It does not skip renewing the CLI login, because
 /// session usage can only be read with that OAuth token.
 pub async fn resolve_claude_auth_fresh() -> Option<ClaudeAuth> {
+    resolve_claude_auth_fresh_in(&crate::state::app_data_dir()).await
+}
+
+pub async fn resolve_claude_auth_fresh_in(data_dir: &std::path::Path) -> Option<ClaudeAuth> {
     let _ = refresh_claude_cli_login().await;
-    resolve_claude_auth()
+    resolve_claude_auth_in(data_dir)
+}
+
+fn resolve_claude_auth_in(data_dir: &std::path::Path) -> Option<ClaudeAuth> {
+    resolve_claude_auth_with(data_dir, false)
 }
 
 /// Renew `~/.config/anthropic/credentials` when the access token is near expiry.
@@ -373,8 +346,8 @@ pub async fn refresh_claude_cli_login() -> Option<String> {
     read_cli_access_token_fresh(&home).await
 }
 
-fn resolve_claude_auth_with(allow_expired_cli: bool) -> Option<ClaudeAuth> {
-    if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk() {
+fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool) -> Option<ClaudeAuth> {
+    if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk(data_dir) {
         return Some(ClaudeAuth {
             token: key,
             via_cli: false,
@@ -512,9 +485,9 @@ fn read_profile_client_id(path: &Path) -> Option<String> {
 }
 
 fn claude_cli_user_agent() -> String {
-    let version = home_dir()
-        .and_then(|home| claude_bin_version(&home))
-        .or_else(|| claude_bin().as_deref().and_then(claude_version));
+    let version = cached_claude_version(claude_bin().as_deref()).or_else(|| {
+        home_dir().and_then(|home| claude_bin_version(&home))
+    });
     match version {
         Some(version) => format!("claude-code/{version}"),
         None => "claude-code".into(),
@@ -895,9 +868,20 @@ pub async fn dev_account_usage(state: tauri::State<'_, crate::state::AppState>) 
     Ok(usage)
 }
 
+/// `claude --version` is a process spawn. A detected version is reused; a miss is tried again.
+fn cached_claude_version(bin: Option<&Path>) -> Option<String> {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    if let Some(found) = VERSION.get() {
+        return Some(found.clone());
+    }
+    let version = bin.and_then(claude_version)?;
+    let _ = VERSION.set(version.clone());
+    Some(version)
+}
+
 pub fn claude_cli_info() -> ClaudeCliInfo {
     let bin = claude_bin();
-    let version = bin.as_ref().and_then(|path| claude_version(path));
+    let version = cached_claude_version(bin.as_deref());
     let account = home_dir().and_then(|home| read_claude_account(&home));
     ClaudeCliInfo {
         installed: bin.is_some(),
@@ -1279,12 +1263,12 @@ fn cli_account_email(home: &Path) -> Option<String> {
         .filter(|email| email.contains('@'))
         .map(str::to_string)
 }
-pub const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+pub const MESSAGES_URL: &str = twanagent_service::anthropic::MESSAGES_URL;
 pub const MODELS_URL: &str = "https://api.anthropic.com/v1/models";
-pub const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub const ANTHROPIC_VERSION: &str = twanagent_service::anthropic::ANTHROPIC_VERSION;
 pub const SIGN_IN_ERROR: &str =
     "Claude isn’t signed in. Run claude login, or add an Anthropic API key in Settings.";
-pub const KEY_REJECTED: &str = "Anthropic rejected the API key.";
+pub const KEY_REJECTED: &str = twanagent_service::anthropic::KEY_REJECTED;
 
 /// OpenAI-shaped chat messages become a Messages API body. No I/O.
 pub fn to_messages_body(
@@ -1293,274 +1277,11 @@ pub fn to_messages_body(
     effort: Option<&str>,
     tools: &serde_json::Value,
 ) -> serde_json::Value {
-    let rows = messages.as_array().cloned().unwrap_or_default();
-    let mut system = String::new();
-    let mut out: Vec<serde_json::Value> = Vec::new();
-    for msg in rows {
-        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        if role == "system" {
-            let text = content_string(msg.get("content"));
-            if text.is_empty() {
-                continue;
-            }
-            if !system.is_empty() {
-                system.push_str("\n\n");
-            }
-            system.push_str(&text);
-            continue;
-        }
-        if role == "tool" {
-            let block = serde_json::json!({
-                "type": "tool_result",
-                "tool_use_id": msg.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or(""),
-                "content": content_string(msg.get("content")),
-            });
-            if let Some(last) = out.last_mut() {
-                if last.get("role").and_then(|v| v.as_str()) == Some("user") {
-                    if let Some(content) = last.get_mut("content").and_then(|v| v.as_array_mut()) {
-                        content.push(block);
-                        continue;
-                    }
-                }
-            }
-            out.push(serde_json::json!({ "role": "user", "content": [block] }));
-            continue;
-        }
-        if role == "assistant" {
-            let mut blocks = Vec::new();
-            blocks.extend(replay_thinking(msg.get("thinking")));
-            let text = content_string(msg.get("content"));
-            if !text.trim().is_empty() {
-                blocks.push(serde_json::json!({ "type": "text", "text": text }));
-            }
-            if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-                for call in calls {
-                    let name = call
-                        .get("function")
-                        .and_then(|f| f.get("name"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let arguments = call
-                        .get("function")
-                        .and_then(|f| f.get("arguments"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    blocks.push(serde_json::json!({
-                        "type": "tool_use",
-                        "id": call.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                        "name": name,
-                        "input": tool_input(arguments),
-                    }));
-                }
-            }
-            if blocks.is_empty() {
-                continue;
-            }
-            out.push(serde_json::json!({ "role": "assistant", "content": blocks }));
-            continue;
-        }
-        let blocks = user_blocks(msg.get("content"));
-        if blocks.is_empty() {
-            continue;
-        }
-        out.push(serde_json::json!({ "role": "user", "content": blocks }));
-    }
-    let mut body = serde_json::json!({
-        "model": model,
-        "max_tokens": max_tokens_for(model),
-        "stream": true,
-        "messages": out,
-        "tools": reshape_tools(tools),
-        "tool_choice": { "type": "auto" },
-    });
-    if supports_adaptive_thinking(model) {
-        body["thinking"] = serde_json::json!({ "type": "adaptive" });
-    } else if let Some(budget) = manual_thinking_budget(model, effort) {
-        body["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": budget });
-    }
-    if !system.is_empty() {
-        body["system"] = serde_json::Value::String(system);
-    }
-    if supports_adaptive_thinking(model) {
-        if let Some(effort) = effort.map(str::trim).filter(|s| !s.is_empty()) {
-            body["output_config"] = serde_json::json!({ "effort": effort });
-        }
-    }
-    body
-}
-
-/// Signed thinking must lead the assistant content, unchanged, before text and tools.
-fn replay_thinking(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
-    let Some(rows) = value.and_then(|item| item.as_array()) else {
-        return Vec::new();
-    };
-    rows.iter()
-        .filter_map(|block| {
-            let kind = block.get("type").and_then(|item| item.as_str()).unwrap_or("");
-            match kind {
-                "thinking" => {
-                    let signature = block.get("signature").and_then(|item| item.as_str()).unwrap_or("");
-                    if signature.is_empty() {
-                        return None;
-                    }
-                    Some(serde_json::json!({
-                        "type": "thinking",
-                        "thinking": block.get("thinking").and_then(|item| item.as_str()).unwrap_or(""),
-                        "signature": signature,
-                    }))
-                }
-                "redacted_thinking" => {
-                    let data = block.get("data").and_then(|item| item.as_str()).unwrap_or("");
-                    if data.is_empty() {
-                        return None;
-                    }
-                    Some(serde_json::json!({
-                        "type": "redacted_thinking",
-                        "data": data,
-                    }))
-                }
-                _ => None,
-            }
-        })
-        .collect()
-}
-
-fn reshape_tools(tools: &serde_json::Value) -> Vec<serde_json::Value> {
-    let Some(rows) = tools.as_array() else {
-        return Vec::new();
-    };
-    rows.iter()
-        .filter_map(|tool| {
-            let function = tool.get("function").unwrap_or(tool);
-            let name = function.get("name").and_then(|v| v.as_str())?;
-            if name.is_empty() {
-                return None;
-            }
-            let mut row = serde_json::json!({
-                "name": name,
-                "input_schema": function.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                })),
-            });
-            if let Some(description) = function.get("description").and_then(|v| v.as_str()) {
-                if !description.is_empty() {
-                    row["description"] = serde_json::Value::String(description.to_string());
-                }
-            }
-            Some(row)
-        })
-        .collect()
-}
-
-fn content_string(value: Option<&serde_json::Value>) -> String {
-    let Some(value) = value else {
-        return String::new();
-    };
-    if let Some(text) = value.as_str() {
-        return text.to_string();
-    }
-    if value.is_null() {
-        return String::new();
-    }
-    let Some(parts) = value.as_array() else {
-        return String::new();
-    };
-    let mut out = String::new();
-    for part in parts {
-        if let Some(text) = part.as_str() {
-            out.push_str(text);
-            continue;
-        }
-        if part.get("type").and_then(|v| v.as_str()) == Some("text") {
-            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                out.push_str(text);
-            }
-        }
-    }
-    out
-}
-
-fn user_blocks(value: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    if let Some(text) = value.as_str() {
-        if text.is_empty() {
-            return Vec::new();
-        }
-        return vec![serde_json::json!({ "type": "text", "text": text })];
-    }
-    let Some(parts) = value.as_array() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for part in parts {
-        let kind = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if kind == "text" {
-            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                if !text.is_empty() {
-                    out.push(serde_json::json!({ "type": "text", "text": text }));
-                }
-            }
-            continue;
-        }
-        if kind == "image_url" {
-            let url = part
-                .get("image_url")
-                .and_then(|v| v.get("url"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if let Some(image) = image_block(url) {
-                out.push(image);
-            }
-        }
-    }
-    out
-}
-
-fn image_block(url: &str) -> Option<serde_json::Value> {
-    let rest = url.strip_prefix("data:")?;
-    let (meta, data) = rest.split_once(",")?;
-    if !meta.contains(";base64") || data.is_empty() {
-        return None;
-    }
-    let media_type = meta.split(';').next().unwrap_or("").trim();
-    if media_type.is_empty() {
-        return None;
-    }
-    Some(serde_json::json!({
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": media_type,
-            "data": data,
-        }
-    }))
-}
-
-fn tool_input(arguments: &str) -> serde_json::Value {
-    let trimmed = arguments.trim();
-    if trimmed.is_empty() {
-        return serde_json::json!({});
-    }
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(value) if value.is_object() => value,
-        _ => serde_json::json!({ "raw": arguments }),
-    }
+    twanagent_service::anthropic::to_messages_body(messages, model, effort, tools)
 }
 
 pub fn http_error_message(status: u16, body: &str) -> String {
-    if status == 401 {
-        return KEY_REJECTED.into();
-    }
-    format!(
-        "Anthropic error {status}: {}",
-        body.chars().take(400).collect::<String>()
-    )
+    twanagent_service::anthropic::http_error_message(status, body)
 }
 
 pub type SsePiece = StreamPiece;
@@ -1577,116 +1298,27 @@ pub struct ToolAccum {
 
 /// One Anthropic SSE `data:` payload. Event names are ignored; the JSON `type` is enough.
 pub fn parse_sse_data(data: &str) -> Option<StreamPiece> {
-    let data = data.trim();
-    if data.is_empty() || data == "[DONE]" {
-        return None;
-    }
-    let json: serde_json::Value = serde_json::from_str(data).ok()?;
-    match json.get("type").and_then(|v| v.as_str())? {
-        "content_block_start" => {
-            let index = json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let block = json.get("content_block")?;
-            match block.get("type").and_then(|v| v.as_str())? {
-                "tool_use" => Some(StreamPiece::ToolStart {
-                    index,
-                    id: block
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    name: block
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                }),
-                "thinking" => Some(StreamPiece::ThinkingStart { index }),
-                "redacted_thinking" => Some(StreamPiece::RedactedThinking {
-                    index,
-                    data: block
-                        .get("data")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                }),
-                _ => None,
-            }
-        }
-        "content_block_delta" => {
-            let index = json.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let delta = json.get("delta")?;
-            match delta.get("type").and_then(|v| v.as_str())? {
-                "text_delta" => {
-                    let text = delta.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(StreamPiece::Delta(text.to_string()))
-                    }
-                }
-                "thinking_delta" => {
-                    let text = delta.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
-                    if text.is_empty() {
-                        None
-                    } else {
-                        Some(StreamPiece::Reasoning(text.to_string()))
-                    }
-                }
-                "signature_delta" => {
-                    let signature = delta.get("signature").and_then(|v| v.as_str()).unwrap_or("");
-                    if signature.is_empty() {
-                        None
-                    } else {
-                        Some(StreamPiece::ThinkingSignature {
-                            index,
-                            signature: signature.to_string(),
-                        })
-                    }
-                }
-                "input_json_delta" => Some(StreamPiece::ToolDelta {
-                    index,
-                    partial: delta
-                        .get("partial_json")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                }),
-                _ => None,
-            }
-        }
-        "message_start" => usage_piece(json.get("message").and_then(|m| m.get("usage"))),
-        "message_delta" => usage_piece(json.get("usage")),
-        "message_stop" => Some(StreamPiece::Stop),
-        _ => None,
-    }
-}
-
-fn usage_count(usage: &serde_json::Value, key: &str) -> Option<u64> {
-    usage.get(key).and_then(|v| v.as_u64())
-}
-
-fn usage_piece(usage: Option<&serde_json::Value>) -> Option<SsePiece> {
-    let usage = usage?;
-    let fresh = usage_count(usage, "input_tokens");
-    let completion = usage_count(usage, "output_tokens");
-    let cache_read = usage_count(usage, "cache_read_input_tokens");
-    let cache_creation = usage_count(usage, "cache_creation_input_tokens");
-    // message_delta often carries only output_tokens. MAX means "keep the previous count".
-    if fresh.is_none() && completion.is_none() && cache_read.is_none() && cache_creation.is_none() {
-        return None;
-    }
-    // Cached reads and writes still occupy the window. Anthropic leaves them out of input_tokens.
-    let prompt_tokens = match fresh {
-        Some(fresh) => fresh
-            .saturating_add(cache_read.unwrap_or(0))
-            .saturating_add(cache_creation.unwrap_or(0)),
-        None => u64::MAX,
-    };
-    Some(StreamPiece::Usage {
-        prompt_tokens,
-        completion_tokens: completion.unwrap_or(u64::MAX),
-        cache_read_tokens: cache_read.unwrap_or(u64::MAX),
-        cache_creation_tokens: cache_creation.unwrap_or(u64::MAX),
+    use twanagent_service::anthropic::SseEvent;
+    Some(match twanagent_service::anthropic::parse_sse_data(data)? {
+        SseEvent::Delta(text) => StreamPiece::Delta(text),
+        SseEvent::Reasoning(text) => StreamPiece::Reasoning(text),
+        SseEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        } => StreamPiece::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        },
+        SseEvent::ToolStart { index, id, name } => StreamPiece::ToolStart { index, id, name },
+        SseEvent::ToolDelta { index, partial } => StreamPiece::ToolDelta { index, partial },
+        SseEvent::ThinkingStart { index } => StreamPiece::ThinkingStart { index },
+        SseEvent::RedactedThinking { index, data } => StreamPiece::RedactedThinking { index, data },
+        SseEvent::ThinkingSignature { index, signature } => StreamPiece::ThinkingSignature { index, signature },
+        SseEvent::Stop => StreamPiece::Stop,
     })
 }
 
@@ -1995,12 +1627,10 @@ mod tests {
         assert!(is_claude_model("claude-haiku-4-5"));
         assert!(is_claude_model("claude-opus-4-8-latest"));
         assert!(is_claude_model("claude-sonnet-4-5-20250929"));
-        assert!(!is_claude_model("sxs-claude-opus-4-6"));
         assert!(!is_claude_model("grok-4.6"));
         assert!(!is_claude_model(""));
         assert_eq!(provider_for("grok-4.6"), Provider::Xai);
         assert_eq!(provider_for(""), Provider::Xai);
-        assert_eq!(provider_for("sxs-claude-opus-4-6"), Provider::Xai);
     }
 
     #[test]
@@ -2011,7 +1641,7 @@ mod tests {
                 {"type":"model","id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","max_input_tokens":200000},
                 {"type":"model","id":"claude-3-haiku-20240307","display_name":"Claude Haiku 3"},
                 {"type":"model","id":"claude-retired","display_name":"Gone","lifecycle":"retired"},
-                {"type":"model","id":"sxs-claude-opus-4-6","display_name":"Tutor"}
+                {"type":"model","id":"not-a-claude","display_name":"Tutor"}
             ],
             "has_more": true,
             "last_id": "claude-3-haiku-20240307"

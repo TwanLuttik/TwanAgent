@@ -108,6 +108,7 @@ export const Workspace = memo(function Workspace({
   const [switching, setSwitching] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [gitMissing, setGitMissing] = useState(false);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
   const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
@@ -124,26 +125,77 @@ export const Workspace = memo(function Workspace({
     if (!workspace) return;
     const gen = ++refreshGen.current;
     setError(null);
-    try {
-      const open = dirsToList(expanded, fileStructureDirs(workspace));
-      const [nextChanges, listings] = await Promise.all([
-        api.gitStatus(workspace, pane.tabs.some((tab) => tab.kind === "git")),
-        Promise.all(open.map(async (path) => ({ path, rows: await api.listDir(workspace, path) }))),
-      ]);
-      if (gen !== refreshGen.current) return;
-      setChanges(nextChanges);
-      setChildren((prev) => {
-        const next = { ...prev };
-        for (const listing of listings) next[listing.path] = listing.rows;
-        const live = new Set(listings.flatMap((listing) => listing.rows.map((row) => row.path)));
-        for (const path of Object.keys(next)) {
-          if (path && !live.has(path)) delete next[path];
+    const wantStats = pane.tabs.some((tab) => tab.kind === "git");
+    // Git and the file tree are independent. A missing remembered folder must
+    // not throw away a status that already came back.
+    const gitResult = api.gitStatus(workspace, wantStats).then(
+      (rows) => ({ rows, missing: false }),
+      (err: unknown) => {
+        const text = String(err).toLowerCase();
+        if (text.includes("git: command not found") || text.includes("git: not found") || text.includes("git is not available")) {
+          return { rows: [] as GitChange[], missing: true };
         }
-        return next;
-      });
+        throw err;
+      },
+    );
+    const open = dirsToList(expanded, fileStructureDirs(workspace));
+    const listed = await Promise.all(
+      open.map(async (path) => {
+        try {
+          return { path, rows: await api.listDir(workspace, path), missing: false, failed: "" };
+        } catch (err) {
+          const text = String(err);
+          // A remembered folder that was deleted or renamed is not a file. Drop it.
+          // Anything else, including a real file, stays on screen.
+          const gone = text.toLowerCase().includes("not a folder");
+          return { path, rows: [] as Entry[], missing: gone, failed: gone ? "" : text };
+        }
+      }),
+    );
+    let gitFailed = false;
+    try {
+      const nextGit = await gitResult;
+      if (gen !== refreshGen.current) return;
+      setGitMissing(nextGit.missing);
+      setChanges(nextGit.rows);
     } catch (e) {
+      gitFailed = true;
       if (gen === refreshGen.current) setError(String(e));
     }
+    const listError = listed.find((row) => row.failed)?.failed ?? "";
+    if (listError && gen === refreshGen.current) {
+      gitFailed = true;
+      setError(listError);
+    }
+    if (gen !== refreshGen.current) return;
+    const gone = listed.filter((row) => row.missing).map((row) => row.path);
+    if (gone.length) {
+      setExpanded((prev) => {
+        if (!gone.some((path) => prev[path])) return prev;
+        const next = { ...prev };
+        for (const path of gone) delete next[path];
+        saveOpenFileTree(workspace, openTreePaths(next));
+        return next;
+      });
+    }
+    setChildren((prev) => {
+      const next = { ...prev };
+      for (const listing of listed) {
+        if (listing.missing) {
+          delete next[listing.path];
+          continue;
+        }
+        next[listing.path] = listing.rows;
+      }
+      const live = new Set(
+        listed.filter((listing) => !listing.missing).flatMap((listing) => listing.rows.map((row) => row.path)),
+      );
+      for (const path of Object.keys(next)) {
+        if (path && !live.has(path)) delete next[path];
+      }
+      return next;
+    });
+    if (!gitFailed && gen === refreshGen.current) setError(null);
   }, [workspace, expanded, pane.tabs]);
 
   const refreshBranches = useCallback(async () => {
@@ -480,6 +532,7 @@ export const Workspace = memo(function Workspace({
               {tab.kind === "files" ? (
                 <FilesPane
                   error={error}
+                  gitMissing={gitMissing}
                   expanded={expanded}
                   childrenOf={children}
                   selected={picked}
@@ -781,6 +834,7 @@ function openTreePaths(state: Record<string, boolean>): string[] {
 
 function FilesPane({
   error,
+  gitMissing = false,
   expanded,
   childrenOf,
   selected,
@@ -803,6 +857,7 @@ function FilesPane({
   onNewFileCancel,
 }: {
   error: string | null;
+  gitMissing?: boolean;
   expanded: Record<string, boolean>;
   childrenOf: Record<string, Entry[]>;
   selected: string[];
@@ -958,6 +1013,17 @@ function FilesPane({
       }}
     >
       {error && <p className="px-2 text-[11px] text-err">{error}</p>}
+      {gitMissing ? (
+        <span className="group/git relative mx-2 mb-1 flex w-fit items-center" title="Git is not installed on this server">
+          <Symbol name="exclamationmark.triangle.fill" className="size-3.5 text-warn" />
+          <span
+            role="tooltip"
+            className="pointer-events-none absolute top-full left-0 z-10 mt-1 hidden w-max rounded-md border border-line/25 bg-canvas px-2 py-1 text-[11px] text-ink shadow-card group-hover/git:block"
+          >
+            Git is not installed on this server
+          </span>
+        </span>
+      ) : null}
       {dropTarget === "" ? (
         <div className="sticky top-0 z-10 mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/20 px-2 py-[5px] text-[12px] font-medium text-accent ring-1 ring-inset ring-accent">
           <Symbol name="arrow.down.to.line" className="size-3.5" />
@@ -1234,6 +1300,8 @@ function GitPane({
   const [message, setMessage] = useState("");
   const [newBranch, setNewBranch] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
   const [commitText, setCommitText] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -1256,6 +1324,22 @@ function GitPane({
     setEmail(identity.email);
   }, [identity]);
 
+  useEffect(() => {
+    if (!moreOpen) return;
+    function onDoc(ev: MouseEvent) {
+      if (moreRef.current && !moreRef.current.contains(ev.target as Node)) setMoreOpen(false);
+    }
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key === "Escape") setMoreOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [moreOpen]);
+
   function setChangesView(next: GitChangesView) {
     setView(next);
     saveGitChangesView(next);
@@ -1273,13 +1357,66 @@ function GitPane({
         {tracking ? <p className="px-2 pt-0.5 text-[11px] text-muted">{tracking}</p> : null}
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
         {repo ? (
-          <div className="flex flex-wrap gap-1 px-1 pt-1">
-            <GitAction label="Fetch" disabled={busy} onClick={() => onSync("fetch")} />
-            <GitAction label="Pull" disabled={busy} onClick={() => onSync("pull")} />
-            <GitAction label={summary?.upstream ? "Push" : "Publish"} disabled={busy} onClick={() => onSync(summary?.upstream ? "push" : "publish")} />
-            <GitAction label="Stash" disabled={busy || changes.length === 0} onClick={() => onStash("push")} />
-            <GitAction label="Pop" disabled={busy} onClick={() => onStash("pop")} />
-            <GitAction label={showNew ? "Cancel" : "Branch"} disabled={busy} onClick={() => setShowNew((v) => !v)} />
+          <div className="flex items-center gap-0.5 px-1 pt-0.5">
+            <GitIconButton label="Fetch" icon="arrow.2.circlepath" disabled={busy} onClick={() => onSync("fetch")} />
+            <GitIconButton label="Pull" icon="square.and.arrow.down" disabled={busy} onClick={() => onSync("pull")} />
+            <GitIconButton
+              label={summary?.upstream ? "Push" : "Publish branch"}
+              icon="square.and.arrow.up"
+              disabled={busy}
+              onClick={() => onSync(summary?.upstream ? "push" : "publish")}
+            />
+            <div className="relative" ref={moreRef}>
+              <GitIconButton
+                label="More"
+                icon="ellipsis"
+                pressed={moreOpen}
+                disabled={busy}
+                onClick={() => setMoreOpen((open) => !open)}
+              />
+              {moreOpen ? (
+                <div
+                  role="menu"
+                  aria-label="Git actions"
+                  className="absolute top-full left-0 z-20 mt-1 min-w-[148px] rounded-md border border-line bg-canvas py-1 shadow-card"
+                >
+                  <GitMenuItem
+                    label="Stash changes"
+                    disabled={changes.length === 0}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      onStash("push");
+                    }}
+                  />
+                  <GitMenuItem
+                    label="Pop stash"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      onStash("pop");
+                    }}
+                  />
+                  <GitMenuItem
+                    label="New branch"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setShowNew(true);
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {showNew ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNew(false);
+                  setNewBranch("");
+                }}
+                className="ml-auto px-1.5 text-[11px] text-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            ) : null}
           </div>
         ) : null}
         {showNew ? (
@@ -1323,11 +1460,12 @@ function GitPane({
           <button
             type="button"
             onClick={onOpenAll}
-            className={`flex w-full items-center justify-center gap-1.5 rounded-[7px] px-2 py-[6px] text-[12px] ${
-              selected === ALL_DIFF_PATH ? "bg-wash-strong text-ink" : "bg-wash text-ink hover:bg-wash-strong"
+            className={`flex w-full items-center gap-1.5 rounded-[6px] px-2 py-1 text-left text-[12px] ${
+              selected === ALL_DIFF_PATH ? "bg-wash-strong text-ink" : "text-ink hover:bg-wash"
             }`}
           >
-            <span>View Diff</span>
+            <Symbol name="doc" className="size-3.5 shrink-0 text-muted" />
+            <span className="min-w-0 flex-1 truncate">View diff</span>
             {totals.additions > 0 ? (
               <span className="font-medium text-ok">+{formatDiffCount(totals.additions)}</span>
             ) : null}
@@ -1352,13 +1490,26 @@ function GitPane({
               rows={2}
               className="resize-none rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
             />
-            <div className="flex gap-1">
-              <GitAction label={`Stage ${unstaged.length || ""}`.trim()} disabled={busy || unstaged.length === 0} onClick={() => onStage(unstaged.map((row) => row.path))} />
+            <div className="flex items-center gap-1">
+              <GitAction label={unstaged.length ? `Stage ${unstaged.length}` : "Stage"} disabled={busy || unstaged.length === 0} onClick={() => onStage(unstaged.map((row) => row.path))} />
               <GitAction label="Unstage" disabled={busy || staged.length === 0} onClick={() => onUnstage(staged.map((row) => row.path))} />
-              <GitAction label="Discard" disabled={busy || changes.length === 0} onClick={() => {
-                if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
-              }} />
-              <GitAction label={busy ? "Working…" : "Commit"} disabled={busy || !message.trim() || staged.length === 0} onClick={() => undefined} submit />
+              <span className="ml-auto">
+                <GitIconButton
+                  label="Discard all changes"
+                  icon="trash"
+                  disabled={busy || changes.length === 0}
+                  onClick={() => {
+                    if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
+                  }}
+                />
+              </span>
+              <button
+                type="submit"
+                disabled={busy || !message.trim() || staged.length === 0}
+                className="rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-40"
+              >
+                {busy ? "Working…" : "Commit"}
+              </button>
             </div>
           </form>
         </div>
@@ -1452,6 +1603,65 @@ function GitPane({
         ) : null}
       </div>
     </>
+  );
+}
+
+function GitIconButton({
+  label,
+  icon,
+  disabled,
+  pressed,
+  onClick,
+}: {
+  label: string;
+  icon: "arrow.2.circlepath" | "square.and.arrow.down" | "square.and.arrow.up" | "ellipsis" | "trash";
+  disabled?: boolean;
+  pressed?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <span className="group/tip relative">
+      <button
+        type="button"
+        disabled={disabled}
+        aria-label={label}
+        aria-pressed={pressed}
+        onClick={onClick}
+        className={`flex size-6 items-center justify-center rounded-[6px] hover:bg-wash hover:text-ink disabled:opacity-40 ${
+          pressed ? "bg-wash-strong text-ink" : "text-muted"
+        }`}
+      >
+        <Symbol name={icon} className="size-3.5" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute top-full left-1/2 z-30 mt-1 hidden -translate-x-1/2 rounded-md border border-line/25 bg-canvas px-2 py-1 text-[11px] whitespace-nowrap text-ink shadow-card group-hover/tip:block"
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function GitMenuItem({
+  label,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex w-full px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-inset disabled:cursor-default disabled:opacity-40"
+    >
+      {label}
+    </button>
   );
 }
 

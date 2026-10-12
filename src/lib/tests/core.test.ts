@@ -1058,7 +1058,10 @@ describe("folder command helpers", () => {
     assert.equal(folderActionEnabled("clone", "https://github.com/acme/app.git"), true);
     assert.equal(folderActionEnabled("open", ""), true);
     assert.match(folderActionHint("create", "demo"), /demo/);
+    assert.match(folderActionHint("create", "demo"), /this Mac/);
+    assert.match(folderActionHint("create", "demo", "Build"), /Build/);
     assert.match(folderActionHint("clone", "https://github.com/acme/app.git"), /app/);
+    assert.match(folderActionHint("clone", "https://github.com/acme/app.git", "Build"), /Build/);
     assert.equal(pathWithSlash("/projects"), "/projects/");
     assert.equal(pathWithSlash("/projects/"), "/projects/");
   });
@@ -1224,6 +1227,31 @@ describe("toApiMessages", () => {
         { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
       ],
     });
+  });
+
+  it("drops an inline image token because the picture is sent beside the text", () => {
+    const out = toApiMessages([
+      {
+        role: "user",
+        content: "what is wrong in [shot.png] here",
+        images: [
+          {
+            id: "img-1",
+            path: "/tmp/a.jpg",
+            name: "shot.png",
+            mime: "image/jpeg",
+            width: 800,
+            height: 600,
+            resized: false,
+            dataUrl: "data:image/jpeg;base64,abc",
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(out[0]?.content, [
+      { type: "text", text: "what is wrong in here" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
+    ]);
   });
 });
 

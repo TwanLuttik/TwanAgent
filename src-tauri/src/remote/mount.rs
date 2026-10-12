@@ -10,6 +10,22 @@ pub fn mkdir_remote_command(remote_path: &str) -> Result<String> {
     Ok(format!("mkdir -p {}", shell_single_quote(&remote)))
 }
 
+/// `git clone` into an absolute folder. The URL is already checked by the caller.
+pub fn clone_remote_command(remote_path: &str, url: &str) -> Result<String> {
+    let remote = validate_remote_path(remote_path)?;
+    let url = url.trim();
+    if url.is_empty() || url.contains('\'') || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(Error::Other("invalid git URL".into()));
+    }
+    let parent = remote.rsplit_once('/').map(|(dir, _)| dir).filter(|dir| !dir.is_empty()).unwrap_or("/");
+    Ok(format!(
+        "mkdir -p {} && git clone -- {} {}",
+        shell_single_quote(parent),
+        shell_single_quote(url),
+        shell_single_quote(&remote)
+    ))
+}
+
 pub fn mount_dir(data_dir: &Path, project_id: &str) -> PathBuf {
     super::config::mount_point(data_dir, project_id)
 }
@@ -57,5 +73,14 @@ mod tests {
     fn remote_mkdir_quotes_the_project_path() {
         assert!(mkdir_remote_command("/srv/apps/billing").unwrap().contains("'/srv/apps/billing'"));
         assert!(mkdir_remote_command("relative").is_err());
+    }
+
+    #[test]
+    fn remote_clone_quotes_the_url_and_rejects_spaces() {
+        let command = clone_remote_command("/home/dev/projects/widgets", "https://github.com/acme/widgets.git").unwrap();
+        assert!(command.contains("git clone -- 'https://github.com/acme/widgets.git' '/home/dev/projects/widgets'"));
+        assert!(command.starts_with("mkdir -p '/home/dev/projects'"));
+        assert!(clone_remote_command("/home/dev/widgets", "https://evil.test/x && rm").is_err());
+        assert!(clone_remote_command("relative", "https://github.com/acme/widgets.git").is_err());
     }
 }

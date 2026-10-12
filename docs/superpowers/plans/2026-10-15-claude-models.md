@@ -12,7 +12,7 @@
 
 - Do not send a Claude model id to `api.x.ai` or the Grok CLI proxy.
 - Do not send Grok auth, `x-grok-*` headers, or `X-XAI-Token-Auth` to Anthropic.
-- Do not treat Grok CLI side-by-side rows (`sxs-claude-…`, `model_family: "anthropic"` in `~/.grok/models_cache.json`) as Claude models. `parse_models_cache` keeps dropping them.
+- Do not treat Grok CLI rows whose `model_family` is not `xai` as Claude models. `parse_models_cache` keeps dropping them.
 - Anthropic auth is a separate keychain account, `anthropic`, on the existing service `app.twanagent.desktop` (debug: `app.twanagent.desktop.dev`). Never store it in the `xai` account or in `secrets.json`.
 - Resolve the Anthropic key as: keychain, then `ANTHROPIC_API_KEY`. Do not fall back to the xAI key or the Grok CLI session.
 - The Grok CLI terminal (`pty.rs`, `dev_pty_open_grok`) stays Grok-only.
@@ -100,9 +100,9 @@ SSE events to handle:
 **Files:** `src-tauri/src/anthropic.rs`, `src-tauri/src/secrets.rs`, `src-tauri/src/dev/keys.rs`, `src-tauri/src/grok_cli.rs`, `src-tauri/src/lib.rs`, `src/lib/provider.ts`, `src/lib/tests/provider.test.ts`, `src/lib/tauri.ts`.
 
 - `claude_models()` returns the three rows above. Each effort has the same short labels Grok uses (`Low`, `Medium`, `High`, `Extra high`) plus `Max` for `max`.
-- `is_claude_model(id)` is true only for ids in that catalog. `claude-opus-4-8-latest` is not a match. `sxs-claude-opus-4-6` is not a match.
+- `is_claude_model(id)` is true only for ids in that catalog. `claude-opus-4-8-latest` is not a match. An id that does not start with `claude-` is not a match.
 - `provider_for(id)` returns `anthropic` for a catalog id and `xai` for everything else, including empty and `grok-*`.
-- Add `provider: String` to `DevModel` and the TS `Model` type. Grok rows from the cache and the fallback list set `provider` to `xai`. `runtime()` appends the Claude catalog after the Grok rows. The Grok cache filter test still drops the side-by-side Claude sample.
+- Add `provider: String` to `DevModel` and the TS `Model` type. Grok rows from the cache and the fallback list set `provider` to `xai`. `runtime()` appends the Claude catalog after the Grok rows. The Grok cache filter test still drops a non-xAI sample.
 - `default_model` is unchanged: still the Grok CLI default. Claude does not become the default just because a key exists.
 - Anthropic keychain uses account `anthropic`. `set` / `get` / `delete` follow the xAI helpers, including the debug-service copy, but they do not read or clear `xai_key` in `secrets.json`.
 - Commands: `dev_anthropic_key_status`, `dev_set_anthropic_key`, `dev_clear_anthropic_key`. Status is `{ saved, env }` where `env` means `ANTHROPIC_API_KEY` is non-empty.
@@ -186,6 +186,6 @@ Task 1 is safe to land alone: the picker can show Claude, but chat still uses xA
 - Prompt caching (`cache_control`) and the 1M-token context beta.
 - Claude CLI, Agent SDK, or a Claude PTY.
 - Per-chat model override. Effort is per chat today. Model stays the global `twanagent.model` preference.
-- Letting Grok CLI side-by-side Anthropic models through the proxy.
+- Letting Grok CLI cache rows from another provider through the proxy.
 - OpenAI or Gemini.
 - Editing the system prompt beyond the provider name and the removed "only Grok" line.

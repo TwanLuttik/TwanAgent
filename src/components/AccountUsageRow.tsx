@@ -45,7 +45,7 @@ const ACCOUNT_ROWS: {
     id: "minimax",
     logo: "logo.minimax",
     logoClass: "text-[#e21680]",
-    barClass: "bg-[#e21680]",
+    barClass: "bg-[#f472b6]",
     fallback: "MiniMax",
     remaining: true,
   },

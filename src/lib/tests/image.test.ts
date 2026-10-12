@@ -6,6 +6,14 @@ import {
   MAX_PROMPT_IMAGES,
   appendPromptImages,
   canSendPrompt,
+  imageBeforeCursor,
+  imageSpans,
+  imageToken,
+  insertImageToken,
+  removeImageSpan,
+  removeImageTokens,
+  stripImageTokens,
+  uniqueImageTokenLabel,
   fileToBase64,
   imageFilesFromClipboard,
   imageFilesFromDrop,
@@ -160,6 +168,60 @@ describe("withImageDataUrls", () => {
     );
     assert.equal(reads, 0);
     assert.equal(loaded[0]?.images?.[0]?.dataUrl, "data:image/jpeg;base64,cached");
+  });
+});
+
+describe("image tokens", () => {
+  it("inserts [name] at the caret and spaces it off neighboring words", () => {
+    const next = insertImageToken("look at this please", 12, 12, "shot.png");
+    assert.equal(next.token, "[shot.png]");
+    assert.equal(next.draft, "look at this [shot.png] please");
+    assert.equal(next.cursor, 12 + " [shot.png]".length);
+  });
+
+  it("replaces a selection and does not double the surrounding space", () => {
+    const next = insertImageToken("see  this", 4, 5, "/Users/me/Desktop/diagram.webp");
+    assert.equal(next.draft, "see [diagram.webp] this");
+    assert.equal(next.cursor, "see [diagram.webp]".length);
+  });
+
+  it("numbers a second image that shares the filename", () => {
+    assert.equal(uniqueImageTokenLabel("shot.png", []), "shot.png");
+    assert.equal(uniqueImageTokenLabel("shot.png", ["shot.png"]), "shot-2.png");
+    assert.equal(uniqueImageTokenLabel("shot.png", ["Shot.png", "shot-2.png"]), "shot-3.png");
+    assert.equal(imageToken("image.png"), "[image.png]");
+  });
+
+  it("finds only tokens that belong to an attached image", () => {
+    const other = { ...shot, id: "img-2", name: "other.png" };
+    const spans = imageSpans("see [shot.png] and [notes.md] plus [other.png]", [shot, other]);
+    assert.deepEqual(
+      spans.map((span) => span.label),
+      ["shot.png", "other.png"],
+    );
+    assert.equal(spans[0]?.id, "img-1");
+  });
+
+  it("strips image markers from the text the model reads", () => {
+    assert.equal(
+      stripImageTokens("what is wrong in [shot.png] here", [shot]),
+      "what is wrong in here",
+    );
+    assert.equal(stripImageTokens("keep [shot.png] typed", []), "keep [shot.png] typed");
+    assert.equal(stripImageTokens("only [shot.png]", [shot]), "only");
+  });
+
+  it("deletes the whole token from anywhere inside it", () => {
+    const draft = "see [shot.png]";
+    const end = imageBeforeCursor(draft, draft.length, draft.length, [shot]);
+    assert.ok(end);
+    assert.equal(removeImageSpan(draft, end!).text, "see ");
+    const inside = draft.indexOf("shot") + 2;
+    const mid = imageBeforeCursor(draft, inside, inside, [shot]);
+    assert.equal(mid?.label, "shot.png");
+    assert.equal(imageBeforeCursor(draft, draft.indexOf("["), draft.indexOf("["), [shot]), null);
+    assert.equal(imageBeforeCursor(draft, 0, draft.length, [shot]), null);
+    assert.equal(removeImageTokens("keep [shot.png] and [other.png]", shot), "keep  and [other.png]");
   });
 });
 

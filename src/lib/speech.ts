@@ -160,14 +160,25 @@ export function micAudioConstraints(deviceId: string): MediaTrackConstraints {
 }
 
 export function micLevel(samples: ArrayLike<number>): number {
+  return Math.max(0, Math.min(1, rms(samples) * 4));
+}
+
+/** Settings meter. Speech RMS is small, so quiet voice still fills a visible stretch of the bar. */
+export function meterLevel(samples: ArrayLike<number>): number {
+  const level = rms(samples);
+  if (!Number.isFinite(level) || level <= 0.004) return 0;
+  const shaped = Math.pow(Math.min(1, level / 0.045), 0.55);
+  return Math.max(0, Math.min(1, shaped));
+}
+
+function rms(samples: ArrayLike<number>): number {
   if (!samples.length) return 0;
   let sum = 0;
   for (let i = 0; i < samples.length; i += 1) {
     const sample = samples[i] ?? 0;
     sum += sample * sample;
   }
-  const rms = Math.sqrt(sum / samples.length);
-  return Math.max(0, Math.min(1, rms * 4));
+  return Math.sqrt(sum / samples.length);
 }
 
 const VOICE_BARS = 12;

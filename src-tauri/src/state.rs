@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{Manager, Runtime};
 
@@ -19,8 +19,17 @@ pub struct AppState {
     pub speech: SpeechEngine,
 }
 
+static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// The data directory set when the app starts. Empty until then, including in tests
+/// that never load `AppState`. Saved provider keys are read from here.
+pub fn app_data_dir() -> PathBuf {
+    APP_DATA_DIR.get().cloned().unwrap_or_default()
+}
+
 impl AppState {
     pub fn load(data_dir: PathBuf) -> Self {
+        let _ = APP_DATA_DIR.set(data_dir.clone());
         let location = crate::dev::project_location::prepare(&data_dir);
         let opened = OpenedRoots::load(&data_dir, location.root.clone());
         if let Ok(conn) = appdb::open(&data_dir) {

@@ -97,12 +97,27 @@ pub fn validate_user(raw: &str) -> Result<String> {
 
 pub fn validate_host(raw: &str) -> Result<String> {
     let host = raw.trim().to_string();
-    if host.is_empty()
-        || host.chars().any(|c| c.is_whitespace() || c.is_control() || c == '/' || c == '@')
+    // `<machine>@orb` is the OrbStack SSH login. `~/.orbstack/ssh/config` resolves it.
+    // A raw address for that VM is on a bridge this Mac cannot route to.
+    let orb = host.strip_suffix("@orb").map(str::trim).filter(|name| !name.is_empty());
+    let check = orb.unwrap_or(host.as_str());
+    if check.is_empty()
+        || check.chars().any(|c| c.is_whitespace() || c.is_control() || c == '/' || c == '@')
     {
         return Err(Error::Other("SSH host is invalid".into()));
     }
+    if orb.is_some() {
+        return Ok(format!("{check}@orb"));
+    }
     Ok(host)
+}
+
+/// `user` and `host` for the system `ssh` command. OrbStack wants `user@machine@orb`.
+pub fn ssh_login(user: &str, host: &str) -> (String, String) {
+    if let Some(machine) = host.strip_suffix("@orb") {
+        return (format!("{user}@{machine}"), "orb".into());
+    }
+    (user.to_string(), host.to_string())
 }
 
 pub fn validate_port(port: u16) -> Result<u16> {
@@ -476,6 +491,14 @@ mod tests {
         assert!(validate_host("").is_err());
         assert!(validate_host("bad host").is_err());
         assert!(validate_host("user@host").is_err());
+        assert_eq!(validate_host("devbox@orb").unwrap(), "devbox@orb");
+        assert!(validate_host("@orb").is_err());
+        assert!(validate_host("bad name@orb").is_err());
+        assert_eq!(
+            ssh_login("dev", "devbox@orb"),
+            ("dev@devbox".into(), "orb".into())
+        );
+        assert_eq!(ssh_login("dev", "10.0.0.2"), ("dev".into(), "10.0.0.2".into()));
         assert!(validate_port(0).is_err());
         assert_eq!(validate_port(2222).unwrap(), 2222);
         assert!(validate_remote_path("relative").is_err());

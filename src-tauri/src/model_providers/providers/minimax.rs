@@ -8,17 +8,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use super::anthropic::to_messages_body;
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
 
 pub const PROVIDER_MINIMAX: &str = "minimax";
 pub const DEFAULT_MODEL: &str = "MiniMax-M3";
 pub const SIGN_IN_ERROR: &str =
     "MiniMax isn’t signed in. Run mmx auth login, or add a MiniMax API key in Settings.";
-pub const KEY_REJECTED: &str = "MiniMax rejected the API key.";
+pub const KEY_REJECTED: &str = twanagent_service::minimax::KEY_REJECTED;
 
 const OAUTH_CLIENT_ID: &str = "659cf4c1-615c-45f6-a5f6-4bf15eb476e5";
 const REFRESH_BUFFER_MS: i64 = 5 * 60 * 1000;
@@ -126,22 +126,8 @@ pub fn minimax_model(id: &str) -> Option<&'static (&'static str, &'static str, u
 }
 
 /// A MiniMax text model. The prefix is case-sensitive, matching the API ids.
-/// `sxs-MiniMax-…` stays on xAI, same as the Claude tutor ids.
 pub fn is_minimax_model(id: &str) -> bool {
-    let id = id.trim();
-    if id.starts_with("sxs-") {
-        return false;
-    }
-    if minimax_model(id).is_some() {
-        return true;
-    }
-    let Some(rest) = id.strip_prefix("MiniMax-") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+    twanagent_service::minimax::is_minimax_model(id)
 }
 
 pub fn max_tokens_for(id: &str) -> u32 {
@@ -162,19 +148,11 @@ pub fn context_window_for(id: &str) -> Option<u64> {
 
 /// `{base}/anthropic/v1/messages`. Empty base uses the global host.
 pub fn messages_url(base_url: &str) -> String {
-    let base = base_url.trim().trim_end_matches('/');
-    let base = if base.is_empty() { REGIONS[0].1 } else { base };
-    format!("{base}/anthropic/v1/messages")
+    twanagent_service::minimax::messages_url(base_url)
 }
 
 pub fn http_error_message(status: u16, body: &str) -> String {
-    if status == 401 || status == 403 {
-        return KEY_REJECTED.into();
-    }
-    format!(
-        "MiniMax error {status}: {}",
-        body.chars().take(400).collect::<String>()
-    )
+    twanagent_service::minimax::http_error_message(status, body)
 }
 
 /// OpenAI-shaped messages become the Messages body `mmx text chat` sends.
@@ -184,19 +162,7 @@ pub fn to_minimax_body(
     model: &str,
     tools: &serde_json::Value,
 ) -> serde_json::Value {
-    let mut body = to_messages_body(messages, model, None, tools);
-    body["model"] = serde_json::Value::String(model.trim().to_string());
-    body["max_tokens"] = serde_json::Value::from(max_tokens_for(model));
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("output_config");
-        // `to_messages_body` only adds thinking for Claude ids. M3 sends adaptive thinking.
-        if is_minimax_model(model) {
-            obj.insert("thinking".into(), serde_json::json!({ "type": "adaptive" }));
-        } else {
-            obj.remove("thinking");
-        }
-    }
-    body
+    twanagent_service::minimax::to_minimax_body(messages, model, tools, max_tokens_for(model))
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -396,7 +362,11 @@ fn api_base(region: &str, base_url: Option<&str>, resource_url: Option<&str>) ->
 /// Saved key, then `MINIMAX_API_KEY`, then the `mmx` OAuth login.
 /// An OAuth token near expiry is refreshed and written back, matching the CLI.
 pub async fn resolve_minimax_auth_fresh() -> Option<MinimaxAuth> {
-    if let Some(key) = crate::secrets::resolve_minimax_key_on_disk() {
+    resolve_minimax_auth_fresh_in(&crate::state::app_data_dir()).await
+}
+
+pub async fn resolve_minimax_auth_fresh_in(data_dir: &Path) -> Option<MinimaxAuth> {
+    if let Some(key) = crate::secrets::resolve_minimax_key_on_disk(data_dir) {
         let base = mmx_home()
             .and_then(|home| read_config(&home))
             .map(|config| api_base(&config.region, config.base_url.as_deref(), None))
@@ -435,15 +405,26 @@ pub async fn resolve_minimax_auth_fresh() -> Option<MinimaxAuth> {
 }
 
 /// Login state for settings. Does not refresh and does not return the token.
+/// `mmx --version` is a process spawn. A detected version is reused; a miss is tried again.
+fn cached_mmx_version(bin: Option<&Path>) -> Option<String> {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    if let Some(found) = VERSION.get() {
+        return Some(found.clone());
+    }
+    let version = bin.and_then(mmx_version)?;
+    let _ = VERSION.set(version.clone());
+    Some(version)
+}
+
 pub fn minimax_cli_info() -> MinimaxCliInfo {
     let bin = mmx_bin();
-    let version = bin.as_ref().and_then(|path| mmx_version(path));
+    let version = cached_mmx_version(bin.as_deref());
     let config = mmx_home().and_then(|home| read_config(&home));
     let logged_in = config
         .as_ref()
         .map(|row| row.api_key.is_some() || row.oauth.is_some())
         .unwrap_or(false)
-        || crate::secrets::resolve_minimax_key_on_disk().is_some();
+        || crate::secrets::resolve_minimax_key_on_disk(&crate::state::app_data_dir()).is_some();
     MinimaxCliInfo {
         installed: bin.is_some(),
         path: bin.map(|path| path.display().to_string()).unwrap_or_default(),
@@ -904,7 +885,6 @@ mod tests {
         assert!(is_minimax_model("MiniMax-M3.1-Flash-Preview"));
         assert!(is_minimax_model("MiniMax-Future-1"));
         assert!(!is_minimax_model("minimax-m3"));
-        assert!(!is_minimax_model("sxs-MiniMax-M3"));
         assert!(!is_minimax_model("claude-sonnet-4-6"));
         assert!(!is_minimax_model("grok-4.6"));
         assert!(!is_minimax_model(""));

@@ -6,7 +6,7 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
-import { visibleConversations, visibleJourneys } from "../../lib/all-projects";
+import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { projectGitKey, projectGitLabel, type ProjectGit } from "../../lib/project-git";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
@@ -20,9 +20,12 @@ import { useMain, useSidebar } from "./context";
 
 export function AppSidebar() {
   const {
+    closeServers,
     closeSettings,
     onSidebarResizeStart,
     openFolder,
+    openServers,
+    showServers,
     setSidebarWidth,
     settingsTab,
     setSettingsTab,
@@ -64,15 +67,29 @@ export function AppSidebar() {
         <WindowButtons />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         {!showSettings ? (
-          <button
-            type="button"
-            aria-label="Open project"
-            title="Open project"
-            onClick={openFolder}
-            className="mr-2 flex size-7 items-center justify-center rounded-[6px] text-ink hover:bg-wash"
-          >
-            <Symbol name="plus" className="size-3.5" />
-          </button>
+          <>
+            <button
+              type="button"
+              aria-label="Servers"
+              aria-pressed={showServers}
+              title="Servers"
+              onClick={showServers ? closeServers : openServers}
+              className={`flex size-7 items-center justify-center rounded-[6px] hover:bg-wash ${
+                showServers ? "bg-wash-strong text-ink" : "text-ink"
+              }`}
+            >
+              <Symbol name="server.rack" className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              aria-label="Open project"
+              title="Open project"
+              onClick={openFolder}
+              className="mr-2 flex size-7 items-center justify-center rounded-[6px] text-ink hover:bg-wash"
+            >
+              <Symbol name="plus" className="size-3.5" />
+            </button>
+          </>
         ) : null}
       </div>
       {showSettings ? <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} /> : null}
@@ -184,6 +201,7 @@ function ProjectsNav({
     deleteProjectFromSidebar,
     legacyProjectsRoot,
     messages,
+    openingId,
     openProjectFromSidebar,
     openProjectSettings,
     projectSettings,
@@ -261,9 +279,10 @@ function ProjectsNav({
         rows.map(async (row: { path: string; id: string; updated: string }) => {
           const key = `${row.path}\t${row.id}`;
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
+          const badgeKey = sidebarTodoKey(row.path, row.id);
           if (isOpen) {
             const badge = todoBadge(todosInLatestTurn(messagesRef.current as ChatMessage[]));
-            if (badge) found[row.id] = badge;
+            if (badge) found[badgeKey] = badge;
             return;
           }
           if (row.id in runningRef.current) return;
@@ -271,7 +290,7 @@ function ProjectsNav({
           try {
             const full = await api.getConversation(row.path, row.id);
             const badge = todoBadge(todosInLatestTurn((full.messages as ChatMessage[]) ?? []));
-            if (badge) found[row.id] = badge;
+            if (badge) found[badgeKey] = badge;
           } catch {
             /* a chat that cannot be read just has no todo chip */
           }
@@ -282,10 +301,11 @@ function ProjectsNav({
         const next: Record<string, TodoBadge> = {};
         for (const row of rows) {
           const key = `${row.path}\t${row.id}`;
+          const badgeKey = sidebarTodoKey(row.path, row.id);
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
-          if (row.id in found) next[row.id] = found[row.id];
-          else if (prev[row.id] && !isOpen && previous.get(key) === row.updated && !(row.id in runningRef.current)) {
-            next[row.id] = prev[row.id];
+          if (badgeKey in found) next[badgeKey] = found[badgeKey];
+          else if (prev[badgeKey] && !isOpen && previous.get(key) === row.updated && !(row.id in runningRef.current)) {
+            next[badgeKey] = prev[badgeKey];
           }
         }
         const prevIds = Object.keys(prev);
@@ -336,6 +356,7 @@ function ProjectsNav({
               dimmed={fullPage}
               archivedView={showArchived}
               todoByChat={todoByChat}
+              loadingId={isSameProject(group.path, workspace) ? openingId : ""}
             />
           )}
         />
@@ -393,6 +414,7 @@ function ProjectConversations({
   dimmed,
   archivedView,
   todoByChat,
+  loadingId = "",
 }: {
   conversations: ConversationSummary[];
   journeys: JourneySummary[];
@@ -400,6 +422,7 @@ function ProjectConversations({
   dimmed: boolean;
   archivedView?: boolean;
   todoByChat: Record<string, TodoBadge>;
+  loadingId?: string;
 }) {
   const {
     activeId,
@@ -410,7 +433,6 @@ function ProjectConversations({
     openChat,
     openJourneyKnowledge,
     openSidebarChat,
-    openingId,
     removeChat,
     renameJourney,
     reorderChats,
@@ -487,9 +509,9 @@ function ProjectConversations({
       const live = runningTurns[id]?.todo;
       if (live) return { done: live.done, total: live.total, finished: false };
       if (id in runningTurns) return null;
-      return todoByChat[id] ?? null;
+      return todoByChat[sidebarTodoKey(path || "", id)] ?? null;
     },
-    [runningTurns, todoByChat],
+    [runningTurns, todoByChat, path],
   );
 
   return (
@@ -499,7 +521,7 @@ function ProjectConversations({
       activeId={activeId}
       runningIds={runningTurns}
       unseenIds={unseenFinished}
-      loadingId={openingId}
+      loadingId={loadingId}
       runningPreview={runningPreview}
       todoFor={todoFor}
       showSettings={dimmed}

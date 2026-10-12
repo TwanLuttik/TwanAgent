@@ -11,6 +11,7 @@ import {
   encodeWav,
   audioInputDevices,
   micAudioConstraints,
+  meterLevel,
   micLevel,
   voiceBars,
   preferredRecorderMime,
@@ -115,6 +116,14 @@ describe("recorder mime", () => {
     assert.equal(micLevel([]), 0);
     assert.equal(micLevel(new Float32Array(128)), 0);
     assert.ok(micLevel(new Float32Array(128).fill(0.25)) > 0.9);
+    assert.equal(meterLevel([]), 0);
+    assert.equal(meterLevel(new Float32Array(128).fill(0.002)), 0);
+    const quietSpeech = meterLevel(new Float32Array(128).fill(0.012));
+    const normalSpeech = meterLevel(new Float32Array(128).fill(0.03));
+    assert.ok(quietSpeech > 0.4);
+    assert.ok(normalSpeech > quietSpeech);
+    assert.ok(normalSpeech < 1);
+    assert.equal(meterLevel(new Float32Array(128).fill(0.2)), 1);
     const quiet = voiceBars(0);
     const loud = voiceBars(1);
     assert.equal(quiet.length, 12);

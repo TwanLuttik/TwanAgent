@@ -63,7 +63,9 @@ export function AllProjectsList({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
-    function onDoc() {
+    function onDoc(ev: MouseEvent) {
+      const target = ev.target;
+      if (target instanceof Element && target.closest("[role='menu']")) return;
       setMenu(null);
       setGitMenu(null);
     }
@@ -74,10 +76,10 @@ export function AllProjectsList({
         setPendingDelete(null);
       }
     }
-    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("mousedown", onDoc, true);
     window.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("mousedown", onDoc, true);
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -139,7 +141,6 @@ export function AllProjectsList({
               <button
                 type="button"
                 onClick={() => onOpenProject(group.path)}
-                title={group.path}
                 className={`flex min-w-0 flex-1 items-center gap-1.5 py-[6px] pr-1 text-left text-[12px] font-medium ${
                   current ? "text-ink" : "text-muted"
                 }`}
@@ -357,15 +358,13 @@ export function ProjectMarks({
     port: number;
     remotePath: string;
     online: boolean;
+    providers?: string[];
   };
 }) {
   const anchor = useRef<HTMLSpanElement>(null);
-  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+  const [box, setBox] = useState<{ top: number; right: number } | null>(null);
   if (!remote && !server) return null;
   const offline = server?.online === false;
-  const address = server
-    ? `${server.user}@${server.host}${server.port === 22 ? "" : `:${server.port}`}`
-    : "";
   return (
     <span
       ref={anchor}
@@ -373,45 +372,41 @@ export function ProjectMarks({
       onMouseEnter={() => {
         const rect = anchor.current?.getBoundingClientRect();
         if (!rect) return;
-        setBox({ top: rect.bottom + 6, left: Math.max(8, rect.right - 220) });
+        // Prefer the card's right edge near the icon, but never past the window.
+        // The card sizes to its text, so the right edge is what stays put.
+        const margin = 8;
+        const right = Math.min(window.innerWidth - margin, Math.max(rect.right + 8, margin));
+        setBox({ top: rect.bottom + 6, right });
       }}
       onMouseLeave={() => setBox(null)}
     >
-      <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Server offline" : "On a server"}>
-        <Symbol name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"} className="size-4" />
+      <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Cloud project offline" : "Cloud project"}>
+        <Symbol name="cloud.fill" className="size-3.5" />
       </span>
       {box
         ? createPortal(
             <span
               role="tooltip"
-              className="pointer-events-none fixed z-50 w-[220px] overflow-hidden rounded-xl border border-line bg-canvas text-left font-normal shadow-card"
-              style={{ top: box.top, left: box.left }}
+              className="pointer-events-none fixed z-50 w-max max-w-[min(320px,calc(100vw-16px))] rounded-lg border border-line/25 bg-canvas text-left font-normal shadow-card"
+              style={{ top: box.top, right: window.innerWidth - box.right }}
             >
-              <span className={`flex items-center gap-2 px-3 py-2 ${offline ? "bg-err/10" : "bg-[#3b82f6]/10"}`}>
-                <Symbol
-                  name={offline ? "exclamationmark.triangle.fill" : "cloud.fill"}
-                  className={`size-4 ${offline ? "text-err" : "text-[#3b82f6]"}`}
-                />
+              <span className="flex items-center gap-2 border-b border-line/20 px-3 py-2.5">
+                <Symbol name="cloud.fill" className={`size-3.5 shrink-0 ${offline ? "text-err" : "text-[#3b82f6]"}`} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-semibold text-ink">{server?.machineName ?? "Server"}</span>
-                  <span className={`block text-[11px] font-medium ${offline ? "text-err" : "text-[#3b82f6]"}`}>
-                    {offline ? "Offline" : "Reachable"}
+                  <span className="block truncate text-[13px] font-medium text-ink">Cloud project</span>
+                  <span className={`block truncate text-[11px] ${offline ? "text-err" : "text-muted"}`}>
+                    {offline ? "This machine is not answering" : "Files and chats stay on this machine"}
                   </span>
                 </span>
               </span>
               {server ? (
-                <span className="grid gap-1.5 px-3 py-2.5">
-                  <span className="block">
-                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Login</span>
-                    <span className="block truncate font-mono text-[11px] text-ink">{address}</span>
-                  </span>
-                  <span className="block">
-                    <span className="block text-[10px] font-semibold tracking-wide text-muted uppercase">Folder</span>
-                    <span className="block truncate font-mono text-[11px] text-ink">{server.remotePath}</span>
-                  </span>
+                <span className="grid gap-2 px-3 py-2.5">
+                  <CloudFact label="Runs on" value={server.host} />
+                  <CloudFact label="Project folder" value={server.remotePath} />
+                  <CloudFact label="Models" value={modelKeysLabel(server.providers)} />
                 </span>
               ) : (
-                <span className="block px-3 py-2 text-[12px] text-muted">On a server</span>
+                <span className="block px-3 py-2.5 text-[12px] text-muted">Checking this machine…</span>
               )}
             </span>,
             document.body,
@@ -419,6 +414,27 @@ export function ProjectMarks({
         : null}
     </span>
   );
+}
+
+function CloudFact({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-[11px] text-muted">{label}</span>
+      <span className="min-w-0 text-right text-[12px] leading-snug break-all text-ink">{value}</span>
+    </span>
+  );
+}
+
+const CLOUD_MODELS: { id: string; label: string }[] = [
+  { id: "xai", label: "Grok" },
+  { id: "anthropic", label: "Claude" },
+  { id: "minimax", label: "MiniMax" },
+];
+
+function modelKeysLabel(providers: string[] | undefined): string {
+  if (!providers) return "Checking…";
+  const names = CLOUD_MODELS.filter((row) => providers.includes(row.id)).map((row) => row.label);
+  return names.length ? names.join(", ") : "No keys copied";
 }
 
 export function ProjectContextMenu({

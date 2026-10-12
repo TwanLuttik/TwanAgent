@@ -21,6 +21,7 @@ export type MainModel = {
   closeFileTab: MainFn;
   closePendingEdit: MainFn;
   closeProjectSettings: MainFn;
+  closeServers: MainFn;
   closeSettings: MainFn;
   closeUsage: MainFn;
   collapsedProjects: any;
@@ -59,6 +60,7 @@ export type MainModel = {
   openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
   openProjectSettings: MainFn;
+  openServers: MainFn;
   openSettings: MainFn;
   openSidebarChat: MainFn;
   openUsage: MainFn;
@@ -93,6 +95,8 @@ export type MainModel = {
   recents: any;
   reloadRuntime: MainFn;
   remoteWorkspace: any;
+  /** True while a cloud project is still opening its server. Send stays off. */
+  cloudConnecting: boolean;
   archiveChat: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;
@@ -126,6 +130,7 @@ export type MainModel = {
   setSidebarWidth: MainFn;
   bumpFiles: () => void;
   showLanding: any;
+  showServers: any;
   showSettings: any;
   showUsage: any;
   sidebarDragging: any;

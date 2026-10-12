@@ -1,6 +1,6 @@
 [package]
 name = "twanagent"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 edition = "2021"
 license = "MIT"
 description = "TwanAgent desktop"
@@ -21,12 +21,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+twanagent-service = { path = "service" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3"
+tokio-tungstenite = "0.26"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 keyring = "3"
+security-framework = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

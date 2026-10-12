@@ -87,6 +87,11 @@ fn walk_tree(root: &Path, dir: &Path, rows: &mut Vec<String>) -> Result<()> {
 pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<DevEntry>> {
     let root = resolve_in_workspace(workspace, "")?;
     let dir = resolve_in_workspace(workspace, rel)?;
+    // A remembered folder can be deleted or renamed between sessions. That is an
+    // empty listing, not a file. A real file still has to say so.
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
     if !dir.is_dir() {
         return Err(Error::Other("not a folder".into()));
     }
@@ -560,5 +565,14 @@ mod tests {
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["b", "a.txt"]
         );
+    }
+
+    #[test]
+    fn list_dir_treats_a_missing_folder_as_empty_and_a_file_as_an_error() {
+        let dir = temp_ws();
+        fs::write(dir.path().join("readme.txt"), "x").unwrap();
+        assert!(list_dir(dir.path(), "src/gone").unwrap().is_empty());
+        let err = list_dir(dir.path(), "readme.txt").unwrap_err();
+        assert!(err.to_string().contains("not a folder"));
     }
 }

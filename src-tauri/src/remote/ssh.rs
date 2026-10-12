@@ -111,6 +111,8 @@ pub struct ExecRequest {
 pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
+    /// Stdout before it was turned into text. A hosted frame is binary, so the string form drops bytes.
+    pub stdout_bytes: Vec<u8>,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
 }
@@ -119,6 +121,14 @@ pub struct ExecResult {
 pub trait SshSession: Send + Sync {
     fn exec_channel(&self, request: &ExecRequest) -> Result<ExecResult>;
     fn alive(&self) -> bool;
+    /// Run a command whose stdout arrives as it is written. Stderr is kept until the end.
+    fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+        let result = self.exec_channel(request)?;
+        if !result.stdout.is_empty() {
+            on_stdout(result.stdout.as_bytes());
+        }
+        Ok(result)
+    }
 }
 
 pub trait SshConnector: Send + Sync {
@@ -286,6 +296,7 @@ mod tests {
             Ok(ExecResult {
                 stdout: format!("{}:{}", self.id, request.command),
                 stderr: String::new(),
+                stdout_bytes: Vec::new(),
                 exit_code: Some(0),
                 timed_out: false,
             })

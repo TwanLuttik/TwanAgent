@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TwanAgent",
-  "version": "1.0.0-beta.1",
+  "version": "1.0.0-beta.2",
   "identifier": "app.twanagent.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,7 +32,8 @@
         "img-src": "'self' asset: http://asset.localhost blob: data:",
         "media-src": "'self' asset: http://asset.localhost blob: data:",
         "style-src": "'self' 'unsafe-inline'",
-        "script-src": "'self' 'unsafe-eval' 'unsafe-inline'"
+        "script-src": "'self' 'unsafe-eval' 'unsafe-inline' blob:",
+        "worker-src": "'self' blob:"
       },
       "assetProtocol": {
         "enable": true,

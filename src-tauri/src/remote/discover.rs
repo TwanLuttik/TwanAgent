@@ -102,8 +102,10 @@ pub async fn scan_ssh_stream(tx: mpsc::UnboundedSender<LanHost>) -> Result<()> {
         }
     }
     // The local network is the scan. Saved SSH config hosts are a fallback, not the result.
+    // OrbStack VMs sit on 192.168.139.0/24, which is not a Mac interface, so the LAN scan misses them.
     probe_many(lan, &tx).await;
     let mut saved = tailscale_hosts();
+    saved.extend(orbstack_hosts());
     saved.extend(gateway_hosts());
     saved.extend(known_ssh_hosts());
     saved.retain(|(host, _)| seen.insert(host.to_ascii_lowercase()));
@@ -151,6 +153,10 @@ fn resolve_ssh(host: &str) -> Option<SocketAddr> {
     let host = host.trim();
     if host.is_empty() || host.contains([' ', '/']) {
         return None;
+    }
+    // `<machine>@orb` is not an IP. Port 22 on this Mac is the OrbStack proxy.
+    if host.ends_with("@orb") {
+        return Some(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 22)));
     }
     let with_port = if host.contains(':') {
         host.to_string()
@@ -204,6 +210,36 @@ pub fn parse_ssh_config_hosts(text: &str) -> Vec<(String, String)> {
                 out.push((host, label));
             }
         }
+    }
+    out
+}
+
+/// Running OrbStack Linux machines. `orb list` prints `name status distro version arch`.
+/// The address is `<machine>@orb`, which `~/.orbstack/ssh/config` turns into a working SSH login.
+/// A bare LAN address for the same VM is not reachable from this Mac.
+pub fn orbstack_hosts() -> Vec<(String, String)> {
+    let Ok(out) = std::process::Command::new("orb").arg("list").output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_orb_list(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub fn parse_orb_list(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        let Some(status) = parts.next() else { continue };
+        if !status.eq_ignore_ascii_case("running") {
+            continue;
+        }
+        if name.eq_ignore_ascii_case("name") || name.contains('@') || name.contains(' ') {
+            continue;
+        }
+        out.push((format!("{name}@orb"), format!("{name} · OrbStack")));
     }
     out
 }
@@ -355,6 +391,22 @@ mod tests {
             vec![
                 ("10.0.0.40".into(), "houseserver".into()),
                 ("server.local".into(), "other".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn orb_list_keeps_running_machines() {
+        let rows = parse_orb_list(
+            "stopped-box            stopped  ubuntu  noble     arm64\n\
+devbox                  running  ubuntu  noble     arm64  970.3 MB  192.168.139.2\n\
+second-box              running  ubuntu  resolute  arm64\n",
+        );
+        assert_eq!(
+            rows,
+            vec![
+                ("devbox@orb".into(), "devbox · OrbStack".into()),
+                ("second-box@orb".into(), "second-box · OrbStack".into()),
             ]
         );
     }
