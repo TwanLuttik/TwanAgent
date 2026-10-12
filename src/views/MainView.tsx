@@ -2,59 +2,53 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
-import { insertCompactionEvent } from "../lib/compact";
 import { cloudSendWaiting } from "../lib/hosted";
-import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
-import { detectMcp, setMcpEnabledInToml, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
-import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
+import { type ChatUsage } from "../lib/context";
+import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
+import { setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
 import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
-import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
+import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
-import { applyLiveProjectChats, isArchivedConversation, isSameProject, mergeLoadedProjectGroups, placeProjectChats, sameJourneyList, sameSidebarConversationList, sidebarProjects, stampProjectServer, type ProjectChatGroup } from "../lib/all-projects";
+import { isSameProject } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
-  loadCollapsedProjects,
-  loadContextWindow,
   loadComposerDrafts,
   loadComposerPastes,
   saveComposerPastes,
-  loadConversation,
   loadEffort,
-  loadModel,
   loadPermission,
-  loadRecentWorkspaces,
   loadSidebarWidth,
   loadWorkspace,
-  pushRecentWorkspace,
-  rewriteStoredProjectPaths,
   saveComposerDraft,
-  saveConversation,
   saveSidebarWidth,
   saveWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
-import { chatHasRunningTurn, clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { chatHasRunningTurn, draftForChat, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary } from "../lib/tauri";
 import { useApp } from "../state/app-state";
 import { emptyGrokPlan, planModeEngaged, type GrokPlan, type PlanDecision, type PlanPrompt } from "../lib/plan";
-import { emptySubagentDock, type SubagentDockState, type SubagentRecord } from "../lib/subagent";
-import { bindTurn } from "./main/useTurn";
-import { useLibrary, type RunTurn } from "./main/useLibrary";
+import type { SubagentDockState, SubagentRecord } from "../lib/subagent";
+import { bindTurn } from "../hooks/useTurn";
+import { useLibrary, type RunTurn } from "../hooks/useLibrary";
+import { useCapabilities } from "../hooks/useCapabilities";
+import { useChatSession, useLiveRef } from "../hooks/useChatSession";
+import { useProjectIndex } from "../hooks/useProjectIndex";
 import type { MainModel, SidebarSlice } from "./main/context";
 import { MainProvider } from "./main/context";
 import { MainShell } from "./main/MainShell";
-import { useOverlays } from "./main/useOverlays";
-import { useRuntime } from "./main/useRuntime";
-import { useSpeech } from "./main/useSpeech";
+import { useOverlays } from "../hooks/useOverlays";
+import { useRuntime } from "../hooks/useRuntime";
+import { useSpeech } from "../hooks/useSpeech";
 
 export function MainView() {
   const { setFlash } = useApp();
@@ -128,12 +122,9 @@ export function MainView() {
   const [subagents, setSubagents] = useState<SubagentRecord[]>([]);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
   const [mcpServers, setMcpServers] = useState<DetectedMcpServer[]>([]);
-  const [mcpBusy, setMcpBusy] = useState<string | null>(null);
   const [skills, setSkills] = useState<DetectedSkill[]>([]);
-  const [skillBusy, setSkillBusy] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
-  const [recents, setRecents] = useState(loadRecentWorkspaces);
   const {
     showSettings,
     setShowSettings,
@@ -161,13 +152,7 @@ export function MainView() {
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
-  const [allProjectGroups, setAllProjectGroups] = useState<ProjectChatGroup[]>([]);
-  const [collapsedProjects, setCollapsedProjects] = useState(loadCollapsedProjects);
-  const [projectsRoot, setProjectsRoot] = useState("");
-  const [legacyProjectsRoot, setLegacyProjectsRoot] = useState("");
   const projectsRootRef = useRef("");
-  projectsRootRef.current = projectsRoot;
-  const [pathsReady, setPathsReady] = useState(false);
   const [projectMenu, setProjectMenu] = useState<{ x: number; y: number; path: string; name: string } | null>(
     null,
   );
@@ -178,44 +163,31 @@ export function MainView() {
   const turnsRef = useRef(new Map<string, AbortController>());
   const runningWsRef = useRef("");
   const runningIdRef = useRef("");
-  const permissionRef = useRef(permission);
-  permissionRef.current = permission;
-  const modelRef = useRef(model);
-  const effortRef = useRef(effort);
-  const contextWindowRef = useRef(contextWindow);
-  modelRef.current = model;
-  effortRef.current = effort;
-  contextWindowRef.current = contextWindow;
-  const activeIdRef = useRef(activeId);
-  activeIdRef.current = activeId;
+  const permissionRef = useLiveRef(permission);
+  const modelRef = useLiveRef(model);
+  const effortRef = useLiveRef(effort);
+  const contextWindowRef = useLiveRef(contextWindow);
+  const activeIdRef = useLiveRef(activeId);
   const viewingChatRef = useRef(true);
   viewingChatRef.current =
     editor.focus === "chat" && !showSettings && !showUsage && !showServers && !projectSettings;
   runningIdRef.current = runningId;
-  const pendingRef = useRef(pendingByChat);
-  pendingRef.current = pendingByChat;
+  const pendingRef = useLiveRef(pendingByChat);
   const editingRef = useRef<PendingEdit | null>(null);
   const busyRef = useRef(false);
-  const mcpServersRef = useRef(mcpServers);
-  mcpServersRef.current = mcpServers;
-  const skillsRef = useRef(skills);
-  skillsRef.current = skills;
+  const mcpServersRef = useLiveRef(mcpServers);
+  const skillsRef = useLiveRef(skills);
   const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
   const [remoteKnown, setRemoteKnown] = useState(false);
   const [linkReady, setLinkReady] = useState(false);
   const hostedChats = Boolean(remoteWorkspace?.paired && linkReady);
-  const remoteRef = useRef<RemoteWorkspace | null>(null);
-  remoteRef.current = remoteWorkspace;
+  const remoteRef = useLiveRef(remoteWorkspace);
   /** The project `remoteWorkspace` was loaded for. Empty until that lookup returns. */
   const remoteForRef = useRef("");
-  const remoteKnownRef = useRef(false);
-  remoteKnownRef.current = remoteKnown;
-  const linkReadyRef = useRef(false);
-  linkReadyRef.current = linkReady;
-  const sidebarSyncRef = useRef({ workspace, conversations, journeys });
-  sidebarSyncRef.current = { workspace, conversations, journeys };
-  const conversationsRef = useRef(conversations);
-  conversationsRef.current = conversations;
+  const remoteKnownRef = useLiveRef(remoteKnown);
+  const linkReadyRef = useLiveRef(linkReady);
+  const sidebarSyncRef = useLiveRef({ workspace, conversations, journeys });
+  const conversationsRef = useLiveRef(conversations);
   const sidebarLoadedForRef = useRef("");
   const deletedIdsRef = useRef(new Set<string>());
   const turnMessagesRef = useRef<ChatMessage[] | null>(null);
@@ -272,168 +244,65 @@ export function MainView() {
   const ready = Boolean(runtime?.ready);
   const models = runtime?.models ?? [];
 
-  const workspaceRef = useRef(workspace);
-  workspaceRef.current = workspace;
+  const workspaceRef = useLiveRef(workspace);
   const openGeneration = useRef(0);
   const libraryRef = useRef<ReturnType<typeof useLibrary> | null>(null);
-
-  const reloadConversations = useCallback(async (ws: string, preferId?: string) => {
-    if (!ws) {
-      sidebarLoadedForRef.current = "";
-      setConversations([]);
-      setJourneys([]);
-      setActiveId("");
-      setMessages([]);
-      return;
-    }
-    const rows = hostedChats ? await api.listHostedConversations(ws) : await api.listConversations(ws);
-    if (!isSameProject(ws, workspaceRef.current)) return;
-    if (conversationsRef.current.length === 0 && rows.length > 0) {
-      setConversations(rows);
-    }
-    const nextJourneys = await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
-    if (!isSameProject(ws, workspaceRef.current)) return;
-    sidebarLoadedForRef.current = ws;
-    // A model switch on an empty chat updates the in-memory row before disk.
-    // Replacing the list with the stale row would send the previous model.
-    const fresh = conversationsRef.current;
-    setConversations(
-      rows.map((row) => {
-        const live = fresh.find((item) => item.id === row.id);
-        if (!live?.model || live.model === row.model) return row;
-        return { ...row, model: live.model, effort: live.effort ?? row.effort, context_window: live.context_window ?? row.context_window, permission: live.permission ?? row.permission };
-      }),
-    );
-    setJourneys(nextJourneys);
-    const visible = rows.filter((row) => !isArchivedConversation(row));
-    const saved = loadConversation(ws);
-    const savedRow = rows.find((row) => row.id === saved);
-    const want =
-      preferId ||
-      (savedRow && !isArchivedConversation(savedRow) ? saved : "") ||
-      visible[0]?.id ||
-      "";
-    if (!want) {
-      setActiveId("");
-      setMessages([]);
-      return;
-    }
-    const found = rows.find((r) => r.id === want);
-    if (!found) {
-      setActiveId("");
-      setMessages([]);
-      return;
-    }
-    const full = hostedChats ? await api.getHostedConversation(ws, found.id) : await api.getConversation(ws, found.id);
-    if (!isSameProject(ws, workspaceRef.current)) return;
-    stickToBottomRef.current = true;
-    setActiveId(found.id);
-    setUnseenFinished((prev) => clearUnseenFinished(prev, found.id));
-    const loaded = (full.messages as ChatMessage[]) ?? [];
-    const withNotice =
-      full.compaction?.summary && full.compaction.through > 0
-        ? insertCompactionEvent(loaded, full.compaction.through)
-        : loaded;
-    const live = liveTurnMessages({
-      workspace: ws,
-      conversationId: found.id,
-      runningWorkspace: runningWsRef.current,
-      runningId: runningIdRef.current,
-      live: turnMessagesRef.current,
-      liveByChat: liveByChatRef.current,
-    });
-    setMessages(live ?? withNotice);
-    if (!live && withNotice !== loaded) {
-      void libraryRef.current?.persist(
-        withNotice,
-        found.id,
-        ws,
-        parseChatUsage(full.context_usage) ?? undefined,
-        full.compaction,
-      );
-    }
-    if (live) {
-      const cached = liveByChatRef.current.get(found.id);
-      setLiveStream({
-        streamText: cached?.streamText ?? turnLiveRef.current.streamText,
-        streamReasoning: cached?.streamReasoning ?? turnLiveRef.current.streamReasoning,
-        liveTools: cached?.liveTools ?? turnLiveRef.current.liveTools,
-        runningActivity: cached?.activity ?? turnLiveRef.current.activity,
-      });
-    } else {
-      clearLiveStream();
-    }
-    const dock = subagentsByChatRef.current.get(found.id) ?? emptySubagentDock();
-    setSubagents(dock.agents);
-    setExpandedAgents(dock.expanded);
-    setUsageByChat((prev) => putChatUsage(prev, found.id, full.context_usage));
-    if (full.compaction?.summary && full.compaction.through > 0) {
-      setCompactionByChat((prev) => ({ ...prev, [found.id]: full.compaction! }));
-    }
-    saveConversation(ws, found.id);
-    // Only retarget the composer when this reload actually opened a different chat.
-    // Depending on `model` re-runs this after a chip change, and the row still has
-    // the model copied at creation until the settings save lands.
-    if (found.id === activeIdRef.current && modelRef.current) return;
-    const next = composerSettingsForChat(
-      {
-        model: full.model ?? found.model,
-        effort: full.effort ?? found.effort,
-        contextWindow: full.context_window ?? found.context_window,
-        permission: full.permission ?? found.permission,
-      },
-      models,
-      {
-        model: modelRef.current || loadModel(),
-        effort: effortRef.current || loadEffort(),
-        contextWindow: contextWindowRef.current || loadContextWindow(),
-        permission: permissionRef.current || loadPermission(),
-      },
-    );
-    if (next.model) {
-      modelRef.current = next.model;
-      setModel(next.model);
-    }
-    if (next.effort) {
-      effortRef.current = next.effort;
-      setEffort(next.effort);
-    }
-    if (next.contextWindow) {
-      contextWindowRef.current = next.contextWindow;
-      setContextWindow(next.contextWindow);
-    }
-    setPermission(parsePermissionMode(next.permission));
-  }, [models, hostedChats]);
-
-  useEffect(() => {
-    if (!pathsReady || !workspace) return;
-    setRecents(pushRecentWorkspace(workspace));
-  }, [pathsReady, workspace]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .projectsLocation()
-      .then((loc) => {
-        if (cancelled) return;
-        rewriteStoredProjectPaths(loc.moves);
-        projectsRootRef.current = loc.root;
-        setProjectsRoot(loc.root);
-        setLegacyProjectsRoot(loc.legacy_root);
-        const saved = loadWorkspace();
-        if (saved) setRecents(pushRecentWorkspace(saved));
-        setCollapsedProjects(loadCollapsedProjects());
-        const next = loadWorkspace();
-        setWorkspace((current) => (current === next ? current : next));
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setPathsReady(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const reloadConversations = useChatSession({
+    hostedChats,
+    models,
+    setConversations,
+    setJourneys,
+    setActiveId,
+    setMessages,
+    setUnseenFinished,
+    setSubagents,
+    setExpandedAgents,
+    setUsageByChat,
+    setCompactionByChat,
+    setModel,
+    setEffort,
+    setContextWindow,
+    setPermission,
+    workspaceRef,
+    conversationsRef,
+    activeIdRef,
+    modelRef,
+    effortRef,
+    contextWindowRef,
+    permissionRef,
+    runningWsRef,
+    runningIdRef,
+    sidebarLoadedForRef,
+    turnMessagesRef,
+    turnLiveRef,
+    liveByChatRef,
+    subagentsByChatRef,
+    stickToBottomRef,
+    libraryRef,
+  });
+  const {
+    recents,
+    setRecents,
+    allProjectGroups,
+    setAllProjectGroups,
+    collapsedProjects,
+    setCollapsedProjects,
+    projectsRoot,
+    legacyProjectsRoot,
+    pathsReady,
+  } = useProjectIndex({
+    workspace,
+    setWorkspace,
+    conversations,
+    journeys,
+    remoteWorkspace,
+    remoteForRef,
+    sidebarSyncRef,
+    sidebarLoadedForRef,
+    workspaceRef,
+    setFlash,
+  });
+  projectsRootRef.current = projectsRoot;
 
   useEffect(() => {
     function onDoc() {
@@ -531,110 +400,6 @@ export function MainView() {
 
   useEffect(() => {
     if (!pathsReady) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const fromDisk = await api.listProjects();
-        let remoteMounts = new Set<string>();
-        try {
-          const remotes = await api.listRemoteProjects();
-          remoteMounts = new Set(remotes.map((row) => projectKey(row.mount_path)));
-        } catch {
-          remoteMounts = new Set();
-        }
-        const saved = sidebarProjects(fromDisk);
-        const rows = saved.map((row) =>
-          remoteMounts.has(projectKey(row.path)) ? { ...row, remote: true } : row,
-        );
-        const ordered = rows;
-        const loaded: ProjectChatGroup[] = [];
-        for (const row of ordered) {
-          if (cancelled) return;
-          const [listed, journeyListed] = await Promise.all([
-            api.listConversations(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as ConversationSummary[], failed: true })),
-            api.listJourneys(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as JourneySummary[], failed: true })),
-          ]);
-          if (cancelled) return;
-          // A cloud call that fails, or is still the empty index, must not replace chats
-          // the sidebar already showed. The next pass fills them in.
-          const convs = listed.failed && row.remote ? null : listed.rows;
-          const nextJourneys = journeyListed.failed && row.remote ? null : journeyListed.rows;
-          let next = {
-            ...row,
-            conversations: convs ?? [],
-            journeys: nextJourneys ?? [],
-            remote: Boolean(row.remote),
-          };
-          if (next.remote && isSameProject(next.path, workspaceRef.current)) {
-            try {
-              const remote = await api.workspaceRemote(next.path);
-              if (remote) {
-                next = {
-                  ...next,
-                  server: {
-                    machineName: remote.machine_name,
-                    host: remote.host,
-                    user: remote.user,
-                    port: remote.port,
-                    remotePath: remote.remote_path,
-                    online: remote.online,
-                  },
-                };
-              }
-            } catch {
-              /* leave the cloud without a status */
-            }
-          }
-          loaded.push(next);
-          if (!cancelled) {
-            const ready = applyLiveProjectChats(loaded, sidebarSyncRef.current, sidebarLoadedForRef.current);
-            setAllProjectGroups((prev) => mergeLoadedProjectGroups(prev, ready));
-          }
-        }
-      } catch (e) {
-        if (!cancelled) setFlash({ kind: "err", text: String(e) });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [pathsReady, setFlash]);
-
-  useEffect(() => {
-    if (!workspace) return;
-    if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
-    // An empty list here is the gap between two projects, not a finished load.
-    if (conversations.length === 0) return;
-    setAllProjectGroups((prev) => {
-      const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current);
-      const stamped = stampProjectServer(
-        placed,
-        workspace,
-        remoteWorkspace,
-        remoteForRef.current,
-      );
-      if (
-        stamped.length === prev.length &&
-        stamped.every((group, i) => {
-          const before = prev[i];
-          return (
-            before &&
-            before.path === group.path &&
-            before.remote === group.remote &&
-            before.server === group.server &&
-            sameSidebarConversationList(before.conversations, group.conversations) &&
-            sameJourneyList(before.journeys, group.journeys)
-          );
-        })
-      ) {
-        return prev;
-      }
-      return stamped;
-    });
-  }, [workspace, conversations, journeys, remoteWorkspace]);
-
-  useEffect(() => {
-    if (!pathsReady) return;
     if (!workspace) {
       setOpened(false);
       return;
@@ -727,133 +492,14 @@ export function MainView() {
     };
   }, [pathsReady, workspace, setFlash]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadMcp = () => {
-      if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
-      if (remoteWorkspace && workspace) {
-        void api
-          .workspaceCapabilities(workspace)
-          .then(async (remote) => {
-            if (!remote) {
-              if (!cancelled) {
-                setMcpServers([]);
-                setSkills([]);
-              }
-              return;
-            }
-            const home = new Map<string, string>();
-            for (const entry of remote.mcp) {
-              const split = entry.indexOf("\n");
-              if (split <= 0) continue;
-              home.set(entry.slice(0, split), entry.slice(split + 1));
-            }
-            const rows = await detectMcp({
-              readHome: async (path) => home.get(path) ?? null,
-              readWorkspace: workspace
-                ? async (path) => {
-                    try {
-                      return await api.readFile(workspace, path);
-                    } catch {
-                      return null;
-                    }
-                  }
-                : undefined,
-            });
-            if (cancelled) return;
-            setMcpServers(withMcpAuth(rows, remote.auth));
-            const grokToml = home.get(".grok/config.toml") ?? null;
-            setSkills(
-              detectSkills(
-                remote.skills.map((file) => ({
-                  source: file.path,
-                  origin: parseSkillOrigin(file.origin, file.path),
-                  contents: file.contents,
-                })),
-                grokToml,
-              ),
-            );
-          })
-          .catch(() => {
-            if (!cancelled) {
-              setMcpServers([]);
-              setSkills([]);
-            }
-          });
-        return;
-      }
-      void detectMcp({
-        readHome: async (path) => {
-          try {
-            return await api.readUserMcp(path);
-          } catch {
-            return null;
-          }
-        },
-        readWorkspace: workspace
-          ? async (path) => {
-              try {
-                return await api.readFile(workspace, path);
-              } catch {
-                return null;
-              }
-            }
-          : undefined,
-      }).then(async (rows) => {
-        let authed: string[] = [];
-        try {
-          authed = await api.mcpAuthNames();
-        } catch {
-          authed = [];
-        }
-        if (!cancelled) setMcpServers(withMcpAuth(rows, authed));
-      });
-    };
-    loadMcp();
-    const stopRefresh = subscribeFileRefresh(loadMcp);
-    if (remoteWorkspace) {
-      return () => {
-        cancelled = true;
-        stopRefresh();
-      };
-    }
-    void (async () => {
-      try {
-        const files = await api.listSkillFiles(workspace || null);
-        let grokToml: string | null = null;
-        try {
-          grokToml = await api.readUserMcp(".grok/config.toml");
-        } catch {
-          grokToml = null;
-        }
-        const inputs = [];
-        for (const file of files) {
-          try {
-            const contents = file.home
-              ? await api.readUserSkill(file.read_path)
-              : workspace
-                ? await api.readFile(workspace, file.read_path)
-                : null;
-            if (contents == null) continue;
-            inputs.push({
-              source: file.path,
-              origin: parseSkillOrigin(file.origin, file.path),
-              contents,
-            });
-          } catch {
-            /* skip unreadable skill files */
-          }
-        }
-        if (!cancelled) setSkills(detectSkills(inputs, grokToml));
-      } catch {
-        if (!cancelled) setSkills([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      stopRefresh();
-    };
-  }, [workspace, remoteWorkspace, remoteKnown, linkReady]);
+  const { mcpBusy, setMcpBusy, skillBusy, setSkillBusy } = useCapabilities({
+    workspace,
+    remoteWorkspace,
+    remoteKnown,
+    linkReady,
+    setMcpServers,
+    setSkills,
+  });
 
   const pendingShell = shellQueue.find((item) => item.chatId === activeId) ?? null;
   const pendingPlan = planQueue.find((item) => item.chatId === activeId) ?? null;

@@ -1,6 +1,6 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
-import { completeTurn } from "../../lib/agent";
-import { cloudSendWaiting, hostedTurnStaysOnServer } from "../../lib/hosted";
+import { completeTurn } from "../lib/agent";
+import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
 import {
   activityFromToolCall,
   conversationTitleFrom,
@@ -15,8 +15,8 @@ import {
   type ChatMessage,
   type ConversationActivity,
   type LiveToolRow,
-} from "../../lib/core";
-import { sameChatUsage, type ChatUsage } from "../../lib/context";
+} from "../lib/core";
+import { sameChatUsage, type ChatUsage } from "../lib/context";
 import {
   MAX_PROMPT_IMAGES,
   appendPromptImages,
@@ -28,12 +28,12 @@ import {
   persistableImages,
   setImagesForChat,
   uniqueImageTokenLabel,
-} from "../../lib/image";
-import { expandFileMentions, type MentionFile } from "../../lib/mention";
-import { expandPasteTokens, type PasteBlock } from "../../lib/paste";
-import { fileBaseName } from "../../lib/file-icon";
-import type { DetectedMcpServer } from "../../lib/mcp";
-import { parsePermissionMode, shouldPromptShell, type PermissionMode, type RemoteWorkspace } from "../../lib/permission";
+} from "../lib/image";
+import { expandFileMentions, type MentionFile } from "../lib/mention";
+import { expandPasteTokens, type PasteBlock } from "../lib/paste";
+import { fileBaseName } from "../lib/file-icon";
+import type { DetectedMcpServer } from "../lib/mcp";
+import { parsePermissionMode, shouldPromptShell, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
 import {
   emptyGrokPlan,
   grokPlanFromPayload,
@@ -42,17 +42,17 @@ import {
   type PlanDecision,
   type PlanModeState,
   type PlanPrompt,
-} from "../../lib/plan";
-import { providerProfile } from "../../lib/provider";
-import type { DetectedSkill } from "../../lib/skill";
+} from "../lib/plan";
+import { providerProfile } from "../lib/provider";
+import type { DetectedSkill } from "../lib/skill";
 import {
   applySubagentToChat,
   emptySubagentDock,
   type SubagentDockState,
   type SubagentRecord,
-} from "../../lib/subagent";
-import { parseConversationKind } from "../../lib/terminal-chat";
-import { isTodoTool, todoBadge, todosInLatestTurn } from "../../lib/todo";
+} from "../lib/subagent";
+import { parseConversationKind } from "../lib/terminal-chat";
+import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
 import {
   clearPendingForChat,
   closeDanglingToolCalls,
@@ -75,7 +75,7 @@ import {
   type PendingEdit,
   type PendingMessage,
   type RunningTurn,
-} from "../../lib/turn";
+} from "../lib/turn";
 import {
   saveComposerDraft,
   saveComposerPastes,
@@ -84,9 +84,9 @@ import {
   saveEffort,
   saveModel,
   savePermission,
-} from "../../lib/prefs";
-import * as api from "../../lib/tauri";
-import type { ConversationSummary, Model, Runtime } from "../../lib/tauri";
+} from "../lib/prefs";
+import * as api from "../lib/tauri";
+import type { ConversationSummary, Model, Runtime } from "../lib/tauri";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 type ShellRequest = { chatId: string; command: string; resolve: (ok: boolean) => void };

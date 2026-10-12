@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { SettingsTab } from "../SettingsView";
+import type { SettingsTab } from "../views/SettingsView";
 
 /** Which full-page screen covers the chat. Opening one closes the others. */
 export function useOverlays() {

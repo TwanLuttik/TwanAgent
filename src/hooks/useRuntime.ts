@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { contextWindowChoices, resolveContextWindow } from "../../lib/context";
-import { loadContextWindow, loadEffort, loadModel } from "../../lib/prefs";
-import { startAccountUsage } from "../../lib/account-usage-store";
-import { startProviderStatus } from "../../lib/provider-status";
-import * as api from "../../lib/tauri";
-import type { Runtime } from "../../lib/tauri";
+import { contextWindowChoices, resolveContextWindow } from "../lib/context";
+import { loadContextWindow, loadEffort, loadModel } from "../lib/prefs";
+import { startAccountUsage } from "../lib/account-usage-store";
+import { startProviderStatus } from "../lib/provider-status";
+import * as api from "../lib/tauri";
+import type { Runtime } from "../lib/tauri";
 
 /** Grok install, login, and the model list. Checked once when the app opens. */
 export function useRuntime() {

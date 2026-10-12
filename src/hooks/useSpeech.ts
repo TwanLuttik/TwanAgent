@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../../lib/speech";
-import * as api from "../../lib/tauri";
+import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
+import * as api from "../lib/tauri";
 
 /** Speech model choice, the download list, and dictation. Settings reads this. */
 export function useSpeech(setFlash: (flash: { kind: "err"; text: string }) => void) {

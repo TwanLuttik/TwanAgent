@@ -1,6 +1,6 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { isMacOS } from "../../components/WindowButtons";
-import { scrollChatToEnd } from "../../lib/chat-scroll";
+import { isMacOS } from "../components/WindowButtons";
+import { scrollChatToEnd } from "../lib/chat-scroll";
 import {
   backfillFinishedAt,
   conversationTitleFrom,
@@ -9,7 +9,7 @@ import {
   nowIso,
   projectKey,
   type ChatMessage,
-} from "../../lib/core";
+} from "../lib/core";
 import {
   expandCollapsedProject,
   isAppProject,
@@ -21,11 +21,11 @@ import {
   toggleCollapsedProject,
   upsertProjectGroup,
   type ProjectChatGroup,
-} from "../../lib/all-projects";
-import { parseChatUsage, putChatUsage, usageToPersist, type ChatUsage } from "../../lib/context";
-import { closeEditorTab, emptyEditor, pinEditorTab, requestCloseEditorTab, selectChatTab, type EditorState } from "../../lib/editor";
-import { insertCompactionEvent } from "../../lib/compact";
-import { persistableCompaction, persistableMessages } from "../../lib/image";
+} from "../lib/all-projects";
+import { parseChatUsage, putChatUsage, usageToPersist, type ChatUsage } from "../lib/context";
+import { closeEditorTab, emptyEditor, pinEditorTab, requestCloseEditorTab, selectChatTab, type EditorState } from "../lib/editor";
+import { insertCompactionEvent } from "../lib/compact";
+import { persistableCompaction, persistableMessages } from "../lib/image";
 import {
   conversationHasSummarizeSource,
   JOURNEY_SUMMARIZE_PROMPT,
@@ -35,16 +35,16 @@ import {
   parseJourneyColor,
   type JourneyColor,
   type JourneySummary,
-} from "../../lib/journey";
-import { forgetPaneWorkspace } from "../../lib/pane-sessions";
-import { shellSessions } from "../../lib/shell-terminal";
-import { conversationDraft, parseConversationKind, type ConversationKind } from "../../lib/terminal-chat";
-import { terminalSessions } from "../../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../../lib/turn";
-import { parsePermissionMode, type PermissionMode } from "../../lib/permission";
-import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../../lib/plan";
-import { providerProfile } from "../../lib/provider";
-import { isNewChatHotkey, isSettingsHotkey } from "../../lib/hotkeys";
+} from "../lib/journey";
+import { forgetPaneWorkspace } from "../lib/pane-sessions";
+import { shellSessions } from "../lib/shell-terminal";
+import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
+import { terminalSessions } from "../lib/terminal-sessions";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { parsePermissionMode, type PermissionMode } from "../lib/permission";
+import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
+import { providerProfile } from "../lib/provider";
+import { isNewChatHotkey, isSettingsHotkey } from "../lib/hotkeys";
 import {
   loadContextWindow,
   loadConversation,
@@ -57,12 +57,12 @@ import {
   saveCollapsedProjects,
   saveConversation,
   saveWorkspace,
-} from "../../lib/prefs";
-import * as api from "../../lib/tauri";
-import type { ConversationSummary } from "../../lib/tauri";
-import type { ConversationActivity, LiveToolRow } from "../../lib/core";
-import { emptySubagentDock, toggleSubagentExpanded, type SubagentDockState } from "../../lib/subagent";
-import { PERSIST_TRAIL_MS, createPersistQueue } from "../../lib/persist-queue";
+} from "../lib/prefs";
+import * as api from "../lib/tauri";
+import type { ConversationSummary } from "../lib/tauri";
+import type { ConversationActivity, LiveToolRow } from "../lib/core";
+import { emptySubagentDock, toggleSubagentExpanded, type SubagentDockState } from "../lib/subagent";
+import { PERSIST_TRAIL_MS, createPersistQueue } from "../lib/persist-queue";
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 
@@ -163,15 +163,15 @@ export type LibraryDeps = {
   setCollapsedProjects: Update<string[]>;
   setRecents: Update<string[]>;
   setDrafts: Update<Record<string, string>>;
-  setPastesByChat: Update<Record<string, import("../../lib/paste").PasteBlock[]>>;
-  setDraftImages: Update<Record<string, import("../../lib/core").ChatImage[]>>;
+  setPastesByChat: Update<Record<string, import("../lib/paste").PasteBlock[]>>;
+  setDraftImages: Update<Record<string, import("../lib/core").ChatImage[]>>;
   setUsageByChat: Update<Record<string, ChatUsage>>;
   setStreamText: Update<string>;
   setStreamReasoning: Update<string>;
   setLiveTools: Update<LiveToolRow[]>;
   setRunningActivity: Update<ConversationActivity | null>;
   setTurnStartedAt: Update<number>;
-  setSubagents: Update<import("../../lib/subagent").SubagentRecord[]>;
+  setSubagents: Update<import("../lib/subagent").SubagentRecord[]>;
   setExpandedAgents: Update<Record<string, boolean>>;
   setOpeningId: Update<string>;
   setUnseenFinished: Update<ReadonlySet<string>>;

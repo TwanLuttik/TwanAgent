@@ -22,7 +22,9 @@ Frontend files do not use a `dev` or `dev-` prefix. Rust command names such as `
 
 ## File size
 
-A view or component that keeps growing gets split into files. `MainView.tsx` owns state and wires it together. The shell, sidebar, chat stage, and each new screen live in `src/views/main/` as their own components. Do not add another screen inline in `MainView.tsx`.
+A view or component that keeps growing gets split into files. `MainView.tsx` wires the screen together. The shell, sidebar, chat stage, and each new screen live in `src/views/main/` as their own components. Do not add another screen inline in `MainView.tsx`.
+
+Hooks live in `src/hooks/`. A new `use*` file goes there, not next to a view. The shell already shares state through `MainProvider`, so do not add a second state library for the same data.
 
 ## Public repo
 
