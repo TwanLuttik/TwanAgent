@@ -19,3 +19,11 @@ This repo stands on its own. Do not depend on another app's source tree.
 ## File names
 
 Frontend files do not use a `dev` or `dev-` prefix. Rust command names such as `dev_list_conversations` stay as they are.
+
+## File size
+
+A view or component that keeps growing gets split into files. `MainView.tsx` owns state and wires it together. The shell, sidebar, chat stage, and each new screen live in `src/views/main/` as their own components. Do not add another screen inline in `MainView.tsx`.
+
+## Public repo
+
+This repository is public. Do not commit anything that comes from the machine it was written on. That includes home paths, usernames, email addresses, SSH hosts, LAN addresses, machine names, signing identities, and tokens. Docs and tests use placeholders such as `<user>`, `<machine>`, and `dev@example`. Build output stays out of git, including `src-tauri/patches/**/target`.

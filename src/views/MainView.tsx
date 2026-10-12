@@ -4,7 +4,7 @@ import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
 import { cloudSendWaiting } from "../lib/hosted";
-import { contextWindowChoices, parseChatUsage, putChatUsage, resolveContextWindow, type ChatUsage } from "../lib/context";
+import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
 import { detectMcp, setMcpEnabledInToml, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { detectSkills, parseSkillOrigin, setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
@@ -39,14 +39,11 @@ import {
   saveWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
-import { startAccountUsage } from "../lib/account-usage-store";
-import { startProviderStatus } from "../lib/provider-status";
-import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
 import { chatHasRunningTurn, clearUnseenFinished, composerSettingsForChat, draftForChat, liveTurnMessages, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
-import type { ConversationSummary, Runtime } from "../lib/tauri";
+import type { ConversationSummary } from "../lib/tauri";
 import { useApp } from "../state/app-state";
 import { emptyGrokPlan, planModeEngaged, type GrokPlan, type PlanDecision, type PlanPrompt } from "../lib/plan";
 import { emptySubagentDock, type SubagentDockState, type SubagentRecord } from "../lib/subagent";
@@ -54,21 +51,26 @@ import { bindTurn } from "./main/useTurn";
 import { useLibrary, type RunTurn } from "./main/useLibrary";
 import type { MainModel, SidebarSlice } from "./main/context";
 import { MainProvider } from "./main/context";
-import type { SettingsTab } from "./SettingsView";
 import { MainShell } from "./main/MainShell";
+import { useOverlays } from "./main/useOverlays";
+import { useRuntime } from "./main/useRuntime";
+import { useSpeech } from "./main/useSpeech";
 
 export function MainView() {
   const { setFlash } = useApp();
   const [workspace, setWorkspace] = useState(loadWorkspace);
-  const [runtime, setRuntime] = useState<Runtime | null>(null);
-  const [model, setModel] = useState("");
-  const [effort, setEffort] = useState("");
-  const [contextWindow, setContextWindow] = useState(0);
+  const { runtime, model, setModel, effort, setEffort, contextWindow, setContextWindow, reloadRuntime } = useRuntime();
   const [permission, setPermission] = useState<PermissionMode>(() => parsePermissionMode(loadPermission()));
-  const [speechModelId, setSpeechModelId] = useState(speechModel(null).id);
-  const [speechRows, setSpeechRows] = useState<SpeechModelInfo[]>([]);
-  const [speechProgress, setSpeechProgress] = useState<{ id: string; received: number; total: number } | null>(null);
-  const [speechDownloading, setSpeechDownloading] = useState(false);
+  const {
+    speechModelId,
+    speechRows,
+    speechProgress,
+    speechDownloading,
+    refreshSpeech,
+    pickSpeechModel,
+    downloadSpeech,
+    dictate,
+  } = useSpeech(setFlash);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
@@ -132,11 +134,26 @@ export function MainView() {
   const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [recents, setRecents] = useState(loadRecentWorkspaces);
-  const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
-  const [showServers, setShowServers] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [projectSettings, setProjectSettings] = useState<{ path: string; name: string } | null>(null);
+  const {
+    showSettings,
+    setShowSettings,
+    settingsTab,
+    setSettingsTab,
+    showServers,
+    setShowServers,
+    showUsage,
+    setShowUsage,
+    projectSettings,
+    setProjectSettings,
+    closeSettings,
+    closeServers,
+    closeUsage,
+    closeProjectSettings,
+    openSettings,
+    openServers,
+    openUsage,
+    openProjectSettings,
+  } = useOverlays();
   const [usageTick, setUsageTick] = useState(0);
   const [fileDrag, setFileDrag] = useState(false);
   const [editor, setEditor] = useState<EditorState>(emptyEditor);
@@ -387,132 +404,6 @@ export function MainView() {
     }
     setPermission(parsePermissionMode(next.permission));
   }, [models, hostedChats]);
-
-  const applyRuntime = useCallback((next: Runtime) => {
-    setRuntime(next);
-    const savedModel = loadModel();
-    const nextModel = next.models.some((m) => m.id === savedModel)
-      ? savedModel
-      : next.default_model;
-    const chosen = next.models.find((m) => m.id === nextModel) ?? next.models[0];
-    const savedEffort = loadEffort();
-    const nextEffort = chosen?.efforts.some((e) => e.id === savedEffort)
-      ? savedEffort
-      : next.default_effort;
-    setModel(nextModel);
-    setEffort(
-      chosen?.efforts.some((e) => e.id === nextEffort)
-        ? nextEffort
-        : (chosen?.efforts[0]?.id ?? ""),
-    );
-    const choices = contextWindowChoices(chosen?.context_windows, chosen?.context_window);
-    setContextWindow(resolveContextWindow(choices, loadContextWindow(), chosen?.context_window, nextModel));
-  }, []);
-
-  const reloadRuntime = useCallback(() => {
-    void api
-      .runtime()
-      .then(applyRuntime)
-      .catch(() =>
-        applyRuntime({
-          installed: false,
-          logged_in: false,
-          version: null,
-          email: null,
-          default_model: "grok-4.6",
-          default_effort: "high",
-          models: [
-            {
-              id: "grok-4.6",
-              name: "Grok 4.6",
-              efforts: [
-                { id: "xhigh", label: "Extra high" },
-                { id: "high", label: "High" },
-                { id: "medium", label: "Medium" },
-                { id: "low", label: "Low" },
-              ],
-              context_window: 256000,
-              context_windows: [256000, 500000],
-              provider: "xai",
-            },
-          ],
-          has_key: false,
-          ready: false,
-          hint: "Install the Grok CLI, or add an xAI API key in Settings.",
-        }),
-      );
-  }, [applyRuntime]);
-
-  useEffect(() => {
-    reloadRuntime();
-    // Provider, storage, folder, and account allowance checks start with the app.
-    // Opening settings only reads them, and closing settings does not cancel them.
-    startProviderStatus();
-    startAccountUsage();
-  }, [reloadRuntime]);
-
-  const refreshSpeech = useCallback(() => {
-    void api
-      .speechModels()
-      .then((rows) => setSpeechRows(rows))
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    refreshSpeech();
-    let gone = false;
-    void api
-      .getAppSetting("speech.model")
-      .then((saved) => {
-        if (!gone) setSpeechModelId(normalizeSpeechModel(saved));
-      })
-      .catch(() => undefined);
-    let unlisten: (() => void) | undefined;
-    void api
-      .onSpeechDownload((event) => {
-        setSpeechProgress({ id: event.id, received: event.received, total: event.total });
-        if (event.done) {
-          setSpeechDownloading(false);
-          setSpeechProgress(null);
-          refreshSpeech();
-        }
-      })
-      .then((fn) => {
-        if (gone) fn();
-        else unlisten = fn;
-      })
-      .catch(() => undefined);
-    return () => {
-      gone = true;
-      unlisten?.();
-    };
-  }, [refreshSpeech]);
-
-  const pickSpeechModel = useCallback((id: string) => {
-    const next = normalizeSpeechModel(id);
-    setSpeechModelId(next);
-    void api.setAppSetting("speech.model", next).catch((e) => setFlash({ kind: "err", text: String(e) }));
-  }, [setFlash]);
-
-  const downloadSpeech = useCallback((id: string) => {
-    setSpeechDownloading(true);
-    setSpeechProgress({ id: normalizeSpeechModel(id), received: 0, total: speechModel(id).bytes });
-    void api
-      .speechDownload(normalizeSpeechModel(id))
-      .then((row) => {
-        setSpeechRows((prev) => prev.map((item) => (item.id === row.id ? row : item)));
-      })
-      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-      .finally(() => {
-        setSpeechDownloading(false);
-        setSpeechProgress(null);
-        refreshSpeech();
-      });
-  }, [refreshSpeech, setFlash]);
-
-  const dictate = useCallback(async (bytesBase64: string, filename: string) => {
-    return api.transcribe(bytesBase64, filename);
-  }, []);
 
   useEffect(() => {
     if (!pathsReady || !workspace) return;
@@ -1029,35 +920,6 @@ export function MainView() {
       ro?.disconnect();
     };
   }, [messages, pendingShell, openingId, pendingByChat, activeId, editor.focus, composerPad]);
-
-  const closeSettings = useCallback(() => setShowSettings(false), []);
-  const closeServers = useCallback(() => setShowServers(false), []);
-  const closeUsage = useCallback(() => setShowUsage(false), []);
-  const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
-  const openSettings = useCallback(() => {
-    setShowUsage(false);
-    setShowServers(false);
-    setProjectSettings(null);
-    setShowSettings(true);
-  }, []);
-  const openServers = useCallback(() => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setProjectSettings(null);
-    setShowServers(true);
-  }, []);
-  const openUsage = useCallback(() => {
-    setShowSettings(false);
-    setShowServers(false);
-    setProjectSettings(null);
-    setShowUsage(true);
-  }, []);
-  const openProjectSettings = useCallback((path: string, name: string) => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setShowServers(false);
-    setProjectSettings({ path, name });
-  }, []);
 
   const onSidebarResizeStart = useCallback((ev: ReactPointerEvent<HTMLDivElement>) => {
     ev.preventDefault();
