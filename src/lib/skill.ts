@@ -52,12 +52,21 @@ export function parseSkillMd(source: string, contents: string, fallbackName: str
   return { name, source, origin, description, enabled: true };
 }
 
+/** A row for the skills pill. The file is not read until Edit opens it. */
+export function skillFromPath(source: string, origin: SkillOrigin): DetectedSkill | null {
+  const name = skillFallbackName(source);
+  if (!name || !skillNameOk(name) || VENDOR_SKILL_NAMES.has(name)) return null;
+  return { name, source, origin: origin || originFromSource(source), description: "", enabled: true };
+}
+
 export function detectSkills(files: SkillFileInput[], grokToml?: string | null): DetectedSkill[] {
   const disabled = new Set(parseSkillsDisabled(grokToml ?? ""));
   const seen = new Set<string>();
   const out: DetectedSkill[] = [];
   for (const file of files) {
-    const parsed = parseSkillMd(file.source, file.contents, skillFallbackName(file.source));
+    const parsed = file.contents.trim()
+      ? parseSkillMd(file.source, file.contents, skillFallbackName(file.source))
+      : skillFromPath(file.source, file.origin);
     if (!parsed) continue;
     const skill = { ...parsed, origin: file.origin || parsed.origin };
     if (seen.has(skill.name)) continue;

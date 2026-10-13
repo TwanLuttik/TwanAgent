@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./Button";
 import { Symbol } from "./Symbol";
 import * as api from "../lib/tauri";
-import type { AgentServer, HostPrompt, KeyStatus, LanHost, RemoteProject, ServerInstallStatus, ServerProviderKeys, ServerStorage } from "../lib/tauri";
+import type { AgentServer, HostPrompt, KeyStatus, LanHost, RemoteProject, ServerInstallStatus, ServerProject, ServerProviderKeys, ServerStorage } from "../lib/tauri";
 import { detectMcp, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { formatBytes } from "../lib/usage";
 
@@ -21,10 +21,25 @@ const NO_LOCAL_KEYS: LocalKeys = { xai: null, anthropic: null, minimax: null };
 
 type InstallView = ServerInstallStatus | "checking" | "copying";
 
+type CopyProgress = { phase: string; sent: number; total: number };
+
+function versionText(raw: string): string {
+  return raw.replace(/^twanagent-server\s+/, "").replace(/\0/g, "").trim();
+}
+
 function versionLabel(status: ServerInstallStatus): string {
-  const version = status.version.replace(/^twanagent-server\s+/, "").trim();
-  if (!version || version === "unknown") return "Installed";
+  const version = versionText(status.version);
+  if (!version || version === "unknown") return "Installed, version unreadable";
   return version;
+}
+
+/** A real newer build, not the same version shown twice because of a trailing null. */
+function newerVersion(status: ServerInstallStatus): string {
+  if (!status.update) return "";
+  const next = versionText(status.available || "");
+  const current = versionText(status.version);
+  if (!next || next === current) return "";
+  return next;
 }
 
 function reachOf(status: InstallView | undefined): { label: string; online: boolean | null } {
@@ -55,14 +70,13 @@ function ServerRow({
   const { label, online } = reachOf(status);
   const known = status && typeof status !== "string" ? status : null;
   const address = `${row.user}@${row.host}${row.port === 22 ? "" : `:${row.port}`}`;
+  const updateReady = Boolean(known?.online && known.installed && newerVersion(known));
   const program = !known
     ? "Checking the server program"
     : !known.online
       ? "SSH did not answer"
       : known.installed
-        ? known.update
-          ? `${versionLabel(known)} · update`
-          : versionLabel(known)
+        ? versionLabel(known)
         : "Not installed";
   return (
     <button
@@ -82,7 +96,16 @@ function ServerRow({
         <span className="mt-0.5 block truncate text-[12px] text-muted">{address}</span>
       </span>
       <span className="flex items-center gap-3 text-[12px] text-muted">
-        <span className="hidden sm:block">{program}</span>
+        {updateReady && known ? (
+          <span className="hidden items-center gap-1.5 sm:flex">
+            <span>{program}</span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-ok/15 px-1.5 py-0.5 font-medium text-ok">
+              {newerVersion(known)}
+            </span>
+          </span>
+        ) : (
+          <span className="hidden sm:block">{program}</span>
+        )}
         <span>{projects === 1 ? "1 project" : `${projects} projects`}</span>
         <Symbol name="chevron.right" className="size-3.5" />
       </span>
@@ -90,12 +113,52 @@ function ServerRow({
   );
 }
 
-function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Fact({ label, value, mono, children }: { label: string; value?: string; mono?: boolean; children?: ReactNode }) {
   return (
     <div className="grid gap-0.5">
       <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
-      <span className={`truncate text-[13px] text-ink ${mono ? "font-mono" : ""}`}>{value}</span>
+      {children ?? <span className={`truncate text-[13px] text-ink ${mono ? "font-mono" : ""}`}>{value}</span>}
     </div>
+  );
+}
+
+function CopyBar({ progress }: { progress: CopyProgress | null }) {
+  const total = progress?.total ?? 0;
+  const sent = progress?.sent ?? 0;
+  const ratio = total > 0 ? Math.min(1, sent / total) : progress?.phase === "installing" ? 1 : 0;
+  const label =
+    progress?.phase === "installing"
+      ? "Installing"
+      : progress?.phase === "reading"
+        ? "Reading the program"
+        : total > 0
+          ? `Copying ${formatBytes(sent)} of ${formatBytes(total)}`
+          : "Copying";
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex items-center justify-between text-[12px] text-muted">
+        <span>{label}</span>
+        <span>{total > 0 ? `${Math.round(ratio * 100)}%` : ""}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-ink/10" role="progressbar" aria-valuenow={Math.round(ratio * 100)} aria-valuemin={0} aria-valuemax={100}>
+        <div className="h-full rounded-full bg-accent transition-[width] duration-150" style={{ width: `${Math.round(ratio * 100)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function VersionFact({ installed, next, copying }: { installed: string; next: string; copying: boolean }) {
+  return (
+    <Fact label="Version">
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[13px]">
+        <span className="truncate text-muted line-through decoration-muted/70">{installed}</span>
+        <Symbol name="chevron.right" className="size-3 shrink-0 text-muted" />
+        <span className="inline-flex min-w-0 items-center gap-1 rounded-full bg-ok/15 px-2 py-0.5 font-medium text-ok">
+          <span className="size-1.5 shrink-0 rounded-full bg-ok" />
+          <span className="truncate">{copying ? "Installing…" : next}</span>
+        </span>
+      </span>
+    </Fact>
   );
 }
 
@@ -103,6 +166,9 @@ function ServerDetail({
   row,
   status,
   projects,
+  projectsLoading,
+  copy,
+  openingPath,
   storage,
   git,
   keys,
@@ -114,6 +180,7 @@ function ServerDetail({
   onPair,
   onRemove,
   onRecheck,
+  onOpenProject,
   onToggleProvider,
   onCopyKeys,
   onInstallGit,
@@ -124,7 +191,10 @@ function ServerDetail({
 }: {
   row: AgentServer;
   status: InstallView | undefined;
-  projects: RemoteProject[];
+  projects: ServerProject[];
+  projectsLoading: boolean;
+  copy: CopyProgress | null;
+  openingPath: string | null;
   storage: ServerStorage | null;
   git: boolean | "checking";
   keys: ServerProviderKeys | null;
@@ -136,6 +206,7 @@ function ServerDetail({
   onPair: () => void;
   onRemove: () => void;
   onRecheck: () => void;
+  onOpenProject: (project: ServerProject) => void;
   onToggleProvider: (id: ProviderId) => void;
   onCopyKeys: (id: ProviderId) => void;
   onInstallGit: () => void;
@@ -151,7 +222,8 @@ function ServerDetail({
   const needsToken = Boolean(known && online && installed && !row.paired);
   const address = `${row.user}@${row.host}${row.port === 22 ? "" : `:${row.port}`}`;
   const version = !known ? "Checking…" : !known.online ? "Unreachable" : installed ? versionLabel(known as ServerInstallStatus) : "Not installed";
-  const update = Boolean(known?.online && installed && known.update);
+  const nextVersion = known && installed ? newerVersion(known) : "";
+  const update = Boolean(known?.online && nextVersion);
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -176,7 +248,11 @@ function ServerDetail({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3 rounded-xl bg-inset/70 px-3 py-3">
-        <Fact label="Version" value={update ? `${version} · update ready` : version} />
+        {update && nextVersion ? (
+          <VersionFact installed={version} next={nextVersion} copying={copying} />
+        ) : (
+          <Fact label="Version" value={version} />
+        )}
         <Fact label="Pairing" value={row.paired ? "Paired" : needsToken ? "Needs a token" : "Not paired"} />
         <Fact label="Program" value={known?.path || "~/.twanagent/bin/twanagent-server"} mono />
         <Fact label="Added" value={row.installed_at ? row.installed_at.slice(0, 10) : "—"} />
@@ -189,6 +265,7 @@ function ServerDetail({
           }
         />
       </div>
+      {copying ? <CopyBar progress={copy} /> : null}
       <div className="flex justify-end gap-2">
         <Button disabled={busy || copying} onClick={onRecheck}>
           {copying ? "Installing…" : status === "checking" ? "Checking…" : "Check again"}
@@ -237,20 +314,34 @@ function ServerDetail({
       ) : null}
       <div className="grid gap-1.5">
         <div className="text-[11px] font-semibold tracking-wide text-muted uppercase">Projects</div>
-        {projects.length === 0 ? (
+        {projectsLoading && projects.length === 0 ? (
+          <p className="m-0 rounded-xl border border-dashed border-ink/10 px-3 py-4 text-[12px] text-muted">
+            Looking on the server…
+          </p>
+        ) : projects.length === 0 ? (
           <p className="m-0 rounded-xl border border-dashed border-ink/10 px-3 py-4 text-[12px] text-muted">
             No projects on this server yet. Create one from the folder picker.
           </p>
         ) : (
-          projects.map((project) => (
-            <div key={project.id} className="flex items-center gap-2 rounded-xl border border-ink/10 bg-panel px-3 py-2.5">
-              <Symbol name="folder.fill" className="size-3.5 shrink-0 text-muted" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-ink">{project.name}</span>
-                <span className="block truncate font-mono text-[11px] text-muted">{project.remote_path}</span>
-              </span>
-            </div>
-          ))
+          projects.map((project) => {
+            const opening = openingPath === project.remote_path;
+            return (
+              <button
+                key={project.remote_path}
+                type="button"
+                disabled={busy || Boolean(openingPath)}
+                onClick={() => onOpenProject(project)}
+                className="flex items-center gap-2 rounded-xl border border-ink/10 bg-panel px-3 py-2.5 text-left hover:border-ink/30 disabled:opacity-60"
+              >
+                <Symbol name="folder.fill" className="size-3.5 shrink-0 text-muted" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] text-ink">{project.name}</span>
+                  <span className="block truncate font-mono text-[11px] text-muted">{project.remote_path}</span>
+                </span>
+                <span className="shrink-0 text-[11px] text-muted">{opening ? "Opening…" : "Open"}</span>
+              </button>
+            );
+          })
         )}
       </div>
     </div>
@@ -262,6 +353,9 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState<Step>("list");
   const [saved, setSaved] = useState<AgentServer[]>([]);
   const [projects, setProjects] = useState<RemoteProject[]>([]);
+  const [liveProjects, setLiveProjects] = useState<Record<string, ServerProject[]>>({});
+  const [projectsLoading, setProjectsLoading] = useState<Record<string, boolean>>({});
+  const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [storageById, setStorageById] = useState<Record<string, ServerStorage>>({});
   const [gitById, setGitById] = useState<Record<string, boolean | "checking">>({});
   const [keysById, setKeysById] = useState<Record<string, ServerProviderKeys>>({});
@@ -279,6 +373,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [found, setFound] = useState<LanHost[]>([]);
   const [scanning, setScanning] = useState(false);
   const [installs, setInstalls] = useState<Record<string, InstallView>>({});
+  const [copyById, setCopyById] = useState<Record<string, CopyProgress>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [probe, setProbe] = useState<ServerInstallStatus | "checking" | null>(null);
@@ -290,17 +385,31 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     setLoading(true);
     void api
       .listAgentServers()
-      .then((rows) => {
+      .then(async (rows) => {
         setSaved(rows);
         setSelectedId((current) => (current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? null));
-        for (const row of rows) void checkInstall(row.id);
+        // Reachability first. Projects and the pairing read both need SSH, so a down host skips them.
+        for (const row of rows) {
+          const status = await checkInstall(row.id);
+          if (status?.online) loadProjects(row.id);
+        }
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
     void api.listRemoteProjects().then(setProjects).catch(() => setProjects([]));
   }
 
+  function loadProjects(id: string) {
+    setProjectsLoading((prev) => ({ ...prev, [id]: true }));
+    void api
+      .serverProjects(id)
+      .then((rows) => setLiveProjects((prev) => ({ ...prev, [id]: rows })))
+      .catch(() => setLiveProjects((prev) => ({ ...prev, [id]: prev[id] ?? [] })))
+      .finally(() => setProjectsLoading((prev) => ({ ...prev, [id]: false })));
+  }
+
   function loadStorage(id: string) {
+    loadProjects(id);
     setGitById((prev) => ({ ...prev, [id]: "checking" }));
     void api
       .serverGit(id)
@@ -323,11 +432,13 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     setCopyProviders((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
-  async function checkInstall(id: string) {
+  async function checkInstall(id: string): Promise<api.ServerInstallStatus | null> {
     setInstalls((prev) => ({ ...prev, [id]: "checking" }));
+    setError(null);
     try {
       const status = await api.agentServerStatus(id);
       setInstalls((prev) => ({ ...prev, [id]: status }));
+      return status;
     } catch (err) {
       setInstalls((prev) => {
         const next = { ...prev };
@@ -335,11 +446,13 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
         return next;
       });
       setError(String(err));
+      return null;
     }
   }
 
   async function installBinary(row: AgentServer) {
     setInstalls((prev) => ({ ...prev, [row.id]: "copying" }));
+    setCopyById((prev) => ({ ...prev, [row.id]: { phase: "reading", sent: 0, total: 0 } }));
     setError(null);
     try {
       const status = await api.installAgentBinary(row.id);
@@ -360,6 +473,16 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, step]);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    void api.onInstallProgress((event) => {
+      setCopyById((prev) => ({ ...prev, [event.id]: { phase: event.phase, sent: event.sent, total: event.total } }));
+    }).then((unlisten) => {
+      stop = unlisten;
+    });
+    return () => stop?.();
+  }, []);
 
   useEffect(() => {
     reload();
@@ -643,7 +766,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
                     key={row.id}
                     row={row}
                     status={installs[row.id]}
-                    projects={projects.filter((project) => project.machine_id === row.machine_id).length}
+                    projects={(liveProjects[row.id] ?? projects.filter((project) => project.machine_id === row.machine_id)).length}
                     onOpen={() => {
                       setSelectedId(row.id);
                       setError(null);
@@ -664,7 +787,23 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
             <ServerDetail
               row={selected}
               status={installs[selected.id]}
-              projects={projects.filter((project) => project.machine_id === selected.machine_id)}
+              projects={liveProjects[selected.id] ?? []}
+              projectsLoading={projectsLoading[selected.id] ?? false}
+              copy={copyById[selected.id] ?? null}
+              openingPath={openingPath}
+              onOpenProject={(project) => {
+                if (!selected.machine_id || openingPath) return;
+                setOpeningPath(project.remote_path);
+                setError(null);
+                void api
+                  .createRemoteProject(project.name, selected.machine_id, project.remote_path)
+                  .then(() => {
+                    loadProjects(selected.id);
+                    void api.listRemoteProjects().then(setProjects).catch(() => undefined);
+                  })
+                  .catch((err) => setError(String(err)))
+                  .finally(() => setOpeningPath(null));
+              }}
               storage={storageById[selected.id] ?? null}
               git={gitById[selected.id] ?? "checking"}
               onInstallGit={() => {
@@ -684,7 +823,11 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               onInstall={() => void installBinary(selected)}
               onPair={() => void pairServer(selected)}
               onRemove={() => void forget(selected)}
-              onRecheck={() => void checkInstall(selected.id)}
+              onRecheck={() => {
+                void checkInstall(selected.id).then((status) => {
+                  if (status?.online) loadStorage(selected.id);
+                });
+              }}
               onToggleProvider={toggleProvider}
               mcpName={mcpName}
               localMcp={localMcp}

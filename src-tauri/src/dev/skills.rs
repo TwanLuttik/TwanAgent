@@ -7,8 +7,7 @@ use crate::error::{Error, Result};
 use crate::grok_cli::grok_home;
 use crate::paths::relative_to;
 
-use super::files::read_file;
-use super::mcp::open_path;
+use super::files::{read_file, write_file};
 use super::paths::{home_dir, resolve_in_workspace};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -30,13 +29,14 @@ pub fn read_user_skill(path: &str) -> Result<String> {
     read_file(&home, allow_user_skill(path)?)
 }
 
-pub fn open_user_skill(path: &str) -> Result<()> {
+pub fn write_user_skill(path: &str, contents: &str) -> Result<()> {
     let home = home_dir().ok_or_else(|| Error::Other("home folder is unknown".into()))?;
-    let full = resolve_in_workspace(&home, allow_user_skill(path)?)?;
+    let rel = allow_user_skill(path)?;
+    let full = resolve_in_workspace(&home, rel)?;
     if !full.is_file() {
         return Err(Error::Other("not a file".into()));
     }
-    open_path(&full)
+    write_file(&home, rel, contents)
 }
 
 pub fn allow_user_skill(rel: &str) -> Result<&str> {
@@ -189,6 +189,27 @@ fn push_file(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn write_replaces_an_existing_skill_and_refuses_a_new_path() {
+        let home = tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home.path()) };
+        let rel = ".grok/skills/commit/SKILL.md";
+        let full = home.path().join(rel);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(&full, "before").unwrap();
+        write_user_skill(rel, "after").unwrap();
+        assert_eq!(fs::read_to_string(&full).unwrap(), "after");
+        let missing = write_user_skill(".grok/skills/new/SKILL.md", "nope").unwrap_err();
+        assert!(missing.to_string().contains("not a file"));
+        let blocked = write_user_skill(".grok/config.toml", "nope").unwrap_err();
+        assert!(blocked.to_string().contains("not an allowed"));
+        match prev {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
 
     #[test]
     fn allowlist_rejects_escapes() {

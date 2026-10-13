@@ -473,6 +473,23 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     contextWindow: chosen.contextWindow,
     permission: chosen.permission,
   });
+  // A cloud chat is created on the server by the first prompt. Saving the empty
+  // draft here writes it into the local mount, and the sidebar shows it beside
+  // the real conversation.
+  if (isSameProject(path, workspace) && hostedChatsRef.current) {
+    setActiveId("");
+    setMessages([]);
+    setStreamText("");
+    setStreamReasoning("");
+    setLiveTools([]);
+    setRunningActivity(null);
+    setTurnStartedAt(0);
+    hideSubagents();
+    retargetForegroundTurn("");
+    setEditor((prev) => selectChatTab(prev));
+    saveConversation(path, "");
+    return;
+  }
   const rows = projectConversations(path);
   const journeysHere = projectJourneys(path);
   const sortOrder = journeyId

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { editorTabTitle, isAllDiffPath, isMcpEditorPath, type EditorState } from "../lib/editor";
+import { editorTabTitle, isAllDiffPath, isMcpEditorPath, isSkillEditorPath, type EditorState } from "../lib/editor";
 import { parseJourneyId } from "../lib/journey";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
@@ -165,6 +165,7 @@ function parentFolder(path: string): string {
   if (isAllDiffPath(path)) return "Git";
   if (path.startsWith("journey:")) return "Journey";
   if (isMcpEditorPath(path)) return "MCP";
+  if (isSkillEditorPath(path)) return "Skill";
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   if (parts.length < 2) return "";
   return parts[parts.length - 2] ?? "";

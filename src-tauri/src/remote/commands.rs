@@ -291,6 +291,18 @@ fn require_trusted_host(work: &ServerWork, machine: &config::Machine) -> Result<
 fn register_remote_project(app: &AppHandle, machine: &config::Machine, name: &str, remote_path: &str) -> Result<String> {
     let state = app.state::<AppState>();
     let conn = open_db(&state)?;
+    // Opening a folder that already exists on the server must not add a second sidebar row.
+    if let Some(existing) = config::list_remote_projects(&conn)?
+        .into_iter()
+        .find(|row| row.machine_id == machine.id && row.remote_path == remote_path)
+    {
+        let mount = std::path::PathBuf::from(&existing.mount_path);
+        super::mount::ensure_mount_point(&mount)?;
+        let canon = state.register_workspace(app, &mount)?;
+        let conn = open_db(&state)?;
+        let _ = crate::appdb::add_project_named(&conn, &canon, Some(name));
+        return Ok(crate::dev::path_string(&canon));
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let mount = super::mount::mount_dir(&state.data_dir, &id);
     super::mount::ensure_mount_point(&mount)?;
@@ -381,14 +393,24 @@ pub struct WorkspaceRemote {
     pub paired: bool,
 }
 
-/// Port check only. A full SSH login would block file tools that share the connection.
-/// DNS lookup has no timeout of its own, so the whole check is capped.
+/// Up check, before any SSH login. Ping first, then the SSH port.
+/// A host that drops ICMP still counts as up when the port accepts a connection.
+/// Tailscale peers often do. DNS lookup has no timeout of its own, so the lookup is capped.
 pub fn machine_reachable(host: &str, port: u16) -> bool {
     use std::net::ToSocketAddrs;
     let host = host.trim().to_string();
     if host.is_empty() || port == 0 {
         return false;
     }
+    let ping_host = host.clone();
+    let (ping_tx, ping_rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("twanagent-ping".into())
+        .spawn(move || {
+            let _ = ping_tx.send(host_answers_ping(&ping_host));
+        })
+        .ok();
+    let answered = ping_rx.recv_timeout(std::time::Duration::from_millis(1500)).unwrap_or(false);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("twanagent-reach".into())
@@ -403,7 +425,32 @@ pub fn machine_reachable(host: &str, port: u16) -> bool {
     let Ok(Some(addr)) = rx.recv_timeout(std::time::Duration::from_millis(1200)) else {
         return false;
     };
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok()
+    let port_open = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok();
+    // The port is the login. Ping only confirms the address is a live machine.
+    let _ = answered;
+    port_open
+}
+
+/// One echo. Failure is not "down": many servers drop ICMP and still accept SSH.
+fn host_answers_ping(host: &str) -> bool {
+    let host = host.trim();
+    if host.is_empty() || host.contains([' ', '\n', '\'']) {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        std::process::Command::new("ping")
+            .args(["-c", "1", "-W", "1000", host])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = host;
+        false
+    }
 }
 
 fn machine_secret(machine: &Machine) -> Option<String> {
@@ -431,12 +478,15 @@ fn require_exec(work: &ServerWork, machine: &Machine, command: &str, timeout_sec
     if made.timed_out {
         return Err(Error::Other(format!("timed out talking to {}", machine.host)));
     }
-    if made.exit_code != Some(0) {
+    if made.exit_code.is_some_and(|code| code != 0) {
         let detail = made.stderr.trim();
-        return Err(Error::Other(if detail.is_empty() {
-            format!("command failed on {}", machine.host)
+        let out = made.stdout.trim();
+        return Err(Error::Other(if !detail.is_empty() {
+            detail.to_string()
+        } else if !out.is_empty() {
+            out.chars().take(240).collect()
         } else {
-            format!("{detail}")
+            format!("command failed on {}", machine.host)
         }));
     }
     Ok(made.stdout)
@@ -466,6 +516,7 @@ fn offline_status() -> super::agent_server::ServerInstallStatus {
     super::agent_server::ServerInstallStatus {
         installed: false,
         version: String::new(),
+        available: String::new(),
         path: "~/.twanagent/bin/twanagent-server".into(),
         online: false,
         update: false,
@@ -474,6 +525,7 @@ fn offline_status() -> super::agent_server::ServerInstallStatus {
 }
 
 fn status_for(work: &ServerWork, server: &super::agent_server::AgentServer) -> Result<super::agent_server::ServerInstallStatus> {
+    // Port 22 first. A pairing or version read is SSH, and it only runs when the machine answers.
     if !machine_reachable(&server.host, server.port) {
         return Ok(offline_status());
     }
@@ -482,12 +534,45 @@ fn status_for(work: &ServerWork, server: &super::agent_server::AgentServer) -> R
     Ok(super::agent_server::parse_version_check(&stdout))
 }
 
-fn copy_binary(work: &ServerWork, machine: &Machine) -> Result<super::agent_server::ServerInstallStatus> {
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InstallProgress {
+    pub id: String,
+    pub phase: String,
+    pub sent: u64,
+    pub total: u64,
+}
+
+/// `1.0.0-beta.3` matches a sidecar that says `twanagent-server 1.0.0-beta.3`.
+fn version_matches(reported: &str, built: &str) -> bool {
+    let reported = reported.trim().strip_prefix("twanagent-server").unwrap_or(reported).trim();
+    let built = built.trim().strip_prefix("twanagent-server").unwrap_or(built).trim();
+    !built.is_empty() && reported == built
+}
+
+fn emit_install(app: &AppHandle, id: &str, phase: &str, sent: u64, total: u64) {
+    let _ = app.emit(
+        "dev-install-progress",
+        InstallProgress {
+            id: id.to_string(),
+            phase: phase.to_string(),
+            sent,
+            total,
+        },
+    );
+}
+
+fn copy_binary(
+    app: &AppHandle,
+    work: &ServerWork,
+    server_id: &str,
+    machine: &Machine,
+) -> Result<super::agent_server::ServerInstallStatus> {
     let probe = require_exec(work, machine, &super::agent_server::target_probe_script(), 15)?;
     let mut lines = probe.lines();
     let arch = lines.next().unwrap_or("").trim();
     let os = lines.next().unwrap_or("").trim();
     let path = super::agent_server::binary_for_target(arch, os)?;
+    emit_install(app, server_id, "reading", 0, 0);
     let bytes = std::fs::read(&path).map_err(|err| Error::Other(format!("could not read {}: {err}", path.display())))?;
     let built = super::agent_server::binary_version(&bytes);
     if built.is_empty() {
@@ -502,24 +587,70 @@ fn copy_binary(work: &ServerWork, machine: &Machine) -> Result<super::agent_serv
         &super::agent_server::version_check_script(),
         20,
     )?);
-    if current.installed && !super::agent_server::server_update_available(&current.version) && current.version.contains(&built)
-    {
+    if current.installed && version_matches(&current.version, &built) {
         return Err(Error::Other(format!(
             "{built} is already on {}. Build a newer twanagent-server before updating.",
             machine.host
         )));
     }
-    let scripts = super::agent_server::binary_install_scripts(&bytes)?;
-    for script in &scripts {
-        let _ = require_exec(work, machine, script, 120)?;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+    let payload = encoded.into_bytes();
+    let wire = payload.len() as u64;
+    let total = bytes.len() as u64;
+    emit_install(app, server_id, "copying", 0, total);
+    let secret = machine_secret(machine);
+    // A second SSH login stalls the shared connection on this Tailscale host, so the status check
+    // stays on Checking. The copy uses the one connection and gives it back when the send finishes.
+    let session = work.ssh_pool.session(machine, secret.as_deref())?;
+    let copied = session.exec_with_stdin(
+        &super::ssh::ExecRequest {
+            cwd: "/".into(),
+            command: super::agent_server::binary_install_command(total, &built),
+            timeout_secs: 180,
+        },
+        &payload,
+        &mut |sent| {
+            let file_sent = if wire == 0 { 0 } else { sent.saturating_mul(total) / wire };
+            emit_install(app, server_id, "copying", file_sent.min(total), total);
+        },
+    )?;
+    if copied.timed_out {
+        return Err(Error::Other(format!("timed out copying the program to {}", machine.host)));
     }
-    let stdout = require_exec(work, machine, &super::agent_server::version_check_script(), 20)?;
-    let status = super::agent_server::parse_version_check(&stdout);
-    if status.installed && !status.version.contains(&built) {
+    if copied.exit_code != Some(0) || !copied.stdout.contains("installed") {
+        let detail = copied.stderr.trim();
+        return Err(Error::Other(if detail.is_empty() {
+            format!("the copy to {} did not finish", machine.host)
+        } else {
+            detail.to_string()
+        }));
+    }
+    emit_install(app, server_id, "installing", total, total);
+    // `--version` runs the program that is already in memory. Replacing the file does not change it.
+    let on_disk = require_exec(work, machine, &super::agent_server::file_version_script(), 20).unwrap_or_default();
+    let reported = on_disk
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .trim_matches(|ch: char| ch == '\'' || ch == '"')
+        .trim_end_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if !version_matches(reported, &built) {
         return Err(Error::Other(format!(
-            "copied {built} to {}, but it still reports {}. The old program was still running.",
-            machine.host, status.version
+            "copied {built} to {}, but the file there reads {}. Rebuild twanagent-server, then update again.",
+            machine.host,
+            if reported.is_empty() { "nothing" } else { reported }
         )));
+    }
+    let mut status = super::agent_server::parse_version_check(&format!("status installed twanagent-server {built}\n"));
+    let wanted = super::agent_server::server_version();
+    // The file copied is the newest build on this Mac. When that build is older than this app,
+    // the server is updated as far as the file allows, and the row still offers a newer build.
+    if super::agent_server::server_update_available(&format!("twanagent-server {built}")) {
+        status.update = true;
+        status.available = wanted.to_string();
+    } else {
+        status.update = false;
+        status.available.clear();
     }
     Ok(status)
 }
@@ -636,69 +767,8 @@ pub async fn dev_server_capabilities(state: State<'_, AppState>, id: String) -> 
 }
 
 fn read_capabilities(work: &ServerWork, machine: &Machine) -> Result<RemoteCapabilities> {
-    let script = r#"python3 - <<'PY'
-import json, os
-home = os.path.expanduser("~")
-mcp = {}
-for rel in (".grok/config.toml", ".cursor/mcp.json", ".claude.json"):
-    path = os.path.join(home, rel)
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            mcp[rel] = handle.read()
-    except OSError:
-        pass
-auth = []
-cred = os.path.join(home, ".grok", "mcp_credentials.json")
-try:
-    with open(cred, "r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-    if isinstance(raw, dict):
-        seen = []
-        for key in raw:
-            name = str(key).split(":", 1)[0].strip()
-            if name and name not in seen:
-                seen.append(name)
-        auth = seen
-except (OSError, ValueError):
-    pass
-roots = [
-    (os.path.join(home, ".grok", "skills"), "user"),
-    (os.path.join(home, ".grok", "commands"), "user"),
-    (os.path.join(home, ".agents", "skills"), "user"),
-    (os.path.join(home, ".claude", "skills"), "claude"),
-    (os.path.join(home, ".claude", "commands"), "claude"),
-    (os.path.join(home, ".cursor", "skills"), "cursor"),
-    (os.path.join(home, ".grok", "bundled", "skills"), "bundled"),
-]
-skills = []
-def add(path, origin):
-    rel = os.path.relpath(path, home).replace(os.sep, "/")
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            skills.append({"path": "~/" + rel, "read_path": rel, "origin": origin, "contents": handle.read()})
-    except OSError:
-        pass
-for root, origin in roots:
-    if not os.path.isdir(root):
-        continue
-    if root.endswith("/commands") or root.endswith(os.sep + "commands"):
-        for name in sorted(os.listdir(root)):
-            if name.lower().endswith(".md") and name.lower() != "readme.md":
-                add(os.path.join(root, name), origin)
-        continue
-    for name in sorted(os.listdir(root)):
-        add(os.path.join(root, name, "SKILL.md"), origin)
-plugins = os.path.join(home, ".grok", "installed-plugins")
-if os.path.isdir(plugins):
-    for plugin in sorted(os.listdir(plugins)):
-        skill_root = os.path.join(plugins, plugin, "skills")
-        if not os.path.isdir(skill_root):
-            continue
-        for name in sorted(os.listdir(skill_root)):
-            add(os.path.join(skill_root, name, "SKILL.md"), "plugin")
-print(json.dumps({"mcp": mcp, "auth": auth, "skills": skills}))
-PY"#;
-    let stdout = require_exec(work, machine, script, 30)?;
+    let script = capabilities_command();
+    let stdout = require_exec(work, machine, &script, 30)?;
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|err| Error::Other(err.to_string()))?;
     let mcp = parsed
         .get("mcp")
@@ -790,6 +860,74 @@ fn local_capability_bundle() -> Result<serde_json::Value> {
     }))
 }
 
+/// Same listing as the old heredoc, but the script rides inside the command.
+/// An exec channel closes stdin as the command starts, so `python3 - <<'PY'` exits before any line arrives.
+fn capabilities_command() -> String {
+    const PROGRAM: &str = r#"import json, os
+home = os.path.expanduser("~")
+mcp = {}
+for rel in (".grok/config.toml", ".cursor/mcp.json", ".claude.json"):
+    path = os.path.join(home, rel)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            mcp[rel] = handle.read()
+    except OSError:
+        pass
+auth = []
+cred = os.path.join(home, ".grok", "mcp_credentials.json")
+try:
+    with open(cred, "r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if isinstance(raw, dict):
+        seen = []
+        for key in raw:
+            name = str(key).split(":", 1)[0].strip()
+            if name and name not in seen:
+                seen.append(name)
+        auth = seen
+except (OSError, ValueError):
+    pass
+roots = [
+    (os.path.join(home, ".grok", "skills"), "user"),
+    (os.path.join(home, ".grok", "commands"), "user"),
+    (os.path.join(home, ".agents", "skills"), "user"),
+    (os.path.join(home, ".claude", "skills"), "claude"),
+    (os.path.join(home, ".claude", "commands"), "claude"),
+    (os.path.join(home, ".cursor", "skills"), "cursor"),
+    (os.path.join(home, ".grok", "bundled", "skills"), "bundled"),
+]
+skills = []
+def add(path, origin):
+    rel = os.path.relpath(path, home).replace(os.sep, "/")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            skills.append({"path": "~/" + rel, "read_path": rel, "origin": origin, "contents": handle.read()})
+    except OSError:
+        pass
+for root, origin in roots:
+    if not os.path.isdir(root):
+        continue
+    if root.endswith("/commands") or root.endswith(os.sep + "commands"):
+        for name in sorted(os.listdir(root)):
+            if name.lower().endswith(".md") and name.lower() != "readme.md":
+                add(os.path.join(root, name), origin)
+        continue
+    for name in sorted(os.listdir(root)):
+        add(os.path.join(root, name, "SKILL.md"), origin)
+plugins = os.path.join(home, ".grok", "installed-plugins")
+if os.path.isdir(plugins):
+    for plugin in sorted(os.listdir(plugins)):
+        skill_root = os.path.join(plugins, plugin, "skills")
+        if not os.path.isdir(skill_root):
+            continue
+        for name in sorted(os.listdir(skill_root)):
+            add(os.path.join(skill_root, name, "SKILL.md"), "plugin")
+print(json.dumps({"mcp": mcp, "auth": auth, "skills": skills}))
+"#;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, PROGRAM.as_bytes());
+    format!("printf %s {} | base64 -d | python3 -", super::ssh::shell_single_quote(&encoded))
+}
+
 fn capability_copy_script(bundle: &serde_json::Value) -> Result<String> {
     let body = serde_json::to_vec(bundle).map_err(|err| Error::Other(err.to_string()))?;
     if body.len() > 8_000_000 {
@@ -855,6 +993,46 @@ pub async fn dev_list_agent_servers(state: State<'_, AppState>) -> Result<Vec<su
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ServerGit {
     pub installed: bool,
+}
+
+/// A folder that already exists on the server. It may not be in this Mac's sidebar yet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ServerProject {
+    pub name: String,
+    pub remote_path: String,
+    /// True when this Mac already saved the folder. Opening it again reuses that row.
+    pub saved: bool,
+}
+
+/// Folders under the home projects directories on this machine.
+/// The sidebar list only has projects this Mac created, so a folder from another client would be missing.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_server_projects(state: State<'_, AppState>, id: String) -> Result<Vec<ServerProject>> {
+    let work = server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        let machine = machine_for_server(&work, &server)?;
+        let saved = config::list_remote_projects(&conn)?;
+        let stdout = require_exec(&work, &machine, &super::files::remote_projects_command(), 20)?;
+        Ok(server_projects_from(&stdout, &machine.id, &saved))
+    })
+    .await
+}
+
+pub(crate) fn server_projects_from(stdout: &str, machine_id: &str, saved: &[config::RemoteProject]) -> Vec<ServerProject> {
+    super::files::parse_remote_projects(stdout)
+        .into_iter()
+        .filter_map(|path| {
+            let name = path.rsplit('/').find(|part| !part.is_empty())?.to_string();
+            let known = saved.iter().any(|row| row.machine_id == machine_id && row.remote_path == path);
+            Some(ServerProject {
+                name,
+                remote_path: path,
+                saved: known,
+            })
+        })
+        .collect()
 }
 
 /// `git --version` on the paired machine. A missing binary is not an error.
@@ -936,15 +1114,17 @@ pub async fn dev_agent_server_status(
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_install_agent_binary(
-    state: State<'_, AppState>,
+    app: AppHandle,
     id: String,
 ) -> Result<super::agent_server::ServerInstallStatus> {
+    let state = app.state::<AppState>();
     let work = server_work(&state);
+    let server_id = id.clone();
     crate::state::run_blocking(move || {
         let conn = work_db(&work)?;
         let server = agent_server_by_id(&conn, &id)?;
         let machine = machine_for_server(&work, &server)?;
-        copy_binary(&work, &machine)
+        copy_binary(&app, &work, &server_id, &machine)
     })
     .await
 }

@@ -9,8 +9,11 @@ import {
   formatPlayerTime,
   isMarkdownPath,
   isMcpEditorPath,
+  isSkillEditorPath,
   mcpEditorPath,
   mcpSourceFromPath,
+  skillEditorPath,
+  skillSourceFromPath,
   languageForPath,
   markdownViewForTab,
   mediaKindForPath,
@@ -265,6 +268,20 @@ describe("isMarkdownPath", () => {
     assert.equal(mcpSourceFromPath("src/a.ts"), null);
     assert.equal(editorTabTitle(path), "config.toml");
     assert.equal(languageForPath(path), "text");
+    const opened = openEditorTab(emptyEditor(), path);
+    assert.deepEqual(opened.tabs.map((tab) => tab.path), [path]);
+    assert.equal(opened.activePath, path);
+  });
+
+  it("keeps a home skill path intact and titles it from SKILL.md", () => {
+    const path = skillEditorPath("~/.grok/skills/commit/SKILL.md");
+    assert.equal(path, "skill:~/.grok/skills/commit/SKILL.md");
+    assert.equal(isSkillEditorPath(path), true);
+    assert.equal(skillSourceFromPath(path), "~/.grok/skills/commit/SKILL.md");
+    assert.equal(skillSourceFromPath("src/a.ts"), null);
+    assert.equal(editorTabTitle(path), "SKILL.md");
+    assert.equal(isMarkdownPath(path), true);
+    assert.equal(languageForPath(path), "markdown");
     const opened = openEditorTab(emptyEditor(), path);
     assert.deepEqual(opened.tabs.map((tab) => tab.path), [path]);
     assert.equal(opened.activePath, path);

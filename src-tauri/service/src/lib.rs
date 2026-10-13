@@ -30,7 +30,8 @@ pub use turn::{ModelStep, ScriptedModel, TurnRequest};
 
 /// `twanagent-server --version` prints this. It is the service crate version, not the app version.
 /// Server binary updates can ship without a new GUI build, so the two numbers move separately.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// A null keeps the next string in the binary from being read as part of the version.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\0");
 
 /// One line the GUI paints while a hosted turn runs. Tool results stay on the server.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,17 +47,30 @@ use std::path::Path;
 
 pub struct ProjectService {
     pub project: std::path::PathBuf,
+    /// This project's conversations. Not shared with another project on the same machine.
     pub store_dir: std::path::PathBuf,
+    /// The machine data directory. Keys and the live tail stay here.
+    pub data_dir: std::path::PathBuf,
 }
 
 impl ProjectService {
     pub fn open(project: impl AsRef<Path>, store_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_data(project, store_dir.as_ref(), store_dir.as_ref().parent().unwrap_or(store_dir.as_ref()))
+    }
+
+    fn open_with_data(project: impl AsRef<Path>, store_dir: &Path, data_dir: &Path) -> Result<Self> {
         let project = project.as_ref().to_path_buf();
-        let store_dir = store_dir.as_ref().to_path_buf();
+        let store_dir = store_dir.to_path_buf();
+        let data_dir = data_dir.to_path_buf();
         std::fs::create_dir_all(&project)?;
         std::fs::create_dir_all(&store_dir)?;
+        std::fs::create_dir_all(&data_dir)?;
         let _ = store::open(&store_dir)?;
-        Ok(Self { project, store_dir })
+        Ok(Self {
+            project,
+            store_dir,
+            data_dir,
+        })
     }
 
     pub fn list_conversations(&self) -> Result<Vec<store::ConversationSummary>> {
@@ -92,8 +106,21 @@ impl ProjectService {
     }
 }
 
+/// Conversations for one project. Two projects on the same machine do not share this directory.
+/// The name is the project path, so a renamed folder is a different project.
+pub fn project_store_dir(data_dir: &Path, project: &Path) -> std::path::PathBuf {
+    data_dir.join("projects").join(project_store_key(project))
+}
+
+fn project_store_key(project: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let text = project.to_string_lossy().replace('\\', "/");
+    let trimmed = text.trim_end_matches('/');
+    Sha256::digest(trimmed.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 pub fn open_server(project: &Path, data_dir: &Path) -> Result<ProjectService> {
-    ProjectService::open(project, data_dir.join("store"))
+    ProjectService::open_with_data(project, &project_store_dir(data_dir, project), data_dir)
 }
 
 pub fn key_file(data_dir: &Path) -> KeyFile {
@@ -146,4 +173,58 @@ pub fn serve_stdio(service: &ProjectService, keys: &KeyFile) -> Result<()> {
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     serve(service, keys, &mut input, &mut output, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat(id: &str, title: &str) -> Conversation {
+        Conversation {
+            id: id.into(),
+            title: title.into(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            kind: "chat".into(),
+            messages: Vec::new(),
+            context_usage: None,
+            compaction: None,
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn two_projects_on_one_machine_do_not_share_chats() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let first = open_server(&root.path().join("dev-test"), &data).unwrap();
+        let second = open_server(&root.path().join("other"), &data).unwrap();
+        assert_ne!(first.store_dir, second.store_dir);
+        assert_ne!(first.store_dir, data.join("store"));
+        first.save_conversation(&chat("c1", "what is the specs of this machine")).unwrap();
+        assert!(second.list_conversations().unwrap().is_empty());
+        assert_eq!(first.list_conversations().unwrap().len(), 1);
+        // Keys stay on the machine, not inside either project store.
+        assert_eq!(first.data_dir, data);
+        assert_eq!(key_file(&data).path, data.join("provider-keys.json"));
+    }
+
+    #[test]
+    fn the_same_project_path_reopens_its_own_store() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let path = root.path().join("dev-test");
+        open_server(&path, &data)
+            .unwrap()
+            .save_conversation(&chat("c1", "kept"))
+            .unwrap();
+        let again = open_server(&path.join(""), &data).unwrap();
+        assert_eq!(again.list_conversations().unwrap()[0].title, "kept");
+    }
 }

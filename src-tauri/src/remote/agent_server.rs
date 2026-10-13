@@ -21,6 +21,9 @@ pub struct ServerInstallStatus {
     /// This Mac has a newer `twanagent-server` than the one on that machine.
     #[serde(default)]
     pub update: bool,
+    /// The version this Mac would copy. Empty when no newer build is ready.
+    #[serde(default)]
+    pub available: String,
     /// `~/.twanagent/auth-token` is a pairing token. The token itself stays on the machine.
     #[serde(default)]
     pub paired: bool,
@@ -65,17 +68,27 @@ pub fn target_probe_script() -> String {
 }
 
 /// The version string baked into a built `twanagent-server`, or empty when it cannot be read.
+/// The binary also contains "twanagent-server live", which is not a version. A digit has to follow.
 pub fn binary_version(bytes: &[u8]) -> String {
     let marker = b"twanagent-server ";
-    let Some(start) = bytes.windows(marker.len()).position(|window| window == marker) else {
-        return String::new();
-    };
-    let rest = &bytes[start + marker.len()..];
-    let end = rest
-        .iter()
-        .position(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-'))
-        .unwrap_or(rest.len());
-    String::from_utf8_lossy(&rest[..end]).trim_matches('-').trim().to_string()
+    let mut from = 0;
+    while let Some(at) = bytes[from..].windows(marker.len()).position(|window| window == marker) {
+        let start = from + at + marker.len();
+        let rest = &bytes[start..];
+        let end = rest
+            .iter()
+            .position(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-'))
+            .unwrap_or(rest.len());
+        let text = String::from_utf8_lossy(&rest[..end]).trim_matches('-').trim().to_string();
+        if text.starts_with(|ch: char| ch.is_ascii_digit()) {
+            return text;
+        }
+        from = start;
+        if from >= bytes.len() {
+            break;
+        }
+    }
+    String::new()
 }
 
 /// macOS builds cannot run on the Linux machine. Pick the binary that matches `uname`.
@@ -155,7 +168,13 @@ fn binary_rank(path: &std::path::Path) -> (Vec<u64>, u8, u64, bool, std::time::S
 
 /// The program this Mac would copy. `twanagent-server --version` prints `twanagent-server <this>`.
 /// This is the service crate version, not the desktop app version.
+/// The trailing null keeps the next string in the binary from being read as part of the version.
+/// It is not part of the version, so a comparison has to drop it or the installed copy looks older.
 pub const SERVER_VERSION: &str = twanagent_service::VERSION;
+
+pub fn server_version() -> &'static str {
+    SERVER_VERSION.trim_end_matches('\0')
+}
 
 /// `installed` is the text from `--version`, such as `twanagent-server 1.0.0-beta.1`.
 pub fn server_update_available(installed: &str) -> bool {
@@ -163,7 +182,7 @@ pub fn server_update_available(installed: &str) -> bool {
     if installed.is_empty() || installed == "unknown" {
         return false;
     }
-    version_is_older(installed, SERVER_VERSION)
+    version_is_older(installed, server_version())
 }
 
 /// Numeric pieces, then the prerelease tag. `1.0.0-beta.1` is older than `1.0.0-beta.2`.
@@ -203,36 +222,71 @@ fn split_version(raw: &str) -> (Vec<u64>, Option<u64>) {
 /// and whether a pairing token is already there.
 /// A file that exists but is not marked executable still counts. The copy step sets the bit.
 /// `-x` alone hid a real install when the bit was missing or the shell could not see it.
+/// Put the program on `PATH` as `twanagent-server`. Silent, and a failure here does not fail the check.
+/// `~/.local/bin` is the usual per-user bin. The shell files are updated only when they do not mention it yet.
+pub fn path_setup_script() -> &'static str {
+    "mkdir -p \"$HOME/.local/bin\" && ln -sfn \"$HOME/.twanagent/bin/twanagent-server\" \"$HOME/.local/bin/twanagent-server\"; \
+path_line='export PATH=\"$HOME/.local/bin:$PATH\"'; \
+for rc in \"$HOME/.bashrc\" \"$HOME/.profile\"; do \
+  if [ -f \"$rc\" ] && grep -Fqs '.local/bin' \"$rc\"; then continue; fi; \
+  printf '\\n%s\\n' \"$path_line\" >> \"$rc\"; \
+done; \
+if [ -f \"$HOME/.zshrc\" ] && ! grep -Fqs '.local/bin' \"$HOME/.zshrc\"; then printf '\\n%s\\n' \"$path_line\" >> \"$HOME/.zshrc\"; fi"
+}
+
 pub fn version_check_script() -> String {
     format!(
-        "bin={BINARY_PATH}; \
+        "{{ {setup}; }} >/dev/null 2>&1 || true; \
+bin={BINARY_PATH}; \
 if [ -f \"$bin\" ] || [ -x \"$bin\" ]; then \
   if [ ! -x \"$bin\" ]; then chmod 755 \"$bin\" 2>/dev/null || true; fi; \
-  printf 'installed '; \"$bin\" --version 2>/dev/null || printf 'unknown'; \
-else printf 'missing'; fi; \
-printf '\\n'; \
+  bytes=$(wc -c < \"$bin\" 2>/dev/null | tr -d '[:space:]'); \
+  case \"$bytes\" in ''|*[!0-9]*) bytes=0 ;; esac; \
+  if [ \"$bytes\" -lt 5000000 ]; then \
+    printf 'status broken\\n'; \
+  else \
+    ver=$(tr -cd '0-9A-Za-z.-\\n' < \"$bin.version\" 2>/dev/null | head -n 1 | tr -d '[:space:]'); \
+    if [ -z \"$ver\" ]; then ver=$(\"$bin\" --version 2>/dev/null | tr -d '\\n' || true); fi; \
+    case \"$ver\" in \
+      twanagent-server*) printf 'status installed %s\\n' \"$ver\" ;; \
+      '') printf 'status installed unknown\\n' ;; \
+      *) printf 'status installed twanagent-server %s\\n' \"$ver\" ;; \
+    esac; \
+  fi; \
+else printf 'status missing\\n'; fi; \
 token=\"$HOME/.twanagent/auth-token\"; \
 if [ -f \"$token\" ]; then \
   tok=$(tr -d '[:space:]' < \"$token\"); \
   case \"$tok\" in \
-    *[!0-9A-Fa-f]*|'') printf 'token no\\n' ;; \
-    ????????????????????????????????*) printf 'token yes\\n' ;; \
-    *) printf 'token no\\n' ;; \
+    *[!0-9A-Fa-f]*|'') printf 'paired no\\n' ;; \
+    ????????????????????????????????*) printf 'paired yes\\n' ;; \
+    *) printf 'paired no\\n' ;; \
   esac; \
-else printf 'token no\\n'; fi"
+else printf 'paired no\\n'; fi; \
+exit 0",
+        setup = path_setup_script(),
     )
 }
 
 pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
     let path = "~/.twanagent/bin/twanagent-server".into();
-    let mut lines = stdout.lines().map(str::trim).filter(|line| !line.is_empty());
-    let first = lines.next().unwrap_or("");
-    let paired = stdout.lines().any(|line| line.trim() == "token yes");
-    if let Some(rest) = first.strip_prefix("installed") {
+    let status = stdout
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("status "))
+        .unwrap_or("")
+        .trim();
+    let paired = stdout.lines().any(|line| {
+        let line = line.trim();
+        line == "paired yes" || line == "token yes"
+    });
+    if let Some(rest) = status.strip_prefix("installed") {
         let version = rest.trim().to_string();
+        let update = server_update_available(&version);
         return ServerInstallStatus {
             installed: true,
-            update: server_update_available(&version),
+            available: if update { server_version().into() } else { String::new() },
+            update,
             version,
             path,
             online: true,
@@ -242,6 +296,7 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
     ServerInstallStatus {
         installed: false,
         version: String::new(),
+        available: String::new(),
         path,
         online: true,
         update: false,
@@ -249,36 +304,41 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
     }
 }
 
-/// One SSH exec cannot carry the whole program. Each piece stays under a channel packet.
-const BINARY_CHUNK_BYTES: usize = 24_000;
+/// Read the version out of the file without starting it. A running copy keeps the old bytes in memory,
+/// so `--version` would still print the version from before the file was replaced.
+/// The marker is written on its own line at the end of the copy, so this does not scan the program.
+pub fn file_version_script() -> String {
+    format!("tail -c 80 {BINARY_PATH}.version 2>/dev/null || true")
+}
 
-/// Stop a copy that is still running, then prepare an empty file, append base64 pieces,
-/// and mark the program executable.
-/// One command with the whole binary is larger than an SSH channel will accept.
-/// A running `twanagent-server` keeps the old bytes mapped, so `--version` would still
-/// print the version that was there before the copy.
-pub fn binary_install_scripts(binary: &[u8]) -> Result<Vec<String>> {
-    if binary.is_empty() {
-        return Err(Error::Other("server binary is empty".into()));
-    }
-    if binary.len() > 80_000_000 {
-        return Err(Error::Other("server binary is too large".into()));
-    }
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, binary);
-    let mut scripts = vec![format!(
-        "pkill -f {BINARY_PATH} >/dev/null 2>&1 || true; sleep 0.3; mkdir -p \"$HOME/.twanagent/bin\" && : > {BINARY_PATH}.b64"
-    )];
-    for chunk in encoded.as_bytes().chunks(BINARY_CHUNK_BYTES) {
-        let piece = std::str::from_utf8(chunk).expect("base64 is ascii");
-        scripts.push(format!(
-            "printf %s {} >> {BINARY_PATH}.b64",
-            super::ssh::shell_single_quote(piece)
-        ));
-    }
-    scripts.push(format!(
-        "base64 -d < {BINARY_PATH}.b64 > {BINARY_PATH}.tmp && rm -f {BINARY_PATH}.b64 && mv {BINARY_PATH}.tmp {BINARY_PATH} && chmod 755 {BINARY_PATH} && echo installed"
-    ));
-    Ok(scripts)
+/// Stop the running program, then decode one base64 stream into a new file and swap it into place.
+/// The old file stays until the new one is complete. A failed copy does not leave a half-written program.
+/// Hundreds of separate SSH commands dropped the copy when the server was busy, so the version never changed.
+///
+/// `base64 -d` exits 0 when the stream ends early. A short file still loads, then segfaults on
+/// `--version`. The byte count is the decoded length, so a cut-off copy is refused before it replaces
+/// the program that is already there.
+///
+/// `version` is the string baked into the file being copied, not the crate version compiled into
+/// this app. A Linux binary built before the crate moved to a newer beta still prints the old one.
+/// Writing the crate version beside that file made the check say the copy had the wrong version.
+pub fn binary_install_command(bytes: u64, version: &str) -> String {
+    let version = version
+        .trim()
+        .trim_end_matches('\0')
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '.' || *ch == '-')
+        .collect::<String>();
+    format!(
+        "pkill -x twanagent-server >/dev/null 2>&1 || true; \
+mkdir -p \"$HOME/.twanagent/bin\" && \
+base64 -d > {BINARY_PATH}.tmp && \
+got=$(wc -c < {BINARY_PATH}.tmp | tr -d '[:space:]') && \
+if [ \"$got\" != '{bytes}' ]; then echo \"copied $got of {bytes} bytes\" >&2; rm -f {BINARY_PATH}.tmp; exit 1; fi && \
+mv {BINARY_PATH}.tmp {BINARY_PATH} && chmod 755 {BINARY_PATH} && \
+printf 'twanagent-server {version}\\n' > {BINARY_PATH}.version && \
+echo installed"
+    )
 }
 
 /// Write `~/.twanagent/provider-keys.json` from the chosen providers. Unchecked providers are cleared.
@@ -474,29 +534,48 @@ mod tests {
     #[test]
     fn version_check_tells_missing_from_installed() {
         let script = version_check_script();
+        assert!(script.contains("$HOME/.local/bin/twanagent-server"));
         assert!(script.contains("$HOME/.twanagent/bin/twanagent-server"));
-        assert!(!parse_version_check("missing\n").installed);
-        let found = parse_version_check(" installed twanagent-server 1.0.0-beta.1\ntoken no\n");
+        assert!(!parse_version_check("status missing\n").installed);
+        // A cut-off copy is a few megabytes and segfaults. It must not count as installed.
+        let broken = parse_version_check("status broken\npaired yes\n");
+        assert!(!broken.installed);
+        assert!(broken.paired);
+        assert!(broken.online);
+        let found = parse_version_check(" status installed twanagent-server 1.0.0-beta.1\npaired no\n");
         assert!(found.installed);
         assert!(found.online);
         assert!(!found.paired);
         assert_eq!(found.version, "twanagent-server 1.0.0-beta.1");
-        let paired = parse_version_check("installed twanagent-server 1.0.0-beta.3\ntoken yes\n");
+        let paired = parse_version_check("status installed twanagent-server 1.0.0-beta.3\npaired yes\n");
         assert!(paired.installed);
         assert!(paired.paired);
-        let token_only = parse_version_check("missing\ntoken yes\n");
+        let token_only = parse_version_check("status missing\npaired yes\n");
         assert!(!token_only.installed);
         assert!(token_only.paired);
+        // The raw `--version` line is not a status. It must not be shown as an error or a version.
+        let leaked = parse_version_check("installed twanagent-server 1.0.0-beta.3\ntoken yes\n");
+        assert!(!leaked.installed);
+        assert!(leaked.paired);
         assert_eq!(
             binary_version(b"prefix twanagent-server 1.0.0-beta.2\0tail"),
             "1.0.0-beta.2"
         );
+        assert_eq!(
+            binary_version(b"twanagent-server live on 127.0.0.1 twanagent-server 1.0.0-beta.4\0"),
+            "1.0.0-beta.4"
+        );
+        assert!(binary_version(b"twanagent-server live").is_empty());
         assert!(server_update_available("twanagent-server 1.0.0-beta.1"));
-        assert!(!server_update_available(&format!("twanagent-server {SERVER_VERSION}")));
+        assert!(!server_update_available(&format!("twanagent-server {}", server_version())));
+        assert!(!server_version().contains('\0'));
+        let current = parse_version_check(&format!("status installed twanagent-server {}\n", server_version()));
+        assert!(!current.update);
+        assert!(current.available.is_empty());
         assert_ne!(SERVER_VERSION, env!("CARGO_PKG_VERSION"));
         assert!(!server_update_available("unknown"));
         assert!(!version_is_older("1.0.0", "1.0.0-beta.2"));
-        let missing = parse_version_check("missing\n");
+        let missing = parse_version_check("status missing\n");
         assert!(!missing.installed);
         assert!(missing.online);
     }
@@ -511,18 +590,20 @@ mod tests {
 
     #[test]
     fn binary_install_decodes_onto_the_server_path() {
-        let scripts = binary_install_scripts(b"#!/bin/sh\necho hi\n").unwrap();
-        assert!(scripts.len() >= 3);
-        assert!(scripts[0].contains("pkill -f"));
-        assert!(scripts[0].contains("|| true"));
-        assert!(scripts[0].contains(": >"));
-        assert!(scripts.iter().any(|script| script.contains("base64 -d")));
-        assert!(scripts.last().unwrap().contains("chmod 755"));
-        assert!(scripts.last().unwrap().contains("$HOME/.twanagent/bin/twanagent-server"));
-        assert!(binary_install_scripts(b"").is_err());
-        let large = binary_install_scripts(&vec![7u8; 80_000]).unwrap();
-        assert!(large.len() > 4);
-        assert!(large.iter().all(|script| script.len() < 40_000));
+        let script = binary_install_command(6171176, "1.0.0-beta.3");
+        assert!(script.contains("pkill -x twanagent-server"));
+        assert!(!script.contains("pkill -f"));
+        assert!(script.contains("base64 -d"));
+        assert!(script.contains("chmod 755"));
+        assert!(script.contains("$HOME/.twanagent/bin/twanagent-server"));
+        assert!(script.contains(".version"));
+        assert!(script.contains("6171176"));
+        assert!(script.contains("twanagent-server 1.0.0-beta.3"));
+        assert!(!script.contains("beta.5"));
+        assert!(script.contains("rm -f"));
+        let read = file_version_script();
+        assert!(read.contains(".version"));
+        assert!(!read.contains("grep"));
     }
 
     #[test]

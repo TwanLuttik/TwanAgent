@@ -29,7 +29,7 @@ export function SkillDock({
       icon="doc"
       summary={skillPillSummary(skills)}
       meta={`${onCount}/${skills.length} on`}
-      hint="Toggle what Grok can use. Edit opens SKILL.md. TwanAgent does not auto-run these."
+      hint="Toggle what Grok can use. Edit opens SKILL.md here. TwanAgent does not auto-run these."
     >
       <div className="space-y-1">
         {skills.map((skill) => {

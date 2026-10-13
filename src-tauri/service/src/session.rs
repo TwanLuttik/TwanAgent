@@ -58,7 +58,7 @@ pub(crate) fn handle_frame(
 }
 
 fn follow_live(service: &ProjectService, id: &str, cursor: u64) -> ServerFrame {
-    let data_dir = service.store_dir.parent().unwrap_or(service.store_dir.as_path());
+    let data_dir = service.data_dir.as_path();
     match crate::live::read_since(data_dir, id, cursor) {
         Ok((frames, next)) => {
             let ended = frames
@@ -130,7 +130,7 @@ pub fn submit_streaming<W: Write>(
     let workspace = LocalWorkspace { root: service.project.clone() };
     let (tx, rx) = std::sync::mpsc::channel();
     let id = request.conversation_id.clone();
-    let data_dir = service.store_dir.parent().unwrap_or(service.store_dir.as_path()).to_path_buf();
+    let data_dir = service.data_dir.clone();
     let _ = crate::live::begin(&data_dir, &id);
     let result = crate::turn::run_live_turn(service, &request, &workspace, &resolved, |event| {
         let frame = match event {
@@ -259,7 +259,7 @@ mod tests {
     fn a_follow_reads_frames_written_while_the_turn_runs() {
         let root = tempfile::tempdir().unwrap();
         let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
-        let data = service.store_dir.parent().unwrap().to_path_buf();
+        let data = service.data_dir.clone();
         crate::live::begin(&data, "c1").unwrap();
         crate::live::append(&data, "c1", &crate::live::LiveFrame::Delta { text: "Hel".into() }).unwrap();
         let first = follow_live(&service, "c1", 0);

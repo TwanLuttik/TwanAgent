@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AllProjectsList } from "../../components/AllProjectsList";
 import { ConversationList } from "../../components/ConversationList";
 import { SpaceCorner } from "../../components/SpaceCorner";
@@ -8,7 +8,8 @@ import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
 import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
-import { projectGitKey, projectGitLabel, type ProjectGit } from "../../lib/project-git";
+import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
+import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
 import type { JourneyColor, JourneySummary } from "../../lib/journey";
@@ -215,32 +216,62 @@ function ProjectsNav({
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || projectSettings);
-  const gitPaths = allProjectGroups.map((group: { path: string }) => group.path).join("\n");
-  useEffect(() => {
-    const paths = gitPaths.split("\n").filter(Boolean);
-    if (!paths.length) {
-      setGitByProject({});
+  const gitRows = allProjectGroups
+    .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
+    .join("\n");
+  const gitRowsRef = useRef(gitRows);
+  gitRowsRef.current = gitRows;
+  const knownGit = useRef(new Map<string, ProjectGit | null>());
+  const gitGeneration = useRef(0);
+  const loadGitLabels = useRef<(refresh: boolean) => void>(() => {});
+  loadGitLabels.current = (refresh: boolean) => {
+    const rows = gitRowsRef.current
+      .split("\n")
+      .filter(Boolean)
+      .map((line: string) => {
+        const tab = line.indexOf("\t");
+        return { remote: line.slice(0, tab) === "1", path: line.slice(tab + 1) };
+      })
+      .filter((row: { path: string }) => row.path);
+    if (refresh) knownGit.current.clear();
+    for (const key of [...knownGit.current.keys()]) {
+      if (!rows.some((row: { path: string }) => projectGitKey(row.path) === key)) knownGit.current.delete(key);
+    }
+    const pending = rows.filter((row: { remote: boolean; path: string }) => !row.remote && !knownGit.current.has(projectGitKey(row.path)));
+    const generation = ++gitGeneration.current;
+    const publish = () => {
+      if (generation !== gitGeneration.current) return;
+      const found: Record<string, ProjectGit> = {};
+      for (const [key, label] of knownGit.current) {
+        if (label) found[key] = label;
+      }
+      setGitByProject((prev) => (sameGitLabels(prev, found) ? prev : found));
+    };
+    if (!pending.length) {
+      publish();
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      const found: Record<string, ProjectGit> = {};
-      await Promise.all(
-        paths.map(async (path: string) => {
-          try {
-            const label = projectGitLabel(await api.gitProjectSummary(path));
-            if (label) found[projectGitKey(path)] = label;
-          } catch {
-            /* a missing folder or closed workspace just stays unlabeled */
-          }
-        }),
-      );
-      if (!cancelled) setGitByProject(found);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [gitPaths, setGitByProject]);
+    void Promise.all(
+      pending.map(async (row: { path: string }) => {
+        const key = projectGitKey(row.path);
+        try {
+          knownGit.current.set(key, projectGitLabel(await api.gitProjectSummary(row.path)));
+        } catch {
+          knownGit.current.set(key, null);
+        }
+      }),
+    ).then(publish);
+  };
+  useEffect(() => {
+    loadGitLabels.current(false);
+  }, [gitRows]);
+  const gitRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
+  const seenGitRefresh = useRef(gitRefresh);
+  useEffect(() => {
+    if (gitRefresh === seenGitRefresh.current) return;
+    seenGitRefresh.current = gitRefresh;
+    loadGitLabels.current(true);
+  }, [gitRefresh]);
 
   const todoWatch = allProjectGroups
     .flatMap((group: { path: string; conversations: ConversationSummary[] }) =>

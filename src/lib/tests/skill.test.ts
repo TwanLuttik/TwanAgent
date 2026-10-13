@@ -6,6 +6,7 @@ import {
   parseSkillsDisabled,
   setSkillEnabledInToml,
   skillFallbackName,
+  skillFromPath,
   skillPillSummary,
   skillSystemLine,
   type DetectedSkill,
@@ -55,6 +56,34 @@ description: Create conventional commits. Use when the user wants to commit.
 });
 
 describe("detectSkills", () => {
+  it("names a skill from its path without reading the file", () => {
+    assert.equal(skillFromPath("~/.cursor/skills/shell/SKILL.md", "cursor"), null);
+    assert.deepEqual(skillFromPath("~/.grok/skills/writing-skills/SKILL.md", "user"), {
+      name: "writing-skills",
+      source: "~/.grok/skills/writing-skills/SKILL.md",
+      origin: "user",
+      description: "",
+      enabled: true,
+    });
+    const skills = detectSkills(
+      [
+        { source: "~/.grok/skills/writing-skills/SKILL.md", origin: "user", contents: "" },
+        { source: "~/.grok/skills/writing-skills/SKILL.md", origin: "plugin", contents: "" },
+        { source: "~/.cursor/skills/shell/SKILL.md", origin: "cursor", contents: "" },
+      ],
+      `[skills]\ndisabled = ["writing-skills"]\n`,
+    );
+    assert.deepEqual(skills, [
+      {
+        name: "writing-skills",
+        source: "~/.grok/skills/writing-skills/SKILL.md",
+        origin: "user",
+        description: "",
+        enabled: false,
+      },
+    ]);
+  });
+
   it("keeps the first name, applies [skills].disabled, and skips vendor defaults", () => {
     const grokToml = `
 [skills]

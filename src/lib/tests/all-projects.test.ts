@@ -16,7 +16,9 @@ import {
   sidebarProjects,
   toggleCollapsedProject,
   applyLiveProjectChats,
+  isLocalCloudDraft,
   mergeLoadedProjectGroups,
+  preferredOpenConversation,
   placeProjectChats,
   sidebarTodoKey,
   stampProjectServer,
@@ -104,6 +106,24 @@ describe("applyLiveProjectChats", () => {
     );
   });
 
+  it("does not paint a local New chat onto a cloud project that already loaded", () => {
+    const groups = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [],
+      { "/mounts/cloud": { conversations: [chat("real", "what is the specs of this machine")], journeys: [] } },
+    );
+    const next = applyLiveProjectChats(
+      groups,
+      {
+        workspace: "/mounts/cloud",
+        conversations: [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
+        journeys: [],
+      },
+      "/mounts/cloud",
+    );
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["real"]);
+  });
+
   it("updates only the project whose chats have finished loading", () => {
     const groups = buildProjectGroups(
       [
@@ -156,21 +176,35 @@ describe("mergeLoadedProjectGroups", () => {
     );
   });
 
-  it("keeps a project's chats when a later cloud load comes back empty", () => {
+  it("clears a cloud project when its own load comes back empty", () => {
     const previous = buildProjectGroups(
-      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [{ name: "cloud", path: "/mounts/dev-test-2", remote: true }],
       [],
-      { "/mounts/cloud": { conversations: [chat("c1")], journeys: [journey("j1")] } },
+      {
+        "/mounts/dev-test-2": {
+          conversations: [chat("real", "what is the specs of this machine"), chat("draft", "New chat")],
+          journeys: [journey("j1")],
+        },
+      },
     );
     const incoming = buildProjectGroups(
-      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [{ name: "dev-test-2", path: "/mounts/dev-test-2", remote: true }],
       [],
-      { "/mounts/cloud": { conversations: [], journeys: [] } },
+      { "/mounts/dev-test-2": { conversations: [], journeys: [] } },
     );
     const next = mergeLoadedProjectGroups(previous, incoming);
-    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["c1"]);
-    assert.deepEqual(next[0]?.journeys.map((row) => row.id), ["j1"]);
+    assert.deepEqual(next[0]?.conversations, []);
+    assert.deepEqual(next[0]?.journeys, []);
     assert.equal(next[0]?.remote, true);
+    assert.equal(isLocalCloudDraft(chat("draft", "New chat")), true);
+    assert.equal(isLocalCloudDraft(chat("real", "what is the specs of this machine")), false);
+    assert.equal(isLocalCloudDraft({ ...chat("term", "New chat"), kind: "terminal" }), false);
+    const open = preferredOpenConversation(
+      [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
+      "draft",
+    );
+    assert.equal(open?.id, "real");
+    assert.equal(preferredOpenConversation([chat("draft", "New chat")], "draft")?.id, "draft");
   });
 
   it("keeps the server status when a later list pass does not include it", () => {
@@ -219,6 +253,22 @@ describe("placeProjectChats", () => {
       next.map((group) => group.conversations.map((row) => row.id)),
       [["a1"], ["b-run", "b1"]],
     );
+  });
+
+  it("drops a local New chat when placing chats on a cloud project", () => {
+    const groups = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [],
+      { "/mounts/cloud": { conversations: [chat("real", "what is the specs of this machine")], journeys: [] } },
+    );
+    const next = placeProjectChats(
+      groups,
+      "/mounts/cloud",
+      [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
+      [],
+      "/mounts/cloud",
+    );
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["real"]);
   });
 
   it("keeps the previous project's chats until the project you opened has loaded", () => {

@@ -666,45 +666,84 @@ pub fn git_branches(target: &GitTarget) -> Result<GitBranches> {
     }
 }
 
-pub fn git_summary(target: &GitTarget) -> Result<GitRepoSummary> {
-    let branches = git_branches(target)?;
-    if !branches.repo {
-        return Ok(empty_summary());
+/// Branch, ahead, behind, and a dirty count from one `git status`.
+pub fn git_label(target: &GitTarget) -> Result<GitRepoSummary> {
+    match git_text(
+        target,
+        &["status", "--porcelain=v2", "--branch", "--untracked-files=no"],
+    )? {
+        GitText::NotRepo => Ok(empty_summary()),
+        GitText::Output(text) => Ok(parse_git_label(&text)),
     }
-    let head = git_output(target, &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let head = head.trim();
-    let detached = head.is_empty() || head == "HEAD";
-    let commit = git_output(target, &["rev-parse", "--short", "HEAD"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && !s.starts_with("ERR"));
-    let upstream = git_output(target, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let (ahead, behind) = if upstream.is_some() {
-        parse_ahead_behind(&git_output(
-            target,
-            &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-        )?)
-    } else {
-        (0, 0)
-    };
-    let rows = git_status_with(target, false)?;
-    Ok(GitRepoSummary {
-        repo: true,
-        current: if detached { None } else { Some(head.to_string()) },
-        detached,
-        commit,
-        upstream,
-        ahead,
-        behind,
-        dirty: rows.len() as u32,
-        staged: rows.iter().filter(|row| row.staged).count() as u32,
-        unstaged: rows.iter().filter(|row| row.unstaged).count() as u32,
-        untracked: rows.iter().filter(|row| row.status == "untracked").count() as u32,
-        conflicts: rows.iter().filter(|row| row.status == "conflict").count() as u32,
-    })
+}
+
+/// `# branch.*` headers plus one ordinary line per change. Untracked files are not listed.
+pub fn parse_git_label(text: &str) -> GitRepoSummary {
+    let mut summary = empty_summary();
+    let mut saw_header = false;
+    let mut dirty = 0u32;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.") {
+            saw_header = true;
+            if let Some((key, value)) = rest.split_once(' ') {
+                match key {
+                    "head" => {
+                        let name = value.trim();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        if name == "(detached)" {
+                            summary.detached = true;
+                        } else {
+                            summary.current = Some(name.to_string());
+                        }
+                    }
+                    "oid" => {
+                        let oid = value.trim();
+                        if oid.len() >= 7 && oid.chars().all(|c| c.is_ascii_hexdigit()) {
+                            summary.commit = Some(oid[..7].to_string());
+                        }
+                    }
+                    "upstream" => {
+                        let name = value.trim();
+                        if !name.is_empty() {
+                            summary.upstream = Some(name.to_string());
+                        }
+                    }
+                    "ab" => {
+                        let (ahead, behind) = parse_branch_ab(value);
+                        summary.ahead = ahead;
+                        summary.behind = behind;
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if line.starts_with("# ") || line.is_empty() {
+            continue;
+        }
+        dirty = dirty.saturating_add(1);
+    }
+    if !saw_header {
+        return empty_summary();
+    }
+    summary.repo = true;
+    summary.dirty = dirty;
+    summary
+}
+
+fn parse_branch_ab(value: &str) -> (u32, u32) {
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    for part in value.split_whitespace() {
+        if let Some(rest) = part.strip_prefix('+') {
+            ahead = rest.parse().unwrap_or(0);
+        } else if let Some(rest) = part.strip_prefix('-') {
+            behind = rest.parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
 }
 
 fn empty_summary() -> GitRepoSummary {
@@ -722,13 +761,6 @@ fn empty_summary() -> GitRepoSummary {
         untracked: 0,
         conflicts: 0,
     }
-}
-
-fn parse_ahead_behind(text: &str) -> (u32, u32) {
-    let mut parts = text.split_whitespace();
-    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    (ahead, behind)
 }
 
 pub fn git_switch(target: &GitTarget, name: &str) -> Result<GitBranches> {
@@ -1222,6 +1254,48 @@ mod tests {
         let target = local(dir.path());
         assert!(git_commit(&target, "   ").is_err());
         assert!(git_commit(&target, "empty").unwrap_err().to_string().contains("nothing staged"));
+    }
+
+    #[test]
+    fn parse_git_label_reads_the_branch_headers_and_counts_changes() {
+        let summary = parse_git_label(
+            "# branch.oid abcdef1234567890\n# branch.head feat/login\n# branch.upstream origin/feat/login\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 aa bb src/a.rs\n? src/new.txt\n",
+        );
+        assert!(summary.repo);
+        assert_eq!(summary.current.as_deref(), Some("feat/login"));
+        assert!(!summary.detached);
+        assert_eq!(summary.commit.as_deref(), Some("abcdef1"));
+        assert_eq!(summary.upstream.as_deref(), Some("origin/feat/login"));
+        assert_eq!(summary.ahead, 2);
+        assert_eq!(summary.behind, 1);
+        assert_eq!(summary.dirty, 2);
+    }
+
+    #[test]
+    fn parse_git_label_marks_a_detached_head_and_a_missing_repo() {
+        let detached = parse_git_label("# branch.oid abcdef1234567890\n# branch.head (detached)\n");
+        assert!(detached.repo);
+        assert!(detached.detached);
+        assert_eq!(detached.current, None);
+        assert_eq!(detached.commit.as_deref(), Some("abcdef1"));
+        assert_eq!(detached.dirty, 0);
+        assert!(!parse_git_label("").repo);
+        assert!(!parse_git_label("fatal: not a git repository\n").repo);
+    }
+
+    #[test]
+    fn git_label_matches_one_status_on_a_real_repo() {
+        let dir = temp_ws();
+        init_repo(dir.path());
+        fs::write(dir.path().join("README.md"), "changed\n").unwrap();
+        fs::write(dir.path().join("note.txt"), "hello\n").unwrap();
+        let summary = git_label(&local(dir.path())).unwrap();
+        assert!(summary.repo);
+        assert_eq!(summary.current.as_deref(), Some("main"));
+        // Untracked files are left out. The label is one status, not a full listing.
+        assert_eq!(summary.dirty, 1);
+        assert_eq!(summary.ahead, 0);
+        assert_eq!(summary.behind, 0);
     }
 
     #[test]

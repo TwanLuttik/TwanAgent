@@ -193,6 +193,26 @@ fn hosted_command(project_path: &str, encoded: &str) -> String {
     )
 }
 
+/// The first four bytes are a length. A shell banner, or the copy's "installed", is not a frame.
+fn decode_server_reply(bytes: &[u8], stderr: &str) -> Result<(ServerFrame, usize)> {
+    if let Ok(decoded) = decode_frame(bytes) {
+        return Ok(decoded);
+    }
+    if let Some(at) = bytes.windows(1).position(|window| window[0] == b'{') {
+        if let Ok(decoded) = decode_frame(&bytes[at.saturating_sub(4)..]) {
+            return Ok(decoded);
+        }
+    }
+    let note = stderr.trim();
+    if !note.is_empty() {
+        return Err(Error::Other(note.to_string()));
+    }
+    if bytes.is_empty() {
+        return Err(Error::Other("the server did not answer".into()));
+    }
+    Err(Error::Other("the server reply was not a frame".into()))
+}
+
 fn encode_client(frame: &ClientFrame) -> Result<String> {
     let bytes = encode_frame(frame).map_err(|err| Error::Other(err.to_string()))?;
     Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
@@ -426,8 +446,7 @@ pub async fn dev_hosted_call(
                 detail.to_string()
             }));
         }
-        let (frame, _): (ServerFrame, usize) = decode_frame(&result.stdout_bytes)
-            .map_err(|err| Error::Other(format!("the server reply was not a frame: {err}")))?;
+        let (frame, _) = decode_server_reply(&result.stdout_bytes, &result.stderr)?;
         match frame {
             ServerFrame::Error { message } => Err(Error::Other(message)),
             ServerFrame::Conversations { rows } => {
@@ -445,6 +464,18 @@ pub async fn dev_hosted_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn a_copy_banner_is_not_reported_as_a_short_frame() {
+        let err = decode_server_reply(b"installed\n", "").unwrap_err().to_string();
+        assert!(!err.contains("frame header"));
+        assert!(err.contains("not a frame"));
+        let detail = decode_server_reply(b"", "the program is missing").unwrap_err().to_string();
+        assert_eq!(detail, "the program is missing");
+        let frame = encode_frame(&ServerFrame::Ok).unwrap();
+        assert!(matches!(decode_server_reply(&frame, "").unwrap().0, ServerFrame::Ok));
+    }
 
     #[test]
     fn a_binary_reply_keeps_bytes_the_string_form_drops() {

@@ -22,6 +22,20 @@ export function visibleConversations<T extends { archived?: boolean; journey_id?
   return conversations.filter((row) => isArchivedConversation(row) === showArchived);
 }
 
+/**
+ * The chat to open for a project. A titled conversation wins over an empty "New chat"
+ * that was saved locally beside a cloud chat.
+ */
+export function preferredOpenConversation<T extends { id: string; title?: string; kind?: string; archived?: boolean }>(
+  rows: T[],
+  savedId = "",
+): T | undefined {
+  const visible = rows.filter((row) => row.archived !== true);
+  const saved = visible.find((row) => row.id === savedId);
+  if (saved && !isEmptyChatDraft(saved)) return saved;
+  return visible.find((row) => !isEmptyChatDraft(row)) ?? saved ?? visible[0];
+}
+
 /** Journeys that still have a visible child. Empty journeys stay in the normal list. */
 export function visibleJourneys<T extends { id: string }>(
   journeys: T[],
@@ -145,18 +159,31 @@ export function mergeLoadedProjectGroups(
       return keepServerMark(group, previous);
     }
     const before = previous.find((row) => isSameProject(row.path, group.path));
-    if (!before || (before.conversations.length === 0 && before.journeys.length === 0)) {
-      return keepServerMark(group, previous);
+    if (!before) return keepServerMark(group, previous);
+    // A new cloud project has no chats. An empty read is that answer.
+    // Keeping the previous titled rows showed another project's conversation here.
+    if (group.remote || before.remote) {
+      return keepServerMark({ ...group, conversations: [], journeys: [] }, previous);
     }
-    // The cloud list is not on this Mac. An empty read is the mount, not a deleted project.
-    // A local project can really be empty, so an empty read replaces it.
-    if (!group.remote && !before.remote) return keepServerMark(group, previous);
-    return keepServerMark(
-      { ...group, conversations: before.conversations, journeys: before.journeys },
-      previous,
-    );
+    return keepServerMark(group, previous);
   });
   return [...filled, ...kept];
+}
+
+/**
+ * An empty "New chat" on a cloud project was saved in the local mount, not on the server.
+ * A chat that already has a title, or is a terminal, stays.
+ */
+export function isLocalCloudDraft(row: { title?: string; kind?: string }): boolean {
+  return isEmptyChatDraft(row);
+}
+
+function isEmptyChatDraft(row: { title?: string; kind?: string }): boolean {
+  return (row.title || "New chat").trim() === "New chat" && (row.kind ?? "chat") !== "terminal";
+}
+
+function cloudChatsWithoutLocalDrafts(rows: ConversationSummary[]): ConversationSummary[] {
+  return rows.filter((row) => !isLocalCloudDraft(row));
 }
 
 /** A list pass does not know whether the server is up. Keep the mark the open project already has. */
@@ -174,11 +201,16 @@ export function applyLiveProjectChats(
   loadedFor: string,
 ): ProjectChatGroup[] {
   if (!live.workspace || !isSameProject(loadedFor, live.workspace)) return groups;
-  const patched = groups.map((group) =>
-    isSameProject(group.path, live.workspace)
-      ? { ...group, conversations: live.conversations, journeys: live.journeys }
-      : group,
-  );
+  const patched = groups.map((group) => {
+    if (!isSameProject(group.path, live.workspace)) return group;
+    // The open project's live list can still be the local mount. Do not put an
+    // empty "New chat" back onto a cloud project that already has its real chats.
+    const conversations =
+      group.remote && live.conversations.some(isLocalCloudDraft)
+        ? cloudChatsWithoutLocalDrafts(live.conversations)
+        : live.conversations;
+    return { ...group, conversations, journeys: live.journeys };
+  });
   if (patched.some((group) => isSameProject(group.path, live.workspace))) return patched;
   return [
     {
@@ -236,10 +268,15 @@ export function placeProjectChats(
   loadedFor = "",
 ): ProjectChatGroup[] {
   if (loadedFor && !isSameProject(loadedFor, path)) return groups;
-  const own = new Set(conversations.map((row) => row.id));
+  const target = groups.find((group) => isSameProject(group.path, path));
+  const shown =
+    target?.remote && conversations.some(isLocalCloudDraft)
+      ? cloudChatsWithoutLocalDrafts(conversations)
+      : conversations;
+  const own = new Set(shown.map((row) => row.id));
   const patched = groups.map((group) => {
     if (isSameProject(group.path, path)) {
-      return { ...group, conversations, journeys };
+      return { ...group, conversations: shown, journeys };
     }
     if (!own.size || !group.conversations.some((row) => own.has(row.id))) return group;
     return { ...group, conversations: group.conversations.filter((row) => !own.has(row.id)) };

@@ -14,6 +14,8 @@ On the machine:
 
 That prints `twanagent-server` and the server version, for example `twanagent-server 1.0.0-beta.3`. The server version is not the desktop app version. A server binary can be updated on its own, without a new TwanAgent release.
 
+A server check also links that program to `~/.local/bin/twanagent-server` and adds `~/.local/bin` to `PATH` in the shell startup files when it is missing. A new shell can then run `twanagent-server` without the full path.
+
 From this Mac, for an OrbStack machine. The VM's bridge address is not reachable from the Mac. `<machine>@orb` is the login OrbStack publishes:
 
 ```sh
@@ -28,18 +30,37 @@ The add-server check looks for that binary and for `~/.twanagent/auth-token`. A 
 ~/.twanagent/bin/twanagent-server --project ~/project --data ~/.twanagent/data
 ```
 
-- `--project` is the folder the tools read and edit.
-- `--data` is where the server keeps its own store. The app creates this directory.
+Chats for that project are stored under `--data/projects/<id>`, so two projects on the same machine do not share a conversation list. The app creates the data directory.
 
-Both flags are required. Without them the program prints the usage line and exits with status 2.
+`--project` and `--data` are required for this run. `--version` and `--live` do not need them. Without a required flag the program prints the usage line and exits with status 2. An unknown argument does the same.
 
 The process then reads frames from stdin and writes frames to stdout. Each frame is a 4-byte big-endian length followed by JSON. The first frame the app sends is `hello`. Leave this process running for the session. Closing stdin stops it.
+
+## Arguments
+
+```
+twanagent-server --project <dir> --data <dir>
+twanagent-server --call --project <dir> --data <dir> [--frame <base64>]
+twanagent-server --live [--data <dir>]
+twanagent-server --version
+```
+
+| Argument | Value | What it does |
+| --- | --- | --- |
+| `--project` | directory | The folder the tools read and edit. Required with the default run and with `--call`. Passed through as written, so `~` is not expanded. |
+| `--data` | directory | Where the server keeps keys and the live tail. A leading `$HOME` is expanded. Required except for `--version` and `--live`. |
+| `--call` | none | Read one frame, write one reply, then exit. The desktop app uses this over SSH. Without `--frame`, the frame is read from stdin. |
+| `--frame` | base64 | The one request frame, base64-encoded. SSH runs the program through a shell, so a pipe never reaches it. Used with `--call`. |
+| `--live` | none | Bind the live socket and wait. `--project` is not required. When `--data` comes first, that directory is used. Otherwise the default is `$HOME/.twanagent`. Flags after `--live` are not read. |
+| `--version` | none | Print `twanagent-server` and the server version, then exit. No other flag is required. |
+
+A turn also starts the live socket in the process that is answering the prompt. That process is the one that publishes. `--data` for the app is `$HOME/.twanagent`.
 
 ## Live socket
 
 A running turn also publishes on a WebSocket at `127.0.0.1:8731`. The process binds that address only, so it is not reachable from another machine except through SSH. The desktop app opens `ssh -N -L` to that port and sends `{"type":"subscribe","id":"<conversation>"}`. Each later text frame is `status`, `delta`, `done`, or `error`.
 
-`--live` starts the socket and waits. A turn also starts it in the process that is answering the prompt, which is the process that publishes. Rebuild and install `twanagent-server` on the machine before the socket exists there.
+`--live` starts the socket and waits. If something is already listening on that port, the command still prints the address and waits, but the process that bound it first is the one that publishes. Rebuild and install `twanagent-server` on the machine before the socket exists there.
 
 ## Build it for a Linux machine
 

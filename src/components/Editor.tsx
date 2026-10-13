@@ -8,15 +8,18 @@ import {
   editorTabTitle,
   isAllDiffPath,
   isMcpEditorPath,
+  isSkillEditorPath,
   languageForPath,
   mcpSourceFromPath,
   mediaKindForPath,
+  skillSourceFromPath,
   type EditorFileView,
   type EditorState,
   type MarkdownOpenMode,
 } from "../lib/editor";
 import { parseJourneyId } from "../lib/journey";
 import { userMcpRel } from "../lib/mcp";
+import { userSkillRel } from "../lib/skill";
 import { addedFileDiff, deletedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
 import { gitChangeGutter } from "../lib/editor-git-gutter";
 import { editorTheme } from "../lib/editor-theme";
@@ -160,7 +163,15 @@ export function Editor({
   }, [path]);
 
   useEffect(() => {
-    if (!workspace || !path || fileView === "diff" || media || parseJourneyId(path) || isMcpEditorPath(path)) {
+    if (
+      !workspace ||
+      !path ||
+      fileView === "diff" ||
+      media ||
+      parseJourneyId(path) ||
+      isMcpEditorPath(path) ||
+      isSkillEditorPath(path)
+    ) {
       setGutterMarks(new Map());
       return;
     }
@@ -345,7 +356,7 @@ export function Editor({
             ? "All changes"
             : parseJourneyId(path)
               ? "Journey knowledge"
-              : mcpSourceFromPath(path) ?? path}
+              : (mcpSourceFromPath(path) ?? skillSourceFromPath(path) ?? path)}
         </span>
         <span className="ml-auto shrink-0">
           {fileView === "diff"
@@ -486,6 +497,12 @@ async function readEditorFile(workspace: string, file: string): Promise<string> 
     if (rel) return api.readUserMcp(rel);
     return api.readFile(workspace, mcp);
   }
+  const skill = skillSourceFromPath(file);
+  if (skill) {
+    const rel = userSkillRel(skill);
+    if (rel) return api.readUserSkill(rel);
+    return api.readFile(workspace, skill);
+  }
   return api.readFile(workspace, file);
 }
 
@@ -503,6 +520,16 @@ async function writeEditorFile(workspace: string, file: string, contents: string
       return;
     }
     await api.writeFile(workspace, mcp, contents);
+    return;
+  }
+  const skill = skillSourceFromPath(file);
+  if (skill) {
+    const rel = userSkillRel(skill);
+    if (rel) {
+      await api.writeUserSkill(rel, contents);
+      return;
+    }
+    await api.writeFile(workspace, skill, contents);
     return;
   }
   await api.writeFile(workspace, file, contents);

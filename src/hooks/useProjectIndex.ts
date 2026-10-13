@@ -1,6 +1,7 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import {
   applyLiveProjectChats,
+  isLocalCloudDraft,
   isSameProject,
   mergeLoadedProjectGroups,
   placeProjectChats,
@@ -129,7 +130,10 @@ export function useProjectIndex({
           if (cancelled) return;
           // A cloud call that fails, or is still the empty index, must not replace chats
           // the sidebar already showed. The next pass fills them in.
-          const convs = listed.failed && row.remote ? null : listed.rows;
+          // A cloud project's chats live on the server. The local list is the mount
+          // database, which only holds empty drafts created before the link was up.
+          const localRows = row.remote ? listed.rows.filter((item) => !isLocalCloudDraft(item)) : listed.rows;
+          const convs = listed.failed && row.remote ? null : localRows;
           const nextJourneys = journeyListed.failed && row.remote ? null : journeyListed.rows;
           let next = {
             ...row,

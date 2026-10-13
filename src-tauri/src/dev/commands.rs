@@ -8,7 +8,7 @@ use super::files::{
 };
 use super::git::{
     git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
-    git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with, git_summary,
+    git_label, git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with,
     git_switch, git_sync, git_unstage, GitCommit, GitIdentity, GitRepoSummary, GitTarget,
 };
 use super::paths::{expand_folder_path, path_string};
@@ -57,19 +57,31 @@ pub async fn dev_list_projects(state: State<'_, AppState>) -> Result<Vec<FolderS
     off_main(move || Ok(list_projects_from(&data_dir, &roots))).await
 }
 
+/// Sidebar labels for the saved projects. A server project is a mount folder whose name is an id.
+/// The name the user typed is on the remote row, so that is what the sidebar shows.
+pub(crate) fn named_project_rows(
+    rows: Vec<FolderSuggestion>,
+    remotes: &[crate::remote::config::RemoteProject],
+) -> Vec<FolderSuggestion> {
+    let mut rows = rows;
+    for remote in remotes {
+        let name = remote.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(row) = rows.iter_mut().find(|row| same_project_path(&row.path, &remote.mount_path)) else {
+            continue;
+        };
+        row.name = name.to_string();
+    }
+    rows
+}
+
 fn list_projects_from(data_dir: &std::path::Path, roots: &[std::path::PathBuf; 2]) -> Vec<FolderSuggestion> {
     match crate::appdb::open(data_dir).and_then(|conn| {
-        let mut rows = crate::appdb::list_projects(&conn)?;
-        if let Ok(remotes) = crate::remote::config::list_remote_projects(&conn) {
-            for remote in remotes {
-                if let Some(row) = rows.iter_mut().find(|row| row.path == remote.mount_path) {
-                    if !remote.name.trim().is_empty() {
-                        row.name = remote.name;
-                    }
-                }
-            }
-        }
-        Ok(rows)
+        let rows = crate::appdb::list_projects(&conn)?;
+        let remotes = crate::remote::config::list_remote_projects(&conn).unwrap_or_default();
+        Ok(named_project_rows(rows, &remotes))
     }) {
         Ok(rows) => rows,
         Err(err) => {
@@ -92,6 +104,10 @@ pub fn dev_opened_workspaces(state: State<'_, AppState>) -> Vec<String> {
 pub fn dev_forget_workspace(state: State<'_, AppState>, path: String) -> Result<bool> {
     let root = expand_folder_path(&path)?;
     state.forget_workspace(&root)
+}
+
+fn same_project_path(left: &str, right: &str) -> bool {
+    crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(right))
 }
 
 fn remember_project(state: &AppState, root: &Path) {
@@ -264,8 +280,8 @@ pub fn dev_read_user_skill(path: String) -> Result<String> {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_open_user_skill(path: String) -> Result<()> {
-    super::skills::open_user_skill(&path)
+pub fn dev_write_user_skill(path: String, contents: String) -> Result<()> {
+    super::skills::write_user_skill(&path, &contents)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -454,7 +470,7 @@ pub async fn dev_git_summary(
     workspace: String,
 ) -> Result<GitRepoSummary> {
     let target = git_target(&state, &workspace)?;
-    off_main(move || git_summary(&target)).await
+    off_main(move || git_label(&target)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -749,11 +765,28 @@ fn remote_files(state: &AppState, root: &Path) -> Result<Option<RemoteFiles>> {
 }
 
 /// Branch label for a sidebar row. Does not register the folder as an opened workspace.
+/// One local `git status`. A cloud project's files are not on this mount.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_git_project_summary(path: String) -> Result<GitRepoSummary> {
+pub async fn dev_git_project_summary(state: State<'_, AppState>, path: String) -> Result<GitRepoSummary> {
     let root = super::paths::expand_folder_path(&path)?;
+    if crate::remote::project_for_workspace(&state, &root)?.is_some() {
+        return Ok(super::git::GitRepoSummary {
+            repo: false,
+            current: None,
+            detached: false,
+            commit: None,
+            upstream: None,
+            ahead: 0,
+            behind: 0,
+            dirty: 0,
+            staged: 0,
+            unstaged: 0,
+            untracked: 0,
+            conflicts: 0,
+        });
+    }
     let target = GitTarget::local(&root)?;
-    off_main(move || git_summary(&target)).await
+    off_main(move || git_label(&target)).await
 }
 
 fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
@@ -786,7 +819,30 @@ fn browser_url(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod url_tests {
-    use super::browser_url;
+    use super::{browser_url, named_project_rows, same_project_path};
+    use crate::dev::projects::FolderSuggestion;
+    use crate::remote::config::RemoteProject;
+
+    #[test]
+    fn a_server_project_keeps_the_typed_name_not_the_mount_id() {
+        let mount = "/Users/me/Library/Application Support/app.twanagent.desktop-dev/mounts/8fecb999-263f-458f-b191-39a4f3e71e88/";
+        let rows = named_project_rows(
+            vec![FolderSuggestion {
+                path: mount.trim_end_matches('/').into(),
+                name: "8fecb999-263f-458f-b191-39a4f3e71e88".into(),
+            }],
+            &[RemoteProject {
+                id: "8fecb999-263f-458f-b191-39a4f3e71e88".into(),
+                machine_id: "m1".into(),
+                name: "dev-test".into(),
+                remote_path: "/home/dev/projects/dev-test".into(),
+                mount_path: mount.into(),
+                created_at: "now".into(),
+            }],
+        );
+        assert_eq!(rows[0].name, "dev-test");
+        assert!(same_project_path(&rows[0].path, mount));
+    }
 
     #[test]
     fn browser_links_are_http_only() {

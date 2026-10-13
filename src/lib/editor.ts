@@ -36,6 +36,7 @@ export function emptyEditor(): EditorState {
 
 export const ALL_DIFF_PATH = "diff:all";
 export const MCP_EDITOR_PREFIX = "mcp:";
+export const SKILL_EDITOR_PREFIX = "skill:";
 
 export function isAllDiffPath(path: string): boolean {
   return path === ALL_DIFF_PATH;
@@ -55,10 +56,27 @@ export function mcpSourceFromPath(path: string): string | null {
   return source || null;
 }
 
+/** A skill that lives outside the project, opened from the skills pill. */
+export function isSkillEditorPath(path: string): boolean {
+  return path.startsWith(SKILL_EDITOR_PREFIX);
+}
+
+export function skillEditorPath(source: string): string {
+  return `${SKILL_EDITOR_PREFIX}${source}`;
+}
+
+export function skillSourceFromPath(path: string): string | null {
+  if (!isSkillEditorPath(path)) return null;
+  const source = path.slice(SKILL_EDITOR_PREFIX.length);
+  return source || null;
+}
+
 export function editorTabTitle(path: string, journeyTitles?: Record<string, string>): string {
   if (isAllDiffPath(path)) return "All changes";
   const mcp = mcpSourceFromPath(path);
   if (mcp) return editorTabTitle(mcp);
+  const skill = skillSourceFromPath(path);
+  if (skill) return editorTabTitle(skill);
   if (path.startsWith("journey:")) {
     const id = path.slice("journey:".length);
     return journeyTitles?.[id] || "Knowledge";
@@ -68,7 +86,9 @@ export function editorTabTitle(path: string, journeyTitles?: Record<string, stri
 }
 
 export function normalizeEditorPath(path: string): string {
-  if (path.startsWith("journey:") || isAllDiffPath(path) || isMcpEditorPath(path)) return path;
+  if (path.startsWith("journey:") || isAllDiffPath(path) || isMcpEditorPath(path) || isSkillEditorPath(path)) {
+    return path;
+  }
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
@@ -210,7 +230,7 @@ const VIDEO_MIME: Record<string, string> = {
 };
 
 function fileExtension(path: string): string {
-  const name = editorTabTitle(path.startsWith(MCP_EDITOR_PREFIX) ? path.slice(MCP_EDITOR_PREFIX.length) : path).toLowerCase();
+  const name = editorTabTitle(bareEditorSource(path)).toLowerCase();
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1) : "";
 }
@@ -268,8 +288,12 @@ export function formatPlayerTime(seconds: number): string {
   return `${m}:${ss}`;
 }
 
+function bareEditorSource(path: string): string {
+  return mcpSourceFromPath(path) ?? skillSourceFromPath(path) ?? path;
+}
+
 export function languageForPath(path: string): EditorLanguage {
-  const name = editorTabTitle(path.startsWith(MCP_EDITOR_PREFIX) ? path.slice(MCP_EDITOR_PREFIX.length) : path).toLowerCase();
+  const name = editorTabTitle(bareEditorSource(path)).toLowerCase();
   const i = name.lastIndexOf(".");
   const ext = i > 0 ? name.slice(i + 1) : "";
   if (ext === "py" || ext === "pyw") return "python";

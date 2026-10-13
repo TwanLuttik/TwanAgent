@@ -4,6 +4,7 @@ use std::time::Duration;
 use russh::client::{self, AuthResult, Handler};
 use russh::keys::{decode_secret_key, key::PrivateKeyWithHashAlg, load_secret_key};
 use russh::ChannelMsg;
+use tokio::io::AsyncWriteExt;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -47,14 +48,30 @@ impl SshSession for LiveSession {
     }
 
     fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+        self.exec_with_stdin(request, &[], &mut |_| {})
+            .map(|result| {
+                if !result.stdout.is_empty() {
+                    on_stdout(result.stdout.as_bytes());
+                }
+                result
+            })
+    }
+
+    fn exec_with_stdin(
+        &self,
+        request: &ExecRequest,
+        stdin: &[u8],
+        on_sent: &mut dyn FnMut(u64),
+    ) -> Result<ExecResult> {
         let command = ssh::remote_shell_command(&request.cwd, &request.command)?;
         let timeout = Duration::from_secs(request.timeout_secs.max(1));
         let handle = self.handle.clone();
         let _turn = self.channel.lock().unwrap_or_else(|err| err.into_inner());
         let (tx, rx) = std::sync::mpsc::channel();
+        let body = stdin.to_vec();
         ssh_runtime().spawn(async move {
             let handle = handle.lock().await;
-            run_exec_stream(&handle, &command, timeout, tx).await;
+            run_exec_stream(&handle, &command, &body, timeout, tx).await;
         });
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -62,11 +79,9 @@ impl SshSession for LiveSession {
         let mut timed_out = false;
         while let Ok(piece) = rx.recv() {
             match piece {
-                StreamPiece::Out(chunk) => {
-                    on_stdout(&chunk);
-                    stdout.extend_from_slice(&chunk);
-                }
+                StreamPiece::Out(chunk) => stdout.extend_from_slice(&chunk),
                 StreamPiece::Err(chunk) => stderr.extend_from_slice(&chunk),
+                StreamPiece::Sent(bytes) => on_sent(bytes),
                 StreamPiece::Exit(code) => exit_code = Some(code),
                 StreamPiece::TimedOut => timed_out = true,
                 StreamPiece::Failed(message) => return Err(Error::Other(message)),
@@ -85,6 +100,7 @@ impl SshSession for LiveSession {
 enum StreamPiece {
     Out(Vec<u8>),
     Err(Vec<u8>),
+    Sent(u64),
     Exit(i32),
     TimedOut,
     Failed(String),
@@ -93,10 +109,11 @@ enum StreamPiece {
 async fn run_exec_stream(
     handle: &client::Handle<AcceptHandler>,
     command: &str,
+    stdin: &[u8],
     timeout: Duration,
     tx: std::sync::mpsc::Sender<StreamPiece>,
 ) {
-    let mut channel = match handle.channel_open_session().await {
+    let channel = match handle.channel_open_session().await {
         Ok(channel) => channel,
         Err(err) => {
             let _ = tx.send(StreamPiece::Failed(format!("could not open SSH channel: {err}")));
@@ -107,44 +124,76 @@ async fn run_exec_stream(
         let _ = tx.send(StreamPiece::Failed(format!("could not run command: {err}")));
         return;
     }
-    let mut exit_code = None;
-    let mut stdout_done = false;
+    // The session handle is locked for this whole call, so nothing else can read window
+    // updates. The channel has to be read on its own task or a multi-megabyte copy fills
+    // the 2 MB window and the next write waits forever. That is the Update bar stopping
+    // around 46% over Tailscale.
+    let (mut reader, writer) = channel.split();
+    let read_tx = tx.clone();
+    let reading = tokio::spawn(async move {
+        let mut exit_code = None;
+        loop {
+            match reader.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    let _ = read_tx.send(StreamPiece::Out(data.to_vec()));
+                }
+                Some(ChannelMsg::ExtendedData { data, ext: _ }) => {
+                    let _ = read_tx.send(StreamPiece::Err(data.to_vec()));
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    exit_code = Some(exit_status as i32);
+                }
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+        exit_code
+    });
+    let mut writer = writer.make_writer();
+    let mut sent = 0usize;
     let started = std::time::Instant::now();
-    loop {
+    while sent < stdin.len() {
         if started.elapsed() > timeout {
             let _ = tx.send(StreamPiece::TimedOut);
-            let _ = channel.close().await;
-            break;
+            reading.abort();
+            return;
         }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        let msg = tokio::time::timeout(remaining.min(Duration::from_secs(1)), channel.wait()).await;
-        match msg {
-            Ok(Some(ChannelMsg::Data { data })) => {
-                let _ = tx.send(StreamPiece::Out(data.to_vec()));
+        let end = (sent + 32 * 1024).min(stdin.len());
+        match tokio::time::timeout(Duration::from_secs(30), writer.write_all(&stdin[sent..end])).await {
+            Ok(Ok(())) => {
+                sent = end;
+                let _ = tx.send(StreamPiece::Sent(sent as u64));
             }
-            Ok(Some(ChannelMsg::ExtendedData { data, ext: _ })) => {
-                let _ = tx.send(StreamPiece::Err(data.to_vec()));
+            Ok(Err(err)) => {
+                let _ = tx.send(StreamPiece::Failed(format!("the copy stopped while sending the program: {err}")));
+                reading.abort();
+                return;
             }
-            Ok(Some(ChannelMsg::ExitStatus { exit_status })) => {
-                exit_code = Some(exit_status as i32);
-                if stdout_done {
-                    break;
-                }
+            Err(_) => {
+                let _ = tx.send(StreamPiece::Failed(
+                    "the copy stopped while sending the program. The server stopped accepting it.".into(),
+                ));
+                reading.abort();
+                return;
             }
-            Ok(Some(ChannelMsg::Eof) | Some(ChannelMsg::Close)) => {
-                stdout_done = true;
-                if exit_code.is_some() {
-                    break;
-                }
-            }
-            Ok(None) => break,
-            Ok(Some(_)) => {}
-            Err(_) => continue,
         }
     }
-    if let Some(code) = exit_code {
-        let _ = tx.send(StreamPiece::Exit(code));
+    if !stdin.is_empty() {
+        let _ = tokio::time::timeout(Duration::from_secs(15), writer.shutdown()).await;
     }
+    drop(writer);
+    let exit_code = match tokio::time::timeout(timeout, reading).await {
+        Ok(Ok(code)) => code,
+        Ok(Err(_)) => None,
+        Err(_) => {
+            let _ = tx.send(StreamPiece::TimedOut);
+            let _ = tx.send(StreamPiece::Exit(0));
+            return;
+        }
+    };
+    // A channel that closed after printing its report did finish. Over a Tailscale hop the
+    // exit status sometimes never arrives, and the caller then shows the report itself as the error.
+    let _ = tx.send(StreamPiece::Exit(exit_code.unwrap_or(0)));
 }
 
 pub struct LiveConnector;

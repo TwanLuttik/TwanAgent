@@ -747,21 +747,10 @@ async function send() {
     const chosenModel = modelRef.current;
     const chosenEffort = effortRef.current;
     const chosenWindow = contextWindowRef.current;
-    await api.saveConversation(ws, {
-      id,
-      title: conversationTitleFrom([userMessage(text, images)]),
-      created_at: now,
-      updated_at: now,
-      kind: "chat",
-      model: chosenModel || null,
-      effort: chosenEffort || null,
-      context_window: chosenWindow || null,
-      permission: permissionRef.current || null,
-      messages: [],
-    });
+    const title = conversationTitleFrom([userMessage(text, images)]);
     const created: ConversationSummary = {
       id,
-      title: conversationTitleFrom([userMessage(text, images)]),
+      title,
       created_at: now,
       updated_at: now,
       kind: "chat",
@@ -770,6 +759,11 @@ async function send() {
       context_window: chosenWindow || null,
       permission: permissionRef.current || null,
     };
+    // A paired cloud project creates the chat on the server from the prompt.
+    // Writing the empty row locally is what shows a second "New chat".
+    if (!hostedTurnStaysOnServer(remoteRef.current)) {
+      await api.saveConversation(ws, { ...created, messages: [] });
+    }
     conversationsRef.current = [created, ...conversationsRef.current.filter((row) => row.id !== id)];
     setConversations(conversationsRef.current);
     setActiveId(id);

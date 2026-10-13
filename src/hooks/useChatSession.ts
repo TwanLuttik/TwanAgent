@@ -3,7 +3,7 @@ import { insertCompactionEvent } from "../lib/compact";
 import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
 import type { ChatMessage, ConversationActivity, LiveToolRow } from "../lib/core";
 import { clearLiveStream, setLiveStream } from "../lib/live-stream";
-import { isArchivedConversation, isSameProject } from "../lib/all-projects";
+import { isArchivedConversation, isLocalCloudDraft, isSameProject, preferredOpenConversation } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { emptySubagentDock, type SubagentDockState } from "../lib/subagent";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
@@ -121,7 +121,10 @@ export function useChatSession({
         setMessages([]);
         return;
       }
-      const rows = hostedChats ? await api.listHostedConversations(ws) : await api.listConversations(ws);
+      const loaded = hostedChats ? await api.listHostedConversations(ws) : await api.listConversations(ws);
+      // The hosted list is the cloud project. An empty "New chat" only exists in the
+      // local mount, saved before the server created the real conversation.
+      const rows = hostedChats ? loaded.filter((row) => !isLocalCloudDraft(row)) : loaded;
       if (!isSameProject(ws, workspaceRef.current)) return;
       if (conversationsRef.current.length === 0 && rows.length > 0) {
         setConversations(rows);
@@ -149,8 +152,8 @@ export function useChatSession({
       const visible = rows.filter((row) => !isArchivedConversation(row));
       const saved = loadConversation(ws);
       const savedRow = rows.find((row) => row.id === saved);
-      const want =
-        preferId || (savedRow && !isArchivedConversation(savedRow) ? saved : "") || visible[0]?.id || "";
+      const preferred = preferredOpenConversation(visible, savedRow && !isArchivedConversation(savedRow) ? saved : "");
+      const want = preferId || preferred?.id || "";
       if (!want) {
         setActiveId("");
         setMessages([]);
@@ -167,11 +170,11 @@ export function useChatSession({
       stickToBottomRef.current = true;
       setActiveId(found.id);
       setUnseenFinished((prev) => clearUnseenFinished(prev, found.id));
-      const loaded = (full.messages as ChatMessage[]) ?? [];
+      const transcript = (full.messages as ChatMessage[]) ?? [];
       const withNotice =
         full.compaction?.summary && full.compaction.through > 0
-          ? insertCompactionEvent(loaded, full.compaction.through)
-          : loaded;
+          ? insertCompactionEvent(transcript, full.compaction.through)
+          : transcript;
       const live = liveTurnMessages({
         workspace: ws,
         conversationId: found.id,
@@ -181,7 +184,7 @@ export function useChatSession({
         liveByChat: liveByChatRef.current,
       });
       setMessages(live ?? withNotice);
-      if (!live && withNotice !== loaded) {
+      if (!live && withNotice !== transcript) {
         void libraryRef.current?.persist(
           withNotice,
           found.id,

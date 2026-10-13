@@ -5,7 +5,7 @@ import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { cloudSendWaiting } from "../lib/hosted";
 import { type ChatUsage } from "../lib/context";
 import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
-import { setSkillEnabledInToml, userSkillRel, type DetectedSkill } from "../lib/skill";
+import { setSkillEnabledInToml, type DetectedSkill } from "../lib/skill";
 import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
 import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
@@ -14,7 +14,7 @@ import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
-import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, type EditorState } from "../lib/editor";
+import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, skillEditorPath, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
@@ -943,16 +943,15 @@ export function MainView() {
   );
 
   const editSkill = useCallback(
-    async (skill: DetectedSkill) => {
-      const rel = userSkillRel(skill.source);
-      try {
-        if (rel) await api.openUserSkill(rel);
-        else openWorkspaceFile(skill.source);
-      } catch (e) {
-        setFlash({ kind: "err", text: String(e) });
-      }
+    (skill: DetectedSkill) => {
+      setShowSettings(false);
+      setShowUsage(false);
+      setShowServers(false);
+      setProjectSettings(null);
+      const path = skill.source.startsWith("~/") ? skillEditorPath(skill.source) : skill.source;
+      setEditor((prev) => pinEditorTab(prev, path));
     },
-    [openWorkspaceFile, setFlash],
+    [],
   );
 
   const showLanding = false;

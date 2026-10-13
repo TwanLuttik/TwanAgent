@@ -450,8 +450,8 @@ export function readUserSkill(path: string): Promise<string> {
   return invoke("dev_read_user_skill", { path });
 }
 
-export function openUserSkill(path: string): Promise<void> {
-  return invoke("dev_open_user_skill", { path });
+export function writeUserSkill(path: string, contents: string): Promise<void> {
+  return invoke("dev_write_user_skill", { path, contents });
 }
 
 export function resolveFile(workspace: string, path: string): Promise<string> {
@@ -774,6 +774,8 @@ export type ServerInstallStatus = {
   path: string;
   online: boolean;
   update?: boolean;
+  /** The version this Mac would install. Set only when `update` is true. */
+  available?: string;
   /** `~/.twanagent/auth-token` on that machine is a real pairing token. */
   paired?: boolean;
 };
@@ -802,8 +804,19 @@ export function probeAgentServer(host: string, port = 22): Promise<ServerInstall
   return invoke("dev_probe_agent_server", { host, port });
 }
 
+export type InstallProgress = {
+  id: string;
+  phase: "reading" | "copying" | "installing" | string;
+  sent: number;
+  total: number;
+};
+
 export function installAgentBinary(id: string): Promise<ServerInstallStatus> {
   return invoke("dev_install_agent_binary", { id });
+}
+
+export function onInstallProgress(fn: (event: InstallProgress) => void): Promise<UnlistenFn> {
+  return listen<InstallProgress>("dev-install-progress", (ev) => fn(ev.payload));
 }
 
 export function installAgentServer(input: {
@@ -860,6 +873,18 @@ export type RemoteCapabilities = {
   auth: string[];
   skills: RemoteSkillFile[];
 };
+
+export type ServerProject = {
+  name: string;
+  remote_path: string;
+  /** True when this Mac already saved the folder. */
+  saved: boolean;
+};
+
+/** Folders that already exist on the server, including ones this Mac never added. */
+export function serverProjects(id: string): Promise<ServerProject[]> {
+  return invoke("dev_server_projects", { id });
+}
 
 export function serverGit(id: string): Promise<{ installed: boolean }> {
   return invoke("dev_server_git", { id });

@@ -129,6 +129,17 @@ pub trait SshSession: Send + Sync {
         }
         Ok(result)
     }
+
+    /// Run a command and feed its stdin. The default sends nothing, which is what a normal exec does.
+    fn exec_with_stdin(
+        &self,
+        request: &ExecRequest,
+        stdin: &[u8],
+        on_sent: &mut dyn FnMut(u64),
+    ) -> Result<ExecResult> {
+        let _ = (stdin, on_sent);
+        self.exec_channel(request)
+    }
 }
 
 pub trait SshConnector: Send + Sync {
@@ -168,6 +179,12 @@ impl Pool {
     pub fn probe(&self, machine: &Machine, secret: Option<&str>) -> Result<(Arc<dyn SshSession>, KnownHost)> {
         let (session, host) = self.connector.connect(machine, secret)?;
         Ok((Arc::from(session), host))
+    }
+
+    /// A connection that is not the shared one. A long copy must not sit on the channel that loads chats.
+    pub fn fresh(&self, machine: &Machine, secret: Option<&str>) -> Result<Arc<dyn SshSession>> {
+        let (session, _host) = self.connector.connect(machine, secret)?;
+        Ok(Arc::from(session))
     }
 
     pub fn session(&self, machine: &Machine, secret: Option<&str>) -> Result<Arc<dyn SshSession>> {

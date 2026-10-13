@@ -31,3 +31,19 @@ export function projectGitLabel(
 export function projectGitKey(path: string): string {
   return projectKey(path);
 }
+
+export function sameGitLabels(a: Record<string, ProjectGit>, b: Record<string, ProjectGit>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return bKeys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    return (
+      left?.branch === right?.branch &&
+      (left?.ahead ?? 0) === (right?.ahead ?? 0) &&
+      (left?.behind ?? 0) === (right?.behind ?? 0) &&
+      (left?.dirty ?? 0) === (right?.dirty ?? 0)
+    );
+  });
+}

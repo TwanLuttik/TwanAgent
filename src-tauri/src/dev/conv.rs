@@ -164,6 +164,12 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
     }
 }
 
+/// An empty chat saved in the local mount. A titled chat, or a terminal, is real.
+fn is_local_cloud_draft(row: &ConversationSummary) -> bool {
+    let title = row.title.trim();
+    (title.is_empty() || title == "New chat") && row.kind != "terminal"
+}
+
 /// A cloud project's chats live on the server. Its local mount has an empty database.
 /// Caching that empty database would make the sidebar say "No chats yet" forever.
 fn remote_workspace(state: &AppState, workspace: &str) -> bool {
@@ -193,7 +199,13 @@ fn list_conversations_blocking(
 ) -> Result<Vec<ConversationSummary>> {
     let conn = crate::appdb::open(data_dir)?;
     if crate::appdb::sidebar_cached(&conn, workspace)? {
-        return Ok(crate::appdb::sidebar_for(&conn, workspace)?.0);
+        let rows = crate::appdb::sidebar_for(&conn, workspace)?.0;
+        // The cache can hold an empty "New chat" written into the mount before
+        // the server had the real conversation. That row is not a cloud chat.
+        if remote {
+            return Ok(rows.into_iter().filter(|row| !is_local_cloud_draft(row)).collect());
+        }
+        return Ok(rows);
     }
     if remote {
         return Ok(Vec::new());

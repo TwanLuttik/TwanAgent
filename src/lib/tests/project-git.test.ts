@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { projectGitLabel } from "../project-git.ts";
+import { projectGitLabel, sameGitLabels } from "../project-git.ts";
 
 describe("projectGitLabel", () => {
   it("shows the current branch", () => {
@@ -37,5 +37,19 @@ describe("projectGitLabel", () => {
       }),
       { branch: "main", ahead: 2, dirty: 3 },
     );
+  });
+});
+
+describe("sameGitLabels", () => {
+  it("ignores key order and treats a missing count as zero", () => {
+    assert.equal(
+      sameGitLabels({ a: { branch: "main", ahead: 0 } }, { a: { branch: "main" } }),
+      true,
+    );
+    assert.equal(
+      sameGitLabels({ a: { branch: "main" } }, { a: { branch: "main", dirty: 1 } }),
+      false,
+    );
+    assert.equal(sameGitLabels({}, { a: { branch: "main" } }), false);
   });
 });

@@ -78,6 +78,66 @@ pub fn remote_list_command(root: &str, rel: &str) -> Result<String> {
     Ok(format!("if [ -d {quoted} ]; then ls -1ap {quoted}; fi"))
 }
 
+/// Folders under `$HOME/projects` and `$HOME/twanagent/projects`.
+/// A project created on another Mac lives there even when this Mac never saved it.
+/// Output is one absolute path per line. Dot folders and the projects roots themselves are skipped.
+///
+/// The script is base64, not a heredoc. An exec channel does not keep stdin open the way a
+/// terminal does, so `python3 - <<'PY'` exits before the script arrives and the server
+/// reports a failed command with no output. That showed up on Tailscale, where the hop is slower.
+pub fn remote_projects_command() -> String {
+    const PROGRAM: &str = r#"import os
+home = os.path.expanduser("~")
+roots = [
+    os.path.join(home, "projects"),
+    os.path.join(home, "twanagent", "projects"),
+    home,
+]
+skip = {
+    "projects", "twanagent", "bin", "Applications", "Desktop", "Documents", "Downloads",
+    "Library", "Movies", "Music", "Pictures", "Public", "snap",
+}
+seen = []
+for root in roots:
+    if not os.path.isdir(root):
+        continue
+    home_root = os.path.realpath(root) == os.path.realpath(home)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        continue
+    for name in names:
+        if not name or name.startswith(".") or name in (".", ".."):
+            continue
+        if home_root and name in skip:
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path) and not os.path.islink(path) and path not in seen:
+            seen.append(path)
+for path in seen:
+    print(path)
+"#;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, PROGRAM.as_bytes());
+    format!("printf %s {} | base64 -d | python3 -", super::ssh::shell_single_quote(&encoded))
+}
+
+/// One absolute directory per line. Anything that is not an absolute path is dropped.
+pub fn parse_remote_projects(text: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let path = line.trim();
+        if path.len() < 2 || !path.starts_with('/') || path.contains('\0') || path.contains("..") {
+            continue;
+        }
+        if rows.iter().any(|row: &String| row == path) {
+            continue;
+        }
+        rows.push(path.to_string());
+    }
+    rows.sort();
+    rows
+}
+
 /// One remote exec that lists every file and folder, skipping heavy build trees.
 /// Output is `kind<TAB>path` lines, directories first in each folder is not required.
 pub fn remote_tree_command(root: &str) -> Result<String> {
@@ -349,6 +409,48 @@ mod tests {
         let empty = remote_write_shell("", &script);
         assert!(empty.starts_with("printf '%s' '' | base64 -d | "));
         assert!(empty.ends_with(&script));
+    }
+
+    #[test]
+    fn remote_projects_keep_absolute_folders_only() {
+        let command = remote_projects_command();
+        assert!(!command.contains("<<"), "a heredoc never receives its body on an exec channel");
+        assert!(command.contains("base64 -d | python3 -"));
+        let encoded = command
+            .strip_prefix("printf %s '")
+            .and_then(|rest| rest.strip_suffix("' | base64 -d | python3 -"))
+            .expect("base64 payload");
+        let script = String::from_utf8(
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap(),
+        )
+        .unwrap();
+        assert!(script.contains("projects"));
+        assert!(script.contains("twanagent"));
+        let rows = parse_remote_projects(
+            "/home/dev/projects/billing\n/home/dev/twanagent/projects/notes\nrelative\n/home/dev/../etc\n\n",
+        );
+        assert_eq!(
+            rows,
+            vec![
+                "/home/dev/projects/billing".to_string(),
+                "/home/dev/twanagent/projects/notes".to_string(),
+            ]
+        );
+        let saved = vec![crate::remote::config::RemoteProject {
+            id: "p1".into(),
+            machine_id: "m1".into(),
+            name: "billing".into(),
+            remote_path: "/home/dev/projects/billing".into(),
+            mount_path: "/tmp/mounts/p1".into(),
+            created_at: "now".into(),
+        }];
+        let marked = crate::remote::commands::server_projects_from(
+            "/home/dev/projects/billing\n/home/dev/projects/notes\n",
+            "m1",
+            &saved,
+        );
+        assert!(marked.iter().any(|row| row.remote_path == "/home/dev/projects/notes" && !row.saved));
+        assert!(marked.iter().any(|row| row.remote_path == "/home/dev/projects/billing" && row.saved));
     }
 
     #[test]

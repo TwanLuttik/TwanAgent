@@ -68,7 +68,7 @@ export function useCapabilities({
                 remote.skills.map((file) => ({
                   source: file.path,
                   origin: parseSkillOrigin(file.origin, file.path),
-                  contents: file.contents,
+                  contents: "",
                 })),
                 grokToml,
               ),
@@ -126,24 +126,11 @@ export function useCapabilities({
         } catch {
           grokToml = null;
         }
-        const inputs = [];
-        for (const file of files) {
-          try {
-            const contents = file.home
-              ? await api.readUserSkill(file.read_path)
-              : workspace
-                ? await api.readFile(workspace, file.read_path)
-                : null;
-            if (contents == null) continue;
-            inputs.push({
-              source: file.path,
-              origin: parseSkillOrigin(file.origin, file.path),
-              contents,
-            });
-          } catch {
-            /* skip unreadable skill files */
-          }
-        }
+        const inputs = files.map((file) => ({
+          source: file.path,
+          origin: parseSkillOrigin(file.origin, file.path),
+          contents: "",
+        }));
         if (!cancelled) setSkills(detectSkills(inputs, grokToml));
       } catch {
         if (!cancelled) setSkills([]);
