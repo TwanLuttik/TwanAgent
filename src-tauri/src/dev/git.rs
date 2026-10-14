@@ -1145,6 +1145,7 @@ mod tests {
             );
         };
         git(&["init", "-b", "main"]);
+        git(&["config", "--local", "commit.gpgsign", "false"]);
         git(&["config", "user.email", "dev@example.com"]);
         git(&["config", "user.name", "Dev"]);
         git(&["add", "."]);
@@ -1317,6 +1318,7 @@ mod tests {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-b", "main"]);
+        git(&["config", "--local", "commit.gpgsign", "false"]);
         git(&["config", "user.email", "dev@example.com"]);
         git(&["config", "user.name", "Dev"]);
         git(&["add", "."]);

@@ -166,7 +166,8 @@ mod tests {
         let backend = Rec {
             calls: Mutex::new(Vec::new()),
         };
-        let out = run_workspace_command(dir.path(), "cat note.txt", None, &backend).unwrap();
+        let command = if cfg!(windows) { "type note.txt" } else { "cat note.txt" };
+        let out = run_workspace_command(dir.path(), command, None, &backend).unwrap();
         assert!(!out.remote);
         assert!(out.text.contains("hi"));
         assert!(backend.calls.lock().unwrap().is_empty());

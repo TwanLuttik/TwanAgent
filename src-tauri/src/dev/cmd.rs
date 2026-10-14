@@ -566,6 +566,19 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    #[cfg(windows)]
+    fn windows_powershell_command(script: &str) -> String {
+        use base64::Engine;
+        let binary = std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        assert!(binary.is_file(), "system PowerShell must be installed");
+        // EncodedCommand takes UTF-16LE. The outer quotes are cmd.exe's /C envelope;
+        // the inner quotes protect the absolute executable path independently of PATH.
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("\"\"{}\" -NoProfile -NonInteractive -EncodedCommand {encoded}\"", binary.display())
+    }
+
     #[test]
     fn run_command_stays_in_workspace() {
         let dir = temp_ws();
@@ -711,7 +724,7 @@ mod tests {
         let mut seen = String::new();
         let out = run_command_with_timeout(
             dir.path(),
-            "powershell -NoProfile -Command \"Write-Output $PID; Start-Sleep -Seconds 30\"",
+            &windows_powershell_command("Write-Output $PID; Start-Sleep -Seconds 30"),
             "",
             Duration::from_secs(2),
             |chunk| seen.push_str(chunk),
@@ -728,12 +741,11 @@ mod tests {
     #[test]
     fn run_command_reads_large_stdout() {
         let dir = temp_ws();
-        let cmd = if cfg!(windows) {
-            "powershell -NoProfile -Command \"$s='x'*200000; Write-Output $s\""
-        } else {
-            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
-        };
-        let out = run_command(dir.path(), cmd).unwrap();
+        #[cfg(windows)]
+        let cmd = windows_powershell_command("$s='x'*200000; Write-Output $s");
+        #[cfg(not(windows))]
+        let cmd = "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'";
+        let out = run_command(dir.path(), &cmd).unwrap();
         assert!(
             out.len() >= CMD_OUTPUT_LIMIT,
             "expected large output, got {}: {:?}",
