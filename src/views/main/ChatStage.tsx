@@ -56,7 +56,6 @@ export function ChatStage() {
     folderOpen,
     journeys,
     opened,
-    cloudConnecting,
     openChat,
     openWorkspaceFile,
     pendingClosePath,
