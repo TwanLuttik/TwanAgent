@@ -5,6 +5,7 @@ import {
   SIDEBAR_DEFAULT,
   SIDEBAR_MAX,
   SIDEBAR_MIN,
+  loadLiveSocketDebug,
   loadPermission,
   loadSidebarWidth,
   loadExpandEdits,
@@ -40,6 +41,7 @@ import {
   saveOpenFileTree,
   setExpandEdits,
   setFileHoverCard,
+  setLiveSocketDebug,
   setPerfOverlay,
   setSpaceCorner,
   setSpaceCornerImage,
@@ -371,6 +373,23 @@ describe("performance overlay", () => {
     assert.equal(loadPerfOverlay(), true);
     setPerfOverlay(false);
     assert.equal(loadPerfOverlay(), false);
+  });
+});
+
+describe("live socket debug", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to off when nothing is stored", () => {
+    assert.equal(loadLiveSocketDebug(), false);
+  });
+
+  it("saves and reloads the preference", () => {
+    setLiveSocketDebug(true);
+    assert.equal(loadLiveSocketDebug(), true);
+    setLiveSocketDebug(false);
+    assert.equal(loadLiveSocketDebug(), false);
   });
 });
 

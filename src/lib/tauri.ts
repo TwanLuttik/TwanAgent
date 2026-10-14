@@ -273,6 +273,14 @@ export type ApiUsageRecord = {
   total_tokens: number;
   duration_ms?: number | null;
 };
+export type LiveSocketEvent = {
+  stream_id: string;
+  conversation_id: string;
+  port: number;
+  direction: "in" | "out" | string;
+  text: string;
+};
+
 export type ChatEvent = {
   stream_id: string;
   kind: "delta" | "done" | "error" | string;
@@ -784,6 +792,12 @@ export type ServerProviderKeys = {
   xai: boolean;
   anthropic: boolean;
   minimax: boolean;
+  /** Set on a copy. True when that provider's key replaced a different one already on the server. */
+  replaced?: {
+    xai: boolean;
+    anthropic: boolean;
+    minimax: boolean;
+  };
 };
 
 export type ServerStorage = {
@@ -933,11 +947,40 @@ function summaryFromHosted(row: Record<string, unknown>): ConversationSummary {
   };
 }
 
-/** Cloud chats live on the paired server. The local mount database is not used. */
+/** The last server chat list and the saved messages. Empty until one sync has landed. */
+export async function hostedSidebarCached(
+  workspace: string,
+): Promise<{ conversations: ConversationSummary[]; journeys: Journey[]; transcripts: Conversation[] }> {
+  const [conversations, journeys, transcripts] = await invoke<
+    [ConversationSummary[], Journey[], Conversation[]]
+  >("dev_hosted_sidebar_cached", { workspace });
+  return {
+    conversations: conversations ?? [],
+    journeys: journeys ?? [],
+    transcripts: transcripts ?? [],
+  };
+}
+
+/** The last transcript saved for one cloud chat. Null until that chat has been opened here. */
+export function hostedConversationCached(workspace: string, id: string): Promise<Conversation | null> {
+  return invoke("dev_hosted_conversation_cached", { workspace, id });
+}
+
+/** Cloud chats live on the paired server. The local mount database is not used. Messages are cached with the list. */
 export async function listHostedConversations(workspace: string): Promise<ConversationSummary[]> {
+  // `list_conversations` is the frame every paired server already accepts.
+  // A newer frame name fails on a server that has not been updated.
   const frame = await hostedFrame(workspace, { type: "list_conversations" });
   const rows = Array.isArray(frame.rows) ? frame.rows : [];
-  return rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
+  const summaries = rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
+  // The list has no messages. Load each chat with the frame the server already
+  // knows, so opening one later paints from the local copy.
+  await Promise.all(
+    summaries.map((row) =>
+      row.id ? getHostedConversation(workspace, row.id).then(() => undefined).catch(() => undefined) : undefined,
+    ),
+  );
+  return summaries;
 }
 
 export async function getHostedConversation(workspace: string, id: string): Promise<Conversation> {
@@ -953,8 +996,13 @@ export function listConversations(workspace: string): Promise<ConversationSummar
   return invoke("dev_list_conversations", { workspace });
 }
 
+/** A cloud chat is found by id. The mount path is not the store. */
+export function getConversationById(id: string): Promise<Conversation> {
+  return invoke("dev_get_conversation", { id });
+}
+
 export function getConversation(workspace: string, id: string): Promise<Conversation> {
-  return invoke("dev_get_conversation", { workspace, id });
+  return invoke("dev_get_conversation", { id, workspace: workspace || null });
 }
 
 export function saveConversation(workspace: string, conversation: Conversation): Promise<Conversation> {
@@ -1272,6 +1320,10 @@ function ensureChatListen(): Promise<UnlistenFn> {
     });
   }
   return chatListen;
+}
+
+export function onLiveSocket(fn: (ev: LiveSocketEvent) => void): Promise<UnlistenFn> {
+  return listen<LiveSocketEvent>("dev-live-socket", (ev) => fn(ev.payload));
 }
 
 export async function onChat(fn: (ev: ChatEvent) => void): Promise<UnlistenFn> {

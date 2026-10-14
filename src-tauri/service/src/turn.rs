@@ -17,6 +17,9 @@ pub struct TurnRequest {
     pub model: String,
     pub effort: String,
     pub permission: String,
+    /// The folder on the machine that owns this chat. Empty for a process started with `--project`.
+    #[serde(default)]
+    pub project: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,6 +304,7 @@ mod tests {
                     model: "grok-4".into(),
                     effort: String::new(),
                     permission: "approve-all".into(),
+                    project: String::new(),
                 },
                 &ReadThenAnswer,
             )
@@ -327,6 +331,7 @@ mod tests {
                     model: String::new(),
                     effort: String::new(),
                     permission: "ask".into(),
+                    project: String::new(),
                 },
                 &DenyShellModel,
             )

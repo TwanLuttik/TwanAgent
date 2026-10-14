@@ -188,6 +188,8 @@ export function MainView() {
   const linkReadyRef = useLiveRef(linkReady);
   const sidebarSyncRef = useLiveRef({ workspace, conversations, journeys });
   const conversationsRef = useLiveRef(conversations);
+  const journeysRef = useLiveRef(journeys);
+  const cloudTranscriptsRef = useRef(new Map<string, import("../lib/tauri").Conversation>());
   const sidebarLoadedForRef = useRef("");
   const deletedIdsRef = useRef(new Set<string>());
   const turnMessagesRef = useRef<ChatMessage[] | null>(null);
@@ -270,6 +272,7 @@ export function MainView() {
     effortRef,
     contextWindowRef,
     permissionRef,
+    journeysRef,
     runningWsRef,
     runningIdRef,
     sidebarLoadedForRef,
@@ -279,6 +282,7 @@ export function MainView() {
     subagentsByChatRef,
     stickToBottomRef,
     libraryRef,
+    cloudTranscriptsRef,
   });
   const {
     recents,
@@ -300,6 +304,7 @@ export function MainView() {
     sidebarSyncRef,
     sidebarLoadedForRef,
     workspaceRef,
+    cloudTranscriptsRef,
     setFlash,
   });
   projectsRootRef.current = projectsRoot;
@@ -656,6 +661,7 @@ export function MainView() {
     stickToBottomRef,
     conversationsRef,
     openGeneration,
+    cloudTranscriptsRef,
     sidebarLoadedForRef,
     setWorkspace,
     setConversations,
@@ -693,6 +699,17 @@ export function MainView() {
     bumpFiles,
   });
   libraryRef.current = library;
+  const hostedWatchRef = useRef("");
+  useEffect(() => {
+    if (!hostedChats || !workspace || !activeId) {
+      hostedWatchRef.current = "";
+      return;
+    }
+    const key = `${projectKey(workspace)}:${activeId}`;
+    if (hostedWatchRef.current === key) return;
+    hostedWatchRef.current = key;
+    void library.watchHosted(workspace, activeId);
+  }, [hostedChats, workspace, activeId, library]);
   const turn = bindTurn({
     workspace,
     activeId,

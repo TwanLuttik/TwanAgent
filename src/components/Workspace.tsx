@@ -495,7 +495,7 @@ export const Workspace = memo(function Workspace({
   return (
     <aside
       ref={asideRef}
-      className="relative flex min-h-0 shrink-0 flex-col border-l border-line/35 bg-canvas"
+      className="relative my-2 flex min-h-0 shrink-0 flex-col overflow-hidden rounded-[12px] border border-line/35 bg-canvas"
       style={{ width }}
     >
       <div

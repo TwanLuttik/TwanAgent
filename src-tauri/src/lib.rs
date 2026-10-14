@@ -348,6 +348,8 @@ pub fn run() {
             remote::hosted::dev_hosted_follow,
             remote::hosted::dev_hosted_unfollow,
             remote::hosted::dev_hosted_call,
+            remote::hosted::dev_hosted_sidebar_cached,
+            remote::hosted::dev_hosted_conversation_cached,
             appdb::dev_app_list_projects,
             appdb::dev_app_add_project,
             appdb::dev_app_reorder_projects,

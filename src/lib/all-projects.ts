@@ -160,10 +160,16 @@ export function mergeLoadedProjectGroups(
     }
     const before = previous.find((row) => isSameProject(row.path, group.path));
     if (!before) return keepServerMark(group, previous);
-    // A new cloud project has no chats. An empty read is that answer.
-    // Keeping the previous titled rows showed another project's conversation here.
+    // The local mount of a cloud project is empty. That read is not the server
+    // list, so a pass that came back empty keeps the copy already on screen.
     if (group.remote || before.remote) {
-      return keepServerMark({ ...group, conversations: [], journeys: [] }, previous);
+      if (before.conversations.length > 0 || before.journeys.length > 0) {
+        return keepServerMark(
+          { ...group, conversations: before.conversations, journeys: before.journeys },
+          previous,
+        );
+      }
+      return keepServerMark(group, previous);
     }
     return keepServerMark(group, previous);
   });

@@ -275,7 +275,7 @@ function ProjectsNav({
 
   const todoWatch = allProjectGroups
     .flatMap((group: { path: string; conversations: ConversationSummary[] }) =>
-      group.conversations.map((row) => `${group.path}\t${row.id}\t${row.updated_at}`),
+      group.conversations.map((row) => `${group.remote ? "1" : "0"}\t${group.path}\t${row.id}\t${row.updated_at}`),
     )
     .join("\n");
   const messagesRef = useRef(messages);
@@ -291,8 +291,14 @@ function ProjectsNav({
       .split("\n")
       .filter(Boolean)
       .map((line: string) => {
-        const [path, id, updated] = line.split("\t");
-        return { path, id, updated };
+        const tab = line.indexOf("\t");
+        const remote = line.slice(0, tab) === "1";
+        const rest = line.slice(tab + 1);
+        const pathEnd = rest.indexOf("\t");
+        const path = rest.slice(0, pathEnd);
+        const tail = rest.slice(pathEnd + 1);
+        const idEnd = tail.indexOf("\t");
+        return { remote, path, id: tail.slice(0, idEnd), updated: tail.slice(idEnd + 1) };
       })
       .filter((row: { path: string; id: string }) => row.path && row.id);
     const previous = new Map(todoRowsRef.current.map((row) => [`${row.path}\t${row.id}`, row.updated]));
@@ -319,7 +325,7 @@ function ProjectsNav({
           if (row.id in runningRef.current) return;
           if (previous.get(key) === row.updated) return;
           try {
-            const full = await api.getConversation(row.path, row.id);
+            const full = row.remote ? await api.getConversationById(row.id) : await api.getConversation(row.path, row.id);
             const badge = todoBadge(todosInLatestTurn((full.messages as ChatMessage[]) ?? []));
             if (badge) found[badgeKey] = badge;
           } catch {

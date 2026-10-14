@@ -750,7 +750,10 @@ pub async fn dev_minimax_account_usage(state: tauri::State<'_, crate::state::App
 }
 
 /// The connected MiniMax account. A token-plan login reports quota windows.
-/// An `sk-api-` key reports the cash balance instead. Nothing is shown when signed out.
+/// An `sk-api-` key reports the cash balance instead, unless it is also on a
+/// plan — in that case the quota endpoint reports windows and they win, the
+/// same way Claude's session usage shadows a prepaid balance. Both endpoints
+/// accept `Bearer` and `x-api-key`, so the same code path covers either login.
 pub async fn account_usage() -> AccountUsage {
     let Some(auth) = resolve_minimax_auth_fresh().await else {
         return empty_usage(false);
@@ -759,8 +762,11 @@ pub async fn account_usage() -> AccountUsage {
         .timeout(std::time::Duration::from_secs(12))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
+    let mut usage = empty_usage(true);
+    if let Some(body) = minimax_get(&client, &quota_url(&auth.base_url), &auth.token).await {
+        usage.windows = parse_quota(&body);
+    }
     if is_secret_api_key(&auth.token) {
-        let mut usage = empty_usage(true);
         if let Some((cents, currency)) = minimax_get(&client, &balance_url(&auth.base_url), &auth.token)
             .await
             .as_deref()
@@ -769,17 +775,8 @@ pub async fn account_usage() -> AccountUsage {
             usage.balance_cents = Some(cents);
             usage.balance_currency = Some(currency);
         }
-        return usage;
     }
-    let windows = minimax_get(&client, &quota_url(&auth.base_url), &auth.token)
-        .await
-        .as_deref()
-        .map(parse_quota)
-        .unwrap_or_default();
-    AccountUsage {
-        windows,
-        ..empty_usage(true)
-    }
+    usage
 }
 
 /// Quota accepts the `mmx` login as a bearer token. An API key is sent as `x-api-key`.
@@ -1070,5 +1067,22 @@ mod tests {
         let other = http_error_message(400, "bad model");
         assert!(other.starts_with("MiniMax error 400:"));
         assert!(SIGN_IN_ERROR.contains("mmx auth login"));
+    }
+
+    #[test]
+    fn quota_and_balance_combine_for_an_api_key_on_a_plan() {
+        // Quota endpoint returns windows for an `sk-api-` key too. The frontend
+        // shows bars when windows exist, falling back to the balance only when
+        // the plan endpoint has nothing to say.
+        let quota_body = r#"{"base_resp":{"status_code":0},"model_remains":[{"model_name":"general","start_time":1791695116008,"end_time":1791713116008,"current_interval_total_count":0,"current_interval_usage_count":0,"current_interval_remaining_percent":62,"current_interval_status":1,"current_weekly_total_count":0,"current_weekly_usage_count":0,"current_weekly_remaining_percent":41,"current_weekly_status":1,"weekly_end_time":1792263899676}]}"#;
+        let quota = parse_quota(quota_body);
+        assert_eq!(quota.len(), 2);
+        assert!((quota[0].used_percent - 62.0).abs() < 0.01);
+        assert!((quota[1].used_percent - 41.0).abs() < 0.01);
+        let balance_body = r#"{"available_amount":"24.96","cash_balance":"24.96"}"#;
+        assert_eq!(parse_balance(balance_body), Some((2496, "USD".into())));
+        // A pay-as-you-go key without a plan keeps the dollar amount.
+        assert!(parse_quota(r#"{"model_remains":[]}"#).is_empty());
+        assert_eq!(parse_balance(balance_body), Some((2496, "USD".into())));
     }
 }

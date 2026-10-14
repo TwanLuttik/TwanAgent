@@ -89,6 +89,7 @@ mod tests {
             model: "grok-4".into(),
             effort: "low".into(),
             permission: "ask".into(),
+            project: String::new(),
         });
         let bytes = encode_frame(&frame).unwrap();
         let (decoded, used): (ClientFrame, usize) = decode_frame(&bytes).unwrap();

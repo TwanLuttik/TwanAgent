@@ -30,6 +30,7 @@ impl ProviderKeys {
     }
 }
 
+#[derive(Clone)]
 pub struct KeyFile {
     pub path: std::path::PathBuf,
 }

@@ -170,8 +170,8 @@ fn is_local_cloud_draft(row: &ConversationSummary) -> bool {
     (title.is_empty() || title == "New chat") && row.kind != "terminal"
 }
 
-/// A cloud project's chats live on the server. Its local mount has an empty database.
-/// Caching that empty database would make the sidebar say "No chats yet" forever.
+/// A cloud project's chats live on the server. The local cache is a copy of that list,
+/// marked cloud, so opening the app can paint it before the server answers.
 fn remote_workspace(state: &AppState, workspace: &str) -> bool {
     let Ok(root) = state.require_workspace(workspace) else {
         return false;
@@ -200,8 +200,8 @@ fn list_conversations_blocking(
     let conn = crate::appdb::open(data_dir)?;
     if crate::appdb::sidebar_cached(&conn, workspace)? {
         let rows = crate::appdb::sidebar_for(&conn, workspace)?.0;
-        // The cache can hold an empty "New chat" written into the mount before
-        // the server had the real conversation. That row is not a cloud chat.
+        // A cloud cache written before the server answered can still hold an empty
+        // "New chat" from the local mount. That row is not a cloud chat.
         if remote {
             return Ok(rows.into_iter().filter(|row| !is_local_cloud_draft(row)).collect());
         }
@@ -219,9 +219,16 @@ fn list_conversations_blocking(
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_get_conversation(
     state: State<'_, AppState>,
-    workspace: String,
     id: String,
+    workspace: Option<String>,
 ) -> Result<Conversation> {
+    let workspace = workspace.unwrap_or_default();
+    // A cloud chat is not in the mount database. The id finds the copy saved from the server.
+    if workspace.trim().is_empty() || remote_workspace(&state, &workspace) {
+        let conn = crate::appdb::open(&state.data_dir)?;
+        return crate::appdb::sidebar_transcript_by_id(&conn, &id)?
+            .ok_or_else(|| Error::NotFound("conversation not found".into()));
+    }
     let dir = conv_store_dir(&state.data_dir, &workspace);
     match store::with_conn(&dir, |conn| store::get_conversation(conn, &id)) {
         Ok(row) => Ok(row),

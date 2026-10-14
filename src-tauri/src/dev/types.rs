@@ -200,6 +200,16 @@ pub struct DevCommandEvent {
     pub exit_code: Option<i32>,
 }
 
+/// One raw text frame from the cloud live socket, before it is turned into a chat event.
+#[derive(Debug, Clone, Serialize)]
+pub struct DevLiveSocketEvent {
+    pub stream_id: String,
+    pub conversation_id: String,
+    pub port: u16,
+    pub direction: String,
+    pub text: String,
+}
+
 /// One website found while a web search is still running.
 #[derive(Debug, Clone, Serialize)]
 pub struct DevWebSearchEvent {

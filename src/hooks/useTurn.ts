@@ -304,7 +304,10 @@ function rememberChatSettings(
   setConversations(rows);
   // Save even if the user has already moved to another chat. Dropping the write
   // leaves the model copied at creation, and the next open restores it.
-  void api.getConversation(workspace, chatId).then((full) => {
+  const load = hostedTurnStaysOnServer(remoteRef.current)
+    ? api.getConversationById(chatId)
+    : api.getConversation(workspace, chatId);
+  void load.then((full) => {
     const current = conversationsRef.current.find((row) => row.id === chatId);
     return api.saveConversation(workspace, {
       ...full,
@@ -631,7 +634,9 @@ async function continueWithPending(finishedId: string, ws: string, latestMessage
   let msgs = latestMessages;
   if (queued.chatId !== finishedId) {
     try {
-      const full = await api.getConversation(ws, queued.chatId);
+      const full = hostedTurnStaysOnServer(remoteRef.current)
+        ? await api.getConversationById(queued.chatId)
+        : await api.getConversation(ws, queued.chatId);
       msgs = (full.messages as ChatMessage[]) ?? [];
     } catch (e) {
       setFlash({ kind: "err", text: String(e) });
@@ -779,7 +784,9 @@ async function send() {
   let history = closeDanglingToolCalls(messages);
   if (!turnAppliesToChat(id, activeIdRef.current)) {
     try {
-      const full = await api.getConversation(ws, id);
+      const full = hostedTurnStaysOnServer(remoteRef.current)
+        ? await api.getConversationById(id)
+        : await api.getConversation(ws, id);
       history = closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []);
     } catch (e) {
       setFlash({ kind: "err", text: String(e) });
@@ -877,18 +884,22 @@ async function runTurn(
         finishWait = resolve;
       });
       unlisten = await api.onChat((ev) => {
-        if (ev.stream_id !== streamId) return;
-        if (ev.kind === "delta" && ev.text) {
+        // The sender joins under streamId. A chat that was already open joined under another id.
+        // Both publish the same conversation, so either `done` ends this wait.
+        const own = ev.stream_id === streamId;
+        const followedDone = ev.kind === "done" && ev.conversation?.id === id;
+        if (!own && !followedDone) return;
+        if (ev.kind === "delta" && ev.text && own) {
           const live = liveByChatRef.current.get(id);
           const streamText = `${live?.streamText ?? ""}` + ev.text;
           rememberLive(id, { streamText });
           if (visible()) setStreamText(streamText);
-        } else if (ev.kind === "status" && ev.text) {
+        } else if (ev.kind === "status" && ev.text && own) {
           const activity = { kind: "tool" as const, label: ev.text };
           rememberLive(id, { activity });
           markRunning(id, { activity });
           if (visible()) setRunningActivity(activity);
-        } else if (ev.kind === "error") {
+        } else if (ev.kind === "error" && own) {
           if (visible()) setFlash({ kind: "err", text: ev.text || "the server could not finish the turn" });
           finishWait?.();
         } else if (ev.kind === "done") {
@@ -915,6 +926,8 @@ async function runTurn(
         effort: turnSettings.effort,
         permission: turnSettings.permission,
       });
+      // The open chat joins under another stream id. Its `done` replaces the live copy
+      // and clears the stream. The sender's own join resolves `finished` directly.
       await finished;
     } catch (e) {
       if (visible()) setFlash({ kind: "err", text: String(e) });

@@ -496,6 +496,18 @@ export function saveOpenFileTree(workspace: string, paths: string[]): void {
   localStorage.setItem(FILE_TREE_OPEN_KEY, JSON.stringify(all));
 }
 
+const LIVE_SOCKET_DEBUG_KEY = "twanagent.liveSocketDebug";
+
+export function loadLiveSocketDebug(): boolean {
+  const raw = localStorage.getItem(LIVE_SOCKET_DEBUG_KEY);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function setLiveSocketDebug(on: boolean): void {
+  localStorage.setItem(LIVE_SOCKET_DEBUG_KEY, on ? "on" : "off");
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
 const PERF_OVERLAY_KEY = "twanagent.perfOverlay";
 
 export function loadPerfOverlay(): boolean {

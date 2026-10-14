@@ -40,12 +40,26 @@ pub fn prompt_frame(turn: &HostedTurn) -> Result<ClientFrame> {
         } else {
             turn.permission.trim().to_string()
         },
+        project: String::new(),
     }))
 }
 
 fn hosted_cancels() -> &'static Mutex<std::collections::HashMap<String, Arc<AtomicBool>>> {
     static CANCELS: OnceLock<Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     CANCELS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn emit_live_socket(app: &AppHandle, stream_id: &str, conversation_id: &str, port: u16, direction: &str, text: &str) {
+    let _ = app.emit(
+        "dev-live-socket",
+        crate::dev::types::DevLiveSocketEvent {
+            stream_id: stream_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            port,
+            direction: direction.to_string(),
+            text: text.to_string(),
+        },
+    );
 }
 
 fn emit_hosted(app: &AppHandle, stream_id: &str, kind: &str, text: Option<String>, conversation: Option<serde_json::Value>) {
@@ -98,77 +112,101 @@ pub async fn dev_hosted_turn(
         effort: effort.unwrap_or_default(),
         permission: permission.unwrap_or_else(|| "ask".into()),
     })?;
-    let bytes = encode_frame(&frame).map_err(|err| Error::Other(err.to_string()))?;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-    let command = hosted_command(&project.remote_path, &encoded);
-    let cancel = Arc::new(AtomicBool::new(false));
-    if let Ok(mut map) = hosted_cancels().lock() {
-        map.insert(stream_id.clone(), cancel.clone());
-    }
+    let bytes = resident_bytes(&project.remote_path, &frame)?;
+    let remote_path = project.remote_path.clone();
+    let chat_id = frame_conversation(&frame);
+    let cache_dir = state.data_dir.clone();
+    let cache_workspace = workspace.clone();
     let pool = state.ssh_pool.clone();
     let sid = stream_id.clone();
     let app2 = app.clone();
+    let machine_for_live = machine.clone();
+    let already = chat_already_joined(&chat_id);
+    let feed_pool = pool.clone();
+    let feed_secret = secret.clone();
+    let feed_machine = machine.clone();
+    let feed_app = app2.clone();
+    let feed_sid = sid.clone();
+    let feed_path = remote_path.clone();
+    if !already {
+        // This window opened the chat but has not joined yet. Join as the sender so tokens
+        // are not stuck behind the SSH command. A chat that is already open keeps its own join.
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Ok(mut map) = hosted_follows().lock() {
+            map.insert(chat_id.clone(), FollowSlot { stream_id: sid.clone(), stop: stop.clone() });
+        }
+        tauri::async_runtime::spawn(async move {
+            let _ = wake_live(pool.clone(), machine_for_live.clone(), secret.clone(), remote_path.clone()).await;
+            let port = match open_live_tunnel(&machine_for_live).await {
+                Ok(port) => port,
+                Err(err) => {
+                    emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
+                    return;
+                }
+            };
+            if let Err(err) = read_live_socket(&app2, &sid, port, &chat_id, &stop, &cache_dir, &cache_workspace).await {
+                emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
+            }
+        });
+    }
+    // The open chat is already joined to the live socket. This only hands the prompt over.
+    // Stdout is the ack. Tokens arrive on `dev-chat` from the socket, not from this command.
     tauri::async_runtime::spawn_blocking(move || {
-        let session = match pool.session(&machine, secret.as_deref()) {
+        let session = match feed_pool.fresh(&feed_machine, feed_secret.as_deref()) {
             Ok(session) => session,
             Err(err) => {
-                emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
+                emit_hosted(&feed_app, &feed_sid, "error", Some(err.to_string()), None);
                 return;
             }
         };
-        let mut buf = Vec::new();
-        let result = session.exec_stream(
+        let sent = session.exec_with_stdin(
             &crate::remote::ssh::ExecRequest {
                 cwd: "/".into(),
-                command,
-                timeout_secs: 600,
+                command: serve_feed_command(),
+                timeout_secs: 30,
             },
-            &mut |chunk| {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                buf.extend_from_slice(chunk);
-                loop {
-                    if buf.len() < 4 {
-                        break;
-                    }
-                    let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                    if buf.len() < 4 + len {
-                        break;
-                    }
-                    let body: Vec<u8> = buf.drain(..4 + len).collect();
-                    let Ok((frame, _)) = decode_frame::<ServerFrame>(&body) else {
-                        continue;
-                    };
-                    paint_frame(&app2, &sid, frame);
-                }
-            },
+            &bytes,
+            &mut |_| {},
         );
-        if let Err(err) = result {
-            emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
-        }
-        if let Ok(mut map) = hosted_cancels().lock() {
-            map.remove(&sid);
+        let failed = match sent {
+            Err(err) => Some(err.to_string()),
+            Ok(result) if result.timed_out || result.exit_code.is_some_and(|code| code != 0) => {
+                let detail = result.stderr.trim();
+                Some(if detail.is_empty() {
+                    format!("the server for {feed_path} did not take the prompt")
+                } else {
+                    detail.to_string()
+                })
+            }
+            Ok(_) => None,
+        };
+        if let Some(detail) = failed {
+            emit_hosted(&feed_app, &feed_sid, "error", Some(detail), None);
         }
     });
     Ok(())
 }
 
-fn paint_frame(app: &AppHandle, stream_id: &str, frame: ServerFrame) {
+/// Hand one frame to the resident process. Its stdin is a fifo, because an exec channel
+/// closes stdin before a piped program can read it.
+fn chat_already_joined(conversation_id: &str) -> bool {
+    hosted_follows()
+        .lock()
+        .ok()
+        .is_some_and(|map| map.contains_key(conversation_id))
+}
+
+fn frame_conversation(frame: &ClientFrame) -> String {
     match frame {
-        ServerFrame::Status { text } => emit_hosted(app, stream_id, "status", Some(text), None),
-        ServerFrame::Delta { text } => emit_hosted(app, stream_id, "delta", Some(text), None),
-        ServerFrame::Done { conversation } => {
-            let value = serde_json::to_value(&conversation).ok();
-            emit_hosted(app, stream_id, "done", None, value);
-        }
-        ServerFrame::Error { message } => emit_hosted(app, stream_id, "error", Some(message), None),
-        ServerFrame::Conversation(conversation) => {
-            let value = serde_json::to_value(&conversation).ok();
-            emit_hosted(app, stream_id, "conversation", None, value);
-        }
-        _ => {}
+        ClientFrame::SubmitPrompt(request) => request.conversation_id.clone(),
+        _ => String::new(),
     }
+}
+
+fn serve_feed_command() -> String {
+    "fifo=\"$HOME/.twanagent/serve.stdin\"; \
+if [ ! -p \"$fifo\" ]; then echo 'the live server is not running' >&2; exit 1; fi; \
+cat > \"$fifo\"".into()
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -180,9 +218,24 @@ pub fn dev_hosted_cancel(stream_id: String) {
     }
 }
 
-fn hosted_follows() -> &'static Mutex<std::collections::HashMap<String, Arc<AtomicBool>>> {
-    static FOLLOWS: OnceLock<Mutex<std::collections::HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+struct FollowSlot {
+    stream_id: String,
+    stop: Arc<AtomicBool>,
+}
+
+fn hosted_follows() -> &'static Mutex<std::collections::HashMap<String, FollowSlot>> {
+    static FOLLOWS: OnceLock<Mutex<std::collections::HashMap<String, FollowSlot>>> = OnceLock::new();
     FOLLOWS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+struct LiveTunnel {
+    port: u16,
+    child: std::sync::Mutex<Option<std::process::Child>>,
+}
+
+fn live_tunnels() -> &'static Mutex<std::collections::HashMap<String, Arc<LiveTunnel>>> {
+    static TUNNELS: OnceLock<Mutex<std::collections::HashMap<String, Arc<LiveTunnel>>>> = OnceLock::new();
+    TUNNELS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 fn hosted_command(project_path: &str, encoded: &str) -> String {
@@ -191,6 +244,19 @@ fn hosted_command(project_path: &str, encoded: &str) -> String {
         crate::remote::ssh::shell_single_quote(project_path),
         crate::remote::ssh::shell_single_quote(encoded),
     )
+}
+
+/// One frame for the resident server. The project is outside the client frame.
+fn resident_bytes(project_path: &str, frame: &ClientFrame) -> Result<Vec<u8>> {
+    let inner = serde_json::to_value(frame).map_err(|err| Error::Other(err.to_string()))?;
+    let wrapped = serde_json::json!({
+        "project": project_path,
+        "frame": inner,
+    });
+    let body = serde_json::to_vec(&wrapped).map_err(|err| Error::Other(err.to_string()))?;
+    let mut out = (body.len() as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(&body);
+    Ok(out)
 }
 
 /// The first four bytes are a length. A shell banner, or the copy's "installed", is not a frame.
@@ -211,11 +277,6 @@ fn decode_server_reply(bytes: &[u8], stderr: &str) -> Result<(ServerFrame, usize
         return Err(Error::Other("the server did not answer".into()));
     }
     Err(Error::Other("the server reply was not a frame".into()))
-}
-
-fn encode_client(frame: &ClientFrame) -> Result<String> {
-    let bytes = encode_frame(frame).map_err(|err| Error::Other(err.to_string()))?;
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
 }
 
 /// Follow a turn that is already running on the server.
@@ -243,14 +304,22 @@ pub async fn dev_hosted_follow(
     let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
     let stop = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = hosted_follows().lock() {
-        if let Some(previous) = map.insert(stream_id.clone(), stop.clone()) {
-            previous.store(true, Ordering::Relaxed);
+        if let Some(previous) = map.insert(
+            conversation_id.clone(),
+            FollowSlot {
+                stream_id: stream_id.clone(),
+                stop: stop.clone(),
+            },
+        ) {
+            previous.stop.store(true, Ordering::Relaxed);
         }
     }
     let pool = state.ssh_pool.clone();
     let sid = stream_id.clone();
     let chat_id = conversation_id.clone();
     let remote_path = project.remote_path.clone();
+    let cache_dir = state.data_dir.clone();
+    let cache_workspace = workspace.clone();
     let app2 = app.clone();
     let machine2 = machine.clone();
     let secret = secret.clone();
@@ -264,12 +333,14 @@ pub async fn dev_hosted_follow(
                 return;
             }
         };
-        if let Err(err) = read_live_socket(&app2, &sid, local, &chat_id, &stop).await {
+        if let Err(err) = read_live_socket(&app2, &sid, local, &chat_id, &stop, &cache_dir, &cache_workspace).await {
             emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
         }
         emit_hosted(&app2, &sid, "idle", None, None);
         if let Ok(mut map) = hosted_follows().lock() {
-            map.remove(&sid);
+            if map.get(&chat_id).is_some_and(|slot| slot.stream_id == sid) {
+                map.remove(&chat_id);
+            }
         }
     });
     Ok(())
@@ -281,17 +352,15 @@ async fn wake_live(
     secret: Option<String>,
     remote_path: String,
 ) -> Result<()> {
-    let encoded = encode_client(&ClientFrame::Hello { version: twanagent_service::PROTOCOL_VERSION })?;
+    let _ = remote_path;
     crate::state::run_blocking(move || {
+        // `--serve` exits immediately when the socket is already taken, so this is safe to repeat.
         let _ = pool.exec(
             &machine,
             secret.as_deref(),
             &crate::remote::ssh::ExecRequest {
                 cwd: "/".into(),
-                command: format!(
-                    "$HOME/.twanagent/bin/twanagent-server --live --data \"$HOME/.twanagent\" >/dev/null 2>&1 & {call}",
-                    call = hosted_command(&remote_path, &encoded)
-                ),
+                command: "$HOME/.twanagent/bin/twanagent-server --serve --data \"$HOME/.twanagent\" >/dev/null 2>&1 &".into(),
                 timeout_secs: 8,
             },
         );
@@ -300,7 +369,29 @@ async fn wake_live(
     .await
 }
 
+fn tunnel_alive(tunnel: &LiveTunnel) -> bool {
+    tunnel
+        .child
+        .lock()
+        .ok()
+        .and_then(|mut slot| {
+            slot.as_mut().and_then(|child| match child.try_wait() {
+                Ok(None) => Some(true),
+                _ => Some(false),
+            })
+        })
+        .unwrap_or(false)
+}
+
 async fn open_live_tunnel(machine: &crate::remote::config::Machine) -> Result<u16> {
+    if let Ok(mut map) = live_tunnels().lock() {
+        if let Some(existing) = map.get(&machine.id) {
+            if tunnel_alive(existing) {
+                return Ok(existing.port);
+            }
+        }
+        map.remove(&machine.id);
+    }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|err| Error::Other(format!("could not open a local port: {err}")))?;
@@ -309,7 +400,7 @@ async fn open_live_tunnel(machine: &crate::remote::config::Machine) -> Result<u1
         .map_err(|err| Error::Other(err.to_string()))?
         .port();
     drop(listener);
-    let mut command = tokio::process::Command::new("ssh");
+    let mut command = std::process::Command::new("ssh");
     command
         .arg("-N")
         .arg("-L")
@@ -326,10 +417,31 @@ async fn open_live_tunnel(machine: &crate::remote::config::Machine) -> Result<u1
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    command
+    let child = command
         .spawn()
         .map_err(|err| Error::Other(format!("could not open the live tunnel: {err}")))?;
+    let tunnel = Arc::new(LiveTunnel {
+        port,
+        child: std::sync::Mutex::new(Some(child)),
+    });
+    if let Ok(mut map) = live_tunnels().lock() {
+        map.insert(machine.id.clone(), tunnel);
+    }
+    wait_for_port(port).await?;
     Ok(port)
+}
+
+async fn wait_for_port(port: u16) -> Result<()> {
+    let started = std::time::Instant::now();
+    loop {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return Ok(());
+        }
+        if started.elapsed() > std::time::Duration::from_secs(8) {
+            return Err(Error::Other("the live tunnel did not open".into()));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 async fn read_live_socket(
@@ -338,6 +450,8 @@ async fn read_live_socket(
     port: u16,
     conversation_id: &str,
     stop: &AtomicBool,
+    cache_dir: &std::path::Path,
+    cache_workspace: &str,
 ) -> Result<()> {
     let url = format!("ws://127.0.0.1:{port}");
     let (socket, _) = tokio::time::timeout(
@@ -350,6 +464,7 @@ async fn read_live_socket(
     let (mut write, mut read) = socket.split();
     let hello = twanagent_service::subscribe_text(conversation_id);
     use futures_util::{SinkExt, StreamExt};
+    emit_live_socket(app, stream_id, conversation_id, port, "out", &hello);
     write
         .send(tokio_tungstenite::tungstenite::Message::Text(hello.into()))
         .await
@@ -368,6 +483,7 @@ async fn read_live_socket(
         let tokio_tungstenite::tungstenite::Message::Text(text) = message else {
             continue;
         };
+        emit_live_socket(app, stream_id, conversation_id, port, "in", text.as_str());
         let Ok(value) = serde_json::from_str::<serde_json::Value>(text.as_str()) else {
             continue;
         };
@@ -376,13 +492,17 @@ async fn read_live_socket(
             "delta" => emit_hosted(app, stream_id, "delta", value.get("text").and_then(|item| item.as_str()).map(str::to_string), None),
             "status" => emit_hosted(app, stream_id, "status", value.get("text").and_then(|item| item.as_str()).map(str::to_string), None),
             "done" => {
+                // The chat stays open. The next turn on this conversation uses the same socket.
+                // The saved conversation is also the copy the next launch paints.
                 let conversation = value.get("conversation").cloned();
+                if let Some(saved) = conversation.as_ref().filter(|row| !row.is_null()) {
+                    remember_hosted_value(&cache_dir, &cache_workspace, saved);
+                }
                 emit_hosted(app, stream_id, "done", None, conversation);
-                break;
+                emit_hosted(app, stream_id, "idle", None, None);
             }
             "error" => {
                 emit_hosted(app, stream_id, "error", value.get("message").and_then(|item| item.as_str()).map(str::to_string), None);
-                break;
             }
             _ => {}
         }
@@ -392,14 +512,119 @@ async fn read_live_socket(
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_hosted_unfollow(stream_id: String) {
-    if let Ok(map) = hosted_follows().lock() {
-        if let Some(flag) = map.get(&stream_id) {
-            flag.store(true, Ordering::Relaxed);
+    if let Ok(mut map) = hosted_follows().lock() {
+        let found = map.iter().find(|(_, slot)| slot.stream_id == stream_id).map(|(id, _)| id.clone());
+        if let Some(id) = found {
+            if let Some(slot) = map.remove(&id) {
+                slot.stop.store(true, Ordering::Relaxed);
+            }
         }
     }
 }
 
+fn summary_from_hosted(row: &twanagent_service::ConversationSummary) -> crate::dev::ConversationSummary {
+    crate::dev::ConversationSummary {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        created_at: row.created_at.clone(),
+        updated_at: row.updated_at.clone(),
+        kind: if row.kind.is_empty() { "chat".into() } else { row.kind.clone() },
+        journey_id: row.journey_id.clone(),
+        sort_order: row.sort_order,
+        effort: row.effort.clone(),
+        model: row.model.clone(),
+        context_window: row.context_window,
+        permission: row.permission.clone(),
+        archived: row.archived,
+    }
+}
+
+fn conversation_from_hosted(row: &twanagent_service::Conversation) -> crate::dev::Conversation {
+    crate::dev::Conversation {
+        id: row.id.clone(),
+        title: row.title.clone(),
+        created_at: row.created_at.clone(),
+        updated_at: row.updated_at.clone(),
+        kind: if row.kind.is_empty() { "chat".into() } else { row.kind.clone() },
+        messages: row.messages.clone(),
+        context_usage: row
+            .context_usage
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        compaction: row
+            .compaction
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        journey_id: row.journey_id.clone(),
+        sort_order: row.sort_order,
+        effort: row.effort.clone(),
+        model: row.model.clone(),
+        context_window: row.context_window,
+        permission: row.permission.clone(),
+        archived: row.archived,
+    }
+}
+
+fn remember_hosted_value(data_dir: &std::path::Path, workspace: &str, value: &serde_json::Value) {
+    let Ok(row) = serde_json::from_value::<twanagent_service::Conversation>(value.clone()) else {
+        return;
+    };
+    remember_hosted_conversation(data_dir, workspace, &row);
+}
+
+/// Remember the server's chat list so the next launch paints it before SSH answers.
+fn remember_hosted_list(data_dir: &std::path::Path, workspace: &str, rows: &[twanagent_service::ConversationSummary]) {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let summaries: Vec<_> = rows.iter().map(summary_from_hosted).collect();
+    let journeys = crate::appdb::sidebar_for(&conn, workspace).map(|(_, journeys)| journeys).unwrap_or_default();
+    let _ = crate::appdb::replace_sidebar_source(&conn, workspace, &summaries, &journeys, true);
+}
+
+fn remember_hosted_conversation(data_dir: &std::path::Path, workspace: &str, row: &twanagent_service::Conversation) {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let _ = crate::appdb::save_sidebar_transcript(&conn, workspace, &conversation_from_hosted(row));
+}
+
+/// The last server list and every saved transcript. Opening a chat paints from this, not from SSH.
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_hosted_sidebar_cached(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<(Vec<crate::dev::ConversationSummary>, Vec<crate::dev::Journey>, Vec<crate::dev::Conversation>)> {
+    let conn = crate::appdb::open(&state.data_dir)?;
+    if !crate::appdb::sidebar_is_cloud(&conn, &workspace)? {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+    let (rows, journeys) = crate::appdb::sidebar_for(&conn, &workspace)?;
+    let rows: Vec<_> = rows.into_iter().filter(|row| {
+        let title = row.title.trim();
+        !((title.is_empty() || title == "New chat") && row.kind != "terminal")
+    }).collect();
+    let keep: std::collections::HashSet<_> = rows.iter().map(|row| row.id.clone()).collect();
+    let transcripts = crate::appdb::sidebar_transcripts(&conn, &workspace)?
+        .into_iter()
+        .filter(|row| keep.contains(&row.id))
+        .collect();
+    Ok((rows, journeys, transcripts))
+}
+
+/// The last transcript saved for one cloud chat. Null until that chat has been opened here.
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_hosted_conversation_cached(
+    state: State<'_, AppState>,
+    workspace: String,
+    id: String,
+) -> Result<Option<crate::dev::Conversation>> {
+    let conn = crate::appdb::open(&state.data_dir)?;
+    crate::appdb::sidebar_transcript(&conn, &workspace, &id)
+}
+
 /// List, load, save, and delete chats on the paired server. The local mount is not the store.
+/// A list or a loaded chat is also written into the app database, marked as a cloud copy.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_hosted_call(
     state: State<'_, AppState>,
@@ -425,6 +650,8 @@ pub async fn dev_hosted_call(
     let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
     let pool = state.ssh_pool.clone();
     let host = machine.host.clone();
+    let data_dir = state.data_dir.clone();
+    let remember_workspace = workspace.clone();
     crate::state::run_blocking(move || {
         let result = pool.exec(
             &machine,
@@ -450,9 +677,11 @@ pub async fn dev_hosted_call(
         match frame {
             ServerFrame::Error { message } => Err(Error::Other(message)),
             ServerFrame::Conversations { rows } => {
+                remember_hosted_list(&data_dir, &remember_workspace, &rows);
                 serde_json::to_string(&serde_json::json!({ "rows": rows })).map_err(Error::from)
             }
             ServerFrame::Conversation(conversation) | ServerFrame::Done { conversation } => {
+                remember_hosted_conversation(&data_dir, &remember_workspace, &conversation);
                 serde_json::to_string(&conversation).map_err(Error::from)
             }
             other => serde_json::to_string(&other).map_err(Error::from),
@@ -465,7 +694,6 @@ pub async fn dev_hosted_call(
 mod tests {
     use super::*;
 
-    #[test]
     #[test]
     fn a_copy_banner_is_not_reported_as_a_short_frame() {
         let err = decode_server_reply(b"installed\n", "").unwrap_err().to_string();
@@ -506,7 +734,7 @@ mod tests {
         })
         .unwrap();
         let bytes = twanagent_service::encode_frame(&frame).unwrap();
-        let text = String::from_utf8(bytes).unwrap();
+        let text = String::from_utf8(bytes[4..].to_vec()).unwrap();
         assert!(text.contains("read the note"));
         assert!(!text.contains("read_file"));
         assert!(!text.contains("run_command"));

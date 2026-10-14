@@ -145,6 +145,8 @@ export type LibraryDeps = {
   conversationsRef: RefObject<ConversationSummary[]>;
   /** Bumped when the visible chat or project changes, so a late load cannot overwrite it. */
   openGeneration: RefObject<number>;
+  /** Saved cloud transcripts, keyed by project and chat. A click paints from here. */
+  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   setWorkspace: Update<string>;
   setConversations: Update<ConversationSummary[]>;
   setJourneys: Update<JourneySummary[]>;
@@ -186,7 +188,7 @@ export function useLibrary(deps: LibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef, sidebarLoadedForRef,
+    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowServers, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -197,6 +199,8 @@ export function useLibrary(deps: LibraryDeps) {
   const hostedChatsRef = useRef(hostedChats);
   hostedChatsRef.current = hostedChats;
   const followRef = useRef("");
+  const followChatRef = useRef("");
+  const followStopRef = useRef<(() => void) | null>(null);
   const persistGen = useRef(new Map<string, number>());
   const persistTrail = useRef<ReturnType<typeof createPersistQueue<PersistPayload>> | null>(null);
   const shownMessages = useRef(new Map<string, ChatMessage[]>());
@@ -383,6 +387,8 @@ function applyWorkspace(path: string) {
       (savedId && liveByChatRef.current.has(savedId) && savedId) ||
       (foregroundHere ? runningIdRef.current : "") ||
       "";
+    const savedCloud =
+      entering?.remote && savedId ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${savedId}`) : undefined;
     const live = prefer
       ? liveTurnMessages({
           workspace: path,
@@ -408,6 +414,19 @@ function applyWorkspace(path: string) {
       setRunningActivity(cached?.activity ?? null);
       setTurnStartedAt(runningTurns[prefer]?.startedAt ?? 0);
       showSubagents(prefer);
+    } else if (savedCloud) {
+      const body = (savedCloud.messages as ChatMessage[]) ?? [];
+      const shown =
+        savedCloud.compaction?.summary && savedCloud.compaction.through > 0
+          ? insertCompactionEvent(body, savedCloud.compaction.through)
+          : body;
+      showChatSettings(entering?.conversations.find((row) => row.id === savedId));
+      setActiveId(savedId);
+      setMessages(shown);
+      shownMessages.current.set(savedId, shown);
+      setRunningActivity(null);
+      setTurnStartedAt(0);
+      hideSubagents();
     } else {
       setActiveId("");
       setMessages([]);
@@ -479,6 +498,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   if (isSameProject(path, workspace) && hostedChatsRef.current) {
     setActiveId("");
     setMessages([]);
+    stopHostedFollow();
     setStreamText("");
     setStreamReasoning("");
     setLiveTools([]);
@@ -647,7 +667,8 @@ async function openChat(id: string) {
     setTurnStartedAt(turn?.startedAt ?? 0);
     showSubagents(id);
     abortRef.current = turnsRef.current.get(id) ?? null;
-    void api.getConversation(workspace, id).then((full) => {
+    const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(workspace, id);
+    void load.then((full) => {
       if (full.compaction?.summary && full.compaction.through > 0) {
         setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
       }
@@ -680,10 +701,39 @@ async function openChat(id: string) {
   setTurnStartedAt(0);
   showChatSettings(conversations.find((row) => row.id === id));
   const cached = shownMessages.current.get(id);
-  if (cached) setMessages(cached);
+  const remembered = !cached && hostedChatsRef.current
+    ? cloudTranscriptsRef.current.get(`${projectKey(workspace)}\t${id}`)
+    : undefined;
+  const painted = cached ?? (remembered ? messagesFromCached(remembered) : undefined);
+  if (painted) {
+    setMessages(painted);
+    shownMessages.current.set(id, painted);
+    if (remembered?.compaction?.summary && remembered.compaction.through > 0) {
+      setCompactionByChat((prev) => ({ ...prev, [id]: remembered.compaction! }));
+    }
+  }
   setActiveId(id);
-  setOpeningId(cached ? "" : id);
+  // A cloud chat that is not in memory yet still reads the sqlite copy before SSH.
+  const cachedLookup = hostedChatsRef.current && !painted
+    ? api.hostedConversationCached(workspace, id).catch(() => null)
+    : null;
+  setOpeningId(painted ? "" : id);
   try {
+    const cachedTranscript = cachedLookup ? await cachedLookup : null;
+    if (generation !== openGeneration.current) return;
+    if (cachedTranscript && shownId.current === id && !shownMessages.current.has(id)) {
+      const cachedBody = (cachedTranscript.messages as ChatMessage[]) ?? [];
+      const shown =
+        cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0
+          ? insertCompactionEvent(cachedBody, cachedTranscript.compaction.through)
+          : cachedBody;
+      shownMessages.current.set(id, shown);
+      setMessages(shown);
+      setOpeningId("");
+      if (cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0) {
+        setCompactionByChat((prev) => ({ ...prev, [id]: cachedTranscript.compaction! }));
+      }
+    }
     const full = hostedChatsRef.current
       ? await api.getHostedConversation(workspace, id)
       : await api.getConversation(workspace, id);
@@ -731,7 +781,7 @@ async function openChat(id: string) {
     saveConversation(workspace, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
     void ensureChatPlan(workspace, id, opened?.model);
-    if (hostedChatsRef.current && !turnsRef.current.has(id)) {
+    if (hostedChatsRef.current) {
       void watchHosted(workspace, id);
     }
   } finally {
@@ -739,9 +789,26 @@ async function openChat(id: string) {
   }
 }
 
-/** Follow a turn that is already running on the server. This window did not start it. */
-async function watchHosted(ws: string, id: string) {
+function messagesFromCached(row: import("../lib/tauri").Conversation): ChatMessage[] {
+  const body = (row.messages as ChatMessage[]) ?? [];
+  return row.compaction?.summary && row.compaction.through > 0
+    ? insertCompactionEvent(body, row.compaction.through)
+    : body;
+}
+
+function stopHostedFollow() {
+  followStopRef.current?.();
+  followStopRef.current = null;
   if (followRef.current) void api.hostedUnfollow(followRef.current);
+  followRef.current = "";
+  followChatRef.current = "";
+}
+
+/** Join the open cloud chat. Frames arrive while it is on screen, including a turn already running. */
+async function watchHosted(ws: string, id: string) {
+  if (followChatRef.current === id && followRef.current) return;
+  stopHostedFollow();
+  followChatRef.current = id;
   const streamId = crypto.randomUUID();
   followRef.current = streamId;
   let unlisten: (() => void) | undefined;
@@ -749,6 +816,10 @@ async function watchHosted(ws: string, id: string) {
     unlisten = await api.onChat((ev) => {
       if (ev.stream_id !== streamId || followRef.current !== streamId) return;
       if (ev.kind === "delta" && ev.text) {
+        if (!turnsRef.current.has(id)) {
+          setRunningId(id);
+          runningIdRef.current = id;
+        }
         const live = liveByChatRef.current.get(id);
         const streamText = `${live?.streamText ?? ""}` + ev.text;
         liveByChatRef.current.set(id, {
@@ -772,21 +843,40 @@ async function watchHosted(ws: string, id: string) {
         if (shownId.current === id) setRunningActivity(activity);
       } else if (ev.kind === "done" && ev.conversation) {
         const messages = (ev.conversation.messages as ChatMessage[]) ?? [];
-        if (messages.length && shownId.current === id) {
-          setMessages(messages);
-          setStreamText("");
-          setRunningActivity(null);
+        if (messages.length) {
+          shownMessages.current.set(id, messages);
+          liveByChatRef.current.set(id, {
+            messages,
+            streamText: "",
+            streamReasoning: "",
+            liveTools: [],
+            activity: null,
+          });
+          if (shownId.current === id) {
+            setMessages(messages);
+            setStreamText("");
+            setRunningActivity(null);
+          }
+        } else {
+          liveByChatRef.current.delete(id);
         }
-        liveByChatRef.current.delete(id);
       } else if (ev.kind === "idle" || ev.kind === "error") {
         if (shownId.current === id) setRunningActivity(null);
       }
     });
+    if (followRef.current !== streamId) {
+      unlisten();
+      return;
+    }
+    followStopRef.current = unlisten;
     await api.hostedFollow(ws, streamId, id);
   } catch {
-    if (followRef.current === streamId) followRef.current = "";
-  } finally {
     unlisten?.();
+    if (followRef.current === streamId) {
+      followStopRef.current = null;
+      followRef.current = "";
+      followChatRef.current = "";
+    }
   }
 }
 
@@ -1086,7 +1176,12 @@ async function createJourneyFromChat(id: string, path = workspace) {
     ]);
     applyProjectData(path, rows, nextJourneys);
     if (!isSameProject(path, workspace)) return;
-    const msgs = id === activeId ? messages : (((await api.getConversation(path, id)).messages as ChatMessage[]) ?? []);
+    const loaded = id === activeId
+      ? null
+      : hostedChatsRef.current
+        ? await api.getConversationById(id)
+        : await api.getConversation(path, id);
+    const msgs = loaded ? ((loaded.messages as ChatMessage[]) ?? []) : messages;
     if (id !== activeId) await openChat(id);
     if (!conversationHasSummarizeSource(msgs)) return;
     const next = [...msgs, { role: "user" as const, content: JOURNEY_SUMMARIZE_PROMPT }];
@@ -1242,6 +1337,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     archiveChat,
     removeChat,
     persist,
+    watchHosted,
     reorderChats,
     reorderSidebar,
     createJourneyFromChat,

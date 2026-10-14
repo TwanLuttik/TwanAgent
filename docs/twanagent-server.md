@@ -39,7 +39,7 @@ The process then reads frames from stdin and writes frames to stdout. Each frame
 ## Arguments
 
 ```
-twanagent-server --project <dir> --data <dir>
+twanagent-server --serve --data <dir>
 twanagent-server --call --project <dir> --data <dir> [--frame <base64>]
 twanagent-server --live [--data <dir>]
 twanagent-server --version
@@ -49,18 +49,19 @@ twanagent-server --version
 | --- | --- | --- |
 | `--project` | directory | The folder the tools read and edit. Required with the default run and with `--call`. Passed through as written, so `~` is not expanded. |
 | `--data` | directory | Where the server keeps keys and the live tail. A leading `$HOME` is expanded. Required except for `--version` and `--live`. |
-| `--call` | none | Read one frame, write one reply, then exit. The desktop app uses this over SSH. Without `--frame`, the frame is read from stdin. |
+| `--serve` | none | Stay up, bind `127.0.0.1:8731`, and run turns. If that port is already taken, print the address and exit. The process that bound it first is the one that publishes. |
+| `--call` | none | Read one store frame, write one reply, then exit. Does not bind the socket and does not run a turn. The desktop app uses this over SSH. Without `--frame`, the frame is read from stdin. |
 | `--frame` | base64 | The one request frame, base64-encoded. SSH runs the program through a shell, so a pipe never reaches it. Used with `--call`. |
-| `--live` | none | Bind the live socket and wait. `--project` is not required. When `--data` comes first, that directory is used. Otherwise the default is `$HOME/.twanagent`. Flags after `--live` are not read. |
+| `--live` | none | Bind the live socket and wait, without reading turn frames. `--project` is not required. When `--data` comes first, that directory is used. Otherwise the default is `$HOME/.twanagent`. Flags after `--live` are not read. |
 | `--version` | none | Print `twanagent-server` and the server version, then exit. No other flag is required. |
 
-A turn also starts the live socket in the process that is answering the prompt. That process is the one that publishes. `--data` for the app is `$HOME/.twanagent`.
+`--serve` is that process. `--data` for the app is `$HOME/.twanagent`. A turn is a frame on `~/.twanagent/serve.stdin`, not a second process. `--call` stays for listing and loading chats.
 
 ## Live socket
 
-A running turn also publishes on a WebSocket at `127.0.0.1:8731`. The process binds that address only, so it is not reachable from another machine except through SSH. The desktop app opens `ssh -N -L` to that port and sends `{"type":"subscribe","id":"<conversation>"}`. Each later text frame is `status`, `delta`, `done`, or `error`.
+`--serve` publishes on a WebSocket at `127.0.0.1:8731`. The process binds that address only, so it is not reachable from another machine except through SSH. The desktop app opens one `ssh -N -L` to that port and, when a conversation is on screen, sends `{"type":"subscribe","id":"<conversation>"}`. Each later text frame is `status`, `delta`, `done`, or `error`. A client that joins while a turn is unfinished first receives the frames already written, then the ones still to come. The socket stays open after `done`, so the next turn on that conversation uses the same subscription. Closing the conversation sends nothing more. The desktop closes its side.
 
-`--live` starts the socket and waits. If something is already listening on that port, the command still prints the address and waits, but the process that bound it first is the one that publishes. Rebuild and install `twanagent-server` on the machine before the socket exists there.
+`--live` only binds the socket and waits. It does not run turns. If something is already listening, the command prints the address and exits. The process that bound the port first is the one that publishes. Rebuild and install `twanagent-server` on the machine before the socket exists there.
 
 ## Build it for a Linux machine
 

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use futures_util::{SinkExt, StreamExt};
@@ -49,6 +49,36 @@ fn hub() -> &'static Mutex<Hub> {
     HUB.get_or_init(|| Mutex::new(Hub::new()))
 }
 
+fn data_root() -> &'static Mutex<PathBuf> {
+    static DATA: OnceLock<Mutex<PathBuf>> = OnceLock::new();
+    DATA.get_or_init(|| Mutex::new(PathBuf::new()))
+}
+
+/// Frames already written for a turn that has not finished. A client that opens the chat
+/// halfway through sees these before the next live frame. A finished tail is not replayed.
+pub fn replay_frames(data_dir: &Path, conversation_id: &str) -> Vec<LiveFrame> {
+    if !crate::live::active(data_dir, conversation_id, std::time::Duration::from_secs(20)).unwrap_or(false) {
+        return Vec::new();
+    }
+    crate::live::read_since(data_dir, conversation_id, 0)
+        .map(|(frames, _)| frames)
+        .unwrap_or_default()
+}
+
+fn frame_json(frame: &LiveFrame) -> Option<String> {
+    let message = match frame {
+        LiveFrame::Status { text } => SocketMessage::Status { text: text.clone() },
+        LiveFrame::Delta { text } => SocketMessage::Delta { text: text.clone() },
+        LiveFrame::Done { conversation } => SocketMessage::Done {
+            conversation: serde_json::to_value(conversation).unwrap_or(serde_json::Value::Null),
+        },
+        LiveFrame::Error { message } => SocketMessage::Error {
+            message: message.clone(),
+        },
+    };
+    serde_json::to_string(&message).ok()
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -60,13 +90,16 @@ fn runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Accept sockets. Binding twice is not an error: the process that already holds the port stays.
-pub fn ensure_started(data_dir: &Path) -> Result<SocketAddr> {
-    let _ = data_dir;
+/// Accept sockets. `false` means another process already holds the port. That process is the one
+/// that publishes, so this process must not run a turn.
+pub fn ensure_started(data_dir: &Path) -> Result<(SocketAddr, bool)> {
+    if let Ok(mut slot) = data_root().lock() {
+        *slot = data_dir.to_path_buf();
+    }
     let addr: SocketAddr = format!("127.0.0.1:{LIVE_PORT}").parse().expect("live address");
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(listener) => listener,
-        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return Ok(addr),
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return Ok((addr, false)),
         Err(err) => return Err(Error::Io(err)),
     };
     listener.set_nonblocking(true).map_err(Error::Io)?;
@@ -82,7 +115,7 @@ pub fn ensure_started(data_dir: &Path) -> Result<SocketAddr> {
             tokio::spawn(handle(stream));
         }
     });
-    Ok(addr)
+    Ok((addr, true))
 }
 
 async fn handle(stream: tokio::net::TcpStream) {
@@ -118,9 +151,25 @@ async fn handle(stream: tokio::net::TcpStream) {
         if chat.is_empty() || chat.contains('/') || chat.contains('\\') || chat.contains("..") {
             continue;
         }
-        if let Ok(mut hub) = hub().lock() {
-            if let Some(row) = hub.subs.get_mut(&id) {
-                row.0 = chat;
+        let sender = {
+            let mut found = None;
+            if let Ok(mut hub) = hub().lock() {
+                if let Some(row) = hub.subs.get_mut(&id) {
+                    row.0 = chat.clone();
+                    found = Some(row.1.clone());
+                }
+            }
+            found
+        };
+        if let Some(sender) = sender {
+            let root = data_root().lock().map(|slot| slot.clone()).unwrap_or_default();
+            if !root.as_os_str().is_empty() {
+                for frame in replay_frames(&root, &chat) {
+                    let Some(text) = frame_json(&frame) else { continue };
+                    if sender.send(text).is_err() {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -132,17 +181,7 @@ async fn handle(stream: tokio::net::TcpStream) {
 
 /// Hand one display frame to every socket watching this conversation.
 pub fn publish(conversation_id: &str, frame: &LiveFrame) {
-    let message = match frame {
-        LiveFrame::Status { text } => SocketMessage::Status { text: text.clone() },
-        LiveFrame::Delta { text } => SocketMessage::Delta { text: text.clone() },
-        LiveFrame::Done { conversation } => SocketMessage::Done {
-            conversation: serde_json::to_value(conversation).unwrap_or(serde_json::Value::Null),
-        },
-        LiveFrame::Error { message } => SocketMessage::Error {
-            message: message.clone(),
-        },
-    };
-    let Ok(text) = serde_json::to_string(&message) else {
+    let Some(text) = frame_json(frame) else {
         return;
     };
     let mut dead = Vec::new();
@@ -184,5 +223,40 @@ mod tests {
         let text = subscribe_text("c1");
         let message: SocketMessage = serde_json::from_str(&text).unwrap();
         assert_eq!(message, SocketMessage::Subscribe { id: "c1".into() });
+    }
+
+    #[test]
+    fn an_unfinished_tail_is_what_a_new_client_sees_first() {
+        let root = tempfile::tempdir().unwrap();
+        crate::live::begin(root.path(), "c1").unwrap();
+        crate::live::append(root.path(), "c1", &LiveFrame::Delta { text: "Hel".into() }).unwrap();
+        let replay = replay_frames(root.path(), "c1");
+        assert_eq!(replay, vec![LiveFrame::Delta { text: "Hel".into() }]);
+        crate::live::append(
+            root.path(),
+            "c1",
+            &LiveFrame::Done {
+                conversation: crate::store::Conversation {
+                    id: "c1".into(),
+                    title: "Hi".into(),
+                    created_at: "t".into(),
+                    updated_at: "t".into(),
+                    kind: "chat".into(),
+                    messages: vec![serde_json::json!({ "role": "assistant", "content": "Hello" })],
+                    context_usage: None,
+                    compaction: None,
+                    journey_id: None,
+                    sort_order: 0,
+                    effort: None,
+                    model: None,
+                    context_window: None,
+                    permission: None,
+                    archived: false,
+                },
+            },
+        )
+        .unwrap();
+        assert!(replay_frames(root.path(), "c1").is_empty());
+        assert!(replay_frames(root.path(), "missing").is_empty());
     }
 }

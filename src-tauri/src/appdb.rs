@@ -49,7 +49,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         CREATE TABLE IF NOT EXISTS sidebar_projects (
             project_path TEXT PRIMARY KEY,
-            refreshed_at TEXT NOT NULL
+            refreshed_at TEXT NOT NULL,
+            cloud INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS sidebar_transcripts (
+            project_path TEXT NOT NULL,
+            id TEXT NOT NULL,
+            body TEXT NOT NULL,
+            PRIMARY KEY (project_path, id)
         );
         CREATE TABLE IF NOT EXISTS sidebar_conversations (
             project_path TEXT NOT NULL,
@@ -81,6 +88,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         ",
     )?;
     migrate_remote_tables(conn)?;
+    migrate_sidebar_cache(conn)?;
     let version: Option<i64> = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -94,6 +102,38 @@ fn init_schema(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Older app databases created `sidebar_projects` without the cloud flag.
+fn migrate_sidebar_cache(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "sidebar_projects", "cloud")? {
+        conn.execute(
+            "ALTER TABLE sidebar_projects ADD COLUMN cloud INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS sidebar_transcripts (
+            project_path TEXT NOT NULL,
+            id TEXT NOT NULL,
+            body TEXT NOT NULL,
+            PRIMARY KEY (project_path, id)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn migrate_remote_tables(conn: &Connection) -> Result<()> {
@@ -345,12 +385,22 @@ pub fn sidebar_cached(conn: &Connection, project: &str) -> Result<bool> {
     Ok(found.is_some())
 }
 
-/// Replace one project's sidebar rows. The chat databases stay where they are.
+/// Replace one project's sidebar rows. `cloud` marks a copy of the server list, not the local mount.
 pub fn replace_sidebar(
     conn: &Connection,
     project: &str,
     conversations: &[crate::dev::ConversationSummary],
     journeys: &[crate::dev::Journey],
+) -> Result<()> {
+    replace_sidebar_source(conn, project, conversations, journeys, false)
+}
+
+pub fn replace_sidebar_source(
+    conn: &Connection,
+    project: &str,
+    conversations: &[crate::dev::ConversationSummary],
+    journeys: &[crate::dev::Journey],
+    cloud: bool,
 ) -> Result<()> {
     let key = project_key(project);
     let tx = conn.unchecked_transaction()?;
@@ -397,12 +447,80 @@ pub fn replace_sidebar(
         )?;
     }
     tx.execute(
-        "INSERT INTO sidebar_projects (project_path, refreshed_at) VALUES (?1, ?2)
-         ON CONFLICT(project_path) DO UPDATE SET refreshed_at = excluded.refreshed_at",
-        params![key, now_iso()],
+        "INSERT INTO sidebar_projects (project_path, refreshed_at, cloud) VALUES (?1, ?2, ?3)
+         ON CONFLICT(project_path) DO UPDATE SET refreshed_at = excluded.refreshed_at, cloud = excluded.cloud",
+        params![key, now_iso(), if cloud { 1 } else { 0 }],
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// True when the cached sidebar rows came from the paired server, not the local mount.
+pub fn sidebar_is_cloud(conn: &Connection, project: &str) -> Result<bool> {
+    let cloud: Option<i64> = conn
+        .query_row(
+            "SELECT cloud FROM sidebar_projects WHERE project_path = ?1",
+            [project_key(project)],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(cloud == Some(1))
+}
+
+/// A cloud transcript by conversation id. The id is enough: these ids are not reused across projects.
+pub fn sidebar_transcript_by_id(conn: &Connection, id: &str) -> Result<Option<crate::dev::Conversation>> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM sidebar_transcripts WHERE id = ?1 LIMIT 1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str(&body)?))
+}
+
+/// The last transcript the GUI loaded for a cloud chat. Empty when this chat was never opened here.
+pub fn sidebar_transcript(conn: &Connection, project: &str, id: &str) -> Result<Option<crate::dev::Conversation>> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM sidebar_transcripts WHERE project_path = ?1 AND id = ?2",
+            params![project_key(project), id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    Ok(Some(serde_json::from_str(&body)?))
+}
+
+pub fn save_sidebar_transcript(conn: &Connection, project: &str, conversation: &crate::dev::Conversation) -> Result<()> {
+    let body = serde_json::to_string(conversation)?;
+    conn.execute(
+        "INSERT INTO sidebar_transcripts (project_path, id, body) VALUES (?1, ?2, ?3)
+         ON CONFLICT(project_path, id) DO UPDATE SET body = excluded.body",
+        params![project_key(project), conversation.id, body],
+    )?;
+    Ok(())
+}
+
+/// Every saved transcript for one project, keyed by chat id. Used to paint a cloud chat on click.
+pub fn sidebar_transcripts(conn: &Connection, project: &str) -> Result<Vec<crate::dev::Conversation>> {
+    let key = project_key(project);
+    let mut stmt = conn.prepare("SELECT body FROM sidebar_transcripts WHERE project_path = ?1")?;
+    let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(serde_json::from_str(&row?)?);
+    }
+    Ok(out)
 }
 
 pub fn sidebar_for(
@@ -465,6 +583,7 @@ pub fn remove_project(conn: &Connection, path: &str) -> Result<bool> {
     let key = project_key(&existing.path);
     let _ = conn.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key]);
     let _ = conn.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key]);
+    let _ = conn.execute("DELETE FROM sidebar_transcripts WHERE project_path = ?1", [&key]);
     let _ = conn.execute("DELETE FROM sidebar_projects WHERE project_path = ?1", [&key]);
     Ok(n > 0)
 }
@@ -744,10 +863,54 @@ mod tests {
         assert_eq!(chats[0].sort_order, 2);
         assert_eq!(journeys[0].collapsed, true);
         assert!(sidebar_cached(&conn, "/app/alpha").unwrap());
+        assert!(!sidebar_is_cloud(&conn, "/app/alpha").unwrap());
+        replace_sidebar_source(&conn, "/app/alpha", &[chat.clone()], &[], true).unwrap();
+        assert!(sidebar_is_cloud(&conn, "/app/alpha").unwrap());
+        let transcript = crate::dev::Conversation {
+            id: chat.id.clone(),
+            title: chat.title.clone(),
+            created_at: chat.created_at.clone(),
+            updated_at: chat.updated_at.clone(),
+            kind: chat.kind.clone(),
+            messages: vec![serde_json::json!({"role":"user","content":"hi"})],
+            context_usage: None,
+            compaction: None,
+            journey_id: None,
+            sort_order: chat.sort_order,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        };
+        save_sidebar_transcript(&conn, "/app/alpha", &transcript).unwrap();
+        let loaded = sidebar_transcript(&conn, "/app/Alpha/", &chat.id).unwrap().unwrap();
+        assert_eq!(loaded.messages.len(), 1);
         replace_sidebar(&conn, "/app/alpha", &[], &[]).unwrap();
         let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
         assert!(chats.is_empty() && journeys.is_empty());
+        assert!(!sidebar_is_cloud(&conn, "/app/alpha").unwrap());
+        assert!(sidebar_transcript(&conn, "/app/alpha", "c1").unwrap().is_some());
         assert!(sidebar_cached(&conn, "/app/beta").unwrap());
+    }
+
+    #[test]
+    fn an_old_sidebar_projects_table_gains_the_cloud_column() {
+        let data = tempdir().unwrap();
+        let path = data.path().join("app.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sidebar_projects (
+                    project_path TEXT PRIMARY KEY,
+                    refreshed_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+        let conn = open(data.path()).unwrap();
+        replace_sidebar_source(&conn, "/mounts/cloud", &[], &[], true).unwrap();
+        assert!(sidebar_is_cloud(&conn, "/mounts/cloud").unwrap());
     }
 
     #[test]

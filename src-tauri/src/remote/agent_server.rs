@@ -342,14 +342,77 @@ echo installed"
 }
 
 /// Write `~/.twanagent/provider-keys.json` from the chosen providers. Unchecked providers are cleared.
-/// The values travel inside the SSH command. The reply is only `copied`, never the keys.
+/// The values travel inside the SSH command. The reply is `copied`, then one line per provider that
+/// already had a different key: `replaced <id>`. The key text never comes back.
 pub fn provider_keys_script(keys: &twanagent_service::ProviderKeys) -> Result<String> {
-    let body = serde_json::to_vec_pretty(&keys.trimmed()).map_err(|err| Error::Other(err.to_string()))?;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body);
+    let trimmed = keys.trimmed();
+    let body = serde_json::to_vec_pretty(&trimmed).map_err(|err| Error::Other(err.to_string()))?;
+    let fingerprints = provider_key_fingerprints(&trimmed);
+    let program = format!(
+        r#"import base64, hashlib, json, os, sys
+path = os.path.expanduser("~/.twanagent/provider-keys.json")
+fresh = json.loads(sys.stdin.read())
+previous = {{}}
+if os.path.isfile(path):
+    try:
+        loaded = json.load(open(path, encoding="utf-8"))
+        if isinstance(loaded, dict):
+            previous = loaded
+    except (OSError, ValueError):
+        previous = {{}}
+want = json.loads({fingerprints:?})
+replaced = []
+for name, digest in want.items():
+    old = previous.get(name)
+    old = old.strip() if isinstance(old, str) else ""
+    if old and hashlib.sha256(old.encode()).hexdigest() != digest:
+        replaced.append(name)
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(fresh, handle, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+print("copied")
+for name in replaced:
+    print("replaced " + name)
+"#
+    );
+    // The program is base64 because it is shell text. The JSON is not: `base64 -d` already
+    // decoded the program, and decoding the JSON again made Python reject it as binary.
+    let program_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
     Ok(format!(
-        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf %s {} | base64 -d > \"$HOME/.twanagent/provider-keys.json\" && chmod 600 \"$HOME/.twanagent/provider-keys.json\" && echo copied",
-        super::ssh::shell_single_quote(&encoded)
+        "f=$(mktemp) && printf %s {} | base64 -d > \"$f\" && python3 \"$f\" <<'TWAN_KEYS'\n{}\nTWAN_KEYS\ns=$?; rm -f \"$f\"; exit $s",
+        super::ssh::shell_single_quote(&program_b64),
+        String::from_utf8(body).map_err(|err| Error::Other(err.to_string()))?,
     ))
+}
+
+/// SHA-256 of each non-empty key. The remote script compares these and never prints a key.
+fn provider_key_fingerprints(keys: &twanagent_service::ProviderKeys) -> String {
+    use sha2::{Digest, Sha256};
+    let mut map = serde_json::Map::new();
+    for (name, value) in [("xai", &keys.xai), ("anthropic", &keys.anthropic), ("minimax", &keys.minimax)] {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        map.insert(name.into(), hex::encode(Sha256::digest(value.as_bytes())).into());
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+/// `replaced xai` lines from a successful copy. Anything else is ignored. Order follows the providers.
+pub fn parse_replaced_providers(stdout: &str) -> Vec<String> {
+    const ORDER: &[&str] = &["xai", "anthropic", "minimax"];
+    let found: std::collections::HashSet<&str> = stdout
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("replaced "))
+        .map(str::trim)
+        .filter(|name| ORDER.contains(name))
+        .collect();
+    ORDER.iter().copied().filter(|name| found.contains(name)).map(str::to_string).collect()
 }
 
 pub fn install_script(token: &str) -> Result<String> {
@@ -655,6 +718,26 @@ mod tests {
         let account = delete_server(&conn, &saved.id).unwrap().unwrap();
         assert_eq!(account, token_account(&saved.id));
         assert!(list_servers(&conn, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn key_copy_reports_a_replaced_provider_without_the_secret() {
+        let keys = twanagent_service::ProviderKeys {
+            xai: "xai-secret".into(),
+            anthropic: String::new(),
+            minimax: "mini-secret".into(),
+        };
+        let script = provider_keys_script(&keys).unwrap();
+        assert!(script.contains("python3 \"$f\""));
+        assert!(script.contains("mktemp"));
+        assert!(script.contains("TWAN_KEYS"));
+        assert!(script.contains("xai-secret"));
+        assert!(!script.contains("print(\"replaced \" + name)"));
+        assert_eq!(
+            parse_replaced_providers("copied\nreplaced minimax\nreplaced nope\nreplaced xai\n"),
+            vec!["xai", "minimax"]
+        );
+        assert!(parse_replaced_providers("copied\n").is_empty());
     }
 
     #[test]

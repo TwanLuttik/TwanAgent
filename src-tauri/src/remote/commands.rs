@@ -371,6 +371,17 @@ pub async fn dev_warm_workspace_link(state: State<'_, AppState>, workspace: Stri
         }
         let secret = machine_secret(&machine);
         let _session = work.ssh_pool.session(&machine, secret.as_deref())?;
+        // The live socket has to belong to the process that will run the turn.
+        // Starting it here means the first send does not have to wait for it.
+        let _ = work.ssh_pool.exec(
+            &machine,
+            secret.as_deref(),
+            &super::ssh::ExecRequest {
+                cwd: "/".into(),
+                command: "$HOME/.twanagent/bin/twanagent-server --serve --data \"$HOME/.twanagent\" >/dev/null 2>&1 &".into(),
+                timeout_secs: 8,
+            },
+        );
         Ok(true)
     })
     .await
@@ -687,18 +698,41 @@ fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_servi
 }
 
 fn keys_view(names: &[String]) -> ServerProviderKeys {
+    keys_view_with(names, &[])
+}
+
+fn keys_view_with(names: &[String], replaced: &[String]) -> ServerProviderKeys {
     let has = |name: &str| names.iter().any(|item| item == name);
+    let was_replaced = |name: &str| replaced.iter().any(|item| item == name);
     ServerProviderKeys {
         xai: has("xai"),
         anthropic: has("anthropic"),
         minimax: has("minimax"),
+        replaced: ServerKeyReplaced {
+            xai: was_replaced("xai"),
+            anthropic: was_replaced("anthropic"),
+            minimax: was_replaced("minimax"),
+        },
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ServerProviderKeys {
     pub xai: bool,
     pub anthropic: bool,
+    pub minimax: bool,
+    /// True when this copy replaced a different key already on the server. Absent on older replies.
+    #[serde(default)]
+    pub replaced: ServerKeyReplaced,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ServerKeyReplaced {
+    #[serde(default)]
+    pub xai: bool,
+    #[serde(default)]
+    pub anthropic: bool,
+    #[serde(default)]
     pub minimax: bool,
 }
 
@@ -1325,7 +1359,16 @@ fn copy_provider_keys(
 ) -> Result<ServerProviderKeys> {
     let keys = provider_keys_for(work, providers);
     let script = super::agent_server::provider_keys_script(&keys)?;
-    let _ = require_exec(work, machine, &script, 20)?;
+    let stdout = require_exec(work, machine, &script, 20)?;
+    if !stdout.lines().any(|line| line.trim() == "copied") {
+        let detail = stdout.trim();
+        return Err(Error::Other(if detail.is_empty() {
+            format!("the keys did not land on {}", machine.host)
+        } else {
+            format!("the keys did not land on {}: {}", machine.host, detail.chars().take(240).collect::<String>())
+        }));
+    }
+    let replaced = super::agent_server::parse_replaced_providers(&stdout);
     let names = super::agent_server::set_server_provider_keys(&conn, &id, &providers)?;
-    Ok(keys_view(&names))
+    Ok(keys_view_with(&names, &replaced))
 }

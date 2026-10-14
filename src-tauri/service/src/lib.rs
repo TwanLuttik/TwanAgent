@@ -128,14 +128,14 @@ pub fn key_file(data_dir: &Path) -> KeyFile {
 }
 
 /// Answer one frame the desktop already decoded. Used when SSH cannot deliver stdin.
+/// A prompt is not run here. The resident server is the only process that publishes.
 pub fn serve_frame(service: &ProjectService, keys: &KeyFile, bytes: &[u8]) -> Result<()> {
     if bytes.len() < 4 {
         return Err(Error::Other("frame header is short".into()));
     }
     let (frame, _) = decode_frame(bytes)?;
-    if let ClientFrame::SubmitPrompt(request) = frame {
-        let mut output = std::io::stdout().lock();
-        return session::submit_streaming(service, keys, request, &mut output);
+    if matches!(frame, ClientFrame::SubmitPrompt(_)) {
+        return Err(Error::Other("a turn is sent to the resident server".into()));
     }
     let response = session::handle_frame(service, keys, frame, None);
     let mut output = std::io::stdout().lock();
@@ -164,6 +164,37 @@ pub fn serve_once(service: &ProjectService, keys: &KeyFile) -> Result<()> {
     output.write_all(&encode_frame(&response)?)?;
     output.flush()?;
     Ok(())
+}
+
+/// The resident server. Stdin frames name the project. Turns publish on the socket this process bound.
+pub fn serve_resident(data_dir: &Path, keys: &KeyFile) -> Result<()> {
+    let stdin = std::io::stdin();
+    let mut input = std::io::BufReader::new(stdin.lock());
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    session::serve_projects(data_dir, keys, &mut input, &mut output)
+}
+
+/// Read frames from a fifo. A writer closing it is not the end. The next prompt opens it again.
+pub fn serve_resident_fifo(data_dir: &Path, keys: &KeyFile, fifo: &Path) -> Result<()> {
+    if !fifo.exists() {
+        let made = std::process::Command::new("mkfifo").arg(fifo).status();
+        if !made.map(|status| status.success()).unwrap_or(false) {
+            return Err(Error::Other("could not create the live server fifo".into()));
+        }
+    }
+    loop {
+        let file = match std::fs::File::open(fifo) {
+            Ok(file) => file,
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
+            }
+        };
+        let mut input = std::io::BufReader::new(file);
+        let mut output = std::io::sink();
+        session::serve_projects(data_dir, keys, &mut input, &mut output)?;
+    }
 }
 
 /// Read prompt frames from stdin and write display frames to stdout.

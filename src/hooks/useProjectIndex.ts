@@ -1,4 +1,5 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { rememberCloudTranscripts } from "./useChatSession";
 import {
   applyLiveProjectChats,
   isLocalCloudDraft,
@@ -40,6 +41,7 @@ export function useProjectIndex({
   sidebarSyncRef,
   sidebarLoadedForRef,
   workspaceRef,
+  cloudTranscriptsRef,
   setFlash,
 }: {
   workspace: string;
@@ -51,6 +53,7 @@ export function useProjectIndex({
   sidebarSyncRef: RefObject<{ workspace: string; conversations: ConversationSummary[]; journeys: JourneySummary[] }>;
   sidebarLoadedForRef: RefObject<string>;
   workspaceRef: RefObject<string>;
+  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   setFlash: (flash: { kind: "err"; text: string }) => void;
 }) {
   const [recents, setRecents] = useState(loadRecentWorkspaces);
@@ -135,10 +138,26 @@ export function useProjectIndex({
           const localRows = row.remote ? listed.rows.filter((item) => !isLocalCloudDraft(item)) : listed.rows;
           const convs = listed.failed && row.remote ? null : localRows;
           const nextJourneys = journeyListed.failed && row.remote ? null : journeyListed.rows;
+          let conversations = convs ?? [];
+          let journeys = nextJourneys ?? [];
+          // The local list of a cloud project is the empty mount. Paint the last
+          // server copy now, then the open project replaces it when SSH returns.
+          if (row.remote && conversations.length === 0 && journeys.length === 0 && !listed.failed && !journeyListed.failed) {
+            try {
+              const cached = await api.hostedSidebarCached(row.path);
+              rememberCloudTranscripts(cloudTranscriptsRef.current, row.path, cached.transcripts);
+              if (cached.conversations.length > 0 || cached.journeys.length > 0) {
+                conversations = cached.conversations;
+                journeys = cached.journeys;
+              }
+            } catch {
+              /* the server copy is missing; the list stays empty until SSH */
+            }
+          }
           let next = {
             ...row,
-            conversations: convs ?? [],
-            journeys: nextJourneys ?? [],
+            conversations,
+            journeys,
             remote: Boolean(row.remote),
           };
           if (next.remote && isSameProject(next.path, workspaceRef.current)) {
@@ -180,13 +199,14 @@ export function useProjectIndex({
     return () => {
       cancelled = true;
     };
-  }, [pathsReady, setFlash, sidebarLoadedForRef, sidebarSyncRef, workspaceRef]);
+  }, [pathsReady, setFlash, sidebarLoadedForRef, sidebarSyncRef, workspaceRef, cloudTranscriptsRef]);
 
   useEffect(() => {
     if (!workspace) return;
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
     // An empty list here is the gap between two projects, not a finished load.
-    if (conversations.length === 0) return;
+    // A cloud project keeps the cached rows until the server list arrives.
+    if (conversations.length === 0 && journeys.length === 0) return;
     setAllProjectGroups((prev) => {
       const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current);
       const stamped = stampProjectServer(placed, workspace, remoteWorkspace, remoteForRef.current);

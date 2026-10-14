@@ -5,6 +5,7 @@ import * as api from "../lib/tauri";
 import type { AgentServer, HostPrompt, KeyStatus, LanHost, RemoteProject, ServerInstallStatus, ServerProject, ServerProviderKeys, ServerStorage } from "../lib/tauri";
 import { detectMcp, withMcpAuth, type DetectedMcpServer } from "../lib/mcp";
 import { formatBytes } from "../lib/usage";
+import { useApp } from "../state/app-state";
 
 type Step = "list" | "detail" | "connect" | "trust" | "install" | "keys";
 type ProviderId = "xai" | "anthropic" | "minimax";
@@ -348,8 +349,32 @@ function ServerDetail({
   );
 }
 
+function providerLabel(id: ProviderId): string {
+  return PROVIDERS.find((provider) => provider.id === id)?.label ?? id;
+}
+
+/** "Grok", "Grok and Claude", or "Grok, Claude, and MiniMax". */
+function joinLabels(ids: ProviderId[]): string {
+  const labels = ids.map(providerLabel);
+  if (labels.length <= 1) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels[labels.length - 1]}`;
+}
+
+function keySyncNotice(copied: ProviderId[], keys: ServerProviderKeys): string {
+  const replaced = copied.filter((id) => keys.replaced?.[id]);
+  const fresh = copied.filter((id) => !keys.replaced?.[id]);
+  const parts: string[] = [];
+  if (fresh.length === 1) parts.push(`Synced the ${providerLabel(fresh[0])} key to the server.`);
+  else if (fresh.length > 1) parts.push(`Synced the ${joinLabels(fresh)} keys to the server.`);
+  if (replaced.length === 1) parts.push(`Replaced the ${providerLabel(replaced[0])} key already on the server.`);
+  else if (replaced.length > 1) parts.push(`Replaced the ${joinLabels(replaced)} keys already on the server.`);
+  return parts.join(" ");
+}
+
 /** TwanAgent servers. A row appears only after the server program is installed and a token is saved. */
 export function ServersDialog({ onClose }: { onClose: () => void }) {
+  const { setFlash } = useApp();
   const [step, setStep] = useState<Step>("list");
   const [saved, setSaved] = useState<AgentServer[]>([]);
   const [projects, setProjects] = useState<RemoteProject[]>([]);
@@ -654,6 +679,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
       if (copy && copyProviders.length) {
         const keys = await api.copyServerProviderKeys(server.id, copyProviders);
         setKeysById((prev) => ({ ...prev, [server.id]: keys }));
+        setFlash({ kind: "ok", text: keySyncNotice(copyProviders, keys) });
       }
       if (syncMcp) await api.syncServerCapabilities(server.id, mcpName || undefined);
       setHost("");
@@ -844,12 +870,12 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               onCopyKeys={(id) => {
                 setBusy(true);
                 setError(null);
-                const next = copyProviders.includes(id) ? copyProviders : [...copyProviders, id];
                 void api
-                  .copyServerProviderKeys(selected.id, next)
+                  .copyServerProviderKeys(selected.id, [id])
                   .then((keys) => {
                     setCopyProviders(PROVIDERS.filter((provider) => keys[provider.id]).map((provider) => provider.id));
                     setKeysById((prev) => ({ ...prev, [selected.id]: keys }));
+                    setFlash({ kind: "ok", text: keySyncNotice([id], keys) });
                   })
                   .catch((err) => setError(String(err)))
                   .finally(() => setBusy(false));

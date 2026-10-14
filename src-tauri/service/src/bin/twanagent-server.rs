@@ -1,10 +1,10 @@
 //! Headless TwanAgent. No window. The GUI starts this over SSH and sends prompts.
 //!
-//! Usage: twanagent-server --project <dir> --data <dir>
-//!        twanagent-server --call --project <dir> --data <dir>
+//! Usage: twanagent-server --serve --data <dir>
+//!        twanagent-server --call --project <dir> --data <dir> [--frame <base64>]
 //!        twanagent-server --version
 //! Frames are length-prefixed JSON on stdin and stdout. See docs/twanagent-server.md.
-//! `--call` reads one frame and exits. The desktop app uses that over SSH.
+//! `--serve` stays up, owns the live socket, and runs turns. `--call` answers one store frame.
 
 use std::env;
 use std::path::PathBuf;
@@ -26,6 +26,7 @@ fn main() -> ExitCode {
     let mut project = None;
     let mut data = None;
     let mut once = false;
+    let mut serve = false;
     let mut frame = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -33,14 +34,21 @@ fn main() -> ExitCode {
             "--project" => project = args.next().map(PathBuf::from),
             "--data" => data = args.next().map(expand_home),
             "--call" => once = true,
+            "--serve" => serve = true,
             "--frame" => frame = args.next(),
             "--live" => {
                 let data = data.get_or_insert_with(|| expand_home("$HOME/.twanagent".into()));
-                if let Err(err) = twanagent_service::ensure_started(data) {
-                    eprintln!("{err}");
-                    return ExitCode::from(1);
+                match twanagent_service::ensure_started(data) {
+                    Ok((addr, true)) => eprintln!("twanagent-server live on {addr}"),
+                    Ok((addr, false)) => {
+                        eprintln!("twanagent-server live on {addr}");
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(err) => {
+                        eprintln!("{err}");
+                        return ExitCode::from(1);
+                    }
                 }
-                eprintln!("twanagent-server live on 127.0.0.1:{}", twanagent_service::LIVE_PORT);
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3600));
                 }
@@ -55,7 +63,36 @@ fn main() -> ExitCode {
             }
         }
     }
-    let (Some(project), Some(data)) = (project, data) else {
+    let Some(data) = data else {
+        eprintln!("usage: twanagent-server --serve --data <dir>");
+        return ExitCode::from(2);
+    };
+    // One process owns the socket and runs the turns. A second start leaves that process alone.
+    if serve && project.is_none() {
+        match twanagent_service::ensure_started(&data) {
+            Ok((addr, true)) => {
+                eprintln!("twanagent-server live on {addr}");
+                let keys = key_file(&data);
+                // SSH closes a command's stdin as the command starts. The desktop writes frames
+                // to a fifo instead, and this process reads that fifo for as long as it runs.
+                let fifo = data.join("serve.stdin");
+                if let Err(err) = twanagent_service::serve_resident_fifo(&data, &keys, &fifo) {
+                    eprintln!("{err}");
+                    return ExitCode::from(1);
+                }
+                return ExitCode::SUCCESS;
+            }
+            Ok((addr, false)) => {
+                eprintln!("twanagent-server live on {addr}");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let Some(project) = project else {
         eprintln!("usage: twanagent-server --project <dir> --data <dir>");
         return ExitCode::from(2);
     };
@@ -66,9 +103,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    // A turn publishes on the socket. Starting it here means the process that runs the turn
-    // is also the process the desktop connects to.
-    let _ = twanagent_service::ensure_started(&data);
+    // `--call` does not bind the socket and does not run a live turn. A second hub would
+    // publish frames no client is connected to.
     let keys = key_file(&data);
     let ran = if once {
         // The SSH session runs this through a shell, so a pipe never reaches this program.

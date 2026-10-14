@@ -49,6 +49,7 @@ export function useChatSession({
   setEffort,
   setContextWindow,
   setPermission,
+  journeysRef,
   workspaceRef,
   conversationsRef,
   activeIdRef,
@@ -65,6 +66,7 @@ export function useChatSession({
   subagentsByChatRef,
   stickToBottomRef,
   libraryRef,
+  cloudTranscriptsRef,
 }: {
   hostedChats: boolean;
   models: Runtime["models"];
@@ -88,6 +90,7 @@ export function useChatSession({
   effortRef: RefObject<string>;
   contextWindowRef: RefObject<number>;
   permissionRef: RefObject<PermissionMode>;
+  journeysRef: RefObject<JourneySummary[]>;
   runningWsRef: RefObject<string>;
   runningIdRef: RefObject<string>;
   sidebarLoadedForRef: RefObject<string>;
@@ -101,6 +104,7 @@ export function useChatSession({
   liveByChatRef: RefObject<Map<string, LiveChat>>;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
+  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   libraryRef: RefObject<{
     persist: (
       next: ChatMessage[],
@@ -109,19 +113,61 @@ export function useChatSession({
       usage?: ChatUsage,
       compaction?: { summary: string; through: number } | null,
     ) => Promise<void>;
+    watchHosted?: (ws: string, id: string) => void;
   } | null>;
 }) {
+  const cachePaintedForRef = useRef("");
+
   const reloadConversations = useCallback(
     async (ws: string, preferId?: string) => {
       if (!ws) {
         sidebarLoadedForRef.current = "";
+        cachePaintedForRef.current = "";
         setConversations([]);
         setJourneys([]);
         setActiveId("");
         setMessages([]);
         return;
       }
-      const loaded = hostedChats ? await api.listHostedConversations(ws) : await api.listConversations(ws);
+      // Paint the last server copy before this call waits on SSH. The live list
+      // below replaces it. A second pass for the same project leaves the rows alone.
+      if (hostedChats && !isSameProject(cachePaintedForRef.current, ws) && conversationsRef.current.length === 0) {
+        try {
+          const cached = await api.hostedSidebarCached(ws);
+          if (!isSameProject(ws, workspaceRef.current)) return;
+          rememberCloudTranscripts(cloudTranscriptsRef.current, ws, cached.transcripts);
+          if (cached.conversations.length > 0 || cached.journeys.length > 0) {
+            cachePaintedForRef.current = ws;
+            sidebarLoadedForRef.current = ws;
+            setConversations(cached.conversations);
+            setJourneys(cached.journeys);
+            const savedId = loadConversation(ws);
+            const row = cached.conversations.find((item) => item.id === savedId);
+            const transcript = row ? cached.transcripts.find((item) => item.id === row.id) : undefined;
+            if (row && transcript && !activeIdRef.current) {
+              if (!isSameProject(ws, workspaceRef.current)) return;
+              if (!activeIdRef.current) {
+                const body = (transcript.messages as ChatMessage[]) ?? [];
+                const shown =
+                  transcript.compaction?.summary && transcript.compaction.through > 0
+                    ? insertCompactionEvent(body, transcript.compaction.through)
+                    : body;
+                setActiveId(row.id);
+                setMessages(shown);
+                if (transcript.compaction?.summary && transcript.compaction.through > 0) {
+                  setCompactionByChat((prev) => ({ ...prev, [row.id]: transcript.compaction! }));
+                }
+              }
+            }
+          }
+        } catch {
+          /* a missing copy just waits for the server */
+        }
+        if (!isSameProject(ws, workspaceRef.current)) return;
+      }
+      const loaded = hostedChats
+        ? await api.listHostedConversations(ws)
+        : await api.listConversations(ws);
       // The hosted list is the cloud project. An empty "New chat" only exists in the
       // local mount, saved before the server created the real conversation.
       const rows = hostedChats ? loaded.filter((row) => !isLocalCloudDraft(row)) : loaded;
@@ -129,9 +175,12 @@ export function useChatSession({
       if (conversationsRef.current.length === 0 && rows.length > 0) {
         setConversations(rows);
       }
-      const nextJourneys = await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
+      // A cloud project's journeys are part of the cached server copy. The local
+      // journey table is the empty mount, so reading it would wipe that copy.
+      const nextJourneys = hostedChats ? [] : await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
       if (!isSameProject(ws, workspaceRef.current)) return;
       sidebarLoadedForRef.current = ws;
+      const keptJourneys = hostedChats ? journeysRef.current : nextJourneys;
       // A model switch on an empty chat updates the in-memory row before disk.
       // Replacing the list with the stale row would send the previous model.
       const fresh = conversationsRef.current;
@@ -148,7 +197,7 @@ export function useChatSession({
           };
         }),
       );
-      setJourneys(nextJourneys);
+      setJourneys(keptJourneys);
       const visible = rows.filter((row) => !isArchivedConversation(row));
       const saved = loadConversation(ws);
       const savedRow = rows.find((row) => row.id === saved);
@@ -165,7 +214,9 @@ export function useChatSession({
         setMessages([]);
         return;
       }
-      const full = hostedChats ? await api.getHostedConversation(ws, found.id) : await api.getConversation(ws, found.id);
+      const full = hostedChats
+        ? await api.getHostedConversation(ws, found.id)
+        : await api.getConversation(ws, found.id);
       if (!isSameProject(ws, workspaceRef.current)) return;
       stickToBottomRef.current = true;
       setActiveId(found.id);
@@ -212,6 +263,7 @@ export function useChatSession({
         setCompactionByChat((prev) => ({ ...prev, [found.id]: full.compaction! }));
       }
       saveConversation(ws, found.id);
+      if (hostedChats) libraryRef.current?.watchHosted?.(ws, found.id);
       // Only retarget the composer when this reload actually opened a different chat.
       // Depending on `model` re-runs this after a chip change, and the row still has
       // the model copied at creation until the settings save lands.
@@ -268,6 +320,7 @@ export function useChatSession({
       effortRef,
       contextWindowRef,
       permissionRef,
+      journeysRef,
       runningWsRef,
       runningIdRef,
       sidebarLoadedForRef,
@@ -277,10 +330,28 @@ export function useChatSession({
       subagentsByChatRef,
       stickToBottomRef,
       libraryRef,
+      cloudTranscriptsRef,
     ],
   );
 
   return reloadConversations;
+}
+
+export function rememberCloudTranscripts(
+  store: Map<string, import("../lib/tauri").Conversation>,
+  workspace: string,
+  rows: import("../lib/tauri").Conversation[],
+) {
+  const prefix = `${workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}\t`;
+  // A sidebar pass can arrive before the full message copy. Keep what is already here.
+  if (rows.length === 0) return;
+  for (const key of [...store.keys()]) {
+    if (key.startsWith(prefix)) store.delete(key);
+  }
+  for (const row of rows) {
+    if (!row.id) continue;
+    store.set(`${prefix}${row.id}`, row);
+  }
 }
 
 /** Keep the latest value in a ref without an effect. A turn reads this, not the render that started it. */

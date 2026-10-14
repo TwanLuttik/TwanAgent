@@ -153,6 +153,73 @@ pub fn submit_streaming<W: Write>(
     Ok(())
 }
 
+/// Frames for the resident process. Each prompt names its project. Store calls do too.
+pub fn serve_projects<R: Read, W: Write>(
+    data_dir: &std::path::Path,
+    keys: &KeyFile,
+    input: &mut R,
+    output: &mut W,
+) -> Result<()> {
+    loop {
+        let mut header = [0u8; 4];
+        match read_header(input, &mut header)? {
+            Header::Eof => return Ok(()),
+            Header::Ready => {}
+        }
+        let len = u32::from_be_bytes(header) as usize;
+        if len > 8_000_000 {
+            return Err(Error::Other("frame is too large".into()));
+        }
+        let mut body = vec![0u8; len];
+        input.read_exact(&mut body)?;
+        let value: serde_json::Value = serde_json::from_slice(&body)?;
+        let (project, inner) = split_resident(&value);
+        if project.is_empty() {
+            write_server(output, &ServerFrame::Error { message: "project is empty".into() })?;
+            continue;
+        }
+        let service = match crate::open_server(std::path::Path::new(&project), data_dir) {
+            Ok(service) => service,
+            Err(err) => {
+                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                continue;
+            }
+        };
+        let frame: ClientFrame = match serde_json::from_value(inner) {
+            Ok(frame) => frame,
+            Err(err) => {
+                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                continue;
+            }
+        };
+        if let ClientFrame::SubmitPrompt(request) = frame {
+            // A turn outlives this read. The socket, not stdout, is what open clients join.
+            let keys = keys.clone();
+            std::thread::spawn(move || {
+                let mut sink = std::io::sink();
+                let _ = submit_streaming(&service, &keys, request, &mut sink);
+            });
+            write_server(output, &ServerFrame::Ok)?;
+            continue;
+        }
+        let response = handle_frame(&service, keys, frame, None);
+        write_server(output, &response)?;
+    }
+}
+
+/// A resident frame is `{ "project": "...", "frame": <ClientFrame> }`.
+/// The project is not part of `ClientFrame`, so a store call and a prompt share one shape.
+fn split_resident(value: &serde_json::Value) -> (String, serde_json::Value) {
+    let wrapped = value.get("frame").is_some();
+    let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
+    let inner = if wrapped {
+        value.get("frame").cloned().unwrap_or(serde_json::Value::Null)
+    } else {
+        value.clone()
+    };
+    (project, inner)
+}
+
 fn write_server<W: Write>(output: &mut W, frame: &ServerFrame) -> Result<()> {
     output.write_all(&crate::codec::encode_frame(frame)?)?;
     output.flush()?;
@@ -229,6 +296,7 @@ mod tests {
             model: "grok-4".into(),
             effort: String::new(),
             permission: "ask".into(),
+            project: String::new(),
         }
     }
 
@@ -296,5 +364,34 @@ mod tests {
             panic!("expected a reload");
         };
         assert_eq!(conversation.messages[0]["content"], "hello from stdin");
+    }
+
+    #[test]
+    fn a_resident_frame_names_the_project_outside_the_client_frame() {
+        let value = serde_json::json!({
+            "project": "/home/dev/app",
+            "frame": { "type": "list_conversations" }
+        });
+        let (project, inner) = split_resident(&value);
+        assert_eq!(project, "/home/dev/app");
+        let frame: ClientFrame = serde_json::from_value(inner).unwrap();
+        assert!(matches!(frame, ClientFrame::ListConversations));
+        let prompt = serde_json::json!({
+            "project": "/home/dev/app",
+            "frame": {
+                "type": "submit_prompt",
+                "conversation_id": "c1",
+                "prompt": "hi",
+                "model": "grok-4",
+                "effort": "",
+                "permission": "ask"
+            }
+        });
+        let (_, inner) = split_resident(&prompt);
+        let frame: ClientFrame = serde_json::from_value(inner).unwrap();
+        let ClientFrame::SubmitPrompt(request) = frame else {
+            panic!("expected a prompt");
+        };
+        assert_eq!(request.prompt, "hi");
     }
 }

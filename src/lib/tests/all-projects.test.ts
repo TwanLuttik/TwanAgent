@@ -176,7 +176,7 @@ describe("mergeLoadedProjectGroups", () => {
     );
   });
 
-  it("clears a cloud project when its own load comes back empty", () => {
+  it("keeps a cloud project's cached chats when a later local read is empty", () => {
     const previous = buildProjectGroups(
       [{ name: "cloud", path: "/mounts/dev-test-2", remote: true }],
       [],
@@ -193,8 +193,11 @@ describe("mergeLoadedProjectGroups", () => {
       { "/mounts/dev-test-2": { conversations: [], journeys: [] } },
     );
     const next = mergeLoadedProjectGroups(previous, incoming);
-    assert.deepEqual(next[0]?.conversations, []);
-    assert.deepEqual(next[0]?.journeys, []);
+    assert.deepEqual(
+      next[0]?.conversations.map((row) => row.id),
+      ["real", "draft"],
+    );
+    assert.equal(next[0]?.journeys[0]?.id, "j1");
     assert.equal(next[0]?.remote, true);
     assert.equal(isLocalCloudDraft(chat("draft", "New chat")), true);
     assert.equal(isLocalCloudDraft(chat("real", "what is the specs of this machine")), false);

@@ -14,6 +14,7 @@ import {
 import {
   loadExpandEdits,
   loadFileHoverCard,
+  loadLiveSocketDebug,
   loadMarkdownOpenMode,
   loadPerfOverlay,
   loadSpaceCorner,
@@ -22,6 +23,7 @@ import {
   saveMarkdownOpenMode,
   setExpandEdits,
   setFileHoverCard,
+  setLiveSocketDebug,
   setPerfOverlay,
   setSpaceCorner,
   setSpaceCornerImage,
@@ -112,6 +114,7 @@ export function SettingsView({
   const [pickingImage, setPickingImage] = useState(false);
   const [fileHoverCard, setFileHoverCardOn] = useState(() => loadFileHoverCard());
   const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
+  const [liveSocketDebug, setLiveSocketDebugOn] = useState(() => loadLiveSocketDebug());
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const [xaiKey, setXaiKey] = useState("");
@@ -277,6 +280,15 @@ export function SettingsView({
                 onChange={(next) => {
                   setPerfOverlayOn(next);
                   setPerfOverlay(next);
+                }}
+              />
+              <Toggle
+                title="Live socket debug"
+                text="Show raw websocket frames from a cloud conversation in a window at the bottom-right."
+                checked={liveSocketDebug}
+                onChange={(next) => {
+                  setLiveSocketDebugOn(next);
+                  setLiveSocketDebug(next);
                 }}
               />
               <Toggle
