@@ -274,7 +274,7 @@ function ProjectsNav({
   }, [gitRefresh]);
 
   const todoWatch = allProjectGroups
-    .flatMap((group: { path: string; conversations: ConversationSummary[] }) =>
+    .flatMap((group: { remote?: boolean; path: string; conversations: ConversationSummary[] }) =>
       group.conversations.map((row) => `${group.remote ? "1" : "0"}\t${group.path}\t${row.id}\t${row.updated_at}`),
     )
     .join("\n");
@@ -313,7 +313,7 @@ function ProjectsNav({
     void (async () => {
       const found: Record<string, TodoBadge> = {};
       await Promise.all(
-        rows.map(async (row: { path: string; id: string; updated: string }) => {
+        rows.map(async (row: { remote: boolean; path: string; id: string; updated: string }) => {
           const key = `${row.path}\t${row.id}`;
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
           const badgeKey = sidebarTodoKey(row.path, row.id);
@@ -479,6 +479,7 @@ function ProjectConversations({
     setJourneyColor,
     startNewChat,
     toggleJourney,
+    openListedChat,
   } = useSidebar();
   const actions = useRef({
     archiveChat,
@@ -495,6 +496,7 @@ function ProjectConversations({
     setJourneyColor,
     startNewChat,
     toggleJourney,
+    openListedChat,
   });
   actions.current = {
     archiveChat,
@@ -502,6 +504,7 @@ function ProjectConversations({
     deleteJourney,
     moveConversation,
     openChat,
+    openListedChat,
     openJourneyKnowledge,
     openSidebarChat,
     removeChat,
@@ -514,7 +517,8 @@ function ProjectConversations({
   };
   const handlers = useMemo(
     () => ({
-      onOpen: (id: string) => (path ? void actions.current.openSidebarChat(path, id) : void actions.current.openChat(id)),
+      onOpen: (id: string) =>
+        path ? void actions.current.openSidebarChat(path, id) : actions.current.openListedChat(id),
       onDelete: (id: string) => void actions.current.removeChat(id, path),
       onArchive: (id: string, archived: boolean) => void actions.current.archiveChat(id, archived, path),
       onReorder: (fromId: string, toId: string) => void actions.current.reorderChats(fromId, toId, path),

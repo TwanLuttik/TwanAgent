@@ -140,6 +140,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M5 5.6h4.4" {...stroke} />
     </>
   ),
+  "rectangle.split.2x1": (
+    <>
+      <rect x="3.4" y="5.2" width="17.2" height="13.6" rx="2" {...stroke} />
+      <path d="M12 5.2v13.6" {...stroke} />
+    </>
+  ),
   "square.grid.2x2": (
     <>
       <rect x="3.6" y="3.6" width="7.1" height="7.1" rx="1.4" {...stroke} />

@@ -32,6 +32,23 @@ export function scrollChatToEnd(
   el.scrollTop = chatScrollMax(el);
 }
 
+const scrollByChat = new Map<string, number>();
+
+/** Remember where this conversation was scrolled so another pane can take the screen. */
+export function rememberChatScroll(id: string, scrollTop: number) {
+  if (!id || !Number.isFinite(scrollTop)) return;
+  scrollByChat.set(id, Math.max(0, scrollTop));
+}
+
+export function chatScrollFor(id: string): number | null {
+  const value = scrollByChat.get(id);
+  return value == null ? null : value;
+}
+
+export function forgetChatScroll(id: string) {
+  if (id) scrollByChat.delete(id);
+}
+
 /** Jump to the end in one assignment when stick-to-bottom is on. */
 export function pinChatToEnd(
   el: { scrollTop: number; scrollHeight: number; clientHeight?: number } | null,

@@ -13,6 +13,7 @@ import {
   loadCollapsedProjects,
   loadComposerDrafts,
   loadConversation,
+  loadProjectOpenTabs,
   loadRecentWorkspaces,
   loadWorkspace,
   loadPerfOverlay,
@@ -36,6 +37,7 @@ import {
   scheduleComposerDraft,
   scheduleComposerPastes,
   saveConversation,
+  saveProjectOpenTabs,
   saveWorkspace,
   saveMarkdownOpenMode,
   saveOpenFileTree,
@@ -227,6 +229,10 @@ describe("project path migration", () => {
     pushRecentWorkspace("/App/projects/Demo");
     pushRecentWorkspace("/Users/me/code");
     saveConversation("/app/projects/demo", "chat-1");
+    saveProjectOpenTabs("/app/projects/demo", [
+      { kind: "chat", id: "chat-1" },
+      { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
+    ]);
     saveCollapsedProjects(["/app/projects/demo"]);
     rewriteStoredProjectPaths([
       { from: "/app/projects/Demo", to: "/Users/me/twanagent/projects/Demo" },
@@ -238,7 +244,55 @@ describe("project path migration", () => {
     ]);
     assert.equal(loadConversation("/Users/me/twanagent/projects/Demo"), "chat-1");
     assert.equal(loadConversation("/app/projects/demo"), "");
+    assert.deepEqual(loadProjectOpenTabs("/Users/me/twanagent/projects/Demo"), [
+      { kind: "chat", id: "chat-1" },
+      { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
+    ]);
+    assert.deepEqual(loadProjectOpenTabs("/app/projects/demo"), []);
     assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
+  });
+});
+
+describe("open tabs", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("keeps each project's open tabs, including a split", () => {
+    saveProjectOpenTabs("/App/projects/Demo", [
+      { kind: "chat", id: "a" },
+      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.35 },
+    ]);
+    assert.deepEqual(loadProjectOpenTabs("/App/projects/Demo"), [
+      { kind: "chat", id: "a" },
+      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.35 },
+    ]);
+    assert.deepEqual(loadProjectOpenTabs("/Users/me/other"), []);
+  });
+
+  it("drops a broken entry and a chat listed twice", () => {
+    localStorage.setItem(
+      "twanagent.openTabs",
+      JSON.stringify({
+        "/demo": [
+          { kind: "chat", id: "a" },
+          { kind: "nope", id: "x" },
+          { kind: "chat", id: "a" },
+          { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 3, leftShare: "wide" },
+          { kind: "split", id: "", chatIds: ["c", "d"] },
+        ],
+      }),
+    );
+    assert.deepEqual(loadProjectOpenTabs("/demo"), [
+      { kind: "chat", id: "a" },
+      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.5 },
+    ]);
+  });
+
+  it("clears a project when its last tab closes", () => {
+    saveProjectOpenTabs("/demo", [{ kind: "chat", id: "a" }]);
+    saveProjectOpenTabs("/demo", []);
+    assert.deepEqual(loadProjectOpenTabs("/demo"), []);
   });
 });
 

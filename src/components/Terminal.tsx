@@ -116,7 +116,7 @@ export function Terminal({
       {error ? <p className="px-3 py-2 text-[12px] text-err">{error}</p> : null}
       <div
         ref={host}
-        className="term min-h-0 flex-1 px-1.5 py-1.5"
+        className="term min-h-0 flex-1 px-1.5"
         onMouseDown={() => termRef.current?.focus()}
       />
     </div>
@@ -138,6 +138,7 @@ export function xtermTheme() {
     cursor: cssVar("--color-ink") || "#3f3f42",
     cursorAccent: cssVar("--color-panel") || "#f5f5f7",
     selectionBackground: cssVar("--color-select") || "#c8daf5",
+    selectionInactiveBackground: cssVar("--color-select") || "#c8daf5",
   };
 }
 

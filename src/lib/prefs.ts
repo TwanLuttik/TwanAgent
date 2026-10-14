@@ -79,6 +79,7 @@ export function setSpaceCornerImage(image: SpaceCornerImage | null): void {
 
 const WORKSPACE_KEY = "twanagent.workspace";
 const CONVERSATION_KEY = "twanagent.conversation";
+const OPEN_TABS_KEY = "twanagent.openTabs";
 const DRAFTS_KEY = "twanagent.drafts";
 const PASTES_KEY = "twanagent.pastes";
 
@@ -254,6 +255,13 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
     if (!nextSaved[dest]) nextSaved[dest] = id;
   }
   localStorage.setItem(CONVERSATION_KEY, JSON.stringify(nextSaved));
+
+  const nextTabs: Record<string, StoredTabItem[]> = {};
+  for (const [path, items] of Object.entries(loadOpenTabs())) {
+    const dest = remap(path);
+    if (!nextTabs[dest]) nextTabs[dest] = items;
+  }
+  localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(nextTabs));
 
   const collapsed = new Set(
     loadCollapsedProjects().map((key) => {
@@ -540,6 +548,81 @@ export function subscribePrefs(onChange: () => void): () => void {
     window.removeEventListener(PREFS_EVENT, onChange);
     window.removeEventListener("storage", onChange);
   };
+}
+
+/** One open conversation tab, or two chats kept side by side. */
+export type StoredTabItem =
+  | { kind: "chat"; id: string }
+  | { kind: "code" }
+  | {
+      kind: "split";
+      id: string;
+      chatIds: [string, string];
+      activePane: 0 | 1;
+      leftShare: number;
+    };
+
+export function loadOpenTabs(): Record<string, StoredTabItem[]> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(OPEN_TABS_KEY) ?? "");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, StoredTabItem[]> = {};
+    for (const [path, items] of Object.entries(raw as Record<string, unknown>)) {
+      const tabs = storedTabItems(items);
+      if (path && tabs.length) out[path] = tabs;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function loadProjectOpenTabs(workspace: string): StoredTabItem[] {
+  if (!workspace) return [];
+  const all = loadOpenTabs();
+  return all[workspace] ?? all[projectKey(workspace)] ?? [];
+}
+
+export function saveProjectOpenTabs(workspace: string, items: StoredTabItem[]): void {
+  if (!workspace) return;
+  const all = loadOpenTabs();
+  const tabs = storedTabItems(items);
+  if (tabs.length) all[workspace] = tabs;
+  else delete all[workspace];
+  localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(all));
+}
+
+function storedTabItems(items: unknown): StoredTabItem[] {
+  if (!Array.isArray(items)) return [];
+  const out: StoredTabItem[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const tab = storedTabItem(item);
+    if (!tab) continue;
+    const ids = tab.kind === "chat" ? [tab.id] : tab.kind === "code" ? ["code"] : tab.chatIds;
+    if (ids.some((id) => seen.has(id))) continue;
+    ids.forEach((id) => seen.add(id));
+    out.push(tab);
+  }
+  return out;
+}
+
+function storedTabItem(item: unknown): StoredTabItem | null {
+  if (!item || typeof item !== "object") return null;
+  const row = item as Partial<StoredTabItem> & { chatIds?: unknown; leftShare?: unknown };
+  if (row.kind === "chat" && typeof row.id === "string" && row.id.trim()) {
+    return { kind: "chat", id: row.id };
+  }
+  if (row.kind === "code") return { kind: "code" };
+  if (row.kind !== "split" || typeof row.id !== "string" || !row.id.trim()) return null;
+  if (!Array.isArray(row.chatIds) || row.chatIds.length !== 2) return null;
+  const [left, right] = row.chatIds;
+  if (typeof left !== "string" || typeof right !== "string" || !left.trim() || !right.trim() || left === right) {
+    return null;
+  }
+  const pane = row.activePane === 1 ? 1 : 0;
+  const share = typeof row.leftShare === "number" && Number.isFinite(row.leftShare) ? row.leftShare : 0.5;
+  return { kind: "split", id: row.id, chatIds: [left, right], activePane: pane, leftShare: share };
 }
 
 export function saveConversation(workspace: string, id: string): void {

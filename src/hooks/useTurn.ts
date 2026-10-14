@@ -53,6 +53,8 @@ import {
 } from "../lib/subagent";
 import { parseConversationKind } from "../lib/terminal-chat";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
+import { setSecondaryLiveStream } from "../lib/live-stream";
+import { rememberSplitPane } from "../lib/split-pane";
 import {
   clearPendingForChat,
   closeDanglingToolCalls,
@@ -68,7 +70,6 @@ import {
   removePending,
   commitPartialReply,
   setDraftForChat,
-  shouldQueueForChat,
   takeNextPending,
   turnAppliesToChat,
   updatePending,
@@ -102,6 +103,7 @@ export type TurnDeps = {
   messages: ChatMessage[];
   draft: string;
   draftPastes: PasteBlock[];
+  draftsRef: RefObject<Record<string, string>>;
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
   busy: boolean;
@@ -193,18 +195,20 @@ export type TurnDeps = {
       }
     >
   >;
+  /** The other conversation in a split. Its tokens go to the secondary stream. */
+  sideChatIdRef?: RefObject<string>;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
 };
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, promptImages, mentionFiles, ready, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, promptImages, mentionFiles, ready, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
     setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
-    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
+    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
 function permissionForChat(chatId: string): PermissionMode {
@@ -321,31 +325,33 @@ function rememberChatSettings(
   });
 }
 
-function pickModel(id: string) {
-  modelRef.current = id;
-  setModel(id);
-  saveModel(id);
-  const chatId = activeIdRef.current;
+function pickModel(id: string, chatId = activeIdRef.current) {
+  const focused = !chatId || chatId === activeIdRef.current;
   const row = conversationsRef.current.find((item) => item.id === chatId);
   const resolved = composerSettingsForChat(
     {
       model: id,
-      effort: row?.effort || effortRef.current,
-      contextWindow: row?.context_window || contextWindowRef.current,
-      permission: permissionRef.current,
+      effort: focused ? effortRef.current : row?.effort,
+      contextWindow: focused ? contextWindowRef.current : row?.context_window,
+      permission: focused ? permissionRef.current : row?.permission,
     },
     models,
     { model: id, effort: effortRef.current, contextWindow: contextWindowRef.current, permission: permissionRef.current },
   );
-  if (resolved.effort !== effortRef.current) {
-    effortRef.current = resolved.effort;
-    setEffort(resolved.effort);
-    if (resolved.effort) saveEffort(resolved.effort);
-  }
-  if (resolved.contextWindow !== contextWindowRef.current) {
-    contextWindowRef.current = resolved.contextWindow;
-    setContextWindow(resolved.contextWindow);
-    if (resolved.contextWindow) saveContextWindow(resolved.contextWindow);
+  if (focused) {
+    modelRef.current = id;
+    setModel(id);
+    saveModel(id);
+    if (resolved.effort !== effortRef.current) {
+      effortRef.current = resolved.effort;
+      setEffort(resolved.effort);
+      if (resolved.effort) saveEffort(resolved.effort);
+    }
+    if (resolved.contextWindow !== contextWindowRef.current) {
+      contextWindowRef.current = resolved.contextWindow;
+      setContextWindow(resolved.contextWindow);
+      if (resolved.contextWindow) saveContextWindow(resolved.contextWindow);
+    }
   }
   if (chatId) {
     rememberChatSettings(chatId, {
@@ -356,22 +362,24 @@ function pickModel(id: string) {
   }
 }
 
-function pickEffort(id: string) {
+function pickEffort(id: string, chatId = activeIdRef.current) {
   const next = id.trim();
   if (!next) return;
-  effortRef.current = next;
-  setEffort(next);
-  saveEffort(next);
-  const chatId = activeIdRef.current;
+  if (!chatId || chatId === activeIdRef.current) {
+    effortRef.current = next;
+    setEffort(next);
+    saveEffort(next);
+  }
   if (!chatId || !workspace) return;
   rememberChatSettings(chatId, { effort: next });
 }
 
-function pickContextWindow(tokens: number) {
-  contextWindowRef.current = tokens;
-  setContextWindow(tokens);
-  saveContextWindow(tokens);
-  const chatId = activeIdRef.current;
+function pickContextWindow(tokens: number, chatId = activeIdRef.current) {
+  if (!chatId || chatId === activeIdRef.current) {
+    contextWindowRef.current = tokens;
+    setContextWindow(tokens);
+    saveContextWindow(tokens);
+  }
   if (!chatId || !workspace) return;
   rememberChatSettings(chatId, { contextWindow: tokens });
 }
@@ -381,9 +389,11 @@ function rememberPlan(chatId: string, plan: GrokPlan) {
   onPlanChange?.();
 }
 
-function pickPlanMode(mode: "off" | "pending" | "on") {
-  const chatId = activeIdRef.current;
-  if (!chatId || !workspace || !providerProfile(modelRef.current).planMode) return;
+function pickPlanMode(mode: "off" | "pending" | "on", chatId = activeIdRef.current) {
+  const modelId = chatId === activeIdRef.current
+    ? modelRef.current
+    : conversationsRef.current.find((row) => row.id === chatId)?.model || modelRef.current;
+  if (!chatId || !workspace || !providerProfile(modelId).planMode) return;
   const running = turnsRef.current.has(chatId);
   const state: PlanModeState =
     mode === "on"
@@ -402,18 +412,24 @@ function pickPlanMode(mode: "off" | "pending" | "on") {
   });
 }
 
-function pickPermission(id: string) {
+function pickPermission(id: string, chatId = activeIdRef.current) {
   const next = parsePermissionMode(id);
-  setPermission(next);
-  savePermission(next);
-  const chatId = activeIdRef.current;
-  if (!chatId || !workspace) return;
-  rememberChatSettings(chatId, { permission: next });
+  if (!chatId || chatId === activeIdRef.current) {
+    setPermission(next);
+    savePermission(next);
+  }
+  if (chatId && workspace) rememberChatSettings(chatId, { permission: next });
   if (shouldPromptShell(next)) return;
   const ok = next === "approve-all";
   setShellQueue((q) => {
-    for (const item of q) item.resolve(ok);
-    return [];
+    let changed = false;
+    const rest = q.filter((item) => {
+      if (chatId && item.chatId !== chatId) return true;
+      item.resolve(ok);
+      changed = true;
+      return false;
+    });
+    return changed ? rest : q;
   });
 }
 
@@ -555,6 +571,21 @@ function rememberLive(
       liveTools: next.liveTools,
       activity: next.activity,
     };
+  }
+  if (sideChatIdRef?.current === id) {
+    rememberSplitPane(id, {
+      messages: next.messages,
+      streamText: next.streamText,
+      streamReasoning: next.streamReasoning,
+      liveTools: next.liveTools,
+      activity: next.activity,
+    });
+    setSecondaryLiveStream({
+      streamText: next.streamText,
+      streamReasoning: next.streamReasoning,
+      liveTools: next.liveTools,
+      runningActivity: next.activity,
+    });
   }
   return next;
 }
@@ -708,9 +739,12 @@ function partialReply(id: string): { text: string; reasoning: string } {
   return { text: live?.streamText ?? "", reasoning: live?.streamReasoning ?? "" };
 }
 
-async function send() {
-  const text = expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
-  const images = persistableImages(promptImages);
+async function send(targetId = activeIdRef.current) {
+  const sendingSide = Boolean(targetId) && targetId !== activeIdRef.current;
+  const text = sendingSide
+    ? expandFileMentions(draftForChat(draftsRef.current, targetId), mentionFiles).trim()
+    : expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
+  const images = sendingSide ? [] : persistableImages(promptImages);
   if (!canSendPrompt(text, images)) return;
   if (cloudSendWaiting(remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
     setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
@@ -745,7 +779,7 @@ async function send() {
     setFlash({ kind: "err", text: String(e) });
     return;
   }
-  let id = activeId;
+  let id = targetId;
   if (!id) {
     const now = nowIso();
     id = newConversationId();
@@ -775,9 +809,9 @@ async function send() {
     activeIdRef.current = id;
     saveConversation(ws, id);
   }
-  stickToBottomRef.current = true;
+  if (turnAppliesToChat(id, activeIdRef.current)) stickToBottomRef.current = true;
   clearPrompt(id);
-  if (shouldQueueForChat(runningIdRef.current, id) || turnsRef.current.has(id)) {
+  if (turnsRef.current.has(id)) {
     setPending(enqueuePending(pendingRef.current, id, text, images));
     return;
   }
@@ -840,11 +874,12 @@ async function runTurn(
       .catch(() => undefined);
   };
   const chat = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
+  const focusedChip = id === activeIdRef.current;
   const chip = {
-    model: modelRef.current,
-    effort: effortRef.current,
-    contextWindow: contextWindowRef.current,
-    permission: permissionRef.current,
+    model: focusedChip ? modelRef.current : chat?.model || modelRef.current,
+    effort: focusedChip ? effortRef.current : chat?.effort || effortRef.current,
+    contextWindow: focusedChip ? contextWindowRef.current : chat?.context_window || contextWindowRef.current,
+    permission: focusedChip ? permissionRef.current : chat?.permission || permissionRef.current,
   };
   // Before the first reply the composer chip is the choice, even when the empty
   // chat was created with the previous conversation's model.
@@ -1183,10 +1218,10 @@ async function runTurn(
   await continueWithPending(id, ws, latestMessages);
 }
 
-function stop() {
-  const visibleId = activeIdRef.current;
+function stop(targetId = activeIdRef.current) {
+  const visibleId = targetId || activeIdRef.current;
   const target = visibleId ? turnsRef.current.get(visibleId) : undefined;
-  (target ?? abortRef.current)?.abort();
+  (target ?? (visibleId === activeIdRef.current ? abortRef.current : null))?.abort();
   if (visibleId) rejectShells(visibleId);
 }
 

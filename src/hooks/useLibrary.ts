@@ -37,6 +37,7 @@ import {
   type JourneySummary,
 } from "../lib/journey";
 import { forgetPaneWorkspace } from "../lib/pane-sessions";
+import { closeTabChat, splitPaneCache } from "../lib/split-pane";
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
@@ -178,7 +179,7 @@ export type LibraryDeps = {
   setOpeningId: Update<string>;
   setUnseenFinished: Update<ReadonlySet<string>>;
   setPendingByChat: Update<Record<string, PendingMessage[]>>;
-  setChatTabsByProject: Update<Record<string, string[]>>;
+  setChatTabsByProject: Update<Record<string, import("../lib/split-pane").TabItem[]>>;
   setFlash: (flash: { kind: "ok" | "err"; text: string } | null) => void;
   bumpFiles: () => void;
 };
@@ -450,6 +451,8 @@ function applyWorkspace(path: string) {
 }
 
 const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => void>(() => {});
+/** Set by the shell. True when the chat is already in a split and was only focused. */
+const revealListedChatRef = useRef<((id: string) => boolean) | null>(null);
 const openSettingsRef = useRef(openSettings);
 
 async function ensureChatPlan(path: string, id: string, modelId: string | null | undefined) {
@@ -560,6 +563,9 @@ async function openSidebarChat(path: string, id: string) {
   setProjectSettings(null);
   if (!path) return;
   if (isSameProject(path, workspace)) {
+    // A chat already in a split stays in that pair. The list click only focuses it.
+    const kept = revealListedChatRef.current?.(id);
+    if (kept) return;
     await openChat(id);
     return;
   }
@@ -653,6 +659,7 @@ async function openChat(id: string) {
     return;
   }
   const openLive = liveByChatRef.current.get(id);
+  const parked = !openLive ? splitPaneCache(id) : null;
   if (openLive) {
     const turn = runningTurns[id];
     showChatSettings(conversations.find((row) => row.id === id));
@@ -692,6 +699,13 @@ async function openChat(id: string) {
     return;
   }
   retargetForegroundTurn(id);
+  if (parked?.messages.length) {
+    setMessages(parked.messages);
+    setStreamText(parked.streamText);
+    setStreamReasoning(parked.streamReasoning);
+    setLiveTools(parked.liveTools);
+    setRunningActivity(parked.activity);
+  }
   if (chatHasRunningTurn(runningTurns, id)) showSubagents(id);
   else hideSubagents();
   setStreamText("");
@@ -935,8 +949,10 @@ async function archiveChat(id: string, archived = true, path = workspace) {
   setChatTabsByProject((prev) => {
     const key = projectKey(path);
     const tabs = prev[key];
-    if (!tabs?.includes(id)) return prev;
-    return { ...prev, [key]: tabs.filter((tab) => tab !== id) };
+    if (!tabs) return prev;
+    const closed = closeTabChat(tabs, id);
+    if (!closed.removed) return prev;
+    return { ...prev, [key]: closed.items };
   });
   if (loadConversation(path) === id) saveConversation(path, "");
   if (isSameProject(path, workspace) && activeId === id) {
@@ -1333,6 +1349,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     openSidebarChat,
     openProjectFromSidebar,
     openChat,
+    revealListedChatRef,
     toggleSubagent,
     archiveChat,
     removeChat,

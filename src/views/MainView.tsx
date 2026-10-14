@@ -6,9 +6,32 @@ import { cloudSendWaiting } from "../lib/hosted";
 import { type ChatUsage } from "../lib/context";
 import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
 import { setSkillEnabledInToml, type DetectedSkill } from "../lib/skill";
-import { closeChatTab as closeChatTabList, openChatTab } from "../lib/chat-tabs";
+import {
+  chatIdsInTabs,
+  closeTabChat,
+  clampSplitShare,
+  focusSplitChat,
+  focusSplitPane as focusSplitPaneItems,
+  forgetSplitPane,
+  moveTabItem,
+  revealTabChat,
+  setSplitShare as setSplitShareItems,
+  withCodeTab,
+  splitSelectedChats,
+  splitChatTab,
+  splitGroupForChat,
+  unsplitGroup,
+  type TabItem,
+  type TabMenu,
+} from "../lib/split-pane";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
-import { clearLiveStream, setLiveStream, subscribeLiveStream } from "../lib/live-stream";
+import {
+  clearLiveStream,
+  clearSecondaryLiveStream,
+  setLiveStream,
+  setSecondaryLiveStream,
+  subscribeLiveStream,
+} from "../lib/live-stream";
 import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
@@ -20,6 +43,9 @@ import {
   SIDEBAR_MIN,
   loadComposerDrafts,
   loadComposerPastes,
+  loadOpenTabs,
+  saveProjectOpenTabs,
+  type StoredTabItem,
   saveComposerPastes,
   loadEffort,
   loadPermission,
@@ -33,6 +59,7 @@ import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
 import type { PasteBlock } from "../lib/paste";
 import { chatHasRunningTurn, draftForChat, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { chatScrollFor, forgetChatScroll, rememberChatScroll } from "../lib/chat-scroll";
 import * as api from "../lib/tauri";
 import type { ConversationSummary } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -49,6 +76,55 @@ import { MainShell } from "./main/MainShell";
 import { useOverlays } from "../hooks/useOverlays";
 import { useRuntime } from "../hooks/useRuntime";
 import { useSpeech } from "../hooks/useSpeech";
+
+function loadStoredOpenTabs(): Record<string, TabItem[]> {
+  const out: Record<string, TabItem[]> = {};
+  for (const [path, items] of Object.entries(loadOpenTabs())) {
+    const key = projectKey(path);
+    if (!key || out[key]) continue;
+    out[key] = items.map(storedTabToItem);
+  }
+  return out;
+}
+
+function storedTabToItem(item: StoredTabItem): TabItem {
+  if (item.kind === "code") return { kind: "code" };
+  if (item.kind === "chat") return { kind: "chat", id: item.id };
+  return {
+    kind: "split",
+    group: {
+      id: item.id,
+      chatIds: item.chatIds,
+      activePane: item.activePane,
+      leftShare: clampSplitShare(item.leftShare),
+    },
+  };
+}
+
+/** Drop a tab only after its chat was listed and then disappeared. A chat that
+ * has not loaded yet stays, so a restart does not wipe the saved strip. */
+function pruneMissingTab(item: TabItem, known: ReadonlySet<string>, seen: ReadonlySet<string>): TabItem[] {
+  if (item.kind === "code") return [item];
+  if (item.kind === "chat") return !seen.has(item.id) || known.has(item.id) ? [item] : [];
+  const [left, right] = item.group.chatIds;
+  const leftGone = seen.has(left) && !known.has(left);
+  const rightGone = seen.has(right) && !known.has(right);
+  if (!leftGone && !rightGone) return [item];
+  if (leftGone && rightGone) return [];
+  return [{ kind: "chat", id: leftGone ? right : left }];
+}
+
+function tabItemToStored(item: TabItem): StoredTabItem {
+  if (item.kind === "code") return { kind: "code" };
+  if (item.kind === "chat") return { kind: "chat", id: item.id };
+  return {
+    kind: "split",
+    id: item.group.id,
+    chatIds: item.group.chatIds,
+    activePane: item.group.activePane,
+    leftShare: item.group.leftShare,
+  };
+}
 
 export function MainView() {
   const { setFlash } = useApp();
@@ -76,7 +152,8 @@ export function MainView() {
   const [pendingByChat, setPendingByChat] = useState<Record<string, PendingMessage[]>>({});
   const [editingPending, setEditingPending] = useState<PendingEdit | null>(null);
   const [busy, setBusy] = useState(false);
-  const [chatTabsByProject, setChatTabsByProject] = useState<Record<string, string[]>>({});
+  const [chatTabsByProject, setChatTabsByProject] = useState<Record<string, TabItem[]>>(loadStoredOpenTabs);
+  const [tabMenu, setTabMenu] = useState<TabMenu | null>(null);
   const [runningId, setRunningId] = useState("");
   const [runningTurns, setRunningTurns] = useState<Record<string, RunningTurn>>({});
   const [unseenFinished, setUnseenFinished] = useState<ReadonlySet<string>>(() => new Set());
@@ -168,6 +245,7 @@ export function MainView() {
   const effortRef = useLiveRef(effort);
   const contextWindowRef = useLiveRef(contextWindow);
   const activeIdRef = useLiveRef(activeId);
+  const sideChatIdRef = useRef("");
   const viewingChatRef = useRef(true);
   viewingChatRef.current =
     editor.focus === "chat" && !showSettings && !showUsage && !showServers && !projectSettings;
@@ -221,6 +299,7 @@ export function MainView() {
   const followingRef = useRef(false);
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
+  const draftsRef = useLiveRef(drafts);
   const draftPastes = pastesByChat[activeId] ?? [];
   const promptImages = imagesForChat(draftImages, activeId);
   const queued = pendingForChat(pendingByChat, activeId);
@@ -229,6 +308,12 @@ export function MainView() {
     saveComposerDraft(activeId, text);
     setDrafts((prev) => setDraftForChat(prev, activeId, text));
   }, [activeId]);
+
+  const setChatDraft = useCallback((chatId: string, text: string) => {
+    if (!chatId) return;
+    saveComposerDraft(chatId, text);
+    setDrafts((prev) => setDraftForChat(prev, chatId, text));
+  }, []);
 
   const setDraftPastes = useCallback((next: PasteBlock[]) => {
     saveComposerPastes(activeId, next);
@@ -310,12 +395,16 @@ export function MainView() {
   projectsRootRef.current = projectsRoot;
 
   useEffect(() => {
-    function onDoc() {
+    function onDoc(ev: MouseEvent) {
+      const target = ev.target;
+      if (target instanceof Element && target.closest("[role='menu']")) return;
       setProjectMenu(null);
+      setTabMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
       if (ev.key === "Escape") {
         setProjectMenu(null);
+        setTabMenu(null);
         setPendingDeleteProject(null);
       }
     }
@@ -533,9 +622,22 @@ export function MainView() {
     prependRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
   }, []);
 
+  const restoredFor = useRef("");
   useLayoutEffect(() => {
     const el = scroller.current;
     const prepend = prependRef.current;
+    if (el && activeId && restoredFor.current !== activeId) {
+      restoredFor.current = activeId;
+      const saved = chatScrollFor(activeId);
+      if (saved != null) {
+        stickToBottomRef.current = isNearBottom({
+          scrollTop: saved,
+          scrollHeight: el.scrollHeight,
+          clientHeight: el.clientHeight,
+        });
+        el.scrollTop = saved;
+      }
+    }
     if (prepend && el) {
       prependRef.current = null;
       el.scrollTop = scrollTopAfterPrepend(prepend, el.scrollHeight);
@@ -716,6 +818,7 @@ export function MainView() {
     messages,
     draft,
     draftPastes,
+    draftsRef,
     promptImages,
     mentionFiles,
     busy,
@@ -786,6 +889,7 @@ export function MainView() {
     liveByChatRef,
     subagentsByChatRef,
     stickToBottomRef,
+    sideChatIdRef,
   });
   runTurnRef.current = turn.runTurn;
   const {
@@ -814,8 +918,62 @@ export function MainView() {
   } = library;
 
   const chatTabKey = workspace ? projectKey(workspace) : "";
-  const chatTabIds = chatTabKey ? (chatTabsByProject[chatTabKey] ?? []) : [];
-  const chatTabs = chatTabIds.map((id) => {
+  const codeTabOpen = editor.tabs.length > 0;
+  const tabItems = withCodeTab(chatTabKey ? (chatTabsByProject[chatTabKey] ?? []) : [], codeTabOpen);
+  useEffect(() => {
+    if (!workspace) return;
+    const key = projectKey(workspace);
+    setChatTabsByProject((prev) => {
+      const current = prev[key] ?? [];
+      const next = withCodeTab(current, codeTabOpen);
+      return next === current ? prev : { ...prev, [key]: next };
+    });
+  }, [workspace, codeTabOpen]);
+  useEffect(() => {
+    if (!workspace) return;
+    saveProjectOpenTabs(workspace, tabItems.map(tabItemToStored));
+  }, [workspace, tabItems]);
+  const seenChats = useRef({ key: "", ids: new Set<string>() });
+  useEffect(() => {
+    if (!workspace || conversations.length === 0) return;
+    const key = projectKey(workspace);
+    if (seenChats.current.key !== key) seenChats.current = { key, ids: new Set() };
+    const known = new Set(conversations.map((row) => row.id));
+    const seen = seenChats.current.ids;
+    setChatTabsByProject((prev) => {
+      const current = prev[key] ?? [];
+      const next = current.flatMap((item) => pruneMissingTab(item, known, seen));
+      const same = next.length === current.length && next.every((item, index) => item === current[index]);
+      return same ? prev : { ...prev, [key]: next };
+    });
+    known.forEach((id) => seen.add(id));
+  }, [workspace, conversations]);
+  const openSplit = splitGroupForChat(tabItems, activeId);
+  const splitChatIds = openSplit ? [...openSplit.chatIds] : [];
+  const sideChatId = splitChatIds.find((id) => id !== activeId) ?? "";
+  sideChatIdRef.current = sideChatId;
+  useEffect(() => {
+    if (!sideChatId) {
+      clearSecondaryLiveStream();
+      return;
+    }
+    const paint = () => {
+      const live = liveByChatRef.current.get(sideChatId);
+      if (!live) {
+        clearSecondaryLiveStream();
+        return;
+      }
+      setSecondaryLiveStream({
+        streamText: live.streamText,
+        streamReasoning: live.streamReasoning,
+        liveTools: live.liveTools,
+        runningActivity: live.activity,
+      });
+    };
+    paint();
+    return subscribeLiveStream(paint);
+  }, [sideChatId]);
+  const chatTabs = chatIdsInTabs(tabItems).map((id) => {
     const row = conversations.find((item) => item.id === id);
     return {
       id,
@@ -830,17 +988,21 @@ export function MainView() {
     const key = projectKey(workspace);
     setChatTabsByProject((prev) => {
       const tabs = prev[key] ?? [];
-      const next = openChatTab(tabs, activeId);
+      const next = revealTabChat(tabs, activeId);
       return next === tabs ? prev : { ...prev, [key]: next };
     });
   }, [workspace, activeId]);
 
   const closeChatTab = useCallback(
     (id: string) => {
-      if (!workspace) return;
+      if (!workspace || !id) return;
       const key = projectKey(workspace);
-      const result = closeChatTabList(chatTabsByProject[key] ?? [], id);
-      setChatTabsByProject((prev) => ({ ...prev, [key]: result.tabs }));
+      const result = closeTabChat(chatTabsByProject[key] ?? [], id);
+      if (!result.removed) return;
+      setChatTabsByProject((prev) => ({ ...prev, [key]: result.items }));
+      forgetSplitPane(id);
+      forgetChatScroll(id);
+      setTabMenu(null);
       if (id !== activeId) return;
       if (result.next) {
         void openChat(result.next);
@@ -849,12 +1011,131 @@ export function MainView() {
       setActiveId("");
       setMessages([]);
       clearLiveStream();
+      clearSecondaryLiveStream();
       setTurnStartedAt(0);
       setSubagents([]);
       setExpandedAgents({});
       runningIdRef.current = "";
       setRunningId("");
       abortRef.current = null;
+    },
+    [workspace, chatTabsByProject, activeId, openChat],
+  );
+
+  const splitSelected = useCallback(
+    (ids: string[]) => {
+      if (!workspace || ids.length < 2) return;
+      const blocked = ids.some((id) => conversations.find((item) => item.id === id)?.kind === "terminal");
+      if (blocked) return;
+      const key = projectKey(workspace);
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = splitSelectedChats(current, ids);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+      setTabMenu(null);
+      setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
+    },
+    [workspace, conversations],
+  );
+
+  const moveChatTab = useCallback(
+    (fromKey: string, toKey: string) => {
+      if (!workspace) return;
+      const key = projectKey(workspace);
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = moveTabItem(current, fromKey, toKey);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+    },
+    [workspace],
+  );
+
+  const setSplitShare = useCallback(
+    (groupId: string, share: number) => {
+      if (!workspace || !groupId) return;
+      const key = projectKey(workspace);
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = setSplitShareItems(current, groupId, share);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+    },
+    [workspace],
+  );
+
+  const splitChat = useCallback(
+    (id: string) => {
+      if (!workspace || !id) return;
+      const row = conversations.find((item) => item.id === id);
+      if (row?.kind === "terminal") return;
+      const key = projectKey(workspace);
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = splitChatTab(current, id);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+      setTabMenu(null);
+      setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
+    },
+    [workspace, conversations],
+  );
+
+  const unsplitChat = useCallback(
+    (groupId: string) => {
+      if (!workspace || !groupId) return;
+      const key = projectKey(workspace);
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = unsplitGroup(current, groupId);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+      setTabMenu(null);
+      clearSecondaryLiveStream();
+    },
+    [workspace],
+  );
+
+  const revealSplitRef = useRef<(id: string) => boolean>(() => false);
+  revealSplitRef.current = (id: string) => {
+    if (!id || !workspace) return false;
+    const key = projectKey(workspace);
+    const items = chatTabsByProject[key] ?? [];
+    if (!splitGroupForChat(items, id)) return false;
+    setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
+    setChatTabsByProject((prev) => {
+      const current = prev[key] ?? [];
+      const next = focusSplitChat(current, id);
+      return next === current ? prev : { ...prev, [key]: next };
+    });
+    if (id !== activeId) void openChat(id);
+    return true;
+  };
+  library.revealListedChatRef.current = (id) => revealSplitRef.current(id);
+
+  const openListedChat = useCallback(
+    (id: string) => {
+      if (!id || !revealSplitRef.current(id)) void openChat(id);
+    },
+    [openChat],
+  );
+
+  const focusSplitChatPane = useCallback(
+    (groupId: string, pane: 0 | 1) => {
+      if (!workspace) return;
+      const key = projectKey(workspace);
+      const group = (chatTabsByProject[key] ?? []).find(
+        (item) => item.kind === "split" && item.group.id === groupId,
+      );
+      if (!group || group.kind !== "split") return;
+      setChatTabsByProject((prev) => {
+        const current = prev[key] ?? [];
+        const next = focusSplitPaneItems(current, groupId, pane);
+        return next === current ? prev : { ...prev, [key]: next };
+      });
+      const id = group.group.chatIds[pane];
+      if (id && id !== activeId) void openChat(id);
     },
     [workspace, chatTabsByProject, activeId, openChat],
   );
@@ -1021,6 +1302,7 @@ export function MainView() {
     const onScroll = () => {
       if (followingRef.current) return;
       stickToBottomRef.current = isNearBottom(el);
+      if (activeIdRef.current) rememberChatScroll(activeIdRef.current, el.scrollTop);
     };
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) stickToBottomRef.current = false;
@@ -1048,6 +1330,7 @@ export function MainView() {
     messages,
     moveConversation,
     openChat,
+    openListedChat,
     openingId,
     openJourneyKnowledge,
     openProjectFromSidebar,
@@ -1105,6 +1388,7 @@ export function MainView() {
       messages,
       moveConversation,
       openChat,
+      openListedChat,
       openingId,
       openJourneyKnowledge,
       openProjectFromSidebar,
@@ -1136,6 +1420,7 @@ export function MainView() {
     live.deleteProjectFromSidebar = deleteProjectFromSidebar;
     live.moveConversation = moveConversation;
     live.openChat = openChat;
+    live.openListedChat = openListedChat;
     live.openJourneyKnowledge = openJourneyKnowledge;
     live.openProjectFromSidebar = openProjectFromSidebar;
     live.openProjectSettings = openProjectSettings;
@@ -1162,6 +1447,17 @@ export function MainView() {
     beginPendingEdit,
     busy,
     chatTabs,
+    tabItems,
+    splitChatIds,
+    tabMenu,
+    setTabMenu,
+    splitChat,
+    splitSelected,
+    moveChatTab,
+    setSplitShare,
+    unsplitChat,
+    focusSplitPane: focusSplitChatPane,
+    openListedChat,
     closeChatTab,
     closeFileTab,
     closePendingEdit,
@@ -1180,6 +1476,7 @@ export function MainView() {
     deleteProjectFromSidebar,
     dirtyFiles,
     draft,
+    drafts,
     draftPastes,
     mentionFiles,
     editingPending,
@@ -1212,6 +1509,7 @@ export function MainView() {
     openWorkspaceFile,
     pendingClosePath,
     pendingDeleteProject,
+    pendingByChat,
     pendingPlan,
     pendingShell,
     permission,
@@ -1263,6 +1561,7 @@ export function MainView() {
     stop,
     setDirtyFiles,
     setDraft,
+    setChatDraft,
     setDraftPastes,
     setDraftImages,
     setDrafts,

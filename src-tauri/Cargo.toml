@@ -39,7 +39,7 @@ tokio = { version = "1", features = ["time", "rt", "rt-multi-thread", "macros", 
 async-trait = "0.1"
 russh = { version = "0.54", features = ["ring"] }
 rand = "0.8"
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
 portable-pty = "0.8"
 tauri-plugin-dialog = "2"
 uuid = { version = "1", features = ["v4"] }

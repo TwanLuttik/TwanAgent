@@ -197,7 +197,7 @@ export function GrokTerminal({
           }}
         />
       ) : null}
-      <div ref={host} className="term min-h-0 flex-1 px-1.5 py-1.5" />
+      <div ref={host} className="term min-h-0 flex-1 px-1.5" />
       {stopped ? (
         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-between gap-3 border-t border-line bg-panel/95 px-3 py-2">
           <p className="min-w-0 truncate text-[12px] text-muted">{message}</p>

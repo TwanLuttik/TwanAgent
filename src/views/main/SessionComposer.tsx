@@ -6,16 +6,25 @@ import { fileToBase64, setImagesForChat } from "../../lib/image";
 import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
-import { chatHasRunningTurn } from "../../lib/turn";
+import { chatHasRunningTurn, composerSettingsForChat, draftForChat } from "../../lib/turn";
 import { useApp } from "../../state/app-state";
 import { useMain } from "./context";
 
-export const SessionComposer = memo(function SessionComposer({ placement }: { placement: "landing" | "chat" }) {
+export const SessionComposer = memo(function SessionComposer({
+  placement,
+  chatId,
+}: {
+  placement: "landing" | "chat";
+  /** Split panes pass the chat this input belongs to. The focused chat is the default. */
+  chatId?: string;
+}) {
   const {
     activeId,
     addPromptImages,
     contextWindow,
+    conversations,
     draft,
+    drafts,
     draftPastes,
     mentionFiles,
     allProjectGroups,
@@ -40,6 +49,7 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     runningTurns,
     send,
     setDraft,
+    setChatDraft,
     setDraftPastes,
     setDraftImages,
     stop,
@@ -48,9 +58,29 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
     dictate,
   } = useMain();
   const { setFlash } = useApp();
-  const todos = useMemo(() => todosFromMessages(messages), [messages]);
+  const boundId = chatId ?? activeId;
+  const focused = !boundId || boundId === activeId;
+  const row = conversations.find((item: { id: string }) => item.id === boundId);
+  const settings = focused
+    ? { model, effort, contextWindow, permission }
+    : composerSettingsForChat(
+        {
+          model: row?.model,
+          effort: row?.effort,
+          contextWindow: row?.context_window,
+          permission: row?.permission,
+        },
+        models,
+        { model, effort, contextWindow, permission },
+      );
+  const boundDraft = focused ? draft : draftForChat(drafts, boundId);
+  const writeDraft = focused ? setDraft : (text: string) => setChatDraft(boundId, text);
+  const todos = useMemo(
+    () => (boundId === activeId ? todosFromMessages(messages) : []),
+    [boundId, activeId, messages],
+  );
   const landing = placement === "landing";
-  const profile = providerProfile(model);
+  const profile = providerProfile(settings.model);
   const providerReady = runtime?.providers?.find((row: { id: string; ready: boolean }) => row.id === profile.id)?.ready ?? ready;
   const ask = `Ask ${profile.agentName}…`;
   const message = `Message ${profile.agentName}…`;
@@ -72,11 +102,11 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
         }
       }}
       onDictateError={(message) => setFlash({ kind: "err", text: message })}
-      draft={draft}
-      onDraft={setDraft}
-      onSend={() => void send()}
-      onStop={stop}
-      busy={chatHasRunningTurn(runningTurns, activeId)}
+      draft={boundDraft}
+      onDraft={writeDraft}
+      onSend={() => void send(boundId)}
+      onStop={() => stop(boundId)}
+      busy={chatHasRunningTurn(runningTurns, boundId)}
       ready={providerReady && !cloudConnecting}
       placeholder={
         cloudConnecting
@@ -94,28 +124,28 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       onOpenProject={(path) => applyWorkspace(path)}
       onOpenFolder={openFolder}
       models={models}
-      model={model}
-      onModel={pickModel}
+      model={settings.model}
+      onModel={(id) => pickModel(id, boundId)}
       lockedProviders={remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
-      effort={effort}
-      onEffort={pickEffort}
-      contextWindow={contextWindow}
-      onContextWindow={pickContextWindow}
-      permission={permission}
-      onPermission={pickPermission}
-      planMode={profile.planMode ? planMode : undefined}
-      onPlanMode={profile.planMode ? pickPlanMode : undefined}
+      effort={settings.effort}
+      onEffort={(id) => pickEffort(id, boundId)}
+      contextWindow={settings.contextWindow}
+      onContextWindow={(tokens) => pickContextWindow(tokens, boundId)}
+      permission={settings.permission}
+      onPermission={(id) => pickPermission(id, boundId)}
+      planMode={profile.planMode && focused ? planMode : undefined}
+      onPlanMode={profile.planMode && focused ? pickPlanMode : undefined}
       autoFocus={landing}
       compact={!landing}
-      usage={landing || !activeId ? undefined : usageByChat[activeId]}
+      usage={landing || !boundId ? undefined : usageByChat[boundId]}
       usageWindow={
         landing
           ? undefined
-          : contextWindow > 0
-            ? contextWindow
+          : settings.contextWindow > 0
+            ? settings.contextWindow
             : contextWindowForModel(
-                model,
-                models.find((row: { id: string; context_window?: number }) => row.id === model)?.context_window,
+                settings.model,
+                models.find((item: { id: string; context_window?: number }) => item.id === settings.model)?.context_window,
               )
       }
       mentionFiles={mentionFiles}
@@ -123,11 +153,11 @@ export const SessionComposer = memo(function SessionComposer({ placement }: { pl
       onPastes={setDraftPastes}
       images={promptImages}
       onImages={(next: ChatImage[]) =>
-        setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, activeId, next))
+        setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, boundId, next))
       }
       onAddImages={(files) => void addPromptImages(files)}
       todos={todos}
-      commandChatId={landing ? "" : activeId}
+      commandChatId={landing ? "" : boundId}
     />
   );
 });

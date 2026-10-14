@@ -28,7 +28,7 @@ export function AnchoredMenu({
       ref={ref}
       role="menu"
       aria-label={label}
-      className="fixed z-50 min-w-[168px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
+      className="fixed z-50 min-w-[168px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card"
       style={{
         left: pos?.left ?? x,
         top: pos?.top ?? y,

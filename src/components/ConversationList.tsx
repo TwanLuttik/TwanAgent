@@ -819,7 +819,7 @@ function ChatContextMenu({
           type="button"
           role="menuitem"
           onClick={item.onClick}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+          className="flex h-7 w-full cursor-pointer items-center px-2.5 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash"
         >
           {item.label}
         </button>

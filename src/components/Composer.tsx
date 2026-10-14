@@ -1007,6 +1007,12 @@ function MentionField({
         ref={area}
         data-composer-input=""
         value={draft}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        autoComplete="off"
+        data-gramm="false"
+        data-enable-grammarly="false"
         onChange={(e) => {
           onEdit();
           onCursor(e.target.selectionStart ?? e.target.value.length);
@@ -1986,7 +1992,7 @@ function PopMenu({
           exit={{ opacity: 0, y: box?.above === false ? -6 : 6 }}
           transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
           style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width, visibility: box ? "visible" : "hidden" }}
-          className={`fixed z-50 overflow-hidden rounded-lg border border-line/25 bg-canvas py-1 shadow-card ${
+          className={`fixed z-50 overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
             box?.above === false ? "origin-top" : "origin-bottom"
           }`}
           onMouseDown={(ev) => ev.stopPropagation()}

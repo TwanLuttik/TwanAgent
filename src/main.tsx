@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./index.css";
+import "./window-drag";
 import { startAccountUsage } from "./lib/account-usage-store";
 import { installDocumentScrollLock } from "./lib/document-scroll";
 import { installOverlayScroll } from "./lib/overlay-scroll";

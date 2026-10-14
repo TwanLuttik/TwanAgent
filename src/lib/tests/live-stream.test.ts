@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import {
   clearLiveStream,
+  clearSecondaryLiveStream,
   getLiveStream,
+  getSecondaryLiveStream,
   liveStreamEmpty,
   resetLiveStreamForTests,
   setLiveStream,
+  setSecondaryLiveStream,
   subscribeLiveStream,
+  subscribeSecondaryLiveStream,
   type LiveStream,
 } from "../live-stream.ts";
 
@@ -74,5 +78,23 @@ describe("live stream store", () => {
     assert.equal(getLiveStream().streamReasoning, "");
     assert.equal(liveStreamEmpty(), true);
     assert.equal(liveStreamEmpty({ streamText: "", streamReasoning: "x", liveTools: [], runningActivity: null }), false);
+  });
+
+  it("keeps a second stream for the split pane", () => {
+    let notices = 0;
+    const stop = subscribeSecondaryLiveStream(() => {
+      notices += 1;
+    });
+    setLiveStream({ streamText: "focused" });
+    setSecondaryLiveStream({ streamText: "side" });
+    assert.equal(notices, 1);
+    assert.equal(getLiveStream().streamText, "focused");
+    assert.equal(getSecondaryLiveStream().streamText, "side");
+    setSecondaryLiveStream({ streamText: "side" });
+    assert.equal(notices, 1);
+    clearSecondaryLiveStream();
+    assert.equal(getSecondaryLiveStream().streamText, "");
+    assert.equal(getLiveStream().streamText, "focused");
+    stop();
   });
 });

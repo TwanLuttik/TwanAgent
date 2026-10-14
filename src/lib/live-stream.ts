@@ -24,6 +24,11 @@ let snapshot: LiveStream = EMPTY_LIVE_STREAM;
 let empty = true;
 const listeners = new Set<() => void>();
 
+/** A second conversation shown beside the focused one. It has its own listeners. */
+let secondarySnapshot: LiveStream = EMPTY_LIVE_STREAM;
+let secondaryEmpty = true;
+const secondaryListeners = new Set<() => void>();
+
 export function getLiveStream(): LiveStream {
   return snapshot;
 }
@@ -102,10 +107,56 @@ export function clearLiveStream(): void {
   setLiveStream(EMPTY_LIVE_STREAM);
 }
 
+export function getSecondaryLiveStream(): LiveStream {
+  return secondarySnapshot;
+}
+
+export function getSecondaryLiveStreamEmpty(): boolean {
+  return secondaryEmpty;
+}
+
+export function subscribeSecondaryLiveStream(cb: () => void): () => void {
+  secondaryListeners.add(cb);
+  return () => secondaryListeners.delete(cb);
+}
+
+/** Replace the split pane's stream. Same values keep the snapshot and skip listeners. */
+export function setSecondaryLiveStream(
+  patch: Partial<LiveStream> | ((prev: LiveStream) => Partial<LiveStream> | LiveStream),
+): void {
+  const prev = secondarySnapshot;
+  const nextPatch = typeof patch === "function" ? patch(prev) : patch;
+  const next: LiveStream = {
+    streamText: nextPatch.streamText ?? prev.streamText,
+    streamReasoning: nextPatch.streamReasoning ?? prev.streamReasoning,
+    liveTools: nextPatch.liveTools ?? prev.liveTools,
+    runningActivity:
+      nextPatch.runningActivity === undefined ? prev.runningActivity : nextPatch.runningActivity,
+  };
+  if (
+    next.streamText === prev.streamText &&
+    next.streamReasoning === prev.streamReasoning &&
+    sameLiveTools(next.liveTools, prev.liveTools) &&
+    sameActivity(next.runningActivity, prev.runningActivity)
+  ) {
+    return;
+  }
+  secondarySnapshot = next;
+  secondaryEmpty = next.streamText.length === 0 && next.streamReasoning.length === 0;
+  secondaryListeners.forEach((cb) => cb());
+}
+
+export function clearSecondaryLiveStream(): void {
+  setSecondaryLiveStream(EMPTY_LIVE_STREAM);
+}
+
 export function resetLiveStreamForTests(): void {
   snapshot = EMPTY_LIVE_STREAM;
   empty = true;
   listeners.clear();
+  secondarySnapshot = EMPTY_LIVE_STREAM;
+  secondaryEmpty = true;
+  secondaryListeners.clear();
 }
 
 export function useLiveStream(): LiveStream {
@@ -119,4 +170,16 @@ export function useLiveStream(): LiveStream {
  */
 export function useLiveStreamEmpty(): boolean {
   return useSyncExternalStore(subscribeLiveStream, getLiveStreamEmpty, getLiveStreamEmpty);
+}
+
+export function useSecondaryLiveStream(): LiveStream {
+  return useSyncExternalStore(subscribeSecondaryLiveStream, getSecondaryLiveStream, getSecondaryLiveStream);
+}
+
+export function useSecondaryLiveStreamEmpty(): boolean {
+  return useSyncExternalStore(
+    subscribeSecondaryLiveStream,
+    getSecondaryLiveStreamEmpty,
+    getSecondaryLiveStreamEmpty,
+  );
 }

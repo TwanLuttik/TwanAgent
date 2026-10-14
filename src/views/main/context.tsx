@@ -1,6 +1,7 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { ProjectChatGroup } from "../../lib/all-projects";
 import type { JourneySummary } from "../../lib/journey";
+import type { TabItem, TabMenu } from "../../lib/split-pane";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { RunningTurn } from "../../lib/turn";
 
@@ -17,6 +18,16 @@ export type MainModel = {
   beginPendingEdit: MainFn;
   busy: any;
   chatTabs: { id: string; title: string; kind: "chat" | "terminal"; running: boolean }[];
+  tabItems: TabItem[];
+  splitChatIds: string[];
+  tabMenu: TabMenu | null;
+  setTabMenu: MainFn;
+  splitChat: MainFn;
+  splitSelected: MainFn;
+  moveChatTab: MainFn;
+  setSplitShare: MainFn;
+  unsplitChat: MainFn;
+  focusSplitPane: MainFn;
   closeChatTab: MainFn;
   closeFileTab: MainFn;
   closePendingEdit: MainFn;
@@ -35,6 +46,7 @@ export type MainModel = {
   deleteProjectFromSidebar: MainFn;
   dirtyFiles: any;
   draft: any;
+  drafts: Record<string, string>;
   draftPastes: any;
   mentionFiles: any;
   editingPending: any;
@@ -54,6 +66,8 @@ export type MainModel = {
   moveConversation: MainFn;
   onSidebarResizeStart: MainFn;
   openChat: MainFn;
+  /** Open a chat from this project's list without moving a split that already shows it. */
+  openListedChat: MainFn;
   opened: any;
   openFolder: MainFn;
   openingId: any;
@@ -67,6 +81,7 @@ export type MainModel = {
   openWorkspaceFile: MainFn;
   pendingClosePath: any;
   pendingDeleteProject: any;
+  pendingByChat: Record<string, { text: string; images?: import("../../lib/core").ChatImage[] }[]>;
   pendingPlan: any;
   pendingShell: any;
   permission: any;
@@ -117,6 +132,8 @@ export type MainModel = {
   setDraftPastes: MainFn;
   setDraftImages: MainFn;
   setDrafts: MainFn;
+  /** Replace one chat's composer text and keep it for the next open. */
+  setChatDraft: MainFn;
   setEditor: MainFn;
   toggleSubagent: MainFn;
   setFolderOpen: MainFn;
@@ -169,6 +186,7 @@ export type SidebarSlice = {
   messages: MainModel["messages"];
   moveConversation: MainFn;
   openChat: MainFn;
+  openListedChat: MainFn;
   openingId: string;
   openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;

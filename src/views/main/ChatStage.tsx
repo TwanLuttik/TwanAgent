@@ -1,4 +1,7 @@
-import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { insertCompactionEvent } from "../../lib/compact";
+import type { ChatMessage } from "../../lib/core";
+import { getSecondaryLiveStream, subscribeSecondaryLiveStream, useSecondaryLiveStream, useSecondaryLiveStreamEmpty } from "../../lib/live-stream";
 import { motion } from "motion/react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
@@ -8,6 +11,7 @@ import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
 import { conversationActivityLabel } from "../../lib/core";
+import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
 import {
@@ -19,10 +23,11 @@ import {
   selectEditorTab,
   setEditorMarkdownView,
 } from "../../lib/editor";
+import { rememberSplitPane, splitGroupForChat, splitPaneCache } from "../../lib/split-pane";
 import { shellApprovalLabel } from "../../lib/permission";
 import { PlanApproval } from "../../components/PlanApproval";
 import { parseConversationKind } from "../../lib/terminal-chat";
-import { draftForChat, setDraftForChat } from "../../lib/turn";
+import { draftForChat, pendingForChat, setDraftForChat, type PendingMessage } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
 import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
 import { ServersDialog } from "../../components/ServersDialog";
@@ -71,6 +76,15 @@ export function ChatStage() {
     setSettingsTab,
     bumpFiles,
     chatTabs,
+    tabItems,
+    splitChatIds,
+    tabMenu,
+    setTabMenu,
+    splitChat,
+    splitSelected,
+    moveChatTab,
+    unsplitChat,
+    focusSplitPane,
     closeChatTab,
     runningTurns,
     showServers,
@@ -89,22 +103,37 @@ export function ChatStage() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-8 shrink-0 items-start" data-tauri-drag-region>
+      <div className="chrome-tab-row flex h-8 shrink-0 items-start">
         {!fullPage ? (
           <CenterTabs
             editor={editor}
             chats={chatTabs}
+            items={tabItems}
             activeChatId={activeId}
+            splitChatIds={splitChatIds}
             runningTurns={runningTurns}
+            menu={tabMenu}
             onChat={(id) => {
               setEditor((prev: typeof editor) => selectChatTab(prev));
+              const group = splitGroupForChat(tabItems, id);
+              if (group) {
+                const pane = group.chatIds[0] === id ? 0 : 1;
+                focusSplitPane(group.id, pane);
+                return;
+              }
               if (id !== activeId) void openChat(id);
             }}
             onCloseChat={closeChatTab}
             onCode={() => setEditor((prev: typeof editor) => focusEditor(prev))}
+            onMenu={setTabMenu}
+            onSplit={splitChat}
+            onSplitSelected={splitSelected}
+            onMoveTab={moveChatTab}
+            onUnsplit={unsplitChat}
+            onCloseMenu={() => setTabMenu(null)}
           />
         ) : (
-          <div className="min-w-0 flex-1" data-tauri-drag-region />
+          <div className="min-w-0 flex-1" data-tauri-drag-region="false" />
         )}
       </div>
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
@@ -192,6 +221,8 @@ export function ChatStage() {
             />
           ) : chatKind === "terminal" && workspace && opened && activeId ? (
             <GrokTerminal workspace={workspace} conversationId={activeId} active />
+          ) : splitChatIds.length > 1 && editor.focus === "chat" ? (
+            <SplitRow ids={splitChatIds} />
           ) : (
             <ChatColumn key={workspace || "none"} />
           )}
@@ -206,6 +237,218 @@ export function ChatStage() {
           />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function SplitRow({ ids }: { ids: string[] }) {
+  const { activeId, tabItems } = useMain();
+  const group = splitGroupForChat(tabItems, ids[0] ?? "");
+  const share = group?.leftShare ?? 0.5;
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0" style={{ width: `${share * 100}%` }}>
+        <StableChatPane chatId={ids[0] ?? ""} active={ids[0] === activeId} />
+      </div>
+      {group ? <SplitDivider groupId={group.id} share={share} /> : null}
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <StableChatPane chatId={ids[1] ?? ""} active={ids[1] === activeId} />
+      </div>
+    </div>
+  );
+}
+
+function SplitDivider({ groupId, share }: { groupId: string; share: number }) {
+  const { setSplitShare } = useMain();
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuenow={Math.round(share * 100)}
+      aria-label="Resize panes"
+      title="Drag to resize"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        const handle = event.currentTarget;
+        const row = handle.parentElement;
+        if (!row) return;
+        handle.setPointerCapture(event.pointerId);
+        const bounds = row.getBoundingClientRect();
+        const move = (ev: PointerEvent) => {
+          const width = bounds.width || 1;
+          setSplitShare(groupId, (ev.clientX - bounds.left) / width);
+        };
+        const up = (ev: PointerEvent) => {
+          handle.releasePointerCapture(ev.pointerId);
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      }}
+      className="group relative z-20 w-1.5 shrink-0 cursor-col-resize"
+    >
+      <span className="pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-line/70 group-hover:bg-accent/50" />
+    </div>
+  );
+}
+
+/** One side of a split. It stays mounted when focus moves so its scroll does too. */
+function StableChatPane({ chatId, active }: { chatId: string; active: boolean }) {
+  if (!chatId) return null;
+  return <SplitChatPane chatId={chatId} active={active} />;
+}
+
+/** The conversation sitting beside the focused one. It keeps its own scroller and input. */
+function SplitChatPane({ chatId, active = false }: { chatId: string; active?: boolean }) {
+  const {
+    beginPendingEdit,
+    closePendingEdit,
+    conversations,
+    editingPending,
+    fileDrag,
+    focusSplitPane,
+    mentionFiles,
+    messages: liveMessages,
+    model,
+    openingId,
+    pendingByChat,
+    removePendingAt,
+    runningTurns,
+    savePendingEdit,
+    tabItems,
+    workspace,
+  } = useMain();
+  const scroller = useRef<HTMLDivElement>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const saved = chatScrollFor(chatId);
+    if (el && saved != null) el.scrollTop = saved;
+  }, [chatId]);
+  const [storedMessages, setStoredMessages] = useState<ChatMessage[]>(() => splitPaneCache(chatId)?.messages ?? []);
+  const messages = active ? liveMessages : storedMessages;
+  const [loading, setLoading] = useState(() => !splitPaneCache(chatId));
+  const stream = useSecondaryLiveStream();
+  const streamEmpty = useSecondaryLiveStreamEmpty();
+  const activeRunning = chatHasRunningTurn(runningTurns, chatId);
+  const queued = pendingForChat(pendingByChat, chatId);
+  const centered = !loading && messages.length === 0 && !activeRunning && queued.length === 0 && streamEmpty;
+  const [pad, setPad] = useState(96);
+
+  useEffect(() => {
+    if (active) return;
+    let gone = false;
+    const cached = splitPaneCache(chatId);
+    if (cached?.messages.length) {
+      setStoredMessages(cached.messages);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+    const load = () => {
+      void import("../../lib/tauri").then((api) =>
+        api
+          .getConversation(workspace, chatId)
+          .then((full) => {
+            if (gone) return;
+            const body = (full.messages as ChatMessage[]) ?? [];
+            setStoredMessages(
+              full.compaction?.summary && full.compaction.through > 0
+                ? insertCompactionEvent(body, full.compaction.through)
+                : body,
+            );
+          })
+          .catch(() => {
+            if (!gone) setStoredMessages([]);
+          })
+          .finally(() => {
+            if (!gone) setLoading(false);
+          }),
+      );
+    };
+    load();
+    // A turn on this side keeps its messages in memory. Read them when the tail moves.
+    const stop = subscribeSecondaryLiveStream(() => {
+      const cached = splitPaneCache(chatId);
+      if (cached) setStoredMessages(cached.messages);
+      if (getSecondaryLiveStream().streamText || getSecondaryLiveStream().streamReasoning) setLoading(false);
+    });
+    return () => {
+      gone = true;
+      stop();
+    };
+  }, [workspace, chatId, active]);
+
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const apply = () => setPad(Math.max(96, Math.round(el.getBoundingClientRect().height) + 24));
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [centered]);
+
+  const group = splitGroupForChat(tabItems, chatId);
+  const pane = group && group.chatIds[1] === chatId ? 1 : 0;
+
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-1">
+      {fileDrag ? <DropImagesHint /> : null}
+      <div
+        ref={scroller}
+        className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
+        onScroll={() => {
+          if (scroller.current) rememberChatScroll(chatId, scroller.current.scrollTop);
+        }}
+        onMouseDown={() => {
+          if (group) focusSplitPane(group.id, pane as 0 | 1);
+        }}
+      >
+        <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-4 pt-5">
+          <LiveTranscript
+            messages={messages}
+            model={model}
+            centeredWithoutStream={centered}
+            activeRunning={activeRunning}
+            transcriptPending={loading || openingId === chatId}
+            conversationId={chatId}
+            mentionFiles={mentionFiles}
+            onLoadOlder={() => undefined}
+            pendingShell={false}
+            pendingPlan={false}
+            activity={runningTurns[chatId]?.activity}
+            startedAt={runningTurnStartedAt(runningTurns, chatId)}
+            streamText={active ? undefined : stream.streamText}
+            streamReasoning={active ? undefined : stream.streamReasoning}
+            liveTools={active ? undefined : stream.liveTools}
+            runningActivity={active ? undefined : stream.runningActivity}
+          />
+          {queued.map((item: PendingMessage, i: number) => (
+            <PendingUserMessage
+              key={`${chatId}-${i}`}
+              text={item.text}
+              images={item.images}
+              mentionFiles={mentionFiles}
+              editing={editingPending?.chatId === chatId && editingPending.index === i}
+              onEdit={() => beginPendingEdit(i)}
+              onSave={(text) => savePendingEdit(i, text)}
+              onCancel={() => closePendingEdit(chatId)}
+              onRemove={() => removePendingAt(i)}
+            />
+          ))}
+          <div style={{ paddingBottom: centered ? 24 : pad }} />
+        </div>
+      </div>
+      <div ref={dockRef} className={`pointer-events-none absolute inset-x-0 z-10 ${centered ? "top-[42%] -translate-y-1/2" : "bottom-0"}`}>
+        <ComposerDockChrome centered={centered}>
+          <SessionComposer placement="chat" chatId={chatId} />
+        </ComposerDockChrome>
+      </div>
+      <span className="sr-only">{conversations.find((row: { id: string }) => row.id === chatId)?.title ?? ""}</span>
     </div>
   );
 }
@@ -250,6 +493,17 @@ function ChatColumn() {
     workspace,
   } = useMain();
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const saved = chatScrollFor(activeId);
+    if (!el || saved == null) return;
+    el.scrollTop = saved;
+  }, [activeId, scroller]);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  useEffect(() => {
+    if (activeId) rememberSplitPane(activeId, { messages: messagesRef.current });
+  }, [activeId, messages]);
   const transcriptPending = Boolean(openingId) && openingId === activeId;
   const centeredWithoutStream =
     !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
@@ -281,7 +535,13 @@ function ChatColumn() {
           </ConversationDocks>
         ) : null}
         {fileDrag ? <DropImagesHint /> : null}
-        <div ref={scroller} className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]">
+        <div
+          ref={scroller}
+          onScroll={() => {
+            if (scroller.current) rememberChatScroll(activeId, scroller.current.scrollTop);
+          }}
+          className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
+        >
           <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
             <LiveTranscript
               messages={messages}
@@ -323,7 +583,7 @@ function ChatColumn() {
                 </div>
               </div>
             )}
-            {queued.map((item: { text: string; images?: [] }, i: number) => (
+            {queued.map((item: PendingMessage, i: number) => (
               <PendingUserMessage
                 key={`${activeId}-${i}`}
                 text={item.text}
@@ -446,6 +706,10 @@ function LiveTranscript({
   pendingPlan,
   activity,
   startedAt,
+  streamText: givenText,
+  streamReasoning: givenReasoning,
+  liveTools: givenTools,
+  runningActivity: givenActivity,
 }: {
   messages: Parameters<typeof ChatTranscript>[0]["messages"];
   model: string;
@@ -459,8 +723,16 @@ function LiveTranscript({
   pendingPlan: boolean;
   activity: Parameters<typeof conversationActivityLabel>[0];
   startedAt: number;
+  streamText?: string;
+  streamReasoning?: string;
+  liveTools?: Parameters<typeof ChatTranscript>[0]["liveTools"];
+  runningActivity?: Parameters<typeof conversationActivityLabel>[0];
 }) {
-  const { streamText, streamReasoning, liveTools, runningActivity } = useLiveStream();
+  const live = useLiveStream();
+  const streamText = givenText ?? live.streamText;
+  const streamReasoning = givenReasoning ?? live.streamReasoning;
+  const liveTools = givenTools ?? live.liveTools;
+  const runningActivity = givenActivity === undefined ? live.runningActivity : givenActivity;
   const showEmpty = centeredWithoutStream && !streamText && !streamReasoning;
   return (
     <>

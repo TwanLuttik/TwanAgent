@@ -10,11 +10,9 @@
     "windows": [
       {
         "label": "main",
-        "decorations": true,
+        "decorations": false,
         "hiddenTitle": true,
-        "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": -80, "y": -40 },
-        "transparent": false,
+        "transparent": true,
         "shadow": true
       }
     ]
