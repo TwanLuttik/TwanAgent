@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use security_framework::passwords::{delete_generic_password, get_generic_password, set_generic_password};
+#[cfg(target_os = "macos")]
+use security_framework::passwords::{
+    delete_generic_password, get_generic_password, set_generic_password,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::appdb;
@@ -55,14 +58,15 @@ pub fn delete_ssh_secret_in(account: &str, store: &dyn SshSecretStore) -> Result
     if !account.starts_with("ssh-secret:") {
         return Err(Error::Other("invalid SSH secret account".into()));
     }
-    store.delete(account);
-    Ok(())
+    store
+        .delete(account)
+        .map_err(|e| Error::Keychain(format!("could not delete SSH secret: {e}")))
 }
 
 pub trait SshSecretStore {
     fn set(&self, account: &str, value: &str) -> std::result::Result<(), String>;
     fn get(&self, account: &str) -> std::result::Result<Option<String>, String>;
-    fn delete(&self, account: &str);
+    fn delete(&self, account: &str) -> std::result::Result<(), String>;
 }
 
 impl SshSecretStore for SystemKeychain {
@@ -74,8 +78,15 @@ impl SshSecretStore for SystemKeychain {
         read_account(keychain_service(), account)
     }
 
-    fn delete(&self, account: &str) {
-        let _ = remove_account(keychain_service(), account);
+    fn delete(&self, account: &str) -> std::result::Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            // Preserve the existing best-effort macOS deletion behavior.
+            let _ = remove_account(keychain_service(), account);
+            Ok(())
+        }
+        #[cfg(not(target_os = "macos"))]
+        remove_account(keychain_service(), account)
     }
 }
 
@@ -142,7 +153,15 @@ pub struct SystemKeychain;
 /// Write a generic password and read it back. `keyring` can report success while the
 /// login keychain never stores the item, so the settings page keeps saying nothing is saved.
 fn write_account(service: &str, account: &str, value: &str) -> std::result::Result<(), String> {
+    #[cfg(target_os = "macos")]
     set_generic_password(service, account, value.as_bytes()).map_err(|err| err.to_string())?;
+    #[cfg(windows)]
+    windows_entry(service, account)?
+        .set_password(value)
+        .map_err(|err| err.to_string())?;
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return unsupported_keychain(service, account, Some(value));
+    #[cfg(any(target_os = "macos", windows))]
     match read_account(service, account)? {
         Some(stored) if stored == value => Ok(()),
         Some(_) => Err("the keychain stored a different value".into()),
@@ -150,6 +169,7 @@ fn write_account(service: &str, account: &str, value: &str) -> std::result::Resu
     }
 }
 
+#[cfg(target_os = "macos")]
 fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
     match delete_generic_password(service, account) {
         Ok(()) => Ok(()),
@@ -158,6 +178,7 @@ fn remove_account(service: &str, account: &str) -> std::result::Result<(), Strin
     }
 }
 
+#[cfg(target_os = "macos")]
 fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
     match get_generic_password(service, account) {
         Ok(bytes) => String::from_utf8(bytes)
@@ -166,6 +187,57 @@ fn read_account(service: &str, account: &str) -> std::result::Result<Option<Stri
         Err(err) if err.code() == -25300 => Ok(None),
         Err(err) => Err(err.to_string()),
     }
+}
+
+// Select the native credential explicitly: production must never use keyring's mock fallback.
+#[cfg(windows)]
+fn windows_entry(service: &str, account: &str) -> std::result::Result<keyring::Entry, String> {
+    let credential = keyring::windows::default_credential_builder()
+        .build(None, service, account)
+        .map_err(|err| err.to_string())?;
+    Ok(keyring::Entry::new_with_credential(credential))
+}
+
+#[cfg(windows)]
+fn windows_read(entry: &keyring::Entry) -> std::result::Result<Option<String>, String> {
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn windows_delete(entry: &keyring::Entry) -> std::result::Result<(), String> {
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
+    windows_read(&windows_entry(service, account)?)
+}
+
+#[cfg(windows)]
+fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
+    windows_delete(&windows_entry(service, account)?)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn unsupported_keychain<T>(_: &str, _: &str, _: Option<&str>) -> std::result::Result<T, String> {
+    Err("secure credential storage is unsupported on this platform".into())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
+    unsupported_keychain(service, account, None)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
+    unsupported_keychain(service, account, None)
 }
 
 fn clear_file_key(data_dir: &Path) -> Result<()> {
@@ -380,9 +452,75 @@ mod xai_key_tests {
         fn get(&self, account: &str) -> std::result::Result<Option<String>, String> {
             Ok(self.0.lock().unwrap().get(account).cloned())
         }
-        fn delete(&self, account: &str) {
+        fn delete(&self, account: &str) -> std::result::Result<(), String> {
             self.0.lock().unwrap().remove(account);
+            Ok(())
         }
+    }
+
+    #[test]
+    fn empty_ssh_secret_deletes_and_missing_delete_is_idempotent() {
+        let store = MemSsh::default();
+        set_ssh_secret_in(" ssh-secret:box ", " value ", &store).unwrap();
+        assert_eq!(
+            get_ssh_secret_in("ssh-secret:box", &store).as_deref(),
+            Some("value")
+        );
+        set_ssh_secret_in("ssh-secret:box", " \n ", &store).unwrap();
+        assert_eq!(get_ssh_secret_in("ssh-secret:box", &store), None);
+        delete_ssh_secret_in("ssh-secret:box", &store).unwrap();
+    }
+
+    struct FailingSsh;
+
+    impl SshSecretStore for FailingSsh {
+        fn set(&self, _: &str, _: &str) -> std::result::Result<(), String> {
+            Err("access denied".into())
+        }
+        fn get(&self, _: &str) -> std::result::Result<Option<String>, String> {
+            Err("access denied".into())
+        }
+        fn delete(&self, _: &str) -> std::result::Result<(), String> {
+            Err("access denied".into())
+        }
+    }
+
+    #[test]
+    fn ssh_store_failures_follow_the_public_error_contract() {
+        for result in [
+            set_ssh_secret_in("ssh-secret:box", "value", &FailingSsh),
+            delete_ssh_secret_in("ssh-secret:box", &FailingSsh),
+            set_ssh_secret_in("ssh-secret:box", "", &FailingSsh),
+        ] {
+            assert!(
+                matches!(result, Err(Error::Keychain(message)) if message.contains("access denied"))
+            );
+        }
+        // Reads retain the existing optional-value contract.
+        assert_eq!(get_ssh_secret_in("ssh-secret:box", &FailingSsh), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_wrapper_handles_missing_entries_and_backend_failures() {
+        let credential = keyring::mock::default_credential_builder()
+            .build(None, DEV_SERVICE, "ssh-secret:test")
+            .unwrap();
+        let entry = keyring::Entry::new_with_credential(credential);
+        assert_eq!(windows_read(&entry).unwrap(), None);
+        windows_delete(&entry).unwrap();
+        entry.set_password("value").unwrap();
+        assert_eq!(windows_read(&entry).unwrap().as_deref(), Some("value"));
+        let mock = entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap();
+        mock.set_error(keyring::Error::Invalid("account".into(), "denied".into()));
+        assert!(windows_read(&entry).unwrap_err().contains("denied"));
+        mock.set_error(keyring::Error::Invalid("account".into(), "denied".into()));
+        assert!(windows_delete(&entry).unwrap_err().contains("denied"));
+        windows_delete(&entry).unwrap();
+        assert_eq!(windows_read(&entry).unwrap(), None);
     }
 
     #[test]
