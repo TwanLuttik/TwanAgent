@@ -23,7 +23,7 @@ pub use providers::{anthropic, minimax, registry, xai};
 pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 pub use error::{Error, Result};
 pub use live::LiveFrame;
-pub use realtime::{ensure_started, subscribe_text, LIVE_PORT};
+pub use realtime::{ensure_started, subscribe_text, subscribe_text_with, LIVE_PORT};
 pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use search::{glob_match, matches_glob, glob as search_glob, grep as search_grep, GlobQuery, GrepQuery};
 pub use session::serve;
@@ -42,6 +42,8 @@ pub enum TurnEvent {
     Delta(String),
     Done(Conversation),
     Error(String),
+    /// Ask mode. The command has not run. The desktop answers on the fifo.
+    ShellApproval { command: String, description: String },
 }
 
 use std::io::{Read, Write};
@@ -114,14 +116,47 @@ pub fn project_store_dir(data_dir: &Path, project: &Path) -> std::path::PathBuf 
     data_dir.join("projects").join(project_store_key(project))
 }
 
+fn decode_call_frame(
+    service: &ProjectService,
+    keys: &KeyFile,
+    bytes: &[u8],
+) -> Result<(ClientFrame, ProjectService)> {
+    let len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let body = bytes.get(4..4 + len).ok_or_else(|| Error::Other("frame body is short".into()))?;
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+        if value.get("frame").is_some() {
+            let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim();
+            let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("");
+            if !keys::token_matches(&keys.auth_token(), token) {
+                return Err(Error::Other("the pairing token does not match".into()));
+            }
+            if project.is_empty() || project == "/" {
+                return Err(Error::Other("project is empty".into()));
+            }
+            let opened = open_server(Path::new(project), &service.data_dir)?;
+            let frame = serde_json::from_value(value.get("frame").cloned().unwrap_or(serde_json::Value::Null))?;
+            return Ok((frame, opened));
+        }
+    }
+    let (frame, _) = decode_frame(bytes)?;
+    Ok((frame, ProjectService {
+        project: service.project.clone(),
+        store_dir: service.store_dir.clone(),
+        data_dir: service.data_dir.clone(),
+    }))
+}
+
 fn project_store_key(project: &Path) -> String {
     use sha2::{Digest, Sha256};
-    let text = project.to_string_lossy().replace('\\', "/");
+    // The same folder must reopen the same store. `~/proj` and its canonical path are one project.
+    let canonical = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    let text = canonical.to_string_lossy().replace('\\', "/");
     let trimmed = text.trim_end_matches('/');
     Sha256::digest(trimmed.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn open_server(project: &Path, data_dir: &Path) -> Result<ProjectService> {
+    std::fs::create_dir_all(project)?;
     ProjectService::open_with_data(project, &project_store_dir(data_dir, project), data_dir)
 }
 
@@ -131,15 +166,16 @@ pub fn key_file(data_dir: &Path) -> KeyFile {
 
 /// Answer one frame the desktop already decoded. Used when SSH cannot deliver stdin.
 /// A prompt is not run here. The resident server is the only process that publishes.
+/// A resident body (`project`, `token`, `frame`) is accepted so a store call carries the token.
 pub fn serve_frame(service: &ProjectService, keys: &KeyFile, bytes: &[u8]) -> Result<()> {
     if bytes.len() < 4 {
         return Err(Error::Other("frame header is short".into()));
     }
-    let (frame, _) = decode_frame(bytes)?;
+    let (frame, service) = decode_call_frame(service, keys, bytes)?;
     if matches!(frame, ClientFrame::SubmitPrompt(_)) {
         return Err(Error::Other("a turn is sent to the resident server".into()));
     }
-    let response = session::handle_frame(service, keys, frame, None);
+    let response = session::handle_frame(&service, keys, frame, None);
     let mut output = std::io::stdout().lock();
     output.write_all(&encode_frame(&response)?)?;
     output.flush()?;
@@ -195,7 +231,13 @@ pub fn serve_resident_fifo(data_dir: &Path, keys: &KeyFile, fifo: &Path) -> Resu
         };
         let mut input = std::io::BufReader::new(file);
         let mut output = std::io::sink();
-        session::serve_projects(data_dir, keys, &mut input, &mut output)?;
+        // A writer that closes halfway through a frame is not the end of the server.
+        // The next prompt opens the fifo again. Only a frame that is too large stops the loop.
+        match session::serve_projects(data_dir, keys, &mut input, &mut output) {
+            Ok(()) => {}
+            Err(err) if err.to_string() == "frame is too large" => return Err(err),
+            Err(_) => {}
+        }
     }
 }
 

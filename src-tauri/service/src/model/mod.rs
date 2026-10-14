@@ -174,6 +174,8 @@ pub(super) struct OpenRound {
     text: String,
     pending: String,
     calls: Vec<ToolCall>,
+    /// Anthropic content-block index to the tool slot. A thinking block must not shift the tool.
+    block_slots: Vec<Option<usize>>,
     stop: bool,
 }
 
@@ -183,6 +185,7 @@ impl Default for OpenRound {
             text: String::new(),
             pending: String::new(),
             calls: Vec::new(),
+            block_slots: Vec::new(),
             stop: false,
         }
     }
@@ -197,12 +200,28 @@ impl OpenRound {
         self.pending.push_str(text);
     }
 
-    fn ensure_call(&mut self, index: usize) -> &mut ToolCall {
+    /// xAI tool indexes are already tool-relative. Anthropic block indexes are not.
+    pub(super) fn ensure_call(&mut self, index: usize) -> &mut ToolCall {
         while self.calls.len() <= index {
             let id = format!("tool_{}", self.calls.len());
             self.calls.push(ToolCall { id, name: String::new(), arguments: String::new() });
         }
         &mut self.calls[index]
+    }
+
+    /// One tool for this content block. A later delta for the same block appends to it.
+    pub(super) fn tool_block(&mut self, block: usize) -> &mut ToolCall {
+        if let Some(Some(slot)) = self.block_slots.get(block).copied() {
+            return &mut self.calls[slot];
+        }
+        while self.block_slots.len() <= block {
+            self.block_slots.push(None);
+        }
+        let slot = self.calls.len();
+        let id = format!("tool_{slot}");
+        self.calls.push(ToolCall { id, name: String::new(), arguments: String::new() });
+        self.block_slots[block] = Some(slot);
+        &mut self.calls[slot]
     }
 
     fn take_delta(&mut self) -> Option<String> {

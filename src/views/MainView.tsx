@@ -52,6 +52,7 @@ import {
   type StoredTabItem,
   saveComposerPastes,
   loadEffort,
+  loadConversation,
   loadPermission,
   loadSidebarWidth,
   loadSidebarCollapsed,
@@ -84,6 +85,14 @@ import { MainShell } from "./main/MainShell";
 import { useOverlays } from "../hooks/useOverlays";
 import { useRuntime } from "../hooks/useRuntime";
 import { useSpeech } from "../hooks/useSpeech";
+
+/** The split pane under a window drag. Positions arrive in physical pixels. */
+function dropChatAt(x: number, y: number): string {
+  const scale = window.devicePixelRatio || 1;
+  const hit = document.elementFromPoint(x / scale, y / scale);
+  const pane = hit?.closest<HTMLElement>("[data-drop-chat]");
+  return pane?.dataset.dropChat ?? "";
+}
 
 function loadStoredOpenTabs(): Record<string, TabItem[]> {
   const out: Record<string, TabItem[]> = {};
@@ -231,7 +240,7 @@ export function MainView() {
     openProjectSettings,
   } = useOverlays();
   const [usageTick, setUsageTick] = useState(0);
-  const [fileDrag, setFileDrag] = useState(false);
+  const [fileDrag, setFileDrag] = useState<string | boolean>(false);
   const [editor, setEditor] = useState<EditorState>(() =>
     loadActiveTab(loadWorkspace()) === "code" ? codeTabEditor() : emptyEditor(),
   );
@@ -321,6 +330,7 @@ export function MainView() {
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
   const draftsRef = useLiveRef(drafts);
+  const draftImagesRef = useLiveRef(draftImages);
   const draftPastes = pastesByChat[activeId] ?? [];
   const promptImages = imagesForChat(draftImages, activeId);
   const queued = pendingForChat(pendingByChat, activeId);
@@ -367,6 +377,7 @@ export function MainView() {
     setExpandedAgents,
     setUsageByChat,
     setCompactionByChat,
+    setOpeningId,
     setModel,
     setEffort,
     setContextWindow,
@@ -442,8 +453,9 @@ export function MainView() {
   useEffect(() => {
     if (!pathsReady || !workspace) return;
     // A new chat has not joined a project. Loading the one just picked would
-    // replace the empty screen and rebuild the composer.
-    if (holdEmptyChatRef.current) return;
+    // replace the empty screen and rebuild the composer. A conversation saved
+    // for this project is a click from the sidebar, so it still has to open.
+    if (holdEmptyChatRef.current && !loadConversation(workspace)) return;
     if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
     void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
   }, [pathsReady, workspace, remoteKnown, remoteWorkspace, linkReady, reloadConversations, setFlash]);
@@ -848,6 +860,7 @@ export function MainView() {
     draft,
     draftPastes,
     draftsRef,
+    draftImagesRef,
     promptImages,
     mentionFiles,
     busy,
@@ -984,6 +997,9 @@ export function MainView() {
     restoredTabFor.current = key;
     const saved = loadActiveTab(workspace);
     if (!saved.startsWith("split:")) return;
+    // A sidebar click names one chat. Restoring the split would replace it
+    // with the pane that was focused last time.
+    if (tabItems.some((item) => item.kind === "chat" && item.id === activeId)) return;
     const groupId = saved.slice("split:".length);
     const group = tabItems.find((item) => item.kind === "split" && item.group.id === groupId);
     if (!group || group.kind !== "split") return;
@@ -1031,7 +1047,11 @@ export function MainView() {
     return subscribeLiveStream(paint);
   }, [sideChatId]);
   const chatTabs = chatIdsInTabs(tabItems).map((id) => {
-    const row = conversations.find((item) => item.id === id);
+    // The open list is empty until the project finishes loading. The sidebar
+    // already has this project's titles, so the strip does not say "Chat" first.
+    const row =
+      conversations.find((item) => item.id === id) ??
+      allProjectGroups.find((group) => isSameProject(group.path, workspace))?.conversations.find((item) => item.id === id);
     return {
       id,
       title: row?.title?.trim() || "Chat",
@@ -1313,6 +1333,8 @@ export function MainView() {
     !showSettings && !showUsage && !showServers && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
   const addImagePathsRef = useRef(addPromptImagePaths);
   addImagePathsRef.current = addPromptImagePaths;
+  const fileDragRef = useRef(fileDrag);
+  fileDragRef.current = fileDrag;
   const chatAcceptsDropRef = useRef(chatAcceptsDrop);
   chatAcceptsDropRef.current = chatAcceptsDrop;
 
@@ -1325,19 +1347,23 @@ export function MainView() {
           setFileDrag(false);
           return;
         }
-        if (event.payload.type === "enter") {
-          setFileDrag(imagePathsFromDrop(event.payload.paths).length > 0);
-          return;
-        }
-        if (event.payload.type === "over") {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          const images = event.payload.type === "enter" ? imagePathsFromDrop(event.payload.paths) : null;
+          if (images && images.length === 0) {
+            setFileDrag(false);
+            return;
+          }
+          const chatId = dropChatAt(event.payload.position.x, event.payload.position.y);
+          setFileDrag(chatId || false);
           return;
         }
         if (event.payload.type === "leave") {
           setFileDrag(false);
           return;
         }
+        const chatId = typeof fileDragRef.current === "string" ? fileDragRef.current : dropChatAt(event.payload.position.x, event.payload.position.y);
         setFileDrag(false);
-        void addImagePathsRef.current(event.payload.paths);
+        void addImagePathsRef.current(event.payload.paths, chatId || undefined);
       })
       .then((fn) => {
         if (gone) fn();
@@ -1533,6 +1559,7 @@ export function MainView() {
     dirtyFiles,
     draft,
     drafts,
+    draftImages,
     draftPastes,
     mentionFiles,
     editingPending,

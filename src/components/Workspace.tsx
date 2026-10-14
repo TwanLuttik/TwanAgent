@@ -610,7 +610,7 @@ function PaneTabs({
         onDragEnd={onDragEnd}
       >
         <SortableContext items={pane.tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Pane">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" role="tablist" aria-label="Pane">
             {pane.tabs.map((tab) => (
               <PaneTabButton
                 key={tab.id}
@@ -699,7 +699,7 @@ function PaneTabButton({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={isDragging ? "opacity-40" : undefined}
+      className={`min-w-0 ${isDragging ? "opacity-40" : ""}`}
     >
       <PaneTabFace
         tab={tab}
@@ -733,7 +733,7 @@ function PaneTabFace({
   const meta = paneMeta(tab.kind);
   return (
     <div
-      className={`group flex h-6 max-w-[11rem] min-w-0 shrink-0 items-center rounded-[6px] ${
+      className={`group flex h-6 max-w-[11rem] min-w-0 items-center rounded-[6px] ${
         overlay ? "cursor-grabbing shadow-card" : ""
       } ${active ? "bg-wash-strong text-ink" : "text-muted hover:bg-wash hover:text-ink"}`}
       onMouseDown={(ev) => {

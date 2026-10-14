@@ -249,7 +249,9 @@ export function ChatStage() {
           ) : splitChatIds.length > 1 && editor.focus === "chat" ? (
             <SplitRow ids={splitChatIds} />
           ) : (
-            <ChatColumn />
+            <div className="flex min-h-0 min-w-0 flex-1" data-drop-chat={activeId || undefined}>
+              <ChatColumn />
+            </div>
           )}
           </div>
         </div>
@@ -336,11 +338,11 @@ function SplitRow({ ids }: { ids: string[] }) {
   const share = group?.leftShare ?? 0.5;
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <div className="flex min-h-0 min-w-0" style={{ width: `${share * 100}%` }}>
+      <div className="flex min-h-0 min-w-0" style={{ width: `${share * 100}%` }} data-drop-chat={ids[0] || undefined}>
         <StableChatPane chatId={ids[0] ?? ""} active={ids[0] === activeId} />
       </div>
       {group ? <SplitDivider groupId={group.id} share={share} /> : null}
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1" data-drop-chat={ids[1] || undefined}>
         <StableChatPane chatId={ids[1] ?? ""} active={ids[1] === activeId} />
       </div>
     </div>
@@ -484,7 +486,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
-      {fileDrag ? <DropImagesHint /> : null}
+      {fileDrag === chatId ? <DropImagesHint /> : null}
       <div
         ref={scroller}
         className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
@@ -621,7 +623,7 @@ function ChatColumn() {
             />
           </ConversationDocks>
         ) : null}
-        {fileDrag ? <DropImagesHint /> : null}
+        {fileDrag === activeId ? <DropImagesHint /> : null}
         <div
           ref={scroller}
           onScroll={() => {

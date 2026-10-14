@@ -1248,6 +1248,15 @@ export function hostedCancel(streamId: string): Promise<void> {
   return invoke("dev_hosted_cancel", { streamId, stream_id: streamId });
 }
 
+/** Ask mode on a paired server. The command has not run until this returns. */
+export function hostedShellAnswer(conversationId: string, allow: boolean): Promise<void> {
+  return invoke("dev_hosted_shell_answer", {
+    conversationId,
+    conversation_id: conversationId,
+    allow,
+  });
+}
+
 /** Follow a turn that is already running on the paired server. Events arrive on `dev-chat`. */
 export function hostedFollow(workspace: string, streamId: string, conversationId: string): Promise<void> {
   return invoke("dev_hosted_follow", {

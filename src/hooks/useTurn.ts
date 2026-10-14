@@ -26,6 +26,7 @@ import {
   imagesForChat,
   insertImageToken,
   persistableImages,
+  stripImageTokens,
   setImagesForChat,
   uniqueImageTokenLabel,
 } from "../lib/image";
@@ -104,6 +105,7 @@ export type TurnDeps = {
   draft: string;
   draftPastes: PasteBlock[];
   draftsRef: RefObject<Record<string, string>>;
+  draftImagesRef: RefObject<Record<string, ChatImage[]>>;
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
   busy: boolean;
@@ -203,7 +205,7 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, draftsRef, promptImages, mentionFiles, ready, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, ready, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
@@ -433,9 +435,10 @@ function pickPermission(id: string, chatId = activeIdRef.current) {
   });
 }
 
-function imageSelection(): { start: number; end: number; value: string } {
-  const field = document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
-  if (!field) return { start: draft.length, end: draft.length, value: draft };
+function imageSelection(chatId = activeId): { start: number; end: number; value: string } {
+  const field = composerField(chatId);
+  const current = chatId === activeId ? draft : draftForChat(draftsRef.current, chatId);
+  if (!field) return { start: current.length, end: current.length, value: current };
   return {
     start: field.selectionStart ?? field.value.length,
     end: field.selectionEnd ?? field.value.length,
@@ -443,12 +446,22 @@ function imageSelection(): { start: number; end: number; value: string } {
   };
 }
 
+/** The composer the drop landed in. A split has two, so the focused one is not enough. */
+function composerField(chatId: string): HTMLTextAreaElement | null {
+  if (chatId) {
+    const owned = document.querySelector<HTMLTextAreaElement>(`[data-composer-chat="${CSS.escape(chatId)}"]`);
+    if (owned) return owned;
+  }
+  return document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
+}
+
 /** Insert `[name]` into the draft that was open when the drop started. */
 function attachPreparedImages(
   prepared: ChatImage[],
   selection: { start: number; end: number; value: string },
+  chatId = activeId,
 ) {
-  const chatId = activeId;
+  const existing = imagesForChat(draftImagesRef.current, chatId);
   let named: ChatImage[] = [];
   let cursor = 0;
   let nextDraft = "";
@@ -464,7 +477,7 @@ function attachPreparedImages(
       const label = match[1]?.trim();
       if (label) labels.add(label);
     }
-    for (const image of promptImages) {
+    for (const image of existing) {
       if (image.name.trim()) labels.add(image.name.trim());
     }
     let text = current;
@@ -488,52 +501,54 @@ function attachPreparedImages(
     setImagesForChat(prev, chatId, appendPromptImages(imagesForChat(prev, chatId), named)),
   );
   requestAnimationFrame(() => {
-    const node = document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
+    const node = composerField(chatId);
     if (!node || node.value !== nextDraft) return;
     node.focus();
     node.setSelectionRange(cursor, cursor);
   });
 }
 
-async function addPromptImages(files: File[]) {
+async function addPromptImages(files: File[], chatId = activeId) {
   if (!files.length) return;
-  const room = MAX_PROMPT_IMAGES - promptImages.length;
+  const held = imagesForChat(draftImagesRef.current, chatId);
+  const room = MAX_PROMPT_IMAGES - held.length;
   if (room <= 0) {
     setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} images.` });
     return;
   }
   const take = files.slice(0, room);
-  const selection = imageSelection();
+  const selection = imageSelection(chatId);
   try {
     const prepared: ChatImage[] = [];
     for (const file of take) {
       const bytes = await fileToBase64(file);
-      const next = await api.prepareImage(bytes, file.name || "image.png", activeId || undefined);
+      const next = await api.prepareImage(bytes, file.name || "image.png", chatId || undefined);
       prepared.push(next);
     }
-    attachPreparedImages(prepared, selection);
+    attachPreparedImages(prepared, selection, chatId);
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
   }
 }
 
-async function addPromptImagePaths(paths: string[]) {
+async function addPromptImagePaths(paths: string[], chatId = activeId) {
   const images = imagePathsFromDrop(paths);
   if (!images.length) return;
-  const room = MAX_PROMPT_IMAGES - promptImages.length;
+  const held = imagesForChat(draftImagesRef.current, chatId);
+  const room = MAX_PROMPT_IMAGES - held.length;
   if (room <= 0) {
     setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} images.` });
     return;
   }
   const take = images.slice(0, room);
-  const selection = imageSelection();
+  const selection = imageSelection(chatId);
   try {
     const prepared: ChatImage[] = [];
     for (const path of take) {
-      const next = await api.prepareImagePath(path, activeId || undefined);
+      const next = await api.prepareImagePath(path, chatId || undefined);
       prepared.push({ ...next, name: next.name || fileBaseName(path) });
     }
-    attachPreparedImages(prepared, selection);
+    attachPreparedImages(prepared, selection, chatId);
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
   }
@@ -723,11 +738,7 @@ function clearPrompt(id: string) {
     delete next[id];
     return next;
   });
-  setDraftImages((prev) => {
-    let next = setImagesForChat(prev, activeId, []);
-    if (id !== activeId) next = setImagesForChat(next, id, []);
-    return next;
-  });
+  setDraftImages((prev) => setImagesForChat(prev, id, []));
 }
 
 function userMessage(text: string, images: ChatImage[]): ChatMessage {
@@ -741,10 +752,14 @@ function partialReply(id: string): { text: string; reasoning: string } {
 
 async function send(targetId = activeIdRef.current) {
   const sendingSide = Boolean(targetId) && targetId !== activeIdRef.current;
+  const sideImages = sendingSide ? imagesForChat(draftImagesRef.current, targetId) : [];
   const text = sendingSide
-    ? expandFileMentions(draftForChat(draftsRef.current, targetId), mentionFiles).trim()
+    ? expandFileMentions(
+        stripImageTokens(draftForChat(draftsRef.current, targetId), sideImages),
+        mentionFiles,
+      ).trim()
     : expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
-  const images = sendingSide ? [] : persistableImages(promptImages);
+  const images = persistableImages(sendingSide ? sideImages : promptImages);
   if (!canSendPrompt(text, images)) return;
   if (cloudSendWaiting(remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
     setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
@@ -910,6 +925,7 @@ async function runTurn(
     let unlisten: (() => void) | undefined;
     let finishWait: (() => void) | undefined;
     const onAbort = () => {
+      void api.hostedCancel(id);
       void api.hostedCancel(streamId);
       finishWait?.();
     };
@@ -934,6 +950,11 @@ async function runTurn(
           rememberLive(id, { activity });
           markRunning(id, { activity });
           if (visible()) setRunningActivity(activity);
+        } else if (ev.kind === "shell_approval" && ev.text && own) {
+          const command = ev.text;
+          void confirmShell(command, id).then((ok) => {
+            void api.hostedShellAnswer(id, ok);
+          });
         } else if (ev.kind === "error" && own) {
           if (visible()) setFlash({ kind: "err", text: ev.text || "the server could not finish the turn" });
           finishWait?.();

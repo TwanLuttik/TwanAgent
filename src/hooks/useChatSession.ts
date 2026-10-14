@@ -45,6 +45,7 @@ export function useChatSession({
   setExpandedAgents,
   setUsageByChat,
   setCompactionByChat,
+  setOpeningId,
   setModel,
   setEffort,
   setContextWindow,
@@ -80,6 +81,7 @@ export function useChatSession({
   setExpandedAgents: Update<Record<string, boolean>>;
   setUsageByChat: Update<Record<string, ChatUsage>>;
   setCompactionByChat: Update<Record<string, { summary: string; through: number }>>;
+  setOpeningId?: Update<string>;
   setModel: Update<string>;
   setEffort: Update<string>;
   setContextWindow: Update<number>;
@@ -143,7 +145,7 @@ export function useChatSession({
             sidebarLoadedForRef.current = ws;
             setConversations(cached.conversations);
             setJourneys(cached.journeys);
-            const savedId = holdEmptyChatRef?.current ? "" : loadConversation(ws);
+            const savedId = preferId || (holdEmptyChatRef?.current ? "" : loadConversation(ws));
             const row = cached.conversations.find((item) => item.id === savedId);
             const transcript = row ? cached.transcripts.find((item) => item.id === row.id) : undefined;
             if (row && transcript && !activeIdRef.current) {
@@ -176,7 +178,9 @@ export function useChatSession({
       if (!isSameProject(ws, workspaceRef.current)) return;
       // A new chat has not joined a project yet. Its sidebar stays on the project
       // it was opened from, even when the selector points the first prompt elsewhere.
-      if (holdEmptyChatRef?.current && !preferId) {
+      // A click on another project's chat saves that id first, so the hold must
+      // not keep the empty screen once a conversation is waiting to open.
+      if (holdEmptyChatRef?.current && !preferId && !loadConversation(ws)) {
         return;
       }
       if (conversationsRef.current.length === 0 && rows.length > 0) {
@@ -213,12 +217,14 @@ export function useChatSession({
       if (!want) {
         setActiveId("");
         setMessages([]);
+        setOpeningId?.("");
         return;
       }
       const found = rows.find((row) => row.id === want);
       if (!found) {
         setActiveId("");
         setMessages([]);
+        setOpeningId?.("");
         return;
       }
       const full = hostedChats
@@ -242,6 +248,7 @@ export function useChatSession({
         liveByChat: liveByChatRef.current,
       });
       setMessages(live ?? withNotice);
+      setOpeningId?.("");
       if (!live && withNotice !== transcript) {
         void libraryRef.current?.persist(
           withNotice,
@@ -316,6 +323,7 @@ export function useChatSession({
       setExpandedAgents,
       setUsageByChat,
       setCompactionByChat,
+      setOpeningId,
       setModel,
       setEffort,
       setContextWindow,

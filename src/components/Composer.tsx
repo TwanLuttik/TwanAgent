@@ -560,6 +560,7 @@ export function Composer({
             setMentionIndex(0);
           }}
           onPasteFiles={takeImageFiles}
+          chatId={commandChatId}
           images={images}
           pastes={pastes}
           onPastes={changePastes}
@@ -849,6 +850,7 @@ function MentionField({
   onCursor,
   onEdit,
   onPasteFiles,
+  chatId = "",
   images,
   pastes,
   onPastes,
@@ -867,6 +869,7 @@ function MentionField({
   onCursor: (cursor: number) => void;
   onEdit: () => void;
   onPasteFiles: (files: File[]) => void;
+  chatId?: string;
   images: ChatImage[];
   pastes: PasteBlock[];
   onPastes: (pastes: PasteBlock[]) => void;
@@ -1011,6 +1014,7 @@ function MentionField({
       <textarea
         ref={area}
         data-composer-input=""
+        data-composer-chat={chatId || undefined}
         value={draft}
         spellCheck={false}
         autoCorrect="off"

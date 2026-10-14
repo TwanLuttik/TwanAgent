@@ -39,7 +39,7 @@ pub(super) fn apply_line(data: &str, open: &mut OpenRound) {
     match event {
         SseEvent::Delta(text) => open.push_text(&text),
         SseEvent::ToolStart { index, id, name } => {
-            let row = open.ensure_call(index as usize);
+            let row = open.tool_block(index as usize);
             if !id.is_empty() {
                 row.id = id;
             }
@@ -48,7 +48,7 @@ pub(super) fn apply_line(data: &str, open: &mut OpenRound) {
             }
         }
         SseEvent::ToolDelta { index, partial } => {
-            open.ensure_call(index as usize).arguments.push_str(&partial);
+            open.tool_block(index as usize).arguments.push_str(&partial);
         }
         SseEvent::Stop => open.stop = true,
         SseEvent::Reasoning(_)

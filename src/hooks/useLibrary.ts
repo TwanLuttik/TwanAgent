@@ -382,6 +382,7 @@ function assignDraftProject(path: string) {
 }
 
 function applyWorkspace(path: string) {
+  const savedId = loadConversation(path);
   if (!isSameProject(path, workspace)) {
     const entering = allProjectGroups.find((group) => isSameProject(group.path, path));
     // Show the project we are opening from the rows it already has, in this same
@@ -393,12 +394,10 @@ function applyWorkspace(path: string) {
     } else {
       sidebarLoadedForRef.current = "";
     }
-    openGeneration.current += 1;
     setStreamText("");
     setStreamReasoning("");
     setLiveTools([]);
     if (!isSameProject(runningWsRef.current, workspace)) hideSubagents();
-    const savedId = loadConversation(path);
     const foregroundHere =
       isSameProject(runningWsRef.current, path) &&
       runningIdRef.current &&
@@ -407,8 +406,9 @@ function applyWorkspace(path: string) {
       (savedId && liveByChatRef.current.has(savedId) && savedId) ||
       (foregroundHere ? runningIdRef.current : "") ||
       "";
-    const savedCloud =
-      entering?.remote && savedId ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${savedId}`) : undefined;
+    const savedCloud = savedId
+      ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${savedId}`)
+      : undefined;
     const live = prefer
       ? liveTurnMessages({
           workspace: path,
@@ -447,6 +447,15 @@ function applyWorkspace(path: string) {
       setRunningActivity(null);
       setTurnStartedAt(0);
       hideSubagents();
+    } else if (savedId && entering?.conversations.some((row) => row.id === savedId)) {
+      // The clicked chat is in this project's list. Keep it selected while its
+      // transcript loads, instead of painting the empty new-chat screen first.
+      showChatSettings(entering.conversations.find((row) => row.id === savedId));
+      setActiveId(savedId);
+      setMessages([]);
+      setRunningActivity(null);
+      setTurnStartedAt(0);
+      hideSubagents();
     } else {
       setActiveId("");
       setMessages([]);
@@ -458,7 +467,9 @@ function applyWorkspace(path: string) {
   saveWorkspace(path);
   setRecents(pushRecentWorkspace(path));
   setWorkspace(path);
-  setEditor(emptyEditor());
+  // A click already picked a chat. Resetting to a blank editor puts the Code tab
+  // on screen and the conversation never appears. Keep the chat selected.
+  setEditor((prev) => (savedId ? selectChatTab(prev) : emptyEditor()));
   setDirtyFiles({});
   setPendingClosePath(null);
   setDrafts({});
@@ -607,6 +618,11 @@ async function openSidebarChat(path: string, id: string) {
   }
   saveConversation(path, id);
   applyWorkspace(path);
+  // Load against the project that was clicked. The hook still has the previous
+  // project until this render lands, and fetching with that path misses the chat.
+  // The switch used to bump the open generation, which made this load look stale
+  // and return before it could clear Loading….
+  await openChat(id, chatTabsByProjectRef.current, path);
 }
 
 function openProjectFromSidebar(path: string) {
@@ -679,14 +695,14 @@ function retargetForegroundTurn(id: string) {
   abortRef.current = shown ? (turnsRef.current.get(shown) ?? null) : null;
 }
 
-async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
+async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = workspace) {
   const generation = ++openGeneration.current;
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
   setShowUsage(false);
   setShowServers(false);
   setProjectSettings(null);
-  if (!workspace) return;
+  if (!path) return;
   stickToBottomRef.current = true;
   setEditor((prev) => (prev.focus === "chat" ? prev : selectChatTab(prev)));
   if (id === activeId) {
@@ -696,7 +712,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
   }
   // Both sides of a split stay mounted. Clicking one only changes which pane is
   // focused. Reloading it paints "Loading…" on a chat that is already on screen.
-  const openTabs = tabs[projectKey(workspace)] ?? [];
+  const openTabs = tabs[projectKey(path)] ?? [];
   const showing = splitGroupForChat(openTabs, activeId);
   const clicked = splitGroupForChat(openTabs, id);
   if (showing && clicked && showing.id === clicked.id) {
@@ -719,13 +735,13 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
     setTurnStartedAt(turn?.startedAt ?? 0);
     showSubagents(id);
     abortRef.current = turnsRef.current.get(id) ?? null;
-    const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(workspace, id);
+    const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(path, id);
     void load.then((full) => {
       if (full.compaction?.summary && full.compaction.through > 0) {
         setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
       }
     }).catch(() => undefined);
-    saveConversation(workspace, id);
+    saveConversation(path, id);
     return;
   }
   if (runningId === id && turnMessagesRef.current) {
@@ -740,7 +756,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
     setRunningActivity(turnLiveRef.current.activity);
     setTurnStartedAt(runningTurns[id]?.startedAt ?? 0);
     showSubagents(id);
-    saveConversation(workspace, id);
+    saveConversation(path, id);
     return;
   }
   retargetForegroundTurn(id);
@@ -761,7 +777,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
   showChatSettings(conversations.find((row) => row.id === id));
   const cached = shownMessages.current.get(id);
   const remembered = !cached && hostedChatsRef.current
-    ? cloudTranscriptsRef.current.get(`${projectKey(workspace)}\t${id}`)
+    ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${id}`)
     : undefined;
   const painted = cached ?? (remembered ? messagesFromCached(remembered) : undefined);
   if (painted) {
@@ -774,7 +790,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
   setActiveId(id);
   // A cloud chat that is not in memory yet still reads the sqlite copy before SSH.
   const cachedLookup = hostedChatsRef.current && !painted
-    ? api.hostedConversationCached(workspace, id).catch(() => null)
+    ? api.hostedConversationCached(path, id).catch(() => null)
     : null;
   setOpeningId(painted ? "" : id);
   try {
@@ -794,8 +810,8 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
       }
     }
     const full = hostedChatsRef.current
-      ? await api.getHostedConversation(workspace, id)
-      : await api.getConversation(workspace, id);
+      ? await api.getHostedConversation(path, id)
+      : await api.getConversation(path, id);
     if (generation !== openGeneration.current) return;
     const known = conversations.find((row) => row.id === id);
     setConversations((rows) =>
@@ -821,7 +837,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
       context_window: full.context_window ?? known?.context_window,
       permission: full.permission ?? known?.permission,
     });
-    const loaded = await withBackfilledTimes(workspace, id, (full.messages as ChatMessage[]) ?? []);
+    const loaded = await withBackfilledTimes(path, id, (full.messages as ChatMessage[]) ?? []);
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
         ? insertCompactionEvent(loaded, full.compaction.through)
@@ -833,15 +849,15 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
       setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
     }
     if (loaded !== ((full.messages as ChatMessage[]) ?? []) || withNotice !== loaded) {
-      void persist(withNotice, id, workspace, parseChatUsage(full.context_usage) ?? undefined, full.compaction, {
+      void persist(withNotice, id, path, parseChatUsage(full.context_usage) ?? undefined, full.compaction, {
         touch: false,
       });
     }
-    saveConversation(workspace, id);
+    saveConversation(path, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
-    void ensureChatPlan(workspace, id, opened?.model);
+    void ensureChatPlan(path, id, opened?.model);
     if (hostedChatsRef.current) {
-      void watchHosted(workspace, id);
+      void watchHosted(path, id);
     }
   } finally {
     setOpeningId("");

@@ -23,11 +23,13 @@ pub const LIVE_PORT: u16 = 8731;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SocketMessage {
-    Subscribe { id: String },
+    Subscribe { id: String, #[serde(default)] token: String },
     Status { text: String },
     Delta { text: String },
     Done { conversation: serde_json::Value },
     Error { message: String },
+    /// Ask mode. The desktop answers with a `shell_answer` frame on the fifo.
+    ShellApproval { command: String, description: String },
 }
 
 struct Hub {
@@ -74,6 +76,10 @@ fn frame_json(frame: &LiveFrame) -> Option<String> {
         },
         LiveFrame::Error { message } => SocketMessage::Error {
             message: message.clone(),
+        },
+        LiveFrame::ShellApproval { command, description } => SocketMessage::ShellApproval {
+            command: command.clone(),
+            description: description.clone(),
         },
     };
     serde_json::to_string(&message).ok()
@@ -144,9 +150,17 @@ async fn handle(stream: tokio::net::TcpStream) {
             break;
         }
         let Message::Text(text) = message else { continue };
-        let Ok(SocketMessage::Subscribe { id: chat }) = serde_json::from_str(text.as_str()) else {
+        let Ok(SocketMessage::Subscribe { id: chat, token }) = serde_json::from_str(text.as_str()) else {
             continue;
         };
+        let root = data_root().lock().map(|slot| slot.clone()).unwrap_or_default();
+        if root.as_os_str().is_empty() {
+            continue;
+        }
+        let stored = crate::keys::KeyFile::in_dir(&root).auth_token();
+        if !crate::keys::token_matches(&stored, &token) {
+            continue;
+        }
         let chat = chat.trim().to_string();
         if chat.is_empty() || chat.contains('/') || chat.contains('\\') || chat.contains("..") {
             continue;
@@ -162,7 +176,6 @@ async fn handle(stream: tokio::net::TcpStream) {
             found
         };
         if let Some(sender) = sender {
-            let root = data_root().lock().map(|slot| slot.clone()).unwrap_or_default();
             if !root.as_os_str().is_empty() {
                 for frame in replay_frames(&root, &chat) {
                     let Some(text) = frame_json(&frame) else { continue };
@@ -211,7 +224,12 @@ pub fn publish_server(conversation_id: &str, frame: &crate::codec::ServerFrame) 
 
 /// The JSON a client sends to start receiving one conversation.
 pub fn subscribe_text(id: &str) -> String {
-    serde_json::json!({ "type": "subscribe", "id": id }).to_string()
+    subscribe_text_with(id, "")
+}
+
+/// The desktop sends the pairing token with the conversation id.
+pub fn subscribe_text_with(id: &str, token: &str) -> String {
+    serde_json::json!({ "type": "subscribe", "id": id, "token": token }).to_string()
 }
 
 #[cfg(test)]
@@ -222,7 +240,10 @@ mod tests {
     fn subscribe_names_the_conversation() {
         let text = subscribe_text("c1");
         let message: SocketMessage = serde_json::from_str(&text).unwrap();
-        assert_eq!(message, SocketMessage::Subscribe { id: "c1".into() });
+        assert_eq!(message, SocketMessage::Subscribe { id: "c1".into(), token: String::new() });
+        let authed = subscribe_text_with("c1", "abc");
+        let message: SocketMessage = serde_json::from_str(&authed).unwrap();
+        assert_eq!(message, SocketMessage::Subscribe { id: "c1".into(), token: "abc".into() });
     }
 
     #[test]

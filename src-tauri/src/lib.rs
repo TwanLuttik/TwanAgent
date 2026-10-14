@@ -347,6 +347,7 @@ pub fn run() {
             remote::commands::dev_sync_server_capabilities,
             remote::hosted::dev_hosted_turn,
             remote::hosted::dev_hosted_cancel,
+            remote::hosted::dev_hosted_shell_answer,
             remote::hosted::dev_hosted_follow,
             remote::hosted::dev_hosted_unfollow,
             remote::hosted::dev_hosted_call,

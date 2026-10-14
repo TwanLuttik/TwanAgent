@@ -21,6 +21,10 @@ pub enum ClientFrame {
     ReorderConversations { ids: Vec<String> },
     SetArchived { id: String, archived: bool },
     SubmitPrompt(TurnRequest),
+    /// The user's answer to a shell prompt the server is waiting on.
+    ShellAnswer { id: String, allow: bool },
+    /// Stop the turn for this conversation. A command it started is killed.
+    CancelTurn { id: String },
     CopyKeys(ProviderKeys),
     RemoveKeys,
 }
@@ -43,6 +47,12 @@ pub enum ServerFrame {
     Delta { text: String },
     Done { conversation: Conversation },
     Keys { present: bool },
+    /// Ask mode is waiting. The command has not run.
+    ShellApproval {
+        conversation_id: String,
+        command: String,
+        description: String,
+    },
     Error { message: String },
 }
 

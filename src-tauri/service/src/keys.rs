@@ -40,6 +40,18 @@ impl KeyFile {
         Self { path: dir.join("provider-keys.json") }
     }
 
+    /// The pairing token written at install time. Empty when this machine was never paired.
+    pub fn auth_token(&self) -> String {
+        let Some(dir) = self.path.parent() else {
+            return String::new();
+        };
+        let path = dir.join("auth-token");
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
     pub fn save(&self, keys: &ProviderKeys) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -75,6 +87,16 @@ impl KeyFile {
         }
         Ok(())
     }
+}
+
+/// Constant-time compare. An empty stored token matches nothing.
+pub fn token_matches(stored: &str, presented: &str) -> bool {
+    let stored = stored.trim();
+    let presented = presented.trim();
+    if stored.is_empty() || stored.len() != presented.len() {
+        return false;
+    }
+    stored.bytes().zip(presented.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 pub fn provider_keys_from_env(file: &ProviderKeys) -> ProviderKeys {

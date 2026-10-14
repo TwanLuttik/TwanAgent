@@ -2,7 +2,7 @@ import { memo, useMemo } from "react";
 import { Composer } from "../../components/Composer";
 import { contextWindowForModel } from "../../lib/context";
 import { providerProfile } from "../../lib/provider";
-import { fileToBase64, setImagesForChat } from "../../lib/image";
+import { fileToBase64, imagesForChat, setImagesForChat } from "../../lib/image";
 import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
@@ -25,6 +25,7 @@ export const SessionComposer = memo(function SessionComposer({
     conversations,
     draft,
     drafts,
+    draftImages,
     draftPastes,
     mentionFiles,
     allProjectGroups,
@@ -42,7 +43,6 @@ export const SessionComposer = memo(function SessionComposer({
     pickPermission,
     pickPlanMode,
     planMode,
-    promptImages,
     ready,
     remoteWorkspace,
     runtime,
@@ -74,6 +74,7 @@ export const SessionComposer = memo(function SessionComposer({
         { model, effort, contextWindow, permission },
       );
   const boundDraft = focused ? draft : draftForChat(drafts, boundId);
+  const boundImages = imagesForChat(draftImages, boundId);
   const writeDraft = focused ? setDraft : (text: string) => setChatDraft(boundId, text);
   const todos = useMemo(
     () => (boundId === activeId ? todosFromMessages(messages) : []),
@@ -148,11 +149,11 @@ export const SessionComposer = memo(function SessionComposer({
       mentionFiles={mentionFiles}
       pastes={draftPastes}
       onPastes={setDraftPastes}
-      images={promptImages}
+      images={boundImages}
       onImages={(next: ChatImage[]) =>
         setDraftImages((prev: Record<string, ChatImage[]>) => setImagesForChat(prev, boundId, next))
       }
-      onAddImages={(files) => void addPromptImages(files)}
+      onAddImages={(files) => void addPromptImages(files, boundId)}
       todos={todos}
       commandChatId={landing ? "" : boundId}
     />

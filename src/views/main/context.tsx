@@ -49,6 +49,7 @@ export type MainModel = {
   dirtyFiles: any;
   draft: any;
   drafts: Record<string, string>;
+  draftImages: Record<string, import("../../lib/core").ChatImage[]>;
   draftPastes: any;
   mentionFiles: any;
   editingPending: any;

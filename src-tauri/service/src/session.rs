@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::codec::{version_ok, ClientFrame, ServerFrame, PROTOCOL_VERSION};
+use crate::turn::TurnGate;
 use crate::error::{Error, Result};
 use crate::keys::{provider_keys_from_env, KeyFile};
 use crate::tools::LocalWorkspace;
@@ -44,6 +47,7 @@ pub(crate) fn handle_frame(
             Err(err) => ServerFrame::Error { message: err.to_string() },
         },
         ClientFrame::SubmitPrompt(request) => submit(service, keys, request, model),
+        ClientFrame::ShellAnswer { .. } | ClientFrame::CancelTurn { .. } => ServerFrame::Ok,
         ClientFrame::CopyKeys(incoming) => match keys.save(&incoming) {
             Ok(()) => ServerFrame::Keys {
                 present: keys.load().map(|row| row.any()).unwrap_or(false),
@@ -114,6 +118,7 @@ pub fn submit_streaming<W: Write>(
     service: &ProjectService,
     keys: &KeyFile,
     request: TurnRequest,
+    gate: Option<Arc<TurnGate>>,
     output: &mut W,
 ) -> Result<()> {
     let stored = keys.load().unwrap_or_default();
@@ -132,17 +137,57 @@ pub fn submit_streaming<W: Write>(
     let id = request.conversation_id.clone();
     let data_dir = service.data_dir.clone();
     let _ = crate::live::begin(&data_dir, &id);
-    let result = crate::turn::run_live_turn(service, &request, &workspace, &resolved, |event| {
+    let gate_for_turn = gate.clone();
+    let chat_id = id.clone();
+    let live_dir = data_dir.clone();
+    let frames = tx.clone();
+    let pending = gate_for_turn.as_ref().map(|gate| gate.pending.clone());
+    let watch_dir = data_dir.clone();
+    let watch_id = id.clone();
+    let watch_tx = tx.clone();
+    let stop_watch = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag = stop_watch.clone();
+    if let Some(pending) = pending {
+        std::thread::spawn(move || {
+            let mut sent = String::new();
+            while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                let next = pending.lock().ok().and_then(|slot| slot.clone());
+                if let Some((command, description)) = next {
+                    if sent != command {
+                        sent = command.clone();
+                        let frame = ServerFrame::ShellApproval {
+                            conversation_id: watch_id.clone(),
+                            command,
+                            description,
+                        };
+                        let _ = crate::live::append_server(&watch_dir, &watch_id, &frame);
+                        crate::realtime::publish_server(&watch_id, &frame);
+                        let _ = watch_tx.send(frame);
+                    }
+                } else {
+                    sent.clear();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        });
+    }
+    let result = crate::turn::run_live_turn_gated(service, &request, &workspace, &resolved, gate_for_turn.as_deref(), move |event| {
         let frame = match event {
             TurnEvent::Status(text) => ServerFrame::Status { text },
             TurnEvent::Delta(text) => ServerFrame::Delta { text },
             TurnEvent::Done(conversation) => ServerFrame::Done { conversation },
             TurnEvent::Error(message) => ServerFrame::Error { message },
+            TurnEvent::ShellApproval { command, description } => ServerFrame::ShellApproval {
+                conversation_id: chat_id.clone(),
+                command,
+                description,
+            },
         };
-        let _ = crate::live::append_server(&data_dir, &id, &frame);
-        crate::realtime::publish_server(&id, &frame);
-        let _ = tx.send(frame);
+        let _ = crate::live::append_server(&live_dir, &chat_id, &frame);
+        crate::realtime::publish_server(&chat_id, &frame);
+        let _ = frames.send(frame);
     });
+    stop_watch.store(true, std::sync::atomic::Ordering::Relaxed);
     drop(tx);
     for frame in rx {
         write_server(output, &frame)?;
@@ -150,7 +195,38 @@ pub fn submit_streaming<W: Write>(
     if let Err(err) = result {
         write_server(output, &ServerFrame::Error { message: err.to_string() })?;
     }
+    if let Some(gate) = gate {
+        forget_gate(&id, &gate);
+    }
     Ok(())
+}
+
+fn turn_gates() -> &'static Mutex<HashMap<String, Arc<TurnGate>>> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<TurnGate>>>> = OnceLock::new();
+    GATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// True when this conversation already has a turn. A second prompt is refused, not run beside it.
+pub fn turn_busy(id: &str) -> bool {
+    turn_gates().lock().ok().is_some_and(|map| map.contains_key(id))
+}
+
+fn remember_gate(id: &str, gate: Arc<TurnGate>) {
+    if let Ok(mut map) = turn_gates().lock() {
+        map.insert(id.to_string(), gate);
+    }
+}
+
+fn forget_gate(id: &str, gate: &Arc<TurnGate>) {
+    if let Ok(mut map) = turn_gates().lock() {
+        if map.get(id).is_some_and(|current| Arc::ptr_eq(current, gate)) {
+            map.remove(id);
+        }
+    }
+}
+
+fn gate_for(id: &str) -> Option<Arc<TurnGate>> {
+    turn_gates().lock().ok().and_then(|map| map.get(id).cloned())
 }
 
 /// Frames for the resident process. Each prompt names its project. Store calls do too.
@@ -171,9 +247,27 @@ pub fn serve_projects<R: Read, W: Write>(
             return Err(Error::Other("frame is too large".into()));
         }
         let mut body = vec![0u8; len];
-        input.read_exact(&mut body)?;
-        let value: serde_json::Value = serde_json::from_slice(&body)?;
-        let (project, inner) = split_resident(&value);
+        if input.read_exact(&mut body).is_err() {
+            // The fifo writer went away after the length. Reopen and keep the turns that are running.
+            return Ok(());
+        }
+        let value: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(value) => value,
+            Err(err) => {
+                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                continue;
+            }
+        };
+        let (project, token, inner) = split_resident(&value);
+        if !crate::keys::token_matches(&keys.auth_token(), &token) {
+            write_server(
+                output,
+                &ServerFrame::Error {
+                    message: "the pairing token does not match".into(),
+                },
+            )?;
+            continue;
+        }
         if project.is_empty() {
             write_server(output, &ServerFrame::Error { message: "project is empty".into() })?;
             continue;
@@ -192,32 +286,63 @@ pub fn serve_projects<R: Read, W: Write>(
                 continue;
             }
         };
-        if let ClientFrame::SubmitPrompt(request) = frame {
-            // A turn outlives this read. The socket, not stdout, is what open clients join.
-            let keys = keys.clone();
-            std::thread::spawn(move || {
-                let mut sink = std::io::sink();
-                let _ = submit_streaming(&service, &keys, request, &mut sink);
-            });
-            write_server(output, &ServerFrame::Ok)?;
-            continue;
+        match frame {
+            ClientFrame::ShellAnswer { id, allow } => {
+                if let Some(gate) = gate_for(&id) {
+                    gate.shell.answer(allow);
+                }
+                write_server(output, &ServerFrame::Ok)?;
+                continue;
+            }
+            ClientFrame::CancelTurn { id } => {
+                if let Some(gate) = gate_for(&id) {
+                    gate.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    gate.shell.answer(false);
+                }
+                write_server(output, &ServerFrame::Ok)?;
+                continue;
+            }
+            ClientFrame::SubmitPrompt(request) => {
+                if turn_busy(&request.conversation_id) {
+                    write_server(
+                        output,
+                        &ServerFrame::Error {
+                            message: "a turn is already running for this chat".into(),
+                        },
+                    )?;
+                    continue;
+                }
+                let gate = Arc::new(TurnGate::new());
+                remember_gate(&request.conversation_id, gate.clone());
+                // A turn outlives this read. The socket, not stdout, is what open clients join.
+                let keys = keys.clone();
+                std::thread::spawn(move || {
+                    let mut sink = std::io::sink();
+                    let _ = submit_streaming(&service, &keys, request, Some(gate), &mut sink);
+                });
+                write_server(output, &ServerFrame::Ok)?;
+                continue;
+            }
+            other => {
+                let response = handle_frame(&service, keys, other, None);
+                write_server(output, &response)?;
+            }
         }
-        let response = handle_frame(&service, keys, frame, None);
-        write_server(output, &response)?;
     }
 }
 
-/// A resident frame is `{ "project": "...", "frame": <ClientFrame> }`.
+/// A resident frame is `{ "project": "...", "token": "...", "frame": <ClientFrame> }`.
 /// The project is not part of `ClientFrame`, so a store call and a prompt share one shape.
-fn split_resident(value: &serde_json::Value) -> (String, serde_json::Value) {
+fn split_resident(value: &serde_json::Value) -> (String, String, serde_json::Value) {
     let wrapped = value.get("frame").is_some();
     let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
+    let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
     let inner = if wrapped {
         value.get("frame").cloned().unwrap_or(serde_json::Value::Null)
     } else {
         value.clone()
     };
-    (project, inner)
+    (project, token, inner)
 }
 
 fn write_server<W: Write>(output: &mut W, frame: &ServerFrame) -> Result<()> {
@@ -248,7 +373,7 @@ pub fn serve<R: Read, W: Write>(
         let frame: ClientFrame = serde_json::from_slice(&body)?;
         if model.is_none() {
             if let ClientFrame::SubmitPrompt(request) = frame {
-                submit_streaming(service, keys, request, output)?;
+                submit_streaming(service, keys, request, None, output)?;
                 continue;
             }
         }
@@ -367,13 +492,39 @@ mod tests {
     }
 
     #[test]
+    fn a_resident_frame_without_the_token_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("auth-token"), "0123456789abcdef0123456789abcdef\n").unwrap();
+        let keys = KeyFile::in_dir(&data);
+        let body = serde_json::json!({
+            "project": root.path().join("proj"),
+            "token": "nope",
+            "frame": { "type": "list_conversations" }
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let mut frame = (bytes.len() as u32).to_be_bytes().to_vec();
+        frame.extend_from_slice(&bytes);
+        let mut output = Vec::new();
+        serve_projects(&data, &keys, &mut frame.as_slice(), &mut output).unwrap();
+        let (decoded, _): (ServerFrame, _) = crate::codec::decode_frame(&output).unwrap();
+        let ServerFrame::Error { message } = decoded else {
+            panic!("expected a token error");
+        };
+        assert!(message.contains("token"));
+    }
+
+    #[test]
     fn a_resident_frame_names_the_project_outside_the_client_frame() {
         let value = serde_json::json!({
             "project": "/home/dev/app",
+            "token": "abc",
             "frame": { "type": "list_conversations" }
         });
-        let (project, inner) = split_resident(&value);
+        let (project, token, inner) = split_resident(&value);
         assert_eq!(project, "/home/dev/app");
+        assert_eq!(token, "abc");
         let frame: ClientFrame = serde_json::from_value(inner).unwrap();
         assert!(matches!(frame, ClientFrame::ListConversations));
         let prompt = serde_json::json!({
@@ -387,7 +538,7 @@ mod tests {
                 "permission": "ask"
             }
         });
-        let (_, inner) = split_resident(&prompt);
+        let (_, _, inner) = split_resident(&prompt);
         let frame: ClientFrame = serde_json::from_value(inner).unwrap();
         let ClientFrame::SubmitPrompt(request) = frame else {
             panic!("expected a prompt");

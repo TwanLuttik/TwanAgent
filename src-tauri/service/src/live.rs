@@ -21,6 +21,8 @@ pub enum LiveFrame {
     Delta { text: String },
     Done { conversation: Conversation },
     Error { message: String },
+    /// Ask mode is waiting on the desktop. The command has not run.
+    ShellApproval { command: String, description: String },
 }
 
 impl From<&ServerFrame> for Option<LiveFrame> {
@@ -33,6 +35,10 @@ impl From<&ServerFrame> for Option<LiveFrame> {
             }),
             ServerFrame::Error { message } => Some(LiveFrame::Error {
                 message: message.clone(),
+            }),
+            ServerFrame::ShellApproval { command, description, .. } => Some(LiveFrame::ShellApproval {
+                command: command.clone(),
+                description: description.clone(),
             }),
             _ => None,
         }

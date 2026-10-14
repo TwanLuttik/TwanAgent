@@ -78,6 +78,9 @@ pub fn open(dir: &Path) -> Result<Connection> {
     fs::create_dir_all(dir)?;
     let conn = Connection::open(db_path(dir))?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // One writer at a time. A turn and a sidebar save must not delete each other's rows.
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS journeys (
@@ -185,6 +188,21 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
 }
 
 pub fn save_conversation(conn: &Connection, conversation: &Conversation) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let saved = save_conversation_in(conn, conversation);
+    match saved {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
+fn save_conversation_in(conn: &Connection, conversation: &Conversation) -> Result<()> {
     conn.execute(
         "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, model, context_window, permission, archived)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)

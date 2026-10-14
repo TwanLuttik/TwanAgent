@@ -1,3 +1,7 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[cfg(test)]
@@ -9,6 +13,71 @@ use crate::model;
 use crate::store::Conversation;
 use crate::tools::{dispatch, tool_status, ToolHost, Workspace};
 use crate::{ProjectService, TurnEvent};
+
+/// One conversation's turn. A second prompt waits. Cancel wakes a shell prompt and kills the command.
+pub struct TurnGate {
+    pub cancel: Arc<AtomicBool>,
+    pub shell: ShellWait,
+    /// Set while ask mode is waiting. The session publishes this, then the turn waits.
+    pub pending: Arc<Mutex<Option<(String, String)>>>,
+}
+
+impl TurnGate {
+    pub fn new() -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            shell: ShellWait::new(),
+            pending: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// The desktop's answer to one `run_command` in ask mode.
+#[derive(Clone)]
+pub struct ShellWait {
+    slot: Arc<(Mutex<Option<bool>>, Condvar)>,
+}
+
+impl ShellWait {
+    pub fn new() -> Self {
+        Self {
+            slot: Arc::new((Mutex::new(None), Condvar::new())),
+        }
+    }
+
+    pub fn answer(&self, allow: bool) {
+        if let Ok(mut slot) = self.slot.0.lock() {
+            *slot = Some(allow);
+        }
+        self.slot.1.notify_all();
+    }
+
+    /// `None` when the wait was cancelled or the desktop never answered.
+    pub fn wait(&self, cancel: &AtomicBool, timeout: Duration) -> Option<bool> {
+        let Ok(mut slot) = self.slot.0.lock() else {
+            return None;
+        };
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(allow) = slot.take() {
+                return Some(allow);
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            let left = timeout.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                return None;
+            }
+            let (next, _) = self
+                .slot
+                .1
+                .wait_timeout(slot, left.min(Duration::from_millis(200)))
+                .unwrap_or_else(|err| err.into_inner());
+            slot = next;
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnRequest {
@@ -34,11 +103,37 @@ pub trait ScriptedModel {
 
 struct PermissionHost {
     permission: String,
+    /// Set while a live turn is waiting for the desktop to approve one command.
+    ask: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
 }
 
 impl ToolHost for PermissionHost {
-    fn allow_shell(&self, _command: &str) -> bool {
-        self.permission == "approve-all"
+    fn allow_shell(&self, command: &str) -> bool {
+        match self.permission.as_str() {
+            "approve-all" => true,
+            "ask" => {
+                let Some(ask) = &self.ask else {
+                    return false;
+                };
+                let description = command_description(command);
+                ask(command, &description)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn command_description(command: &str) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return "Run a command".into();
+    }
+    let mut chars = trimmed.chars();
+    let short: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
     }
 }
 
@@ -68,6 +163,7 @@ pub fn run_scripted_turn(
     conversation.updated_at = now();
     let host = PermissionHost {
         permission: request.permission.clone(),
+        ask: None,
     };
     for step in model.steps() {
         match step {
@@ -102,6 +198,44 @@ pub fn run_live_turn(
     request: &TurnRequest,
     workspace: &dyn Workspace,
     keys: &ProviderKeys,
+    on_event: impl FnMut(TurnEvent),
+) -> Result<Conversation> {
+    run_live_turn_gated(service, request, workspace, keys, None, on_event)
+}
+
+pub fn run_live_turn_gated(
+    service: &ProjectService,
+    request: &TurnRequest,
+    workspace: &dyn Workspace,
+    keys: &ProviderKeys,
+    gate: Option<&TurnGate>,
+    on_event: impl FnMut(TurnEvent),
+) -> Result<Conversation> {
+    let ask = gate.map(|gate| {
+        let cancel = gate.cancel.clone();
+        let shell = gate.shell.clone();
+        let pending = gate.pending.clone();
+        Arc::new(move |command: &str, description: &str| {
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some((command.to_string(), description.to_string()));
+            }
+            let allow = shell.wait(&cancel, Duration::from_secs(600)).unwrap_or(false);
+            if let Ok(mut slot) = pending.lock() {
+                *slot = None;
+            }
+            allow
+        }) as Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
+    });
+    run_live_turn_inner(service, request, workspace, keys, ask, gate.map(|gate| gate.cancel.clone()), on_event)
+}
+
+fn run_live_turn_inner(
+    service: &ProjectService,
+    request: &TurnRequest,
+    workspace: &dyn Workspace,
+    keys: &ProviderKeys,
+    ask: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
+    cancel: Option<Arc<AtomicBool>>,
     mut on_event: impl FnMut(TurnEvent),
 ) -> Result<Conversation> {
     let prompt = request.prompt.trim();
@@ -122,15 +256,20 @@ pub fn run_live_turn(
         conversation.title = title_from(prompt);
     }
     conversation.updated_at = now();
+    crate::files::set_command_cancel(cancel.clone());
     let host = PermissionHost {
         permission: request.permission.clone(),
+        ask,
     };
     let model_name = if request.model.trim().is_empty() {
         "grok-4.6"
     } else {
         request.model.trim()
     };
-    for _ in 0..MAX_ROUNDS {
+    for round_index in 0..MAX_ROUNDS {
+        if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return finish_cancelled(service, &mut conversation, &mut on_event);
+        }
         let mut saw_delta = false;
         let round = match model::run_round(keys, model_name, &request.effort, &conversation.messages, &mut |text| {
             if !text.is_empty() {
@@ -140,15 +279,18 @@ pub fn run_live_turn(
         }) {
             Ok(round) => round,
             Err(err) => {
+                crate::files::set_command_cancel(None);
                 on_event(TurnEvent::Error(err.to_string()));
                 return Err(err);
             }
         };
         if let Some(message) = round.error {
+            crate::files::set_command_cancel(None);
             on_event(TurnEvent::Error(message.clone()));
             return Err(Error::Other(message));
         }
         if round.tool_calls.is_empty() {
+            crate::files::set_command_cancel(None);
             let text = if round.text.trim().is_empty() && !saw_delta {
                 "Done.".to_string()
             } else {
@@ -173,8 +315,19 @@ pub fn run_live_turn(
             "tool_calls": calls,
         }));
         for call in &round.tool_calls {
+            if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                conversation.messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "Skipped: stopped.",
+                }));
+                continue;
+            }
             on_event(TurnEvent::Status(tool_status(&call.name, &call.arguments)));
-            let result = dispatch(workspace, &host, &request.permission, &call.name, &call.arguments)?;
+            let result = match dispatch(workspace, &host, &request.permission, &call.name, &call.arguments) {
+                Ok(result) => result,
+                Err(err) => format!("Error: {err}"),
+            };
             conversation.messages.push(json!({
                 "role": "tool",
                 "tool_call_id": call.id,
@@ -183,8 +336,35 @@ pub fn run_live_turn(
         }
         conversation.updated_at = now();
         service.save_conversation(&conversation)?;
+        if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return finish_cancelled(service, &mut conversation, &mut on_event);
+        }
+        if round_index + 1 == MAX_ROUNDS {
+            crate::files::set_command_cancel(None);
+            let message = "the turn ran too many tool rounds".to_string();
+            on_event(TurnEvent::Error(message.clone()));
+            return Err(Error::Other(message));
+        }
     }
-    Err(Error::Other("the turn ran too many tool rounds".into()))
+    crate::files::set_command_cancel(None);
+    let message = "the turn ran too many tool rounds".to_string();
+    on_event(TurnEvent::Error(message.clone()));
+    Err(Error::Other(message))
+}
+
+fn finish_cancelled(
+    service: &ProjectService,
+    conversation: &mut Conversation,
+    on_event: &mut impl FnMut(TurnEvent),
+) -> Result<Conversation> {
+    crate::files::set_command_cancel(None);
+    conversation.updated_at = now();
+    service.save_conversation(conversation)?;
+    let mut shown = conversation.clone();
+    shown.messages = public_messages(conversation);
+    on_event(TurnEvent::Error("Stopped.".into()));
+    let _ = shown;
+    Err(Error::Other("Stopped.".into()))
 }
 
 /// Keep only the text the GUI is allowed to see. Tool arguments stay on the server.
@@ -317,6 +497,73 @@ mod tests {
         assert_eq!(loaded.messages.len(), 4);
         let workspace = LocalWorkspace { root: project };
         assert_eq!(workspace.read("note.txt").unwrap(), "hi");
+    }
+
+    #[test]
+    fn a_tool_error_is_saved_and_the_turn_continues() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        struct Missing;
+        impl ScriptedModel for Missing {
+            fn steps(&self) -> Vec<ModelStep> {
+                vec![
+                    ModelStep::Tool {
+                        id: "call-1".into(),
+                        name: "read_file".into(),
+                        arguments: r#"{"path":"gone.txt"}"#.into(),
+                    },
+                    ModelStep::Text("Continued.".into()),
+                ]
+            }
+        }
+        let err = service.submit_prompt(
+            &TurnRequest {
+                conversation_id: "c1".into(),
+                prompt: "read it".into(),
+                model: String::new(),
+                effort: String::new(),
+                permission: "ask".into(),
+                project: String::new(),
+            },
+            &Missing,
+        );
+        // Scripted turns still surface a hard tool error. The live loop records it and continues.
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn ask_mode_runs_a_command_only_after_the_gate_allows_it() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let _service = ProjectService::open(&project, root.path().join("store")).unwrap();
+        let gate = TurnGate::new();
+        gate.shell.answer(true);
+        let workspace = LocalWorkspace { root: project.clone() };
+        let marker = project.join("ran.txt");
+        let host_result = {
+            let ask = {
+                let shell = gate.shell.clone();
+                let cancel = gate.cancel.clone();
+                std::sync::Arc::new(move |_command: &str, _description: &str| {
+                    shell.wait(&cancel, std::time::Duration::from_secs(2)).unwrap_or(false)
+                }) as std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
+            };
+            let host = PermissionHost {
+                permission: "ask".into(),
+                ask: Some(ask),
+            };
+            crate::tools::dispatch(
+                &workspace,
+                &host,
+                "ask",
+                "run_command",
+                &format!(r#"{{"command":"echo ran > {}"}}"#, marker.display()),
+            )
+            .unwrap()
+        };
+        assert!(!host_result.contains("skipped"), "{host_result}");
+        assert!(marker.exists(), "the approved command did not run");
     }
 
     #[test]
