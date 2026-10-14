@@ -15,8 +15,11 @@ import * as api from "../../lib/tauri";
 import type { JourneyColor, JourneySummary } from "../../lib/journey";
 import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
+import { installAppUpdate, relaunchAppUpdate, useAppUpdate } from "../../lib/update-store";
+import { updateButtonLabel, updateNote } from "../../lib/update";
 import { SETTINGS_TABS } from "../SettingsView";
 import { NewChatMenu } from "./AppChrome";
+import { useApp } from "../../state/app-state";
 import { useMain, useSidebar } from "./context";
 
 export function AppSidebar() {
@@ -46,7 +49,7 @@ export function AppSidebar() {
 
   return (
     <aside
-      className={`relative flex shrink-0 flex-col overflow-hidden ${sidebarCollapsed ? "z-10 bg-transparent" : "z-0 bg-sidebar"} ${sidebarDragging ? "" : "transition-[width] duration-200 ease-out"}`}
+      className={`relative flex shrink-0 flex-col overflow-hidden bg-transparent ${sidebarCollapsed ? "z-10" : "z-0"} ${sidebarDragging ? "" : "transition-[width] duration-200 ease-out"}`}
       style={{ width: sidebarCollapsed ? 44 : sidebarWidth }}
     >
       {sidebarCollapsed ? <CollapsedRail /> : null}
@@ -109,7 +112,7 @@ export function AppSidebar() {
       {showSettings ? <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} /> : null}
       {/* Stay mounted while settings covers it. Unmounting restarts the account
           usage poll and rebuilds the project list, which is the pause on Escape. */}
-      <div className="flex min-h-0 flex-1 flex-col" style={showSettings ? { display: "none" } : undefined}>
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-sidebar" style={showSettings ? { display: "none" } : undefined}>
         <ProjectsNav
           usageHover={usageHover}
           setUsageHover={setUsageHover}
@@ -249,8 +252,7 @@ function SettingsNav({
           );
         })}
         <div className="mt-auto px-2 pt-4">
-          <div className="text-[12px] font-medium text-ink">TwanAgent {__APP_VERSION_LABEL__}</div>
-          <div className="text-[11px] text-muted">Desktop workspace</div>
+          <UpdateRow />
         </div>
       </nav>
     </>
@@ -486,9 +488,7 @@ function ProjectsNav({
         />
       </div>
       <div className="relative z-10 flex flex-col gap-1 px-2.5 pb-3">
-        <p className="px-2 pb-0.5 text-[11px] tabular-nums text-muted/55" title={`TwanAgent ${__APP_VERSION_LABEL__}`}>
-          {__APP_VERSION_LABEL__}
-        </p>
+        <UpdateRow />
         <button
           type="button"
           onClick={openUsage}
@@ -516,6 +516,54 @@ function ProjectsNav({
         </button>
       </div>
     </>
+  );
+}
+
+function UpdateRow() {
+  const { setFlash } = useApp();
+  const { update, phase, received, total, dev } = useAppUpdate();
+  const busy = phase === "downloading" || phase === "installing";
+  const note = update ? updateNote(update.notes) : "";
+
+  function install() {
+    if (!update || busy) return;
+    void installAppUpdate().then((error) => {
+      if (error) setFlash({ kind: "err", text: error });
+    });
+  }
+
+  function restart() {
+    void relaunchAppUpdate().catch((err) => setFlash({ kind: "err", text: String(err) }));
+  }
+
+  return (
+    <div className="px-2 pb-0.5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="flex min-w-0 items-center gap-1.5 truncate text-[11px] tabular-nums text-muted/55" title={`TwanAgent ${__APP_VERSION_LABEL__}`}>
+          <span className="truncate">{__APP_VERSION_LABEL__}</span>
+          {dev ? (
+            <span className="shrink-0 rounded-[4px] bg-wash px-1 py-px text-[10px] font-semibold tracking-wide text-muted uppercase">
+              Dev
+            </span>
+          ) : null}
+        </p>
+        {update ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={phase === "ready" ? restart : install}
+            className="shrink-0 rounded-[6px] bg-accent px-1.5 py-0.5 text-[11px] font-medium text-on-accent hover:bg-accent-hover disabled:opacity-60"
+          >
+            {updateButtonLabel(phase, received, total || update.bytes)}
+          </button>
+        ) : null}
+      </div>
+      {update ? (
+        <p className="mt-0.5 text-[11px] leading-snug text-muted" title={update.notes || update.version}>
+          {phase === "ready" ? `${update.version} is installed. Restart to open it.` : note || `${update.version} is available.`}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

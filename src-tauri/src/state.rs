@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::remote::client::LiveConnector;
 use crate::remote::ssh::Pool;
 use crate::speech::SpeechEngine;
+use crate::update::UpdateGate;
 use crate::workspace::OpenedRoots;
 
 pub struct AppState {
@@ -17,6 +18,7 @@ pub struct AppState {
     opened: Mutex<OpenedRoots>,
     pub ssh_pool: Arc<Pool>,
     pub speech: SpeechEngine,
+    pub updates: UpdateGate,
 }
 
 static APP_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -53,6 +55,7 @@ impl AppState {
             opened: Mutex::new(opened),
             ssh_pool: Arc::new(Pool::new(Arc::new(LiveConnector))),
             speech: SpeechEngine::new(),
+            updates: UpdateGate::default(),
         }
     }
 
@@ -110,4 +113,10 @@ pub async fn run_blocking<T: Send + 'static>(
 #[tauri::command(rename_all = "snake_case")]
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// True for `tauri dev` and a debug bundle. Release builds are false.
+#[tauri::command(rename_all = "snake_case")]
+pub fn app_dev_build() -> bool {
+    cfg!(debug_assertions)
 }

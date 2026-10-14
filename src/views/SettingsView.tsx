@@ -1003,7 +1003,7 @@ function CliStatus({
   reveal,
   onToggleReveal,
 }: {
-  cli: { installed: boolean; path: string; version: string | null; logged_in: boolean; email: string | null } | null;
+  cli: { installed: boolean; path: string; version: string | null; logged_in: boolean; email: string | null; update?: string } | null;
   reveal: boolean;
   onToggleReveal: () => void;
 }) {
@@ -1016,6 +1016,17 @@ function CliStatus({
         label="CLI"
         value={cli ? (installed ? cli.version || "Installed" : "Not found") : "Checking…"}
         tone={installed ? "ok" : cli ? "err" : "muted"}
+        action={
+          installed && cli?.update && cli.update !== cli.version ? (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok/15 px-1.5 py-0.5 text-[10px] font-medium text-ok"
+              title={`${cli.update} is available`}
+            >
+              <span className="size-1.5 rounded-full bg-ok" />
+              Update {cli.update}
+            </span>
+          ) : null
+        }
       />
       {installed && cli?.path ? (
         <StatusLine icon="folder" label="Path" value={cli.path} mono title={cli.path} />

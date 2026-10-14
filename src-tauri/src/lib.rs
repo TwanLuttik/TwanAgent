@@ -16,6 +16,7 @@ mod secrets;
 mod speech;
 mod state;
 mod store;
+mod update;
 mod usage;
 mod web_search;
 mod workspace;
@@ -215,6 +216,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             state::app_version,
+            state::app_dev_build,
+            update::app_update_check,
+            update::app_update_install,
+            update::app_update_relaunch,
             perf::app_perf_snapshot,
             dev::keys::dev_key_status,
             dev::keys::dev_runtime,

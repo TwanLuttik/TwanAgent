@@ -8,7 +8,7 @@ export function ChromeTabStrip({ children }: { children: ReactNode }) {
       aria-label="Main view"
       data-tauri-drag-region="false"
     >
-      <div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto px-3" data-tauri-drag-region="false">
+      <div className="no-scrollbar flex min-w-0 items-center gap-1.5 overflow-x-auto px-3" data-tauri-drag-region="false">
         {children}
       </div>
       <div className="min-w-0 flex-1 self-stretch" data-tauri-drag-region />

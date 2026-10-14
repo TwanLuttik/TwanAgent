@@ -40,6 +40,7 @@ import {
 import { dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import {
   closedTerminalTabs,
+  filePaneNeedsReload,
   paneForWorkspace,
   savePaneForWorkspace,
 } from "../lib/pane-sessions";
@@ -216,7 +217,15 @@ export const Workspace = memo(function Workspace({
     }
   }, [workspace]);
 
+  const treeProjectRef = useRef(workspace);
   useEffect(() => {
+    // A canonical rewrite of the open folder is still this project. Resetting
+    // here covers the tree with the spinner while a chat in it is opening.
+    if (!filePaneNeedsReload(treeProjectRef.current, workspace)) {
+      treeProjectRef.current = workspace;
+      return;
+    }
+    treeProjectRef.current = workspace;
     setExpanded(openTreeState(loadOpenFileTree(workspace)));
     setPaneState(paneForWorkspace(workspace));
     setSelected([]);
@@ -463,7 +472,7 @@ export const Workspace = memo(function Workspace({
       className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-[12px] border border-line/35 bg-canvas"
     >
       <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} onCollapse={onCollapse} />
-      <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`}>
+      <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`} data-pane-pending={pending || !treeReady ? "" : undefined}>
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeId;
           return (
@@ -539,7 +548,7 @@ export const Workspace = memo(function Workspace({
         })}
       </div>
       {pending || !treeReady ? (
-        <div className="absolute inset-0 top-9 z-20 flex items-center justify-center bg-canvas">
+        <div className="absolute inset-0 top-9 z-20 flex items-center justify-center bg-canvas" data-pane-loading>
           <span className="size-4 animate-spin rounded-full border border-muted/40 border-t-transparent" aria-label="Loading" />
         </div>
       ) : null}

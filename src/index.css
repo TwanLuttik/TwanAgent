@@ -153,6 +153,11 @@ textarea.text-transparent::selection {
   color: var(--color-ink);
 }
 
+.chrome-tab-on .chrome-tab-face {
+  background: color-mix(in srgb, var(--color-ink) 20%, var(--color-sidebar));
+  border-color: color-mix(in srgb, var(--color-ink) 28%, transparent);
+}
+
 .chrome-tab-off {
   color: var(--color-muted);
 }
@@ -161,7 +166,7 @@ textarea.text-transparent::selection {
   position: absolute;
   inset: 0;
   border: 1px solid color-mix(in srgb, var(--color-line) 55%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--color-ink) 10%, var(--color-sidebar));
   transition:
     background-color 150ms ease,
@@ -169,8 +174,8 @@ textarea.text-transparent::selection {
 }
 
 .chrome-tab-face-off {
-  background: transparent;
-  border-color: transparent;
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-sidebar));
+  border-color: color-mix(in srgb, var(--color-line) 55%, transparent);
 }
 
 .chrome-tab-off {
@@ -182,8 +187,8 @@ textarea.text-transparent::selection {
 }
 
 .chrome-tab-off:hover .chrome-tab-face-off {
-  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
-  border-color: transparent;
+  background: color-mix(in srgb, var(--color-ink) 14%, var(--color-sidebar));
+  border-color: color-mix(in srgb, var(--color-line) 55%, transparent);
 }
 
 [data-tab-key],

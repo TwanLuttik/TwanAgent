@@ -49,6 +49,39 @@ export function forgetChatScroll(id: string) {
   if (id) scrollByChat.delete(id);
 }
 
+/**
+ * A pane follows its own tail only while that pane is at the bottom.
+ * The other pane in a split does not count, so one scrolled-up chat stays put.
+ */
+export function panesThatFollow<T extends { id: string; nearBottom: boolean }>(panes: readonly T[]): string[] {
+  const ids: string[] = [];
+  for (const pane of panes) {
+    if (!pane.id || !pane.nearBottom || ids.includes(pane.id)) continue;
+    ids.push(pane.id);
+  }
+  return ids;
+}
+
+/**
+ * Stick after putting a saved offset back.
+ * No saved offset means the pane has not been scrolled, so it follows.
+ * An offset the current transcript cannot reach means the messages are not in
+ * the scroller yet, so it does not follow until that offset can be applied.
+ */
+export function stickToBottomAfterRestore(
+  el: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  saved: number | null,
+): boolean {
+  if (saved == null) return true;
+  const max = chatScrollMax(el);
+  if (saved > max + CHAT_NEAR_BOTTOM_PX) return false;
+  return isNearBottom({
+    scrollTop: Math.min(saved, max),
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  });
+}
+
 /** Jump to the end in one assignment when stick-to-bottom is on. */
 export function pinChatToEnd(
   el: { scrollTop: number; scrollHeight: number; clientHeight?: number } | null,

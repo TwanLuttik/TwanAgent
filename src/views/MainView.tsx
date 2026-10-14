@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
+import { insertCompactionEvent } from "../lib/compact";
 import { cloudSendWaiting } from "../lib/hosted";
 import { type ChatUsage } from "../lib/context";
 import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
@@ -10,6 +11,7 @@ import {
   chatIdsInTabs,
   closeTabChat,
   primaryChatId,
+  rememberSplitPane,
   tabItemKey,
   clampSplitShare,
   focusSplitChat,
@@ -533,6 +535,27 @@ export function MainView() {
     };
   }, [workspace, opened]);
 
+  const openProjectFolder = useCallback(() => {
+    const asked = workspaceRef.current;
+    if (!asked) return;
+    void api
+      .openFolder(asked)
+      .then((path) => {
+        if (!isSameProject(asked, workspaceRef.current)) return;
+        if (path !== workspaceRef.current) {
+          saveWorkspace(path);
+          setWorkspace(path);
+          return;
+        }
+        setOpened(true);
+      })
+      .catch((e) => {
+        if (!isSameProject(asked, workspaceRef.current)) return;
+        setOpened(false);
+        setFlash({ kind: "err", text: String(e) });
+      });
+  }, [setFlash]);
+
   useEffect(() => {
     if (!pathsReady) return;
     if (!workspace) {
@@ -541,24 +564,8 @@ export function MainView() {
     }
     // The empty chat only points at a project. Opening the folder waits until a
     // real chat is on screen, so the composer does not rebuild on each pick.
-    if (!activeId) return;
+    if (activeIdRef.current) openProjectFolder();
     let cancelled = false;
-    void api
-      .openFolder(workspace)
-      .then((path) => {
-        if (cancelled) return;
-        if (path !== workspace) {
-          saveWorkspace(path);
-          setWorkspace(path);
-          return;
-        }
-        setOpened(true);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setOpened(false);
-        setFlash({ kind: "err", text: String(e) });
-      });
     let remoteTimer = 0;
     // Drop the previous project's cloud mark before this lookup returns.
     // Otherwise the project just opened inherits that icon.
@@ -627,7 +634,17 @@ export function MainView() {
       cancelled = true;
       window.clearTimeout(remoteTimer);
     };
-  }, [pathsReady, workspace, Boolean(activeId), setFlash]);
+  }, [pathsReady, workspace, openProjectFolder, setFlash]);
+
+  const openedForRef = useRef("");
+  useEffect(() => {
+    if (!pathsReady || !workspace || !activeId) return;
+    const key = projectKey(workspace);
+    // The first chat in this project opens the folder. Later chats do not.
+    if (openedForRef.current === key) return;
+    openedForRef.current = key;
+    openProjectFolder();
+  }, [pathsReady, workspace, activeId, openProjectFolder]);
 
   const { mcpBusy, setMcpBusy, skillBusy, setSkillBusy } = useCapabilities({
     workspace,
@@ -1025,6 +1042,33 @@ export function MainView() {
   const splitChatIds = openSplit ? [...openSplit.chatIds] : [];
   const sideChatId = splitChatIds.find((id) => id !== activeId) ?? "";
   sideChatIdRef.current = sideChatId;
+  const sidePrepared = useRef("");
+  useEffect(() => {
+    if (!workspace || !sideChatId) {
+      sidePrepared.current = "";
+      return;
+    }
+    const key = `${projectKey(workspace)}:${sideChatId}`;
+    if (sidePrepared.current === key) return;
+    sidePrepared.current = key;
+    let gone = false;
+    const load = hostedChats ? api.getHostedConversation(workspace, sideChatId) : api.getConversation(workspace, sideChatId);
+    void load
+      .then((full) => {
+        if (gone) return;
+        const body = (full.messages as ChatMessage[]) ?? [];
+        const shown =
+          full.compaction?.summary && full.compaction.through > 0
+            ? insertCompactionEvent(body, full.compaction.through)
+            : body;
+        if (!shown.length) return;
+        rememberSplitPane(sideChatId, { messages: shown });
+      })
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+    };
+  }, [workspace, sideChatId, hostedChats]);
   useEffect(() => {
     if (!sideChatId) {
       clearSecondaryLiveStream();
@@ -1378,6 +1422,8 @@ export function MainView() {
 
   useEffect(() => {
     if (showLanding || showSettings || showUsage || showServers || editor.focus === "file") return;
+    // A split gives the focused chat its own scroller. The window ref is empty then,
+    // and that pane follows itself. This listener is only the single-chat column.
     const el = scroller.current;
     if (!el) return;
     const onScroll = () => {
@@ -1394,7 +1440,7 @@ export function MainView() {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [showLanding, showSettings, showUsage, showServers, editor.focus]);
+  }, [showLanding, showSettings, showUsage, showServers, editor.focus, splitChatIds.join("|")]);
 
   const sidebarRef = useRef<SidebarSlice | null>(null);
   if (!sidebarRef.current) sidebarRef.current = {

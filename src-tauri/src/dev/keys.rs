@@ -91,17 +91,48 @@ pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRunt
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_cli_info(state: State<'_, AppState>) -> Result<grok_cli::GrokCliInfo> {
     let data_dir = state.data_dir.clone();
-    crate::state::run_blocking(move || Ok(grok_cli::cli_info(&data_dir))).await
+    let mut info = crate::state::run_blocking({
+        let data_dir = data_dir.clone();
+        move || Ok(grok_cli::cli_info(&data_dir))
+    })
+    .await?;
+    info.update = cli_update_version(crate::model_providers::cli_update::grok_update(
+        &data_dir,
+        info.version.as_deref(),
+    ))
+    .await;
+    Ok(info)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_claude_cli_info() -> Result<crate::anthropic::ClaudeCliInfo> {
-    crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await
+pub async fn dev_claude_cli_info(state: State<'_, AppState>) -> Result<crate::anthropic::ClaudeCliInfo> {
+    let data_dir = state.data_dir.clone();
+    let mut info = crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await?;
+    info.update = cli_update_version(crate::model_providers::cli_update::claude_update(
+        &data_dir,
+        info.version.as_deref(),
+    ))
+    .await;
+    Ok(info)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_minimax_cli_info() -> Result<crate::minimax::MinimaxCliInfo> {
-    crate::state::run_blocking(|| Ok(crate::minimax::minimax_cli_info())).await
+pub async fn dev_minimax_cli_info(state: State<'_, AppState>) -> Result<crate::minimax::MinimaxCliInfo> {
+    let data_dir = state.data_dir.clone();
+    let mut info = crate::state::run_blocking(|| Ok(crate::minimax::minimax_cli_info())).await?;
+    info.update = cli_update_version(crate::model_providers::cli_update::minimax_update(
+        &data_dir,
+        info.version.as_deref(),
+    ))
+    .await;
+    Ok(info)
+}
+
+/// The newer version, or empty. A check that fails does not fail the CLI row.
+async fn cli_update_version(
+    check: impl std::future::Future<Output = Option<crate::model_providers::cli_update::CliUpdate>>,
+) -> String {
+    check.await.map(|row| row.available).unwrap_or_default()
 }
 
 #[tauri::command(rename_all = "snake_case")]

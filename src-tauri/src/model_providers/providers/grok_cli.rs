@@ -48,6 +48,9 @@ pub struct GrokCliInfo {
     pub version: Option<String>,
     pub logged_in: bool,
     pub email: Option<String>,
+    /// A newer release than `version`. Empty when this install is current or the check has not run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -809,6 +812,7 @@ pub fn cli_info(data_dir: &Path) -> GrokCliInfo {
         version: status.version,
         logged_in: status.logged_in,
         email: status.email,
+        update: String::new(),
     }
 }
 

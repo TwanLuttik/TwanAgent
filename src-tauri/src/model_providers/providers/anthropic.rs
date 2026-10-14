@@ -161,6 +161,9 @@ pub struct ClaudeCliInfo {
     pub version: Option<String>,
     pub logged_in: bool,
     pub email: Option<String>,
+    /// A newer release than `version`. Empty when this install is current or the check has not run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -889,6 +892,7 @@ pub fn claude_cli_info() -> ClaudeCliInfo {
         version,
         logged_in: account.as_ref().map(|row| row.0).unwrap_or(false),
         email: account.and_then(|row| row.1),
+        update: String::new(),
     }
 }
 

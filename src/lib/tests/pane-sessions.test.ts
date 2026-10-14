@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { closePane, openPane } from "../pane.ts";
 import {
   closedTerminalTabs,
+  filePaneNeedsReload,
   forgetPaneWorkspace,
   paneForWorkspace,
   savePaneForWorkspace,
@@ -22,6 +23,15 @@ describe("pane sessions", () => {
     assert.equal(fresh.tabs.filter((tab) => tab.kind === "terminal").length, 1);
     assert.notEqual(fresh.tabs.find((tab) => tab.kind === "terminal")?.id, next.tabs.at(-1)?.id);
     forgetPaneWorkspace("/app/alpha");
+  });
+
+  it("does not reload the file pane for another chat in the same project", () => {
+    assert.equal(filePaneNeedsReload("/repo", "/repo"), false);
+    assert.equal(filePaneNeedsReload("/repo", "/repo/"), false);
+    assert.equal(filePaneNeedsReload("/Repo", "/repo"), false);
+    assert.equal(filePaneNeedsReload("/repo", "/other"), true);
+    assert.equal(filePaneNeedsReload("", "/repo"), true);
+    assert.equal(filePaneNeedsReload("/repo", ""), false);
   });
 
   it("lists terminal tabs removed by a close", () => {

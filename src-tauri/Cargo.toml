@@ -24,7 +24,9 @@ tauri-build = { version = "2", features = [] }
 twanagent-service = { path = "service" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flate2 = "1"
 futures-util = "0.3"
+tar = "0.4"
 tokio-tungstenite = "0.26"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }

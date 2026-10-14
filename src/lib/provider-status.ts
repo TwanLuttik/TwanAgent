@@ -70,6 +70,7 @@ export function startProviderStatusCached() {
           version: cached.version,
           logged_in: cached.logged_in,
           email: cached.email,
+          update: "",
         },
         claudeCli: claude?.ready
           ? { installed: true, path: "", version: null, logged_in: true, email: null }

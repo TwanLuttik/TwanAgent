@@ -38,7 +38,7 @@ import {
 } from "../lib/journey";
 import { forgetPaneWorkspace } from "../lib/pane-sessions";
 import { getLiveStream, setLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
-import { closeTabChat, rememberSplitPane, splitGroupForChat, splitPaneCache } from "../lib/split-pane";
+import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForChat, splitPaneCache } from "../lib/split-pane";
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
@@ -716,7 +716,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   const showing = splitGroupForChat(openTabs, activeId);
   const clicked = splitGroupForChat(openTabs, id);
   if (showing && clicked && showing.id === clicked.id) {
-    focusVisibleSplitChat(id, activeId);
+    focusVisibleSplitChat(id, activeId, splitPaneCache(id)?.messages ?? []);
     return;
   }
   const openLive = liveByChatRef.current.get(id);
@@ -865,7 +865,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
 }
 
 /** Move focus inside a split without fetching the chat again. The other pane keeps what it was showing. */
-function focusVisibleSplitChat(id: string, fromId: string) {
+function focusVisibleSplitChat(id: string, fromId: string, shown: ChatMessage[]) {
   showChatSettings(conversations.find((row) => row.id === id));
   const leaving = getLiveStream();
   if (fromId) {
@@ -879,9 +879,11 @@ function focusVisibleSplitChat(id: string, fromId: string) {
   }
   const parked = splitPaneCache(id);
   const running = chatHasRunningTurn(runningTurns, id);
+  const kept = focusedSplitMessages(shown.length ? shown : (shownMessages.current.get(id) ?? []), parked?.messages);
+  if (kept.length) rememberSplitPane(id, { messages: kept });
   setActiveId(id);
   retargetForegroundTurn(id);
-  setMessages(parked?.messages ?? []);
+  setMessages(kept);
   setLiveStream({
     streamText: parked?.streamText ?? "",
     streamReasoning: parked?.streamReasoning ?? "",

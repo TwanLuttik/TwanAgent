@@ -81,6 +81,9 @@ pub struct MinimaxCliInfo {
     pub version: Option<String>,
     pub logged_in: bool,
     pub email: Option<String>,
+    /// A newer release than `version`. Empty when this install is current or the check has not run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub update: String,
 }
 
 pub fn minimax_models() -> Vec<DevModel> {
@@ -431,6 +434,7 @@ pub fn minimax_cli_info() -> MinimaxCliInfo {
         version,
         logged_in,
         email: None,
+        update: String::new(),
     }
 }
 

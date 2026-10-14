@@ -7,8 +7,10 @@ import {
   chatBottomPadding,
   easeChatToEnd,
   isNearBottom,
+  panesThatFollow,
   pinChatToEnd,
   scrollChatToEnd,
+  stickToBottomAfterRestore,
 } from "../chat-scroll.ts";
 
 describe("isNearBottom", () => {
@@ -77,6 +79,49 @@ describe("scrollChatToEnd", () => {
 
   it("does nothing without a scroller", () => {
     scrollChatToEnd(null, true);
+  });
+});
+
+describe("split panes follow on their own", () => {
+  it("follows only the pane that is already at the bottom", () => {
+    assert.deepEqual(
+      panesThatFollow([
+        { id: "left", nearBottom: true },
+        { id: "right", nearBottom: false },
+      ]),
+      ["left"],
+    );
+    assert.deepEqual(
+      panesThatFollow([
+        { id: "left", nearBottom: false },
+        { id: "right", nearBottom: true },
+      ]),
+      ["right"],
+    );
+    assert.deepEqual(
+      panesThatFollow([
+        { id: "left", nearBottom: true },
+        { id: "right", nearBottom: true },
+      ]),
+      ["left", "right"],
+    );
+    assert.deepEqual(
+      panesThatFollow([
+        { id: "left", nearBottom: false },
+        { id: "right", nearBottom: false },
+      ]),
+      [],
+    );
+  });
+
+  it("does not follow a saved offset the transcript cannot reach yet", () => {
+    const short = { scrollTop: 0, scrollHeight: 200, clientHeight: 200 };
+    assert.equal(stickToBottomAfterRestore(short, null), true);
+    assert.equal(stickToBottomAfterRestore(short, 800), false);
+    const atEnd = { scrollTop: 700, scrollHeight: 900, clientHeight: 200 };
+    assert.equal(stickToBottomAfterRestore(atEnd, 700), true);
+    const up = { scrollTop: 40, scrollHeight: 900, clientHeight: 200 };
+    assert.equal(stickToBottomAfterRestore(up, 40), false);
   });
 });
 

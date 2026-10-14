@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { insertCompactionEvent } from "../../lib/compact";
 import type { ChatMessage } from "../../lib/core";
-import { getSecondaryLiveStream, subscribeSecondaryLiveStream, useSecondaryLiveStream, useSecondaryLiveStreamEmpty } from "../../lib/live-stream";
+import { getSecondaryLiveStream, subscribeLiveStream, subscribeSecondaryLiveStream, useSecondaryLiveStream, useSecondaryLiveStreamEmpty } from "../../lib/live-stream";
 import { motion } from "motion/react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
@@ -11,7 +11,8 @@ import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
 import { conversationActivityLabel } from "../../lib/core";
-import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
+import { chatScrollFor, isNearBottom, pinChatToEnd, rememberChatScroll, stickToBottomAfterRestore } from "../../lib/chat-scroll";
+import { filePaneNeedsReload } from "../../lib/pane-sessions";
 import { chatHasRunningTurn, runningTurnStartedAt } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
 import {
@@ -103,21 +104,29 @@ export function ChatStage() {
   if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
   const [paneWorkspace, setPaneWorkspace] = useState(workspace);
+  // A click between chats in this project must not unmount the file pane.
+  // `activeId` is empty for a frame while the next transcript loads.
+  const [paneChat, setPaneChat] = useState(activeId);
+  const paneProjectRef = useRef(workspace);
   const [paneWidth, setPaneWidth] = useState(loadPaneWidth);
   const paneSlotRef = useRef<HTMLDivElement>(null);
   const paneWidthRef = useRef(paneWidth);
   paneWidthRef.current = paneWidth;
   useEffect(() => {
-    if (workspace && opened) setPaneWorkspace(workspace);
+    if (!workspace || !opened) return;
+    // The same folder can come back under a canonical path. Swapping the key
+    // would reset the tree and flash the loading cover.
+    if (!filePaneNeedsReload(paneProjectRef.current, workspace)) return;
+    paneProjectRef.current = workspace;
+    setPaneWorkspace(workspace);
   }, [workspace, opened]);
+  useEffect(() => {
+    if (activeId) setPaneChat(activeId);
+  }, [activeId]);
 
   return (
-    <div className={`relative z-10 flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? "bg-transparent" : "bg-sidebar"}`}>
-      <div
-        className={`chrome-tab-row relative z-10 flex h-11 shrink-0 items-center ${
-          sidebarCollapsed ? "bg-transparent" : "bg-sidebar"
-        }`}
-      >
+    <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
+      <div className="chrome-tab-row relative z-10 flex h-11 shrink-0 items-center bg-transparent">
         {sidebarCollapsed && isMacOS() ? (
           <button
             type="button"
@@ -255,7 +264,7 @@ export function ChatStage() {
           )}
           </div>
         </div>
-        {paneWorkspace && activeId && !fullPage ? (
+        {paneWorkspace && (activeId || paneChat) && !fullPage ? (
           <div
             ref={paneSlotRef}
             className={`relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden ${
@@ -413,13 +422,36 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   } = useMain();
   const scroller = useRef<HTMLDivElement>(null);
   const dockRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    const saved = chatScrollFor(chatId);
-    if (el && saved != null) el.scrollTop = saved;
-  }, [chatId]);
+  const stickRef = useRef(true);
+  const followingRef = useRef(false);
+  /** False until a saved offset can actually be applied. A short first paint must not decide. */
+  const settledRef = useRef(false);
+  const restoredFor = useRef("");
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>(() => splitPaneCache(chatId)?.messages ?? []);
   const messages = active ? liveMessages : storedMessages;
+  useEffect(() => {
+    if (messages.length) rememberSplitPane(chatId, { messages });
+  }, [chatId, messages]);
+  useLayoutEffect(() => {
+    if (restoredFor.current === chatId && settledRef.current) return;
+    if (restoredFor.current !== chatId) {
+      restoredFor.current = chatId;
+      settledRef.current = false;
+      stickRef.current = true;
+    }
+    const el = scroller.current;
+    if (!el) return;
+    const saved = chatScrollFor(chatId);
+    if (saved == null) {
+      settledRef.current = true;
+      return;
+    }
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (!stickToBottomAfterRestore(el, saved)) return;
+    el.scrollTop = Math.min(saved, max);
+    stickRef.current = isNearBottom(el);
+    settledRef.current = true;
+  }, [chatId, messages]);
   // Only a pane that has nothing to show yet is loading. Flipping focus must not
   // replace a transcript that is already on screen with Loading….
   const [loading, setLoading] = useState(
@@ -436,7 +468,10 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
     if (active) return;
     let gone = false;
     const cached = splitPaneCache(chatId);
-    if (cached?.messages.length) setStoredMessages(cached.messages);
+    if (cached?.messages.length) {
+      setStoredMessages(cached.messages);
+      rememberSplitPane(chatId, { messages: cached.messages });
+    }
     const load = () => {
       void import("../../lib/tauri").then((api) =>
         api
@@ -444,11 +479,14 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
           .then((full) => {
             if (gone) return;
             const body = (full.messages as ChatMessage[]) ?? [];
-            setStoredMessages(
+            const shown =
               full.compaction?.summary && full.compaction.through > 0
                 ? insertCompactionEvent(body, full.compaction.through)
-                : body,
-            );
+                : body;
+            setStoredMessages(shown);
+            // Focusing this pane reads the cache. Without this write the click
+            // paints an empty new chat over the transcript that is on screen.
+            rememberSplitPane(chatId, { messages: shown });
           })
           .catch(() => {
             if (!gone) setStoredMessages([]);
@@ -472,6 +510,37 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   }, [workspace, chatId, active]);
 
   useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let frame = 0;
+    const pin = () => {
+      if (!settledRef.current || !stickRef.current) return;
+      followingRef.current = true;
+      pinChatToEnd(el, true);
+      followingRef.current = false;
+    };
+    const pinAfterLayout = () => {
+      if (!stickRef.current || frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        pin();
+      });
+    };
+    pin();
+    // The focused pane reads the primary stream. The other pane reads the secondary one.
+    const stopStream = active ? subscribeLiveStream(pin) : subscribeSecondaryLiveStream(pin);
+    const content = el.firstElementChild;
+    const ro = content && typeof ResizeObserver !== "undefined" ? new ResizeObserver(pinAfterLayout) : null;
+    if (content) ro?.observe(content);
+    return () => {
+      followingRef.current = false;
+      if (frame) cancelAnimationFrame(frame);
+      stopStream();
+      ro?.disconnect();
+    };
+  }, [active, chatId, messages, pad]);
+
+  useLayoutEffect(() => {
     const el = dockRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
     const apply = () => setPad(Math.max(96, Math.round(el.getBoundingClientRect().height) + 24));
@@ -491,7 +560,13 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
         ref={scroller}
         className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         onScroll={() => {
-          if (scroller.current) rememberChatScroll(chatId, scroller.current.scrollTop);
+          const el = scroller.current;
+          if (!el || followingRef.current) return;
+          stickRef.current = isNearBottom(el);
+          rememberChatScroll(chatId, el.scrollTop);
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) stickRef.current = false;
         }}
         onMouseDown={() => {
           if (group) focusSplitPane(group.id, pane as 0 | 1);

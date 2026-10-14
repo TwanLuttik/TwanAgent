@@ -73,6 +73,8 @@ npm run bundle
 
 The macOS app lands in `src-tauri/target/release/bundle/macos/TwanAgent.app`.
 
+A signed build checks GitHub releases when the sidebar opens. If a newer prerelease has a `TwanAgent_*.app.tar.gz` asset, the version row shows Update. That downloads the archive, replaces this `.app`, and restarts. `tauri dev` can see the update but cannot install it, because it is not running from `TwanAgent.app`.
+
 ## Layout
 
 - `src/` React interface, chat client, and frontend tests in `src/lib/tests/`

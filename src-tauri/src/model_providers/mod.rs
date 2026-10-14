@@ -10,6 +10,7 @@
 //!
 //! No other file should branch on the provider id. Unknown model ids stay on xAI.
 
+pub mod cli_update;
 pub mod event;
 pub mod providers;
 pub mod registry;

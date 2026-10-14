@@ -298,6 +298,17 @@ export function splitPaneCache(id: string): SplitPaneCache | null {
   return paneCache.get(id) ?? null;
 }
 
+/**
+ * The transcript to show when a split pane becomes the focused chat.
+ * The pane already painted `shown`. An empty cache must not replace that with
+ * a new-chat screen. A cache that has messages wins, because a live turn may
+ * be ahead of the copy the pane loaded.
+ */
+export function focusedSplitMessages(shown: readonly ChatMessage[], cached: readonly ChatMessage[] | null | undefined): ChatMessage[] {
+  if (cached && cached.length > 0) return cached.slice();
+  return shown.slice();
+}
+
 export function forgetSplitPane(id: string) {
   if (id) paneCache.delete(id);
 }

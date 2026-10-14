@@ -6,6 +6,7 @@ import {
   closeSplitPane,
   closeTabChat,
   focusSplitChat,
+  focusedSplitMessages,
   focusSplitPane,
   moveTabItem,
   openTabChat,
@@ -160,6 +161,15 @@ describe("open and focus", () => {
     assert.equal(setSplitShare(wider, "split-1", 0.7), wider);
     assert.equal(clampSplitShare(2), 0.8);
     assert.equal(clampSplitShare(0), 0.2);
+  });
+
+  it("keeps the transcript a split pane was already showing", () => {
+    const shown = [{ role: "user" as const, content: "ping" }];
+    assert.deepEqual(focusedSplitMessages(shown, null), shown);
+    assert.deepEqual(focusedSplitMessages(shown, []), shown);
+    const newer = [{ role: "user" as const, content: "ping" }, { role: "assistant" as const, content: "pong" }];
+    assert.deepEqual(focusedSplitMessages(shown, newer), newer);
+    assert.deepEqual(focusedSplitMessages([], null), []);
   });
 
   it("remembers which pane is focused", () => {
