@@ -131,7 +131,8 @@ export function GrokTerminal({
       if (frame || !paneIsShown(el)) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        if (paneIsShown(el)) fit.fit();
+        if (!paneIsShown(el) || el.closest("[data-pane-resizing]")) return;
+        fit.fit();
       });
     });
     ro.observe(el);

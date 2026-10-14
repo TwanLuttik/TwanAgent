@@ -80,13 +80,13 @@ textarea.text-transparent::selection {
   position: relative;
   z-index: 0;
   display: flex;
-  height: 32px;
+  height: 28px;
   width: max-content;
-  min-width: 5.5rem;
-  max-width: 11rem;
+  min-width: 0;
+  max-width: 15rem;
   flex-shrink: 0;
-  align-items: stretch;
-  font-size: 12px;
+  align-items: center;
+  font-size: 13px;
   line-height: 16px;
   cursor: pointer;
 }
@@ -95,16 +95,16 @@ textarea.text-transparent::selection {
 .chrome-tab + .chrome-tab-group,
 .chrome-tab-group + .chrome-tab,
 .chrome-tab-group + .chrome-tab-group {
-  margin-left: 3px;
+  margin-left: 0;
 }
 
 .chrome-tab-group {
   position: relative;
   z-index: 0;
   display: flex;
-  height: 32px;
+  height: 28px;
   flex-shrink: 0;
-  align-items: stretch;
+  align-items: center;
 }
 
 .chrome-tab-group-row {
@@ -117,8 +117,8 @@ textarea.text-transparent::selection {
 
 .chrome-tab-grouped {
   width: max-content;
-  min-width: 4.75rem;
-  max-width: 11rem;
+  min-width: 0;
+  max-width: 13rem;
 }
 
 /* A held tab keeps the width it had when the drag started. A split pair keeps
@@ -160,18 +160,17 @@ textarea.text-transparent::selection {
 .chrome-tab-face {
   position: absolute;
   inset: 0;
-  border: 1px solid color-mix(in srgb, var(--color-line) 35%, transparent);
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  background: var(--color-canvas);
+  border: 1px solid color-mix(in srgb, var(--color-line) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-ink) 10%, var(--color-sidebar));
   transition:
     background-color 150ms ease,
     border-color 150ms ease;
 }
 
 .chrome-tab-face-off {
-  background: color-mix(in srgb, var(--color-canvas) 42%, transparent);
-  border-color: color-mix(in srgb, var(--color-line) 18%, transparent);
+  background: transparent;
+  border-color: transparent;
 }
 
 .chrome-tab-off {
@@ -183,8 +182,8 @@ textarea.text-transparent::selection {
 }
 
 .chrome-tab-off:hover .chrome-tab-face-off {
-  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
-  border-color: color-mix(in srgb, var(--color-line) 28%, transparent);
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  border-color: transparent;
 }
 
 [data-tab-key],
@@ -213,7 +212,7 @@ textarea.text-transparent::selection {
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   overflow: visible;
   padding: 0 12px;
   line-height: 16px;
@@ -223,8 +222,8 @@ textarea.text-transparent::selection {
 .chrome-tab-label {
   min-width: 0;
   overflow: hidden;
+  font-weight: 500;
   line-height: 16px;
-  padding-bottom: 1px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -265,11 +264,34 @@ textarea.text-transparent::selection {
   background: color-mix(in srgb, var(--color-ink) 8%, transparent);
 }
 
+.rail-tip {
+  animation: rail-tip 150ms ease-out;
+}
+
+@keyframes rail-tip {
+  from {
+    opacity: 0;
+    transform: translate(4px, -50%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, -50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-tip {
+    animation: none;
+  }
+}
+
 .sidebar-space {
   pointer-events: none;
   position: absolute;
-  inset: 0 0 auto 0;
-  z-index: 0;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  width: 500px;
   height: 26rem;
   overflow: hidden;
 }
@@ -291,7 +313,7 @@ html[data-space-corner="off"] .sidebar-space {
   background-position: top left;
   background-repeat: no-repeat;
   background-size: 100% 100%;
-  opacity: 0.48;
+  opacity: 0.3;
 }
 
 .sidebar-space-scene {
@@ -302,7 +324,7 @@ html[data-space-corner="off"] .sidebar-space {
   max-width: none;
   height: auto;
   aspect-ratio: auto;
-  opacity: 0.72;
+  opacity: 0.42;
 }
 
 .sidebar-space-dots {
@@ -320,16 +342,16 @@ html[data-space-corner="off"] .sidebar-space {
 
 html[data-theme-mode="dark"] .sidebar-space-art {
   mix-blend-mode: screen;
-  opacity: 0.55;
+  opacity: 0.32;
 }
 
 html[data-theme-mode="light"] .sidebar-space-art {
   mix-blend-mode: multiply;
-  opacity: 0.2;
+  opacity: 0.12;
 }
 
 html[data-theme-mode="light"] .sidebar-space-scene {
-  opacity: 0.42;
+  opacity: 0.26;
 }
 
 html[data-theme-mode="light"] .sidebar-space-dots {
@@ -517,6 +539,13 @@ html[data-theme-mode="light"] .model-tip {
 
 .term .xterm-selection {
   opacity: 0.55;
+}
+
+/* The grid stays put while the pane edge moves. Stretch the canvas to the new
+   box, then the real fit runs once the drag ends. */
+[data-pane-resizing] .xterm-screen canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 /* Fixed box. `.term { height: 100% }` would follow the opening row and grow forever. */

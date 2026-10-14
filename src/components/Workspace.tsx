@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type RefObject } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -57,13 +57,8 @@ import {
 import { shellSessionId } from "../lib/shell-sessions";
 import { shellSessions } from "../lib/shell-terminal";
 import {
-  PANE_DEFAULT,
-  PANE_MAX,
-  PANE_MIN,
-  loadPaneWidth,
   loadGitChangesView,
   loadOpenFileTree,
-  savePaneWidth,
   saveGitChangesView,
   saveOpenFileTree,
   type GitChangesView,
@@ -80,17 +75,19 @@ export const Workspace = memo(function Workspace({
   selectedPath,
   onOpenFile,
   onRefresh,
+  onCollapse,
+  pending = false,
 }: {
   workspace: string;
   selectedPath?: string | null;
   onOpenFile?: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
   onRefresh?: () => void;
+  onCollapse?: () => void;
+  /** The project is still opening. Keep the pane frame and cover its contents. */
+  pending?: boolean;
 }) {
   const [pane, setPaneState] = useState<PaneState>(() => paneForWorkspace(workspace));
-  const [width, setWidth] = useState(loadPaneWidth);
   const asideRef = useRef<HTMLElement>(null);
-  const widthRef = useRef(width);
-  widthRef.current = width;
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() =>
     openTreeState(loadOpenFileTree(workspace)),
   );
@@ -109,6 +106,7 @@ export const Workspace = memo(function Workspace({
   const [gitBusy, setGitBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gitMissing, setGitMissing] = useState(false);
+  const [treeReady, setTreeReady] = useState(false);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
   const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
@@ -195,6 +193,7 @@ export const Workspace = memo(function Workspace({
       }
       return next;
     });
+    if (gen === refreshGen.current) setTreeReady(true);
     if (!gitFailed && gen === refreshGen.current) setError(null);
   }, [workspace, expanded, pane.tabs]);
 
@@ -224,6 +223,7 @@ export const Workspace = memo(function Workspace({
     setRenaming(null);
     setCreating(null);
     setNewFileParent(null);
+    setTreeReady(false);
   }, [workspace]);
 
   const setPane = useCallback(
@@ -457,66 +457,13 @@ export const Workspace = memo(function Workspace({
     }
   }
 
-  const onResizeStart = useCallback((ev: ReactPointerEvent<HTMLDivElement>) => {
-    ev.preventDefault();
-    const handle = ev.currentTarget;
-    handle.setPointerCapture(ev.pointerId);
-    const startX = ev.clientX;
-    const startWidth = widthRef.current;
-    let latest = startWidth;
-    let frame = 0;
-    handle.dataset.dragging = "true";
-
-    function paint() {
-      frame = 0;
-      const aside = asideRef.current;
-      if (aside) aside.style.width = `${latest}px`;
-    }
-    function onMove(move: PointerEvent) {
-      latest = Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(startWidth - (move.clientX - startX))));
-      if (!frame) frame = requestAnimationFrame(paint);
-    }
-    function onUp(up: PointerEvent) {
-      handle.releasePointerCapture(up.pointerId);
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      if (frame) cancelAnimationFrame(frame);
-      delete handle.dataset.dragging;
-      widthRef.current = latest;
-      setWidth(latest);
-      savePaneWidth(latest);
-    }
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
-  }, []);
-
   return (
     <aside
       ref={asideRef}
-      className="relative my-2 flex min-h-0 shrink-0 flex-col overflow-hidden rounded-[12px] border border-line/35 bg-canvas"
-      style={{ width }}
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-[12px] border border-line/35 bg-canvas"
     >
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize workspace pane"
-        title="Drag to resize"
-        onPointerDown={onResizeStart}
-        onDoubleClick={() => {
-          setWidth(PANE_DEFAULT);
-          savePaneWidth(PANE_DEFAULT);
-        }}
-        className="group absolute inset-y-0 left-0 z-10 w-2 cursor-col-resize touch-none"
-      >
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 w-0.5 group-hover:bg-accent/30 group-data-[dragging=true]:bg-accent/40"
-        />
-      </div>
-      <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} />
-      <div className="relative min-h-0 flex-1">
+      <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} onCollapse={onCollapse} />
+      <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`}>
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeId;
           return (
@@ -591,6 +538,11 @@ export const Workspace = memo(function Workspace({
           );
         })}
       </div>
+      {pending || !treeReady ? (
+        <div className="absolute inset-0 top-9 z-20 flex items-center justify-center bg-canvas">
+          <span className="size-4 animate-spin rounded-full border border-muted/40 border-t-transparent" aria-label="Loading" />
+        </div>
+      ) : null}
     </aside>
   );
 });
@@ -599,10 +551,12 @@ function PaneTabs({
   pane,
   onChange,
   onAdd,
+  onCollapse,
 }: {
   pane: PaneState;
   onChange: (next: PaneState) => void;
   onAdd: (kind: PaneKind) => void;
+  onCollapse?: () => void;
 }) {
   const [menu, setMenu] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -673,6 +627,18 @@ function PaneTabs({
           {dragging ? <PaneTabFace tab={dragging} active={dragging.id === pane.activeId} canClose={canClose} overlay /> : null}
         </DragOverlay>
       </DndContext>
+      {onCollapse ? (
+        <button
+          type="button"
+          aria-label="Hide files"
+          aria-pressed
+          title="Hide files"
+          onClick={onCollapse}
+          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+        >
+          <Symbol name="sidebar.right" className="size-3.5" weight="regular" />
+        </button>
+      ) : null}
       <div className="relative shrink-0" ref={menuRef}>
         <button
           type="button"

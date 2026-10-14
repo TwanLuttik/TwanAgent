@@ -9,9 +9,9 @@ export function isWindows(): boolean {
   return /Windows/i.test(navigator.userAgent);
 }
 
-/** Unified titlebar + toolbar height so chrome sits in the vertical center, not flush with the top. */
+/** Titlebar height. Matches the collapsed sidebar so the header does not grow when it closes. */
 export function headerBarClass(): string {
-  return isMacOS() ? "h-[52px]" : "h-11";
+  return "h-11";
 }
 
 export function WindowButtons() {

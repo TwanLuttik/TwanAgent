@@ -109,6 +109,15 @@ export async function executeTool(
     switch (call.name) {
       case "list_dir":
         return JSON.stringify(await api.listDir(workspace, String(args.path ?? "")), null, 2);
+      case "grep":
+        return await api.grep(
+          workspace,
+          String(args.pattern ?? args.query ?? ""),
+          String(args.path ?? ""),
+          String(args.glob ?? ""),
+        );
+      case "glob":
+        return await api.glob(workspace, String(args.pattern ?? ""), String(args.path ?? ""));
       case "read_file":
         return await api.readFile(workspace, String(args.path ?? ""));
       case "write_file":

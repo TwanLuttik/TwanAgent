@@ -103,7 +103,7 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
     Ok(text)
 }
 
-fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
+pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
     let root = fs::canonicalize(root).map_err(|_| Error::Other("workspace folder is missing".into()))?;
     let rel = normalize(rel)?;
     let joined = if rel.as_os_str().is_empty() { root.clone() } else { root.join(&rel) };

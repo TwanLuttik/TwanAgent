@@ -80,6 +80,7 @@ export function setSpaceCornerImage(image: SpaceCornerImage | null): void {
 const WORKSPACE_KEY = "twanagent.workspace";
 const CONVERSATION_KEY = "twanagent.conversation";
 const OPEN_TABS_KEY = "twanagent.openTabs";
+const ACTIVE_TAB_KEY = "twanagent.activeTab";
 const DRAFTS_KEY = "twanagent.drafts";
 const PASTES_KEY = "twanagent.pastes";
 
@@ -263,6 +264,13 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
   }
   localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(nextTabs));
 
+  const nextActive: Record<string, string> = {};
+  for (const [path, key] of Object.entries(loadActiveTabs())) {
+    const dest = remap(path);
+    if (key && !nextActive[dest]) nextActive[dest] = key;
+  }
+  localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(nextActive));
+
   const collapsed = new Set(
     loadCollapsedProjects().map((key) => {
       const dest = map.get(projectKey(key));
@@ -415,6 +423,30 @@ export function loadSidebarWidth(): number {
 
 export function saveSidebarWidth(width: number): void {
   localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clampSidebarWidth(width)));
+}
+
+const SIDEBAR_COLLAPSED_KEY = "twanagent.sidebarCollapsed";
+const PANE_COLLAPSED_KEY = "twanagent.paneCollapsed";
+
+function loadCollapsedFlag(key: string): boolean {
+  const raw = localStorage.getItem(key);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function loadSidebarCollapsed(): boolean {
+  return loadCollapsedFlag(SIDEBAR_COLLAPSED_KEY);
+}
+
+export function saveSidebarCollapsed(collapsed: boolean): void {
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "on" : "off");
+}
+
+export function loadPaneCollapsed(): boolean {
+  return loadCollapsedFlag(PANE_COLLAPSED_KEY);
+}
+
+export function savePaneCollapsed(collapsed: boolean): void {
+  localStorage.setItem(PANE_COLLAPSED_KEY, collapsed ? "on" : "off");
 }
 
 const MARKDOWN_OPEN_KEY = "twanagent.markdownOpen";
@@ -590,6 +622,35 @@ export function saveProjectOpenTabs(workspace: string, items: StoredTabItem[]): 
   if (tabs.length) all[workspace] = tabs;
   else delete all[workspace];
   localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(all));
+}
+
+/** The tab that was selected, keyed like `chat:<id>`, `split:<id>`, or `code`. */
+export function loadActiveTabs(): Record<string, string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(ACTIVE_TAB_KEY) ?? "");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    const out: Record<string, string> = {};
+    for (const [path, key] of Object.entries(raw as Record<string, unknown>)) {
+      if (path && typeof key === "string" && key.trim()) out[path] = key;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function loadActiveTab(workspace: string): string {
+  if (!workspace) return "";
+  const all = loadActiveTabs();
+  return all[workspace] ?? all[projectKey(workspace)] ?? "";
+}
+
+export function saveActiveTab(workspace: string, key: string): void {
+  if (!workspace) return;
+  const all = loadActiveTabs();
+  if (key.trim()) all[workspace] = key;
+  else delete all[workspace];
+  localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(all));
 }
 
 function storedTabItems(items: unknown): StoredTabItem[] {

@@ -206,7 +206,14 @@ describe("mergeLoadedProjectGroups", () => {
       [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
       "draft",
     );
-    assert.equal(open?.id, "real");
+    assert.equal(open?.id, "draft");
+    assert.equal(
+      preferredOpenConversation(
+        [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
+        "",
+      )?.id,
+      "real",
+    );
     assert.equal(preferredOpenConversation([chat("draft", "New chat")], "draft")?.id, "draft");
   });
 

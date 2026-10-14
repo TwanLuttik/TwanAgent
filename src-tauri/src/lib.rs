@@ -242,6 +242,8 @@ pub fn run() {
             dev::commands::dev_clone_repo,
             dev::commands::dev_tree_signature,
             dev::commands::dev_list_dir,
+            dev::commands::dev_grep,
+            dev::commands::dev_glob,
             dev::commands::dev_read_file,
             dev::commands::dev_read_user_mcp,
             dev::commands::dev_write_user_mcp,

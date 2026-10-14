@@ -146,6 +146,18 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M12 5.2v13.6" {...stroke} />
     </>
   ),
+  "sidebar.left": (
+    <>
+      <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2" {...stroke} />
+      <path d="M9.2 4.4v15.2" {...stroke} />
+    </>
+  ),
+  "sidebar.right": (
+    <>
+      <rect x="3.4" y="4.4" width="17.2" height="15.2" rx="2" {...stroke} />
+      <path d="M14.8 4.4v15.2" {...stroke} />
+    </>
+  ),
   "square.grid.2x2": (
     <>
       <rect x="3.6" y="3.6" width="7.1" height="7.1" rx="1.4" {...stroke} />

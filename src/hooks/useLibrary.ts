@@ -37,7 +37,8 @@ import {
   type JourneySummary,
 } from "../lib/journey";
 import { forgetPaneWorkspace } from "../lib/pane-sessions";
-import { closeTabChat, splitPaneCache } from "../lib/split-pane";
+import { getLiveStream, setLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
+import { closeTabChat, rememberSplitPane, splitGroupForChat, splitPaneCache } from "../lib/split-pane";
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
@@ -180,6 +181,8 @@ export type LibraryDeps = {
   setUnseenFinished: Update<ReadonlySet<string>>;
   setPendingByChat: Update<Record<string, PendingMessage[]>>;
   setChatTabsByProject: Update<Record<string, import("../lib/split-pane").TabItem[]>>;
+  /** Open tabs for the project on screen. A split chat is already visible, so focusing it must not reload. */
+  chatTabsByProject?: Record<string, import("../lib/split-pane").TabItem[]>;
   setFlash: (flash: { kind: "ok" | "err"; text: string } | null) => void;
   bumpFiles: () => void;
 };
@@ -196,6 +199,8 @@ export function useLibrary(deps: LibraryDeps) {
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
   } = deps;
+  const chatTabsByProjectRef = useRef(deps.chatTabsByProject ?? {});
+  chatTabsByProjectRef.current = deps.chatTabsByProject ?? chatTabsByProjectRef.current;
 
   const hostedChatsRef = useRef(hostedChats);
   hostedChatsRef.current = hostedChats;
@@ -362,6 +367,20 @@ async function deleteProjectFromSidebar(path: string) {
   else clearWorkspace();
 }
 
+/**
+ * A new chat that has not been saved yet. Picking a project only remembers where
+ * the first prompt should land. It must not open a chat that project already has.
+ */
+function assignDraftProject(path: string) {
+  if (!path || isSameProject(path, workspace)) return;
+  // Remember the project for the first prompt only. Opening the folder, reloading
+  // its chats, or swapping the composer would move the empty chat on screen.
+  saveWorkspace(path);
+  setRecents(pushRecentWorkspace(path));
+  setWorkspace(path);
+  expandProject(path);
+}
+
 function applyWorkspace(path: string) {
   if (!isSameProject(path, workspace)) {
     const entering = allProjectGroups.find((group) => isSameProject(group.path, path));
@@ -474,6 +493,23 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   setShowServers(false);
   setProjectSettings(null);
   if (!runningWsRef.current) hideSubagents();
+  // A plain new chat stays off every project until the first prompt. The selector
+  // only chooses where that prompt will be saved.
+  if (kind === "chat" && !journeyId) {
+    stickToBottomRef.current = true;
+    setActiveId("");
+    setMessages([]);
+    stopHostedFollow();
+    setStreamText("");
+    setStreamReasoning("");
+    setLiveTools([]);
+    setRunningActivity(null);
+    setTurnStartedAt(0);
+    hideSubagents();
+    retargetForegroundTurn("");
+    setEditor((prev) => selectChatTab(prev));
+    return;
+  }
   if (!path) {
     setFolderOpen(true);
     return;
@@ -643,7 +679,7 @@ function retargetForegroundTurn(id: string) {
   abortRef.current = shown ? (turnsRef.current.get(shown) ?? null) : null;
 }
 
-async function openChat(id: string) {
+async function openChat(id: string, tabs = chatTabsByProjectRef.current) {
   const generation = ++openGeneration.current;
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
@@ -656,6 +692,15 @@ async function openChat(id: string) {
   if (id === activeId) {
     // The list may still be mounting the tail. Pin on the next frame, after layout.
     requestAnimationFrame(() => scrollChatToEnd(scroller.current, stickToBottomRef.current));
+    return;
+  }
+  // Both sides of a split stay mounted. Clicking one only changes which pane is
+  // focused. Reloading it paints "Loading…" on a chat that is already on screen.
+  const openTabs = tabs[projectKey(workspace)] ?? [];
+  const showing = splitGroupForChat(openTabs, activeId);
+  const clicked = splitGroupForChat(openTabs, id);
+  if (showing && clicked && showing.id === clicked.id) {
+    focusVisibleSplitChat(id, activeId);
     return;
   }
   const openLive = liveByChatRef.current.get(id);
@@ -801,6 +846,49 @@ async function openChat(id: string) {
   } finally {
     setOpeningId("");
   }
+}
+
+/** Move focus inside a split without fetching the chat again. The other pane keeps what it was showing. */
+function focusVisibleSplitChat(id: string, fromId: string) {
+  showChatSettings(conversations.find((row) => row.id === id));
+  const leaving = getLiveStream();
+  if (fromId) {
+    rememberSplitPane(fromId, {
+      messages,
+      streamText: leaving.streamText,
+      streamReasoning: leaving.streamReasoning,
+      liveTools: leaving.liveTools,
+      activity: leaving.runningActivity,
+    });
+  }
+  const parked = splitPaneCache(id);
+  const running = chatHasRunningTurn(runningTurns, id);
+  setActiveId(id);
+  retargetForegroundTurn(id);
+  setMessages(parked?.messages ?? []);
+  setLiveStream({
+    streamText: parked?.streamText ?? "",
+    streamReasoning: parked?.streamReasoning ?? "",
+    liveTools: parked?.liveTools ?? [],
+    runningActivity: parked?.activity ?? null,
+  });
+  if (fromId) {
+    const left = splitPaneCache(fromId);
+    setSecondaryLiveStream({
+      streamText: left?.streamText ?? "",
+      streamReasoning: left?.streamReasoning ?? "",
+      liveTools: left?.liveTools ?? [],
+      runningActivity: left?.activity ?? null,
+    });
+  }
+  if (running) {
+    setTurnStartedAt(runningTurns[id]?.startedAt ?? 0);
+    showSubagents(id);
+  } else {
+    setTurnStartedAt(0);
+    hideSubagents();
+  }
+  saveConversation(workspace, id);
 }
 
 function messagesFromCached(row: import("../lib/tauri").Conversation): ChatMessage[] {
@@ -1345,6 +1433,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     clearWorkspace,
     deleteProjectFromSidebar,
     applyWorkspace,
+    assignDraftProject,
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,

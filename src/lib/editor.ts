@@ -34,6 +34,11 @@ export function emptyEditor(): EditorState {
   return { tabs: [], activePath: null, focus: "chat" };
 }
 
+/** The Code tab was selected last time. The file itself is not kept, only the selection. */
+export function codeTabEditor(): EditorState {
+  return { tabs: [], activePath: null, focus: "file" };
+}
+
 export const ALL_DIFF_PATH = "diff:all";
 export const MCP_EDITOR_PREFIX = "mcp:";
 export const SKILL_EDITOR_PREFIX = "skill:";

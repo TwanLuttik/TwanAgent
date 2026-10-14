@@ -3,12 +3,12 @@ import type { MouseEvent, ReactNode } from "react";
 export function ChromeTabStrip({ children }: { children: ReactNode }) {
   return (
     <div
-      className="relative z-10 flex min-h-8 min-w-0 flex-1 items-end self-stretch"
+      className="relative z-10 flex min-h-11 min-w-0 flex-1 items-center self-stretch"
       role="tablist"
       aria-label="Main view"
       data-tauri-drag-region="false"
     >
-      <div className="no-scrollbar flex min-w-0 items-end overflow-x-auto pl-2 pr-3" data-tauri-drag-region="false">
+      <div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto px-3" data-tauri-drag-region="false">
         {children}
       </div>
       <div className="min-w-0 flex-1 self-stretch" data-tauri-drag-region />

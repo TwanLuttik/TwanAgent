@@ -23,8 +23,9 @@ export function visibleConversations<T extends { archived?: boolean; journey_id?
 }
 
 /**
- * The chat to open for a project. A titled conversation wins over an empty "New chat"
- * that was saved locally beside a cloud chat.
+ * The chat to open for a project. The saved id wins, including an empty "New chat"
+ * the user just opened. A titled chat is only preferred when nothing was saved,
+ * so a local empty draft does not cover a cloud conversation on startup.
  */
 export function preferredOpenConversation<T extends { id: string; title?: string; kind?: string; archived?: boolean }>(
   rows: T[],
@@ -32,8 +33,8 @@ export function preferredOpenConversation<T extends { id: string; title?: string
 ): T | undefined {
   const visible = rows.filter((row) => row.archived !== true);
   const saved = visible.find((row) => row.id === savedId);
-  if (saved && !isEmptyChatDraft(saved)) return saved;
-  return visible.find((row) => !isEmptyChatDraft(row)) ?? saved ?? visible[0];
+  if (saved) return saved;
+  return visible.find((row) => !isEmptyChatDraft(row)) ?? visible[0];
 }
 
 /** Journeys that still have a visible child. Empty journeys stay in the normal list. */
@@ -184,7 +185,7 @@ export function isLocalCloudDraft(row: { title?: string; kind?: string }): boole
   return isEmptyChatDraft(row);
 }
 
-function isEmptyChatDraft(row: { title?: string; kind?: string }): boolean {
+export function isEmptyChatDraft(row: { title?: string; kind?: string }): boolean {
   return (row.title || "New chat").trim() === "New chat" && (row.kind ?? "chat") !== "terminal";
 }
 

@@ -71,6 +71,210 @@ pub fn remote_write_shell(contents: &str, script: &str) -> String {
     format!("printf '%s' '{encoded}' | base64 -d | {script}")
 }
 
+/// Content search on the server. The pattern is data, not a shell snippet.
+/// Heavy trees are pruned. Output is `path:line:text`, capped at 100 lines.
+pub fn remote_grep_command(root: &str, pattern: &str, rel: &str, glob: &str) -> Result<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(Error::Other("pattern is empty".into()));
+    }
+    if pattern.contains('\0') || glob.contains('\0') {
+        return Err(Error::Other("invalid pattern".into()));
+    }
+    let remote = remote_join(root, rel)?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    let pattern_q = super::ssh::shell_single_quote(pattern);
+    let glob_q = super::ssh::shell_single_quote(glob.trim());
+    let prune = heavy_prune();
+    let script = remote_search_script(GREP_PROGRAM);
+    Ok(format!(
+        "if [ ! -e {quoted} ]; then echo 'path was not found' >&2; exit 1; fi; \
+         find {quoted} \\( {prune} \\) -prune -o -type f -print0 -o -true | {script} {quoted} {pattern_q} {glob_q}"
+    ))
+}
+
+/// Path search on the server. `*` stays in one segment. `**` crosses folders.
+pub fn remote_glob_command(root: &str, pattern: &str, rel: &str) -> Result<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(Error::Other("pattern is empty".into()));
+    }
+    if pattern.contains('\0') {
+        return Err(Error::Other("invalid pattern".into()));
+    }
+    let remote = remote_join(root, rel)?;
+    let quoted = super::ssh::shell_single_quote(&remote);
+    let pattern_q = super::ssh::shell_single_quote(pattern);
+    let prune = heavy_prune();
+    let script = remote_search_script(GLOB_PROGRAM);
+    Ok(format!(
+        "if [ ! -d {quoted} ]; then echo 'path is not a folder' >&2; exit 1; fi; \
+         find {quoted} \\( {prune} \\) -prune -o -print | {script} {quoted} {pattern_q}"
+    ))
+}
+
+/// Base64, same reason as the project listing: an exec channel closes stdin, so a heredoc never runs.
+fn remote_search_script(program: &str) -> String {
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
+    // The decoded program is python's -c argument. Find's output stays on stdin.
+    // A pipe into python would swallow that output, because the decoder would own stdin.
+    format!(
+        "python3 -c \"$(printf '%s' {} | base64 -d)\"",
+        super::ssh::shell_single_quote(&encoded)
+    )
+}
+
+const GREP_PROGRAM: &str = r#"import os, sys
+root = os.path.realpath(sys.argv[1])
+pat = sys.argv[2].lower()
+glob = sys.argv[3]
+limit = 100
+hits = []
+files = sys.stdin.buffer.read().split(b"\0")
+
+def match(pat, text):
+    pi = ti = 0
+    star = None
+    while ti < len(text):
+        if pi < len(pat) and (pat[pi] == "?" or pat[pi].lower() == text[ti].lower()):
+            pi += 1
+            ti += 1
+            continue
+        if pi < len(pat) and pat[pi] == "*":
+            star = (pi, ti)
+            pi += 1
+            continue
+        if star is not None:
+            pi = star[0] + 1
+            ti = star[1] + 1
+            star = (star[0], ti)
+            continue
+        return False
+    while pi < len(pat) and pat[pi] == "*":
+        pi += 1
+    return pi == len(pat)
+
+def glob_ok(pattern, path):
+    parts = [part for part in pattern.split("/") if part]
+    segs = [part for part in path.split("/") if part]
+    def walk(left, right):
+        if not left:
+            return not right
+        if left[0] == "**":
+            if walk(left[1:], right):
+                return True
+            return bool(right) and walk(left, right[1:])
+        if not right:
+            return False
+        return match(left[0], right[0]) and walk(left[1:], right[1:])
+    return walk(parts, segs)
+
+for raw in files:
+    if not raw or len(hits) >= limit:
+        continue
+    path = os.path.realpath(raw.decode("utf-8", "replace"))
+    if path == root:
+        continue
+    rel = os.path.relpath(path, root) if path.startswith(root + os.sep) or path == root else os.path.basename(path)
+    name = rel.rsplit("/", 1)[-1]
+    name_ok = "/" not in glob and "/" in rel and glob_ok(glob, name)
+    if glob and not glob_ok(glob, rel) and not name_ok:
+        continue
+    try:
+        data = open(path, "rb").read(400001)
+    except OSError:
+        continue
+    if len(data) > 400000 or b"\0" in data:
+        continue
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        continue
+    for number, line in enumerate(text.splitlines(), 1):
+        if pat in line.lower():
+            hits.append("%s:%d:%s" % (rel, number, line.strip()[:240]))
+            if len(hits) >= limit:
+                break
+
+if not hits:
+    sys.stdout.write("No matches.\n")
+else:
+    sys.stdout.write("\n".join(hits))
+    if len(hits) >= limit:
+        sys.stdout.write("\n…results truncated")
+    sys.stdout.write("\n")
+"#;
+
+const GLOB_PROGRAM: &str = r#"import os, sys
+root = os.path.realpath(sys.argv[1])
+pat = sys.argv[2]
+limit = 200
+hits = []
+
+def match(pat, text):
+    pi = ti = 0
+    star = None
+    while ti < len(text):
+        if pi < len(pat) and (pat[pi] == "?" or pat[pi].lower() == text[ti].lower()):
+            pi += 1
+            ti += 1
+            continue
+        if pi < len(pat) and pat[pi] == "*":
+            star = (pi, ti)
+            pi += 1
+            continue
+        if star is not None:
+            pi = star[0] + 1
+            ti = star[1] + 1
+            star = (star[0], ti)
+            continue
+        return False
+    while pi < len(pat) and pat[pi] == "*":
+        pi += 1
+    return pi == len(pat)
+
+def glob_ok(pattern, path):
+    parts = [part for part in pattern.split("/") if part]
+    segs = [part for part in path.split("/") if part]
+    def walk(left, right):
+        if not left:
+            return not right
+        if left[0] == "**":
+            if walk(left[1:], right):
+                return True
+            return bool(right) and walk(left, right[1:])
+        if not right:
+            return False
+        return match(left[0], right[0]) and walk(left[1:], right[1:])
+    return walk(parts, segs)
+
+for line in sys.stdin:
+    path = os.path.realpath(line.strip())
+    if not path or path == root or len(hits) >= limit:
+        continue
+    rel = os.path.relpath(path, root) if path.startswith(root + os.sep) else path
+    name = rel.rsplit("/", 1)[-1]
+    if glob_ok(pat, rel) or ("/" not in pat and "/" in rel and glob_ok(pat, name)):
+        hits.append(rel)
+
+hits.sort()
+if not hits:
+    sys.stdout.write("No files.\n")
+else:
+    sys.stdout.write("\n".join(hits))
+    if len(hits) >= limit:
+        sys.stdout.write("\n…results truncated")
+    sys.stdout.write("\n")
+"#;
+
+fn heavy_prune() -> String {
+    HEAVY_DIR_NAMES
+        .iter()
+        .map(|name| format!("-name {}", super::ssh::shell_single_quote(name)))
+        .collect::<Vec<_>>()
+        .join(" -o ")
+}
+
 pub fn remote_list_command(root: &str, rel: &str) -> Result<String> {
     let remote = remote_join(root, rel)?;
     let quoted = super::ssh::shell_single_quote(&remote);
@@ -143,11 +347,7 @@ pub fn parse_remote_projects(text: &str) -> Vec<String> {
 pub fn remote_tree_command(root: &str) -> Result<String> {
     let remote = remote_join(root, "")?;
     let quoted = super::ssh::shell_single_quote(&remote);
-    let prune = HEAVY_DIR_NAMES
-        .iter()
-        .map(|name| format!("-name {}", super::ssh::shell_single_quote(name)))
-        .collect::<Vec<_>>()
-        .join(" -o ");
+    let prune = heavy_prune();
     Ok(format!(
         "if [ -d {quoted} ]; then find {quoted} \\( {prune} \\) -prune -o -print | while IFS= read -r item; do \
          if [ \"$item\" = {quoted} ]; then continue; fi; \
@@ -367,6 +567,49 @@ mod tests {
         assert!(remote_join("/srv/billing", "../etc/passwd").is_err());
         assert!(remote_join("/srv/billing", "/etc/passwd").is_err());
         assert!(remote_join("/srv/billing", "src/../../etc").is_err());
+    }
+
+    #[test]
+    fn remote_search_commands_quote_the_pattern_and_reject_escapes() {
+        let grep = remote_grep_command("/srv/billing", "answer", "src", "*.rs").unwrap();
+        assert!(grep.contains("find '/srv/billing/src'"));
+        assert!(grep.contains("-name 'node_modules'"));
+        assert!(grep.contains("'answer'"));
+        assert!(grep.contains("'*.rs'"));
+        assert!(grep.contains("python3 -c \"$(printf '%s'"));
+        assert!(!grep.contains("pattern is empty"));
+        assert!(remote_grep_command("/srv/billing", "", "", "").is_err());
+        assert!(remote_grep_command("/srv/billing", "x", "../etc", "").is_err());
+        let glob = remote_glob_command("/srv/billing", "**/*.ts", "").unwrap();
+        assert!(glob.contains("find '/srv/billing'"));
+        assert!(glob.contains("'**/*.ts'"));
+        assert!(remote_glob_command("/srv/billing", "", "src").is_err());
+        assert!(remote_glob_command("/srv/billing", "*.ts", "/etc").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("src/app.ts"), "export const answer = 42;\n").unwrap();
+        std::fs::write(root.join("node_modules/pkg/skip.ts"), "export const answer = 1;\n").unwrap();
+        let root_s = root.to_string_lossy().replace('\\', "/");
+        let ran = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(remote_grep_command(&root_s, "answer", "", "*.ts").unwrap())
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&ran.stdout);
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(text.contains("src/app.ts:1:"), "{text}");
+        assert!(!text.contains("node_modules"));
+        let listed = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(remote_glob_command(&root_s, "**/*.ts", "").unwrap())
+            .output()
+            .unwrap();
+        let paths = String::from_utf8_lossy(&listed.stdout);
+        assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+        assert!(paths.contains("src/app.ts"), "{paths}");
+        assert!(!paths.contains("node_modules"));
     }
 
     #[test]

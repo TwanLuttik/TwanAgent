@@ -286,6 +286,14 @@ export function needsShellConfirm(name: string): boolean {
 export function toolSummary(name: string, args: Record<string, unknown>): string {
   const path = String(args.path ?? "");
   if (name === "read_file") return `Read ${path}`;
+  if (name === "grep") {
+    const pattern = String(args.pattern ?? args.query ?? "").trim();
+    return pattern ? `Search ${pattern}` : "Search";
+  }
+  if (name === "glob") {
+    const pattern = String(args.pattern ?? "").trim();
+    return pattern ? `Find ${pattern}` : "Find files";
+  }
   if (name === "write_file") return `Write ${fileBaseName(path) || path || "file"}`;
   if (name === "edit_file") return `Edit ${fileBaseName(path) || path || "file"}`;
   if (name === "list_dir") return `List ${path || "."}`;
@@ -413,6 +421,17 @@ export function toolDetail(call: ChatToolCall): string {
   if (call.name === "git_commit") return String(args.message ?? "").trim();
   if (call.name === "read_file" || call.name === "list_dir") {
     return String(args.path ?? "").trim();
+  }
+  if (call.name === "grep") {
+    const pattern = String(args.pattern ?? args.query ?? "").trim();
+    const where = String(args.path ?? "").trim();
+    const glob = String(args.glob ?? "").trim();
+    return [pattern, glob, where].filter(Boolean).join(" ");
+  }
+  if (call.name === "glob") {
+    const pattern = String(args.pattern ?? "").trim();
+    const where = String(args.path ?? "").trim();
+    return [pattern, where].filter(Boolean).join(" ");
   }
   if (call.name === "update_journey_knowledge") {
     const mode = String(args.mode ?? "").trim();
@@ -669,9 +688,11 @@ export type TranscriptItem =
 
 export type ToolTrailRow = { label: string; change: ToolFileChange | null; detail: string };
 
-function trailGroup(label: string): "read" | "list" | null {
+function trailGroup(label: string): "read" | "list" | "search" | "find" | null {
   if (label.startsWith("Read ")) return "read";
   if (label.startsWith("List ")) return "list";
+  if (label === "Search" || label.startsWith("Search ")) return "search";
+  if (label === "Find files" || label.startsWith("Find ")) return "find";
   return null;
 }
 
@@ -696,9 +717,17 @@ export function foldToolTrailRows(
             ? count === 1
               ? "Read 1 file"
               : `Read ${count} files`
-            : count === 1
-              ? "List 1 directory"
-              : `List ${count} directories`,
+            : group === "list"
+              ? count === 1
+                ? "List 1 directory"
+                : `List ${count} directories`
+              : group === "search"
+                ? count === 1
+                  ? "Search 1 time"
+                  : `Search ${count} times`
+                : count === 1
+                  ? "Find 1 pattern"
+                  : `Find ${count} patterns`,
         change: null,
         detail: paths.join("\n"),
       });
@@ -750,6 +779,8 @@ export function toolTrailTypeIcon(type: string): string {
   if (type === "Git status" || type === "Diff") return "arrow.triangle.branch";
   if (type.includes("journey knowledge")) return "sparkles";
   if (type === "Read") return "doc";
+  if (type === "Search") return "magnifyingglass";
+  if (type === "Find") return "magnifyingglass";
   if (type === "Write") return "square.and.arrow.down";
   if (type === "Edit") return "pencil";
   if (type === "List") return "folder";
@@ -1011,6 +1042,7 @@ ${permissionSystemLine(permission)}${planning ? `\n${planning}` : ""}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
 For current facts, news, docs, or anything that may have changed, call web_search instead of guessing. Cite the source URLs it returns.
+To find code, call grep for contents and glob for paths. Do not use the shell to search.
 Prefer edit_file for small changes. Don't commit unless asked. Be concise.${knowledgeBlock}${extra}`,
   };
 }

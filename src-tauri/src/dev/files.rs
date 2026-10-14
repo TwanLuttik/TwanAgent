@@ -386,6 +386,183 @@ pub fn write_file(workspace: &Path, rel: &str, contents: &str) -> Result<()> {
     Ok(())
 }
 
+const SEARCH_MATCHES: usize = 100;
+const SEARCH_FILES: usize = 200;
+const SEARCH_OUTPUT: usize = 40_000;
+const SEARCH_SNIPPET: usize = 240;
+
+/// Case-insensitive content search. Heavy trees are skipped. Lines come back as `path:line:text`.
+pub fn grep(workspace: &Path, pattern: &str, rel: &str, glob_pattern: &str) -> Result<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(Error::Other("pattern is empty".into()));
+    }
+    let needle = pattern.to_ascii_lowercase();
+    let glob_pattern = glob_pattern.trim();
+    let root = resolve_in_workspace(workspace, "")?;
+    let start = resolve_in_workspace(workspace, rel)?;
+    if !start.exists() {
+        return Err(Error::Other("path was not found".into()));
+    }
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    if start.is_file() {
+        scan_search_file(&root, &start, &needle, glob_pattern, &mut hits, &mut truncated);
+    } else if start.is_dir() {
+        walk_grep(&root, &start, &needle, glob_pattern, &mut hits, &mut truncated)?;
+    } else {
+        return Err(Error::Other("path was not found".into()));
+    }
+    Ok(search_text(&hits, truncated || hits.len() >= SEARCH_MATCHES, "No matches."))
+}
+
+/// Path search. `*` stays in one segment. `**` crosses folders. Heavy trees are skipped.
+pub fn glob(workspace: &Path, pattern: &str, rel: &str) -> Result<String> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(Error::Other("pattern is empty".into()));
+    }
+    let root = resolve_in_workspace(workspace, "")?;
+    let start = resolve_in_workspace(workspace, rel)?;
+    if !start.is_dir() {
+        return Err(Error::Other("path is not a folder".into()));
+    }
+    let mut hits = Vec::new();
+    let mut truncated = false;
+    walk_glob(&root, &start, pattern, &mut hits, &mut truncated)?;
+    hits.sort();
+    Ok(search_text(&hits, truncated || hits.len() >= SEARCH_FILES, "No files."))
+}
+
+fn walk_grep(
+    root: &Path,
+    dir: &Path,
+    needle: &str,
+    glob_pattern: &str,
+    hits: &mut Vec<String>,
+    truncated: &mut bool,
+) -> Result<()> {
+    if hits.len() >= SEARCH_MATCHES {
+        *truncated = true;
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    let mut rows: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
+    rows.sort_by_key(|entry| entry.file_name());
+    for entry in rows {
+        if hits.len() >= SEARCH_MATCHES {
+            *truncated = true;
+            return Ok(());
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if TREE_SKIP.contains(&name.as_str()) {
+            continue;
+        }
+        let full = entry.path();
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
+            walk_grep(root, &full, needle, glob_pattern, hits, truncated)?;
+        } else if meta.is_file() {
+            scan_search_file(root, &full, needle, glob_pattern, hits, truncated);
+        }
+    }
+    Ok(())
+}
+
+fn scan_search_file(root: &Path, path: &Path, needle: &str, glob_pattern: &str, hits: &mut Vec<String>, truncated: &mut bool) {
+    if hits.len() >= SEARCH_MATCHES {
+        *truncated = true;
+        return;
+    }
+    let rel = search_rel(root, path);
+    if !twanagent_service::matches_glob(glob_pattern, &rel) {
+        return;
+    }
+    let Ok(text) = read_file(root, &rel) else {
+        return;
+    };
+    for (index, line) in text.lines().enumerate() {
+        if hits.len() >= SEARCH_MATCHES {
+            *truncated = true;
+            return;
+        }
+        if line.to_ascii_lowercase().contains(needle) {
+            hits.push(format!("{rel}:{}:{}", index + 1, search_clip(line)));
+        }
+    }
+}
+
+fn walk_glob(root: &Path, dir: &Path, pattern: &str, hits: &mut Vec<String>, truncated: &mut bool) -> Result<()> {
+    if hits.len() >= SEARCH_FILES {
+        *truncated = true;
+        return Ok(());
+    }
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    let mut rows: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
+    rows.sort_by_key(|entry| entry.file_name());
+    for entry in rows {
+        if hits.len() >= SEARCH_FILES {
+            *truncated = true;
+            return Ok(());
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if TREE_SKIP.contains(&name.as_str()) {
+            continue;
+        }
+        let full = entry.path();
+        let rel = search_rel(root, &full);
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+        if twanagent_service::matches_glob(pattern, &rel) {
+            hits.push(rel);
+        }
+        if is_dir {
+            walk_glob(root, &full, pattern, hits, truncated)?;
+        }
+    }
+    Ok(())
+}
+
+fn search_rel(root: &Path, path: &Path) -> String {
+    crate::paths::relative_to(root, path)
+        .unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+        .replace('\\', "/")
+}
+
+fn search_clip(line: &str) -> String {
+    let trimmed = line.trim();
+    let mut chars = trimmed.chars();
+    let taken: String = chars.by_ref().take(SEARCH_SNIPPET).collect();
+    if chars.next().is_some() { format!("{taken}…") } else { taken }
+}
+
+fn search_text(hits: &[String], truncated: bool, empty: &str) -> String {
+    if hits.is_empty() {
+        return empty.to_string();
+    }
+    let mut text = hits.join("\n");
+    if truncated {
+        text.push_str("\n…results truncated");
+    }
+    if text.len() > SEARCH_OUTPUT {
+        let mut end = SEARCH_OUTPUT;
+        while !text.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n…results truncated");
+    }
+    text
+}
+
 pub fn edit_file(workspace: &Path, rel: &str, old: &str, new: &str) -> Result<()> {
     if old.is_empty() {
         return Err(Error::Other("old_string is empty".into()));
@@ -565,6 +742,23 @@ mod tests {
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["b", "a.txt"]
         );
+    }
+
+    #[test]
+    fn grep_and_glob_skip_heavy_dirs() {
+        let dir = temp_ws();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
+        fs::write(dir.path().join("src/app.ts"), "export const answer = 42;\n").unwrap();
+        fs::write(dir.path().join("node_modules/pkg/skip.ts"), "export const answer = 1;\n").unwrap();
+        let found = grep(dir.path(), "answer", "", "*.ts").unwrap();
+        assert!(found.contains("src/app.ts:1:"));
+        assert!(!found.contains("node_modules"));
+        let paths = glob(dir.path(), "**/*.ts", "").unwrap();
+        assert!(paths.contains("src/app.ts"));
+        assert!(!paths.contains("node_modules"));
+        assert_eq!(grep(dir.path(), "missing", "src", "").unwrap(), "No matches.");
+        assert!(grep(dir.path(), "  ", "", "").is_err());
     }
 
     #[test]

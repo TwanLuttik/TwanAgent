@@ -29,6 +29,7 @@ export const SessionComposer = memo(function SessionComposer({
     mentionFiles,
     allProjectGroups,
     applyWorkspace,
+    assignDraftProject,
     effort,
     messages,
     model,
@@ -44,7 +45,6 @@ export const SessionComposer = memo(function SessionComposer({
     promptImages,
     ready,
     remoteWorkspace,
-    cloudConnecting,
     runtime,
     runningTurns,
     send,
@@ -80,6 +80,7 @@ export const SessionComposer = memo(function SessionComposer({
     [boundId, activeId, messages],
   );
   const landing = placement === "landing";
+  const projectOpen = !boundId || (focused && messages.length === 0);
   const profile = providerProfile(settings.model);
   const providerReady = runtime?.providers?.find((row: { id: string; ready: boolean }) => row.id === profile.id)?.ready ?? ready;
   const ask = `Ask ${profile.agentName}…`;
@@ -107,26 +108,22 @@ export const SessionComposer = memo(function SessionComposer({
       onSend={() => void send(boundId)}
       onStop={() => stop(boundId)}
       busy={chatHasRunningTurn(runningTurns, boundId)}
-      ready={providerReady && !cloudConnecting}
+      ready={providerReady}
       placeholder={
-        cloudConnecting
-          ? "Connecting…"
-          : providerReady
-            ? landing
-              ? ask
-              : message
-            : landing
-              ? `${signIn} to start`
-              : `${signIn} to continue`
+        providerReady ? (landing ? ask : message) : landing ? `${signIn} to start` : `${signIn} to continue`
       }
       workspace={workspace}
       projects={allProjectGroups}
-      onOpenProject={(path) => applyWorkspace(path)}
+      showProject={projectOpen}
+      onOpenProject={(path) => {
+        if (!boundId) assignDraftProject(path);
+        else applyWorkspace(path);
+      }}
       onOpenFolder={openFolder}
       models={models}
       model={settings.model}
       onModel={(id) => pickModel(id, boundId)}
-      lockedProviders={remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
+      lockedProviders={boundId && remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
       effort={settings.effort}
       onEffort={(id) => pickEffort(id, boundId)}
       contextWindow={settings.contextWindow}

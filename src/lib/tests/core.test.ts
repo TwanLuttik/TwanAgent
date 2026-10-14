@@ -208,6 +208,12 @@ describe("tool helpers", () => {
       "Run membership UI tests",
     );
     assert.equal(toolSummary("read_file", { path: "src/lib.rs" }), "Read src/lib.rs");
+    assert.equal(toolSummary("grep", { pattern: "answer" }), "Search answer");
+    assert.equal(toolSummary("glob", { pattern: "**/*.ts" }), "Find **/*.ts");
+    assert.equal(
+      toolDetail({ id: "g", name: "grep", arguments: '{"pattern":"answer","path":"src","glob":"*.rs"}' }),
+      "answer *.rs src",
+    );
     assert.equal(toolSummary("edit_file", { path: "src/lib.rs" }), "Edit lib.rs");
     assert.equal(toolSummary("spawn_subagent", { description: "Find parser" }), "Subagent: Find parser");
     assert.equal(toolSummary("web_search", { query: "  rust 2024 edition  " }), "Web search: rust 2024 edition");
@@ -419,6 +425,9 @@ describe("tool helpers", () => {
     );
     assert.deepEqual(foldToolTrailRows(["List .", "List src"]), [
       { label: "List 2 directories", change: null, detail: "" },
+    ]);
+    assert.deepEqual(foldToolTrailRows(["Search answer", "Search parse"], [], ["answer src", "parse"]), [
+      { label: "Search 2 times", change: null, detail: "answer src\nparse" },
     ]);
   });
 
@@ -969,6 +978,8 @@ describe("tool trail collapse", () => {
     );
     assert.equal(toolTrailTypeCountText("Read", 15), "Read ×15");
     assert.equal(toolTrailTypeIcon("Read"), "doc");
+    assert.equal(toolTrailTypeIcon("Search"), "magnifyingglass");
+    assert.equal(toolTrailTypeIcon("Find"), "magnifyingglass");
     assert.equal(toolTrailTypeIcon("$"), "terminal");
     assert.equal(toolTrailTypeIcon("Edit"), "pencil");
     assert.equal(toolTrailTypeIcon("List"), "folder");
@@ -1273,6 +1284,7 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "read-only").content), /Read-only/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /todo_write/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /web_search/);
+    assert.match(String(systemPrompt("/tmp/app", "ask").content), /call grep for contents and glob for paths/);
     assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6", "Plan mode is Active.").content), /Plan mode is Active/);
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /Plan mode is/);
     assert.match(String(systemPrompt("/tmp/app", "ask").content), /You are a coding agent in TwanAgent/);

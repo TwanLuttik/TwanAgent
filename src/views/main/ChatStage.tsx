@@ -29,12 +29,14 @@ import { PlanApproval } from "../../components/PlanApproval";
 import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, pendingForChat, setDraftForChat, type PendingMessage } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
-import { loadMarkdownOpenMode, saveComposerDraft } from "../../lib/prefs";
+import { PANE_DEFAULT, PANE_MAX, PANE_MIN, loadMarkdownOpenMode, loadPaneWidth, saveComposerDraft, savePaneWidth } from "../../lib/prefs";
 import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
 import { UsageView } from "../UsageView";
 import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
+import { Symbol } from "../../components/Symbol";
+import { isMacOS } from "../../components/WindowButtons";
 import { CenterTabs } from "./AppChrome";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
@@ -90,6 +92,10 @@ export function ChatStage() {
     showServers,
     showSettings,
     showUsage,
+    paneCollapsed,
+    setPaneCollapsed,
+    sidebarCollapsed,
+    setSidebarCollapsed,
     workspace,
   } = useMain();
   const fullPage = Boolean(showSettings || showUsage || showServers || projectSettings);
@@ -97,13 +103,32 @@ export function ChatStage() {
   if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
   const [paneWorkspace, setPaneWorkspace] = useState(workspace);
+  const [paneWidth, setPaneWidth] = useState(loadPaneWidth);
+  const paneSlotRef = useRef<HTMLDivElement>(null);
+  const paneWidthRef = useRef(paneWidth);
+  paneWidthRef.current = paneWidth;
   useEffect(() => {
     if (workspace && opened) setPaneWorkspace(workspace);
   }, [workspace, opened]);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="chrome-tab-row flex h-8 shrink-0 items-start">
+    <div className={`relative z-10 flex min-h-0 min-w-0 flex-1 flex-col ${sidebarCollapsed ? "bg-transparent" : "bg-sidebar"}`}>
+      <div
+        className={`chrome-tab-row relative z-10 flex h-11 shrink-0 items-center ${
+          sidebarCollapsed ? "bg-transparent" : "bg-sidebar"
+        }`}
+      >
+        {sidebarCollapsed && isMacOS() ? (
+          <button
+            type="button"
+            aria-label="Show sidebar"
+            title="Show sidebar"
+            onClick={() => setSidebarCollapsed(false)}
+            className="ml-9 mr-2 flex size-7 shrink-0 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          >
+            <Symbol name="sidebar.left" className="size-3.5" />
+          </button>
+        ) : null}
         {!fullPage ? (
           <CenterTabs
             editor={editor}
@@ -136,7 +161,7 @@ export function ChatStage() {
           <div className="min-w-0 flex-1" data-tauri-drag-region="false" />
         )}
       </div>
-      <div className="flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
+      <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Settings stays mounted after the first open. Escape only hides it,
               so closing does not tear the page down or restart its checks. */}
@@ -224,17 +249,81 @@ export function ChatStage() {
           ) : splitChatIds.length > 1 && editor.focus === "chat" ? (
             <SplitRow ids={splitChatIds} />
           ) : (
-            <ChatColumn key={workspace || "none"} />
+            <ChatColumn />
           )}
           </div>
         </div>
-        {paneWorkspace && !fullPage && !cloudConnecting ? (
-          <Workspace
-            workspace={paneWorkspace}
-            selectedPath={editor.activePath}
-            onOpenFile={openWorkspaceFile}
-            onRefresh={bumpFiles}
-          />
+        {paneWorkspace && activeId && !fullPage ? (
+          <div
+            ref={paneSlotRef}
+            className={`relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden ${
+              paneCollapsed ? "mr-2 transition-[width] duration-200 ease-out" : ""
+            }`}
+            style={{ width: paneCollapsed ? 36 : paneWidth }}
+          >
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize workspace pane"
+              title="Drag to resize"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                const handle = event.currentTarget;
+                const slot = paneSlotRef.current;
+                if (!slot) return;
+                handle.setPointerCapture(event.pointerId);
+                const right = slot.getBoundingClientRect().right;
+                let latest = paneWidthRef.current;
+                const move = (ev: PointerEvent) => {
+                  latest = Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(right - ev.clientX)));
+                  slot.style.width = `${latest}px`;
+                };
+                const up = (ev: PointerEvent) => {
+                  handle.releasePointerCapture(ev.pointerId);
+                  handle.removeEventListener("pointermove", move);
+                  handle.removeEventListener("pointerup", up);
+                  handle.removeEventListener("pointercancel", up);
+                  paneWidthRef.current = latest;
+                  setPaneWidth(latest);
+                  savePaneWidth(latest);
+                };
+                handle.addEventListener("pointermove", move);
+                handle.addEventListener("pointerup", up);
+                handle.addEventListener("pointercancel", up);
+              }}
+              onDoubleClick={() => {
+                setPaneWidth(PANE_DEFAULT);
+                savePaneWidth(PANE_DEFAULT);
+              }}
+              className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize touch-none"
+            >
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 left-0 w-0.5 group-hover:bg-accent/30"
+              />
+            </div>
+            <div className="relative h-full min-w-0 flex-1">
+              <Workspace
+                workspace={paneWorkspace}
+                selectedPath={editor.activePath}
+                onOpenFile={openWorkspaceFile}
+                onRefresh={bumpFiles}
+                onCollapse={() => setPaneCollapsed(true)}
+                pending={paneWorkspace !== workspace}
+              />
+              <button
+                type="button"
+                aria-label="Show files"
+                title="Show files"
+                onClick={() => setPaneCollapsed(false)}
+                className={`absolute top-0 left-0 flex size-9 items-center justify-center rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink ${
+                  paneCollapsed ? "" : "pointer-events-none opacity-0"
+                }`}
+              >
+                <Symbol name="sidebar.right" className="size-3.5" />
+              </button>
+            </div>
+          </div>
         ) : null}
       </div>
     </div>
@@ -313,7 +402,6 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
     mentionFiles,
     messages: liveMessages,
     model,
-    openingId,
     pendingByChat,
     removePendingAt,
     runningTurns,
@@ -330,7 +418,11 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   }, [chatId]);
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>(() => splitPaneCache(chatId)?.messages ?? []);
   const messages = active ? liveMessages : storedMessages;
-  const [loading, setLoading] = useState(() => !splitPaneCache(chatId));
+  // Only a pane that has nothing to show yet is loading. Flipping focus must not
+  // replace a transcript that is already on screen with Loading….
+  const [loading, setLoading] = useState(
+    () => (splitPaneCache(chatId)?.messages.length ?? 0) === 0,
+  );
   const stream = useSecondaryLiveStream();
   const streamEmpty = useSecondaryLiveStreamEmpty();
   const activeRunning = chatHasRunningTurn(runningTurns, chatId);
@@ -342,12 +434,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
     if (active) return;
     let gone = false;
     const cached = splitPaneCache(chatId);
-    if (cached?.messages.length) {
-      setStoredMessages(cached.messages);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
+    if (cached?.messages.length) setStoredMessages(cached.messages);
     const load = () => {
       void import("../../lib/tauri").then((api) =>
         api
@@ -414,7 +501,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
             model={model}
             centeredWithoutStream={centered}
             activeRunning={activeRunning}
-            transcriptPending={loading || openingId === chatId}
+            transcriptPending={!active && loading && messages.length === 0}
             conversationId={chatId}
             mentionFiles={mentionFiles}
             onLoadOlder={() => undefined}

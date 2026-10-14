@@ -48,6 +48,37 @@ pub fn tool_defs() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "grep",
+                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. Skips node_modules, target, dist, build, and .git. Use this instead of a shell search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Text to find. Matched case-insensitively." },
+                        "path": { "type": "string", "description": "Folder or file relative to the workspace. Empty searches the whole workspace." },
+                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs or src/**/*.ts. Empty searches every text file." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "glob",
+                "description": "Find files and folders by path pattern. Returns workspace-relative paths. Skips node_modules, target, dist, build, and .git. Use this instead of a shell find.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Glob such as **/*.ts or src/**/mod.rs. * stays in one segment. ** crosses folders." },
+                        "path": { "type": "string", "description": "Folder relative to the workspace. Empty starts at the workspace root." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "read_file",
                 "description": "Read a UTF-8 text file in the workspace.",
                 "parameters": {

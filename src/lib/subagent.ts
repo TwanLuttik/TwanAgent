@@ -95,9 +95,9 @@ export function subagentSystemPrompt(
 ): ChatMessage {
   const limits =
     type === "explore"
-      ? "You are an explore agent. Search and read, including the web, but do not edit files or run shell commands."
+      ? "You are an explore agent. Search with grep and glob, read files, and use the web, but do not edit files or run shell commands."
       : type === "plan"
-        ? "You are a plan agent. Explore the codebase and the web, then produce a structured plan. Do not edit files or run shell commands."
+        ? "You are a plan agent. Search with grep and glob, explore the codebase and the web, then produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
   const knowledgeBlock = (knowledge ?? "").trim() ? `\nJourney knowledge:\n${knowledge!.trim()}` : "";
   const name = agentNameFor(modelId ?? "");

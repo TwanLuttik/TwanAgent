@@ -82,7 +82,10 @@ export function Terminal({
       if (frame || !paneIsShown(el)) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        if (paneIsShown(el)) fit.fit();
+        // Fitting rebuilds the grid and tells the shell. While the pane edge is
+        // moving, stretch the canvas instead and fit once when the drag ends.
+        if (!paneIsShown(el) || el.closest("[data-pane-resizing]")) return;
+        fit.fit();
       });
     });
     ro.observe(el);

@@ -15,6 +15,8 @@ export type MainModel = {
   answerPlan: MainFn;
   answerShell: MainFn;
   applyWorkspace: MainFn;
+  /** Point an unsaved new chat at another project without opening that project's chats. */
+  assignDraftProject: MainFn;
   beginPendingEdit: MainFn;
   busy: any;
   chatTabs: { id: string; title: string; kind: "chat" | "terminal"; running: boolean }[];
@@ -152,6 +154,10 @@ export type MainModel = {
   showUsage: any;
   sidebarDragging: any;
   sidebarWidth: any;
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: MainFn;
+  paneCollapsed: boolean;
+  setPaneCollapsed: MainFn;
   skillBusy: any;
   skills: any;
   startNewChat: MainFn;

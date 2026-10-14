@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::files;
+use crate::search::{self, GlobQuery, GrepQuery};
 
 pub fn tool_status(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
@@ -13,6 +14,14 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
         "write_file" => format!("Writing {}", label(path)),
         "edit_file" => format!("Editing {}", label(path)),
         "list_dir" => format!("Listing {}", if path.is_empty() { "." } else { path }),
+        "grep" => {
+            let pattern = args.get("pattern").and_then(Value::as_str).unwrap_or("").trim();
+            if pattern.is_empty() { "Searching".into() } else { format!("Searching for {pattern}") }
+        }
+        "glob" => {
+            let pattern = args.get("pattern").and_then(Value::as_str).unwrap_or("").trim();
+            if pattern.is_empty() { "Finding files".into() } else { format!("Finding {pattern}") }
+        }
         "run_command" => {
             let description = args.get("description").and_then(Value::as_str).unwrap_or("").trim();
             if description.is_empty() {
@@ -34,6 +43,8 @@ pub trait Workspace {
     fn write(&self, path: &str, contents: &str) -> Result<()>;
     fn edit(&self, path: &str, old: &str, new: &str) -> Result<()>;
     fn list(&self, path: &str) -> Result<String>;
+    fn grep(&self, pattern: &str, path: &str, glob: &str) -> Result<String>;
+    fn glob(&self, pattern: &str, path: &str) -> Result<String>;
     fn run(&self, command: &str) -> Result<String>;
 }
 
@@ -62,6 +73,25 @@ impl Workspace for LocalWorkspace {
             .collect::<Vec<_>>()
             .join("\n"))
     }
+    fn grep(&self, pattern: &str, path: &str, glob: &str) -> Result<String> {
+        search::grep(
+            &self.root,
+            &GrepQuery {
+                pattern: pattern.to_string(),
+                path: path.to_string(),
+                glob: glob.to_string(),
+            },
+        )
+    }
+    fn glob(&self, pattern: &str, path: &str) -> Result<String> {
+        search::glob(
+            &self.root,
+            &GlobQuery {
+                pattern: pattern.to_string(),
+                path: path.to_string(),
+            },
+        )
+    }
     fn run(&self, command: &str) -> Result<String> {
         files::run_command(&self.root, command)
     }
@@ -82,6 +112,8 @@ pub fn dispatch(
     match name {
         "read_file" => workspace.read(&text("path")),
         "list_dir" => workspace.list(&text("path")),
+        "grep" => workspace.grep(&text("pattern"), &text("path"), &text("glob")),
+        "glob" => workspace.glob(&text("pattern"), &text("path")),
         "write_file" => {
             let path = text("path");
             workspace.write(&path, &text("contents"))?;
@@ -131,5 +163,23 @@ mod tests {
         .unwrap();
         assert_eq!(result, "User skipped this command.");
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn grep_and_glob_run_inside_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/app.rs"), "fn answer() {}\n").unwrap();
+        struct Allow;
+        impl ToolHost for Allow {
+            fn allow_shell(&self, _command: &str) -> bool {
+                true
+            }
+        }
+        let workspace = LocalWorkspace { root: dir.path().to_path_buf() };
+        let found = dispatch(&workspace, &Allow, "read-only", "grep", r#"{"pattern":"answer","glob":"*.rs"}"#).unwrap();
+        assert!(found.contains("src/app.rs:1:"));
+        let paths = dispatch(&workspace, &Allow, "read-only", "glob", r#"{"pattern":"**/*.rs"}"#).unwrap();
+        assert!(paths.contains("src/app.rs"));
     }
 }

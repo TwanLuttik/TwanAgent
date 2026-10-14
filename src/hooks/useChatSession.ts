@@ -65,6 +65,7 @@ export function useChatSession({
   liveByChatRef,
   subagentsByChatRef,
   stickToBottomRef,
+  holdEmptyChatRef,
   libraryRef,
   cloudTranscriptsRef,
 }: {
@@ -104,6 +105,7 @@ export function useChatSession({
   liveByChatRef: RefObject<Map<string, LiveChat>>;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
+  holdEmptyChatRef?: RefObject<boolean>;
   cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   libraryRef: RefObject<{
     persist: (
@@ -141,7 +143,7 @@ export function useChatSession({
             sidebarLoadedForRef.current = ws;
             setConversations(cached.conversations);
             setJourneys(cached.journeys);
-            const savedId = loadConversation(ws);
+            const savedId = holdEmptyChatRef?.current ? "" : loadConversation(ws);
             const row = cached.conversations.find((item) => item.id === savedId);
             const transcript = row ? cached.transcripts.find((item) => item.id === row.id) : undefined;
             if (row && transcript && !activeIdRef.current) {
@@ -172,6 +174,11 @@ export function useChatSession({
       // local mount, saved before the server created the real conversation.
       const rows = hostedChats ? loaded.filter((row) => !isLocalCloudDraft(row)) : loaded;
       if (!isSameProject(ws, workspaceRef.current)) return;
+      // A new chat has not joined a project yet. Its sidebar stays on the project
+      // it was opened from, even when the selector points the first prompt elsewhere.
+      if (holdEmptyChatRef?.current && !preferId) {
+        return;
+      }
       if (conversationsRef.current.length === 0 && rows.length > 0) {
         setConversations(rows);
       }
@@ -329,6 +336,7 @@ export function useChatSession({
       liveByChatRef,
       subagentsByChatRef,
       stickToBottomRef,
+      holdEmptyChatRef,
       libraryRef,
       cloudTranscriptsRef,
     ],

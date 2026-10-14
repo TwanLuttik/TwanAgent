@@ -936,6 +936,8 @@ mod tests {
             .filter_map(|row| row["name"].as_str())
             .collect();
         assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"glob"));
         assert!(!names.iter().any(|name| name.contains("plan")));
         assert_eq!(max_tokens_for("MiniMax-M2.7"), 128_000);
         assert_eq!(context_window_for("MiniMax-M2.7"), Some(200_000));

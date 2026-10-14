@@ -410,7 +410,8 @@ function ChatChromeTab({
   onMenu: (event: ReactMouseEvent<HTMLElement>) => void;
 }) {
   const terminal = chat?.kind === "terminal";
-  const label = chat?.title || (terminal ? "Terminal" : "Chat");
+  const raw = chat?.title?.trim() || "";
+  const label = terminal ? raw || "Terminal" : raw && raw !== "New chat" ? raw : "New thread";
   return (
     <ChromeTab
       selected={selected}

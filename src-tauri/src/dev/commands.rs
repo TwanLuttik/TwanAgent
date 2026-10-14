@@ -3,8 +3,8 @@ use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::files::{
-    create_dir, delete_paths, edit_file, existing_files, file_preview, list_dir, move_path,
-    read_file, rename_path, resolve_file, tree_snapshot, write_file,
+    create_dir, delete_paths, edit_file, existing_files, file_preview, glob, grep, list_dir,
+    move_path, read_file, rename_path, resolve_file, tree_snapshot, write_file,
 };
 use super::git::{
     git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
@@ -206,6 +206,46 @@ pub async fn dev_list_dir(
             return remote.list(&rel);
         }
         list_dir(&root, &rel)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_grep(
+    state: State<'_, AppState>,
+    workspace: String,
+    pattern: String,
+    path: Option<String>,
+    glob: Option<String>,
+) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    let remote = remote_files(&state, &root)?;
+    let rel = path.unwrap_or_default();
+    let glob = glob.unwrap_or_default();
+    off_main(move || {
+        if let Some(remote) = remote {
+            return remote.grep(&pattern, &rel, &glob);
+        }
+        grep(&root, &pattern, &rel, &glob)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_glob(
+    state: State<'_, AppState>,
+    workspace: String,
+    pattern: String,
+    path: Option<String>,
+) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    let remote = remote_files(&state, &root)?;
+    let rel = path.unwrap_or_default();
+    off_main(move || {
+        if let Some(remote) = remote {
+            return remote.glob(&pattern, &rel);
+        }
+        glob(&root, &pattern, &rel)
     })
     .await
 }
@@ -632,6 +672,16 @@ impl RemoteFiles {
             return Err(Error::Other(err.trim().chars().take(300).collect()));
         }
         Ok(out.stdout)
+    }
+
+    fn grep(&self, pattern: &str, rel: &str, glob: &str) -> Result<String> {
+        let command = crate::remote::files::remote_grep_command(&self.project.remote_path, pattern, rel, glob)?;
+        self.exec_at("/", &command)
+    }
+
+    fn glob(&self, pattern: &str, rel: &str) -> Result<String> {
+        let command = crate::remote::files::remote_glob_command(&self.project.remote_path, pattern, rel)?;
+        self.exec_at("/", &command)
     }
 
     fn read(&self, rel: &str) -> Result<String> {

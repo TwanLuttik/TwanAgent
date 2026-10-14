@@ -8,8 +8,11 @@ import {
   loadLiveSocketDebug,
   loadPermission,
   loadSidebarWidth,
+  loadSidebarCollapsed,
+  loadPaneCollapsed,
   loadExpandEdits,
   loadFileHoverCard,
+  loadActiveTab,
   loadCollapsedProjects,
   loadComposerDrafts,
   loadConversation,
@@ -25,10 +28,13 @@ import {
   loadOpenFileTree,
   savePermission,
   saveSidebarWidth,
+  saveSidebarCollapsed,
+  savePaneCollapsed,
   saveGitChangesView,
   pushRecentWorkspace,
   removeRecentWorkspace,
   rewriteStoredProjectPaths,
+  saveActiveTab,
   saveCollapsedProjects,
   flushComposerDrafts,
   loadComposerPastes,
@@ -147,6 +153,19 @@ describe("sidebar width", () => {
     localStorage.setItem("twanagent.sidebarWidth", "40");
     assert.equal(loadSidebarWidth(), SIDEBAR_MIN);
   });
+
+  it("remembers when the sidebar or the right pane is collapsed", () => {
+    assert.equal(loadSidebarCollapsed(), false);
+    assert.equal(loadPaneCollapsed(), false);
+    saveSidebarCollapsed(true);
+    savePaneCollapsed(true);
+    assert.equal(loadSidebarCollapsed(), true);
+    assert.equal(loadPaneCollapsed(), true);
+    saveSidebarCollapsed(false);
+    savePaneCollapsed(false);
+    assert.equal(loadSidebarCollapsed(), false);
+    assert.equal(loadPaneCollapsed(), false);
+  });
 });
 
 describe("markdown open mode", () => {
@@ -233,6 +252,7 @@ describe("project path migration", () => {
       { kind: "chat", id: "chat-1" },
       { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
     ]);
+    saveActiveTab("/app/projects/demo", "chat:chat-1");
     saveCollapsedProjects(["/app/projects/demo"]);
     rewriteStoredProjectPaths([
       { from: "/app/projects/Demo", to: "/Users/me/twanagent/projects/Demo" },
@@ -249,6 +269,8 @@ describe("project path migration", () => {
       { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
     ]);
     assert.deepEqual(loadProjectOpenTabs("/app/projects/demo"), []);
+    assert.equal(loadActiveTab("/Users/me/twanagent/projects/Demo"), "chat:chat-1");
+    assert.equal(loadActiveTab("/app/projects/demo"), "");
     assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
   });
 });
@@ -287,6 +309,14 @@ describe("open tabs", () => {
       { kind: "chat", id: "a" },
       { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.5 },
     ]);
+  });
+
+  it("remembers which tab was selected", () => {
+    saveActiveTab("/App/projects/Demo", "split:split-1");
+    assert.equal(loadActiveTab("/App/projects/Demo"), "split:split-1");
+    assert.equal(loadActiveTab("/Users/me/other"), "");
+    saveActiveTab("/App/projects/Demo", "");
+    assert.equal(loadActiveTab("/App/projects/Demo"), "");
   });
 
   it("clears a project when its last tab closes", () => {

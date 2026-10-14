@@ -3,6 +3,8 @@ import { DeleteProjectDialog, ProjectContextMenu } from "../../components/AllPro
 import { Flash } from "../../components/Flash";
 import { FolderDialog } from "../../components/FolderDialog";
 import { isAppProject } from "../../lib/all-projects";
+import { isMacOS, WindowButtons } from "../../components/WindowButtons";
+import { SpaceCorner } from "../../components/SpaceCorner";
 import { AppSidebar } from "./AppSidebar";
 import { ChatStage } from "./ChatStage";
 import { useMain } from "./context";
@@ -22,6 +24,7 @@ export function MainShell() {
     setFolderOpen,
     setPendingDeleteProject,
     setProjectMenu,
+    sidebarCollapsed,
     showLanding,
     startNewChat,
     openWorkspaceFile,
@@ -32,7 +35,15 @@ export function MainShell() {
 
   return (
     <WorkspaceFileLinks workspace={workspace || null} onOpenFile={openWorkspaceFile}>
-      <div className="flex h-full min-w-0 overflow-hidden bg-sidebar">
+      <div className="relative isolate flex h-full min-w-0 overflow-hidden bg-sidebar">
+        <SpaceCorner />
+        {sidebarCollapsed && isMacOS() ? (
+          <div className="pointer-events-none absolute top-0 left-0 z-40 flex h-11 items-center">
+            <div className="pointer-events-auto">
+              <WindowButtons />
+            </div>
+          </div>
+        ) : null}
         <Flash />
         {folderOpen ? (
           <FolderDialog

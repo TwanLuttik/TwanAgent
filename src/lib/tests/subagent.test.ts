@@ -66,6 +66,9 @@ describe("childCanUseTool", () => {
     assert.equal(childCanUseTool("plan", "run_command"), false);
     assert.equal(childCanUseTool("general-purpose", "run_command"), true);
     assert.equal(childCanUseTool("explore", "list_dir"), true);
+    assert.equal(childCanUseTool("explore", "grep"), true);
+    assert.equal(childCanUseTool("explore", "glob"), true);
+    assert.equal(childCanUseTool("plan", "grep"), true);
     assert.equal(childCanUseTool("explore", "web_search"), true);
     assert.equal(childCanUseTool("plan", "web_search"), true);
   });

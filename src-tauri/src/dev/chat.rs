@@ -83,6 +83,37 @@ fn base_tools_json() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "grep",
+                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. Skips node_modules, target, dist, build, and .git. Use this to find a symbol instead of listing folders or running a shell search.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Text to find. Matched case-insensitively." },
+                        "path": { "type": "string", "description": "Folder or file relative to the workspace. Empty searches the whole workspace." },
+                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs or src/**/*.ts. Empty searches every text file." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "glob",
+                "description": "Find files and folders by path pattern. Returns workspace-relative paths. Skips node_modules, target, dist, build, and .git. Use this to find files by name instead of listing the tree.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Glob such as **/*.ts or src/**/mod.rs. * stays in one segment. ** crosses folders." },
+                        "path": { "type": "string", "description": "Folder relative to the workspace. Empty starts at the workspace root." }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "read_file",
                 "description": "Read a UTF-8 text file in the workspace.",
                 "parameters": {
@@ -805,9 +836,13 @@ mod tests {
         let grok = names(tools_json(false));
         assert!(grok.iter().any(|name| name == "enter_plan_mode"));
         assert!(grok.iter().any(|name| name == "exit_plan_mode"));
+        assert!(grok.iter().any(|name| name == "grep"));
+        assert!(grok.iter().any(|name| name == "glob"));
         let claude = names(tools_json_for(true, false));
         assert!(!claude.iter().any(|name| name == "enter_plan_mode"));
         assert!(!claude.iter().any(|name| name == "exit_plan_mode"));
+        assert!(claude.iter().any(|name| name == "grep"));
+        assert!(claude.iter().any(|name| name == "glob"));
         assert!(claude.iter().any(|name| name == "update_journey_knowledge"));
     }
 

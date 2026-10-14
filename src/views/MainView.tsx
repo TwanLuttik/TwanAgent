@@ -9,6 +9,8 @@ import { setSkillEnabledInToml, type DetectedSkill } from "../lib/skill";
 import {
   chatIdsInTabs,
   closeTabChat,
+  primaryChatId,
+  tabItemKey,
   clampSplitShare,
   focusSplitChat,
   focusSplitPane as focusSplitPaneItems,
@@ -37,22 +39,28 @@ import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
 import type { JourneySummary } from "../lib/journey";
 import { parseConversationKind } from "../lib/terminal-chat";
-import { emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, skillEditorPath, type EditorState } from "../lib/editor";
+import { codeTabEditor, emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, skillEditorPath, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
   SIDEBAR_MIN,
+  loadActiveTab,
   loadComposerDrafts,
   loadComposerPastes,
   loadOpenTabs,
+  saveActiveTab,
   saveProjectOpenTabs,
   type StoredTabItem,
   saveComposerPastes,
   loadEffort,
   loadPermission,
   loadSidebarWidth,
+  loadSidebarCollapsed,
+  loadPaneCollapsed,
   loadWorkspace,
   saveComposerDraft,
   saveSidebarWidth,
+  saveSidebarCollapsed,
+  savePaneCollapsed,
   saveWorkspace,
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
@@ -224,11 +232,23 @@ export function MainView() {
   } = useOverlays();
   const [usageTick, setUsageTick] = useState(0);
   const [fileDrag, setFileDrag] = useState(false);
-  const [editor, setEditor] = useState<EditorState>(emptyEditor);
+  const [editor, setEditor] = useState<EditorState>(() =>
+    loadActiveTab(loadWorkspace()) === "code" ? codeTabEditor() : emptyEditor(),
+  );
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [sidebarDragging, setSidebarDragging] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(loadSidebarCollapsed);
+  const [paneCollapsed, setPaneCollapsedState] = useState(loadPaneCollapsed);
+  const setSidebarCollapsed = useCallback((collapsed: boolean) => {
+    setSidebarCollapsedState(collapsed);
+    saveSidebarCollapsed(collapsed);
+  }, []);
+  const setPaneCollapsed = useCallback((collapsed: boolean) => {
+    setPaneCollapsedState(collapsed);
+    savePaneCollapsed(collapsed);
+  }, []);
   const projectsRootRef = useRef("");
   const [projectMenu, setProjectMenu] = useState<{ x: number; y: number; path: string; name: string } | null>(
     null,
@@ -296,6 +316,7 @@ export function MainView() {
   const composerDockRef = useRef<HTMLDivElement>(null);
   const [composerPad, setComposerPad] = useState(CHAT_BOTTOM_PAD_FALLBACK);
   const stickToBottomRef = useRef(true);
+  const holdEmptyChatRef = useRef(false);
   const followingRef = useRef(false);
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
@@ -366,6 +387,7 @@ export function MainView() {
     liveByChatRef,
     subagentsByChatRef,
     stickToBottomRef,
+    holdEmptyChatRef,
     libraryRef,
     cloudTranscriptsRef,
   });
@@ -416,8 +438,12 @@ export function MainView() {
     };
   }, []);
 
+  holdEmptyChatRef.current = !activeId && messages.length === 0;
   useEffect(() => {
     if (!pathsReady || !workspace) return;
+    // A new chat has not joined a project. Loading the one just picked would
+    // replace the empty screen and rebuild the composer.
+    if (holdEmptyChatRef.current) return;
     if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
     void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
   }, [pathsReady, workspace, remoteKnown, remoteWorkspace, linkReady, reloadConversations, setFlash]);
@@ -501,8 +527,10 @@ export function MainView() {
       setOpened(false);
       return;
     }
+    // The empty chat only points at a project. Opening the folder waits until a
+    // real chat is on screen, so the composer does not rebuild on each pick.
+    if (!activeId) return;
     let cancelled = false;
-    setOpened(false);
     void api
       .openFolder(workspace)
       .then((path) => {
@@ -587,7 +615,7 @@ export function MainView() {
       cancelled = true;
       window.clearTimeout(remoteTimer);
     };
-  }, [pathsReady, workspace, setFlash]);
+  }, [pathsReady, workspace, Boolean(activeId), setFlash]);
 
   const { mcpBusy, setMcpBusy, skillBusy, setSkillBusy } = useCapabilities({
     workspace,
@@ -797,6 +825,7 @@ export function MainView() {
     setUnseenFinished,
     setPendingByChat,
     setChatTabsByProject,
+    chatTabsByProject,
     setFlash,
     bumpFiles,
   });
@@ -899,6 +928,7 @@ export function MainView() {
     reorderProjects,
     deleteProjectFromSidebar,
     applyWorkspace,
+    assignDraftProject,
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
@@ -933,6 +963,33 @@ export function MainView() {
     if (!workspace) return;
     saveProjectOpenTabs(workspace, tabItems.map(tabItemToStored));
   }, [workspace, tabItems]);
+  const activeTabKey = (() => {
+    if (editor.focus === "file") return "code";
+    const item = tabItems.find((row) => {
+      if (row.kind === "chat") return row.id === activeId;
+      if (row.kind === "split") return row.group.chatIds.includes(activeId);
+      return false;
+    });
+    return item ? tabItemKey(item) : "";
+  })();
+  useEffect(() => {
+    if (!workspace || !activeTabKey) return;
+    saveActiveTab(workspace, activeTabKey);
+  }, [workspace, activeTabKey]);
+  const restoredTabFor = useRef("");
+  useEffect(() => {
+    if (!workspace || !activeId) return;
+    const key = projectKey(workspace);
+    if (restoredTabFor.current === key) return;
+    restoredTabFor.current = key;
+    const saved = loadActiveTab(workspace);
+    if (!saved.startsWith("split:")) return;
+    const groupId = saved.slice("split:".length);
+    const group = tabItems.find((item) => item.kind === "split" && item.group.id === groupId);
+    if (!group || group.kind !== "split") return;
+    const paneId = primaryChatId(group);
+    if (paneId && paneId !== activeId) void openChat(paneId);
+  }, [workspace, activeId, tabItems, openChat]);
   const seenChats = useRef({ key: "", ids: new Set<string>() });
   useEffect(() => {
     if (!workspace || conversations.length === 0) return;
@@ -1104,12 +1161,10 @@ export function MainView() {
     const items = chatTabsByProject[key] ?? [];
     if (!splitGroupForChat(items, id)) return false;
     setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
-    setChatTabsByProject((prev) => {
-      const current = prev[key] ?? [];
-      const next = focusSplitChat(current, id);
-      return next === current ? prev : { ...prev, [key]: next };
-    });
-    if (id !== activeId) void openChat(id);
+    const current = chatTabsByProject[key] ?? [];
+    const next = focusSplitChat(current, id);
+    if (next !== current) setChatTabsByProject((prev) => ({ ...prev, [key]: next }));
+    if (id !== activeId) void openChat(id, { ...chatTabsByProject, [key]: next });
     return true;
   };
   library.revealListedChatRef.current = (id) => revealSplitRef.current(id);
@@ -1129,13 +1184,13 @@ export function MainView() {
         (item) => item.kind === "split" && item.group.id === groupId,
       );
       if (!group || group.kind !== "split") return;
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = focusSplitPaneItems(current, groupId, pane);
-        return next === current ? prev : { ...prev, [key]: next };
-      });
       const id = group.group.chatIds[pane];
-      if (id && id !== activeId) void openChat(id);
+      const current = chatTabsByProject[key] ?? [];
+      const next = focusSplitPaneItems(current, groupId, pane);
+      if (next !== current) setChatTabsByProject((prev) => ({ ...prev, [key]: next }));
+      // Pass the focused tabs in. State has not committed yet, and openChat must
+      // see this chat as already on screen so it does not fetch it and show Loading….
+      if (id && id !== activeId) void openChat(id, { ...chatTabsByProject, [key]: next });
     },
     [workspace, chatTabsByProject, activeId, openChat],
   );
@@ -1444,6 +1499,7 @@ export function MainView() {
     answerPlan,
     answerShell,
     applyWorkspace,
+    assignDraftProject,
     beginPendingEdit,
     busy,
     chatTabs,
@@ -1583,6 +1639,10 @@ export function MainView() {
     showUsage,
     sidebarDragging,
     sidebarWidth,
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    paneCollapsed,
+    setPaneCollapsed,
     skillBusy,
     skills,
     startNewChat,

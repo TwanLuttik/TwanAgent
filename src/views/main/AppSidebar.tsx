@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { AllProjectsList } from "../../components/AllProjectsList";
 import { ConversationList } from "../../components/ConversationList";
-import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
@@ -34,6 +34,8 @@ export function AppSidebar() {
     openUsage,
     sidebarDragging,
     sidebarWidth,
+    sidebarCollapsed,
+    setSidebarCollapsed,
     usageTick,
   } = useMain();
   const { showSettings } = useSidebar();
@@ -43,12 +45,17 @@ export function AppSidebar() {
   const [todoByChat, setTodoByChat] = useState<Record<string, TodoBadge>>({});
 
   return (
-    <aside className="relative flex shrink-0 flex-col bg-sidebar" style={{ width: sidebarWidth }}>
+    <aside
+      className={`relative flex shrink-0 flex-col overflow-hidden ${sidebarCollapsed ? "z-10 bg-transparent" : "z-0 bg-sidebar"} ${sidebarDragging ? "" : "transition-[width] duration-200 ease-out"}`}
+      style={{ width: sidebarCollapsed ? 44 : sidebarWidth }}
+    >
+      {sidebarCollapsed ? <CollapsedRail /> : null}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label="Resize sidebar"
         title="Drag to resize"
+        hidden={sidebarCollapsed}
         onPointerDown={onSidebarResizeStart}
         onDoubleClick={() => {
           setSidebarWidth(SIDEBAR_DEFAULT);
@@ -63,10 +70,16 @@ export function AppSidebar() {
           }`}
         />
       </div>
-      {!showSettings ? <SpaceCorner /> : null}
+      <div className={sidebarCollapsed ? "hidden" : "contents"}>
       <div className={`relative z-10 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         <WindowButtons />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
+        <PanelToggle
+          label="Hide sidebar"
+          icon="sidebar.left"
+          pressed
+          onClick={() => setSidebarCollapsed(true)}
+        />
         {!showSettings ? (
           <>
             <button
@@ -111,7 +124,81 @@ export function AppSidebar() {
           usageTick={usageTick}
         />
       </div>
+      </div>
     </aside>
+  );
+}
+
+function CollapsedRail() {
+  const { allProjectGroups, openProjectFromSidebar, workspace } = useSidebar();
+  const [tip, setTip] = useState<{ name: string; top: number; left: number } | null>(null);
+  return (
+    <div className="absolute inset-0 z-30 flex flex-col">
+      <div className="h-11 shrink-0" />
+      <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-auto px-1 pb-2">
+        {allProjectGroups.map((group) => {
+          const current = isSameProject(group.path, workspace);
+          return (
+            <button
+              key={projectKey(group.path)}
+              type="button"
+              aria-label={group.name}
+              aria-current={current ? "true" : undefined}
+              onClick={() => openProjectFromSidebar(group.path)}
+              onMouseEnter={(event) => {
+                const box = event.currentTarget.getBoundingClientRect();
+                setTip({ name: group.name, top: box.top + box.height / 2, left: box.right + 10 });
+              }}
+              onMouseLeave={() => setTip((current) => (current?.name === group.name ? null : current))}
+              className={`flex size-8 items-center justify-center rounded-[8px] ${
+                current ? "bg-wash-strong text-accent" : "text-muted hover:bg-wash hover:text-ink"
+              }`}
+            >
+              <Symbol name="folder.fill" className="size-4" />
+            </button>
+          );
+        })}
+      </div>
+      {tip
+        ? createPortal(
+            <span
+              role="tooltip"
+              className="rail-tip pointer-events-none fixed z-50 -translate-y-1/2 rounded-md border border-line/25 bg-canvas px-2 py-1 text-[12px] whitespace-nowrap text-ink shadow-card"
+              style={{ top: tip.top, left: tip.left }}
+            >
+              {tip.name}
+            </span>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+function PanelToggle({
+  label,
+  icon,
+  pressed = false,
+  onClick,
+}: {
+  label: string;
+  icon: "sidebar.left" | "sidebar.right";
+  pressed?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={pressed}
+      title={label}
+      onClick={onClick}
+      className={`flex size-7 items-center justify-center rounded-[6px] hover:bg-wash ${
+        pressed ? "text-ink" : "text-muted hover:text-ink"
+      }`}
+    >
+      <Symbol name={icon} className="size-3.5" />
+    </button>
   );
 }
 

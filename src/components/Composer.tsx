@@ -56,6 +56,7 @@ export function Composer({
   placeholder,
   workspace,
   projects = [],
+  showProject = true,
   onOpenProject,
   onOpenFolder,
   models,
@@ -96,6 +97,8 @@ export function Composer({
   workspace: string;
   /** Known projects. When present, the folder chip opens this list instead of the new-project dialog. */
   projects?: ProjectRow[];
+  /** Hidden once the open chat already has messages. A saved chat cannot move projects. */
+  showProject?: boolean;
   onOpenProject?: (path: string) => void;
   onOpenFolder: () => void;
   models: Model[];
@@ -642,12 +645,14 @@ export function Composer({
             onPick={pickMic}
             onClose={() => setMicMenu(false)}
           />
-          <ProjectSelect
-            workspace={workspace}
-            projects={projects}
-            onOpen={onOpenProject ?? (() => onOpenFolder())}
-            onNew={onOpenFolder}
-          />
+          {showProject ? (
+            <ProjectSelect
+              workspace={workspace}
+              projects={projects}
+              onOpen={onOpenProject ?? (() => onOpenFolder())}
+              onNew={onOpenFolder}
+            />
+          ) : null}
           {busy && onStop ? (
             <button
               type="button"
