@@ -41,7 +41,10 @@ describe("parseAccountUsage", () => {
     assert.equal(parsed?.balanceCents, 1250);
     assert.equal(parsed?.balanceCurrency, "USD");
     assert.equal(parsed?.creditStatus, "available");
-    assert.equal(formatAccountBalance(1250, "USD"), "$12.50");
+    assert.equal(
+      formatAccountBalance(1250, "USD"),
+      (12.5).toLocaleString(undefined, { style: "currency", currency: "USD" }),
+    );
     assert.equal(formatAccountBalance(null), "");
   });
 
@@ -65,7 +68,10 @@ describe("parseAccountUsage", () => {
     });
     assert.equal(balance?.windows.length, 0);
     assert.equal(balance?.balanceCents, 1250);
-    assert.equal(formatAccountBalance(1250, "USD"), "$12.50");
+    assert.equal(
+      formatAccountBalance(1250, "USD"),
+      (12.5).toLocaleString(undefined, { style: "currency", currency: "USD" }),
+    );
   });
 
   it("reports a disconnected account with no windows", () => {

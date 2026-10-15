@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   attachTerminalLinks,
   attachXtermInput,
@@ -194,72 +194,94 @@ describe("attachTerminalLinks", () => {
     return { opened, fire, elementHandlers, link: () => last?.[0], stop };
   }
 
-  it("underlines and opens only while command is held", () => {
-    const { opened, fire, link } = setup("see https://example.com/a");
-    const item = link();
-    assert.ok(item);
-    assert.equal(item.decorations.underline, false);
-    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
-    assert.equal(item.decorations.underline, false);
-    assert.equal(item.decorations.pointerCursor, false);
-    item.activate({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
-    assert.deepEqual(opened, []);
+  for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
+    describe(platform, () => {
+      const mac = platform === "MacIntel";
+      const modifierKey = mac ? "Meta" : "Control";
+      const modifiers = { metaKey: mac, ctrlKey: !mac };
+      let navigatorDescriptor: PropertyDescriptor | undefined;
 
-    const commandDown = {
-      type: "keydown",
-      key: "Meta",
-      metaKey: true,
-      ctrlKey: false,
-      getModifierState: () => true,
-    } as unknown as KeyboardEvent;
-    fire("keydown", commandDown);
-    assert.equal(item.decorations.underline, true);
-    assert.equal(item.decorations.pointerCursor, true);
-    item.activate({ metaKey: true, ctrlKey: false } as MouseEvent, item.text);
-    assert.deepEqual(opened, ["https://example.com/a"]);
+      beforeEach(() => {
+        navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+        Object.defineProperty(globalThis, "navigator", {
+          configurable: true,
+          value: { platform, userAgent: "" },
+        });
+      });
+      afterEach(() => {
+        if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+        else Reflect.deleteProperty(globalThis, "navigator");
+      });
 
-    fire("keyup", { type: "keyup", key: "Meta", metaKey: false, ctrlKey: false } as KeyboardEvent);
-    assert.equal(item.decorations.underline, false);
-    item.leave({} as MouseEvent, item.text);
-    fire("keydown", commandDown);
-    assert.equal(item.decorations.underline, false);
-  });
+      it("underlines and opens only while the platform modifier is held", () => {
+        const { opened, fire, link } = setup("see https://example.com/a");
+        const item = link();
+        assert.ok(item);
+        assert.equal(item.decorations.underline, false);
+        item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+        assert.equal(item.decorations.underline, false);
+        assert.equal(item.decorations.pointerCursor, false);
+        item.activate({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+        assert.deepEqual(opened, []);
+        // SAFETY: Synthetic Node events provide the fields read by the terminal handlers.
+        item.activate({ metaKey: !mac, ctrlKey: mac } as MouseEvent, item.text);
+        assert.deepEqual(opened, []);
 
-  it("underlines a link the pointer was already on when command goes down", () => {
-    const seen: { x: number; y: number }[] = [];
-    const screen = {
-      dispatchEvent(event: MouseEvent) {
-        seen.push({ x: event.clientX, y: event.clientY });
-        return true;
-      },
-    };
-    const { fire, elementHandlers, link } = setup("see https://example.com/a", screen);
-    elementHandlers.get("mousemove")?.({ clientX: 40, clientY: 12, metaKey: false, ctrlKey: false } as MouseEvent);
-    fire("keydown", {
-      type: "keydown",
-      key: "Meta",
-      metaKey: true,
-      ctrlKey: false,
-      getModifierState: () => true,
-    } as unknown as KeyboardEvent);
-    assert.deepEqual(seen.map((point) => point.x), [41, 40]);
-    const item = link();
-    assert.ok(item);
-    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
-    assert.equal(item.decorations.underline, true);
-    assert.equal(item.decorations.pointerCursor, true);
-  });
+        const commandDown = {
+          type: "keydown",
+          key: modifierKey,
+          ...modifiers,
+          getModifierState: (key: string) => key === modifierKey,
+        } as unknown as KeyboardEvent;
+        fire("keydown", commandDown);
+        assert.equal(item.decorations.underline, true);
+        assert.equal(item.decorations.pointerCursor, true);
+        item.activate(modifiers as MouseEvent, item.text);
+        assert.deepEqual(opened, ["https://example.com/a"]);
 
-  it("notices command that was already held when the pointer moves onto the link", () => {
-    const { elementHandlers, link } = setup("see https://example.com/a");
-    const item = link();
-    assert.ok(item);
-    item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
-    assert.equal(item.decorations.underline, false);
-    elementHandlers.get("mousemove")?.({ metaKey: true, ctrlKey: false } as MouseEvent);
-    assert.equal(item.decorations.underline, true);
-    assert.equal(item.decorations.pointerCursor, true);
-  });
+        fire("keyup", { type: "keyup", key: modifierKey, metaKey: false, ctrlKey: false } as KeyboardEvent);
+        assert.equal(item.decorations.underline, false);
+        item.leave({} as MouseEvent, item.text);
+        fire("keydown", commandDown);
+        assert.equal(item.decorations.underline, false);
+      });
+
+      it("underlines a link the pointer was already on when the platform modifier goes down", () => {
+        const seen: { x: number; y: number }[] = [];
+        const screen = {
+          dispatchEvent(event: MouseEvent) {
+            seen.push({ x: event.clientX, y: event.clientY });
+            return true;
+          },
+        };
+        const { fire, elementHandlers, link } = setup("see https://example.com/a", screen);
+        elementHandlers.get("mousemove")?.({ clientX: 40, clientY: 12, metaKey: false, ctrlKey: false } as MouseEvent);
+        fire("keydown", {
+          type: "keydown",
+          key: modifierKey,
+          ...modifiers,
+          getModifierState: (key: string) => key === modifierKey,
+        } as unknown as KeyboardEvent);
+        assert.deepEqual(seen.map((point) => point.x), [41, 40]);
+        const item = link();
+        assert.ok(item);
+        item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+        assert.equal(item.decorations.underline, true);
+        assert.equal(item.decorations.pointerCursor, true);
+      });
+
+      it("notices the platform modifier already held when the pointer moves onto the link", () => {
+        const { elementHandlers, link } = setup("see https://example.com/a");
+        const item = link();
+        assert.ok(item);
+        item.hover({ metaKey: false, ctrlKey: false } as MouseEvent, item.text);
+        assert.equal(item.decorations.underline, false);
+        elementHandlers.get("mousemove")?.(modifiers as MouseEvent);
+        assert.equal(item.decorations.underline, true);
+        assert.equal(item.decorations.pointerCursor, true);
+      });
+    });
+  }
 });
 
 describe("attachXtermInput", () => {

@@ -629,7 +629,7 @@ mod tests {
             "1.0.0-beta.4"
         );
         assert!(binary_version(b"twanagent-server live").is_empty());
-        assert!(server_update_available("twanagent-server 1.0.0-beta.1"));
+        assert!(server_update_available("twanagent-server 1.0.0-beta.0"));
         assert!(!server_update_available(&format!("twanagent-server {}", server_version())));
         assert!(!server_version().contains('\0'));
         let current = parse_version_check(&format!("status installed twanagent-server {}\n", server_version()));

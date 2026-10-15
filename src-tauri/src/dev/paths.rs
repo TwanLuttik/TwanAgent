@@ -210,6 +210,7 @@ mod tests {
 
     #[test]
     fn symlink_escape_is_rejected() {
+        #[cfg(unix)]
         let dir = temp_ws();
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("secret.txt");

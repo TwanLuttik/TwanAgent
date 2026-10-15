@@ -64,4 +64,16 @@ describe("file selection rules", () => {
     assert.equal(validNewFileName("notes."), false);
     assert.equal(validNewFileName("a/b.ts"), false);
   });
+
+  it("accepts dotfiles with or without another extension", () => {
+    for (const name of [".env", ".gitignore", ".env.local", " .env "]) {
+      assert.equal(validNewFileName(name), true, name);
+    }
+  });
+
+  it("rejects empty, path, and trailing-dot file names", () => {
+    for (const name of ["", " ", ".", "..", "readme", "notes.", ".env.", "a/b.ts", "a\\b.ts", ".env\0"]) {
+      assert.equal(validNewFileName(name), false, JSON.stringify(name));
+    }
+  });
 });

@@ -11,11 +11,38 @@ TwanAgent is a [Tauri](https://tauri.app) 2 app. The interface is React and Type
 - [Grok CLI](https://x.ai/cli) signed in (`grok login`), or an xAI API key in Settings
 - Optional: Claude CLI signed in (`claude login`), or an Anthropic API key in Settings
 
+On Windows, use the `x86_64-pc-windows-msvc` Rust toolchain and Visual Studio 2022
+Build Tools with **Desktop development with C++**, MSVC x64 tools, and the Windows
+10 or 11 SDK. Install CMake and LLVM (including `libclang.dll`); the speech library
+uses CMake for C++ and Clang for Rust bindings. Run native commands in a Developer
+PowerShell for VS 2022 so the SDK headers are available. If another Visual Studio
+installation is selected, set `$env:CMAKE_GENERATOR = 'Visual Studio 17 2022'`.
+Set `$env:LIBCLANG_PATH` to your LLVM `bin` directory. If Clang cannot find its
+standard headers, use `clang --print-resource-dir` and the MSVC include directory
+in `BINDGEN_EXTRA_CLANG_ARGS`, as shown in the Windows release workflow.
+
+Windows also needs the [Microsoft Edge WebView2 Evergreen Runtime](https://v2.tauri.app/start/prerequisites/#webview2).
+
 ## Install
 
 ```bash
 npm install
 ```
+
+For Windows release development, install [Bun](https://bun.sh/) and use the
+committed `package-lock.json` without adding another repository lockfile:
+
+```powershell
+bun install --frozen-lockfile --no-save
+if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+git diff --exit-code -- package-lock.json
+if ($LASTEXITCODE -ne 0) { throw 'The committed lockfile changed' }
+if (Test-Path 'bun.lock') { Remove-Item -LiteralPath 'bun.lock' }
+```
+
+Bun 1.4.3 imports the npm lockfile but still writes a transient `bun.lock` with
+`--no-save`. The workflow removes that generated file; no Bun lockfile is committed.
+Use `bun run test` for the frontend tests and `bun x tsc --noEmit` for typechecking.
 
 ## Run
 
@@ -72,6 +99,28 @@ npm run bundle
 `npm run tauri build` produces the same app. `npm run bundle` then renames the disk image and updater archives so the file name carries the build id, for example `TwanAgent_1.0.0-beta.2+0ab7051_aarch64.dmg`. The id is the short git commit. The app version inside the bundle stays `1.0.0-beta.2`. The `twanagent-server` version is separate and is not part of that name.
 
 The macOS app lands in `src-tauri/target/release/bundle/macos/TwanAgent.app`.
+
+Build an unsigned Windows x64 NSIS installer from the repo root:
+
+```powershell
+cargo check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+bun run test
+bun run tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign --ci
+```
+
+The installer lands in
+`src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/TwanAgent_*-setup.exe`.
+The release workflow tests and checks Windows before packaging, uploads the
+`TwanAgent-windows-x86_64` workflow artifact, then attaches the installer to the
+release after the macOS job has created it. Signing credentials are not needed
+for Windows; SmartScreen may warn because the installer is unsigned.
+
+The existing Tauri configuration uses the default WebView2
+[`downloadBootstrapper` mode](https://v2.tauri.app/distribute/windows-installer/#webview2-installation-options).
+If WebView2 is missing, installation requires internet access to download it.
+Installer execution and WebView2 installation need a Windows smoke test in
+addition to CI packaging.
 
 A signed build checks GitHub releases when the sidebar opens. If a newer prerelease has a `TwanAgent_*.app.tar.gz` asset, the version row shows Update. That downloads the archive, replaces this `.app`, and restarts. `tauri dev` can see the update but cannot install it, because it is not running from `TwanAgent.app`.
 
