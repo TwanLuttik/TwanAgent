@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { accountFromUsage, forecastAccounts } from "../account-forecast.ts";
 import {
   accountUsageIsFresh,
   formatAccountBalance,
@@ -87,6 +88,55 @@ describe("parseAccountUsage", () => {
     assert.equal(accountUsageIsFresh(parsed!, now), true);
     assert.equal(accountUsageIsFresh({ ...parsed!, fetchedAt: "2026-07-20T11:00:00Z" }, now), false);
     assert.equal(accountUsageIsFresh({ ...parsed!, fetchedAt: null }, now), true);
+  });
+});
+
+describe("forecastAccounts", () => {
+  it("keeps MiniMax 5-hour and weekly allowances as separate rows", () => {
+    const now = Date.parse("2026-07-20T12:00:00Z");
+    const account = accountFromUsage(
+      "minimax",
+      parseAccountUsage({
+        provider: "minimax",
+        connected: true,
+        label: "MiniMax",
+        windows: [
+          { id: "general:current", label: "5h", used_percent: 62, resets_at: "2026-07-20T16:00:00Z" },
+          { id: "general:week", label: "Week", used_percent: 41, resets_at: "2026-07-26T00:00:00Z" },
+        ],
+      }),
+      now,
+    );
+    const rows = forecastAccounts(account, [], now);
+    assert.deepEqual(
+      rows.map((row) => row.account.name),
+      ["MiniMax 5h", "MiniMax Week"],
+    );
+    assert.equal(rows[0]?.window?.label, "5h");
+    assert.equal(rows[1]?.window?.label, "Week");
+    assert.equal(rows[0]?.usedPercent, 38);
+    assert.equal(rows[1]?.usedPercent, 59);
+  });
+
+  it("keeps Claude on one row", () => {
+    const now = Date.parse("2026-07-20T12:00:00Z");
+    const account = accountFromUsage(
+      "anthropic",
+      parseAccountUsage({
+        provider: "anthropic",
+        connected: true,
+        label: "Claude",
+        windows: [
+          { id: "five_hour", label: "5h", used_percent: 20, resets_at: "2026-07-20T16:00:00Z" },
+          { id: "seven_day", label: "Week", used_percent: 10, resets_at: "2026-07-26T00:00:00Z" },
+        ],
+      }),
+      now,
+    );
+    const rows = forecastAccounts(account, [], now);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.account.name, "Claude");
+    assert.equal(rows[0]?.window?.label, "5h");
   });
 });
 

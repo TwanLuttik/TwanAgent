@@ -34,6 +34,7 @@ import { PANE_DEFAULT, PANE_MAX, PANE_MIN, loadMarkdownOpenMode, loadPaneWidth, 
 import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
+import { DocsView } from "../DocsView";
 import { UsageView } from "../UsageView";
 import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { Symbol } from "../../components/Symbol";
@@ -50,6 +51,7 @@ export function ChatStage() {
     closeServers,
     closeSettings,
     closeUsage,
+    closeDocs,
     conversations,
     dirtyFiles,
     editor,
@@ -92,13 +94,14 @@ export function ChatStage() {
     showServers,
     showSettings,
     showUsage,
+    showDocs,
     paneCollapsed,
     setPaneCollapsed,
     sidebarCollapsed,
     setSidebarCollapsed,
     workspace,
   } = useMain();
-  const fullPage = Boolean(showSettings || showUsage || showServers || projectSettings);
+  const fullPage = Boolean(showSettings || showUsage || showDocs || showServers || projectSettings);
   const [settingsAlive, setSettingsAlive] = useState(showSettings);
   if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
@@ -166,7 +169,7 @@ export function ChatStage() {
             onCloseMenu={() => setTabMenu(null)}
           />
         ) : (
-          <div className="min-w-0 flex-1" data-tauri-drag-region="false" />
+          <div className="min-h-11 min-w-0 flex-1 self-stretch" data-tauri-drag-region />
         )}
       </div>
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
@@ -203,8 +206,11 @@ export function ChatStage() {
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
           ) : null}
-          {showUsage && !showSettings && !showServers ? (
+          {showUsage && !showSettings && !showDocs && !showServers ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
+          ) : null}
+          {showDocs && !showSettings && !showServers ? (
+            <DocsView onClose={folderOpen ? undefined : closeDocs} />
           ) : null}
           {showServers && !showSettings ? (
             <ServersDialog onClose={folderOpen ? () => undefined : closeServers} />
@@ -242,6 +248,7 @@ export function ChatStage() {
               onSendToChat={(snippet) => {
                 setShowSettings(false);
                 setShowUsage(false);
+                closeDocs();
                 closeServers();
                 closeProjectSettings();
                 setEditor((prev: typeof editor) => selectChatTab(prev));

@@ -11,7 +11,7 @@ import {
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { CSS, type Transform } from "@dnd-kit/utilities";
 import {
   HEAVY_DIRS,
   formatDiffCount,
@@ -690,6 +690,12 @@ function PaneTabs({
   );
 }
 
+/** Move the held tab without stretching it to the tab it passes over. */
+function paneDragTransform(transform: Transform | null): string | undefined {
+  if (!transform) return undefined;
+  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+}
+
 function PaneTabButton({
   tab,
   active,
@@ -707,7 +713,7 @@ function PaneTabButton({
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{ transform: paneDragTransform(transform), transition }}
       className={`min-w-0 ${isDragging ? "opacity-40" : ""}`}
     >
       <PaneTabFace

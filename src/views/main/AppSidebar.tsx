@@ -35,6 +35,7 @@ export function AppSidebar() {
     setSettingsTab,
     openSettings,
     openUsage,
+    openDocs,
     sidebarDragging,
     sidebarWidth,
     sidebarCollapsed,
@@ -74,7 +75,7 @@ export function AppSidebar() {
         />
       </div>
       <div className={sidebarCollapsed ? "hidden" : "contents"}>
-      <div className={`relative z-10 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
+      <div className={`relative z-30 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         <WindowButtons />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         <PanelToggle
@@ -112,7 +113,7 @@ export function AppSidebar() {
       {showSettings ? <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} /> : null}
       {/* Stay mounted while settings covers it. Unmounting restarts the account
           usage poll and rebuilds the project list, which is the pause on Escape. */}
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-sidebar" style={showSettings ? { display: "none" } : undefined}>
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col" style={showSettings ? { display: "none" } : undefined}>
         <ProjectsNav
           usageHover={usageHover}
           setUsageHover={setUsageHover}
@@ -124,6 +125,7 @@ export function AppSidebar() {
           setTodoByChat={setTodoByChat}
           openSettings={openSettings}
           openUsage={openUsage}
+          openDocs={openDocs}
           usageTick={usageTick}
         />
       </div>
@@ -270,6 +272,7 @@ function ProjectsNav({
   setTodoByChat,
   openSettings,
   openUsage,
+  openDocs,
   usageTick,
 }: {
   usageHover: boolean;
@@ -282,6 +285,7 @@ function ProjectsNav({
   setTodoByChat: (next: Record<string, TodoBadge> | ((prev: Record<string, TodoBadge>) => Record<string, TodoBadge>)) => void;
   openSettings: () => void;
   openUsage: () => void;
+  openDocs: () => void;
   usageTick: number;
 }) {
   const {
@@ -299,12 +303,13 @@ function ProjectsNav({
     showSettings,
     runningTurns,
     showUsage,
+    showDocs,
     reorderProjects,
     startNewChat,
     toggleProjectCollapsed,
     workspace,
   } = useSidebar();
-  const fullPage = Boolean(showSettings || showUsage || projectSettings);
+  const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -503,6 +508,16 @@ function ProjectsNav({
           <UsageTeaser refresh={usageTick} hover={usageHover} />
         </button>
         <AccountUsageRow refresh={usageTick} />
+        <button
+          type="button"
+          onClick={openDocs}
+          className={`flex w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] ${
+            showDocs ? "bg-wash-strong text-ink" : "text-ink/90 hover:bg-wash"
+          }`}
+        >
+          <Symbol name="book" className="size-4 text-muted" />
+          <span>Docs</span>
+        </button>
         <button
           type="button"
           title={isMacOS() ? "Settings ⌘," : "Settings Ctrl+,"}

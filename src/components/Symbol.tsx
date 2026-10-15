@@ -54,6 +54,19 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  book: (
+    <>
+      <path d="M6.2 4.2h9.2A2.4 2.4 0 0 1 17.8 6.6V20.2H8.2A2 2 0 0 0 6.2 18.2Z" {...stroke} />
+      <path d="M6.2 4.2A2 2 0 0 0 4.2 6.2v12" {...stroke} />
+      <path d="M9.2 8.2h5.2M9.2 11.4h5.2" {...stroke} />
+    </>
+  ),
+  "book.fill": (
+    <>
+      <path d="M6.2 4.2h9.2A2.4 2.4 0 0 1 17.8 6.6V20.2H8.2A2 2 0 0 0 6.2 18.2Z" fill="currentColor" />
+      <path d="M6.2 4.2A2 2 0 0 0 4.2 6.2v12" {...stroke} />
+    </>
+  ),
   doc: (
     <>
       <path d="M7.8 3.4h5.4L19.6 9.8V19.6A1.6 1.6 0 0 1 18 21.2H7.8A1.6 1.6 0 0 1 6.2 19.6V5A1.6 1.6 0 0 1 7.8 3.4Z" {...stroke} />

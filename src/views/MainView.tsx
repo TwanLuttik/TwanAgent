@@ -230,15 +230,19 @@ export function MainView() {
     setShowServers,
     showUsage,
     setShowUsage,
+    showDocs,
+    setShowDocs,
     projectSettings,
     setProjectSettings,
     closeSettings,
     closeServers,
     closeUsage,
+    closeDocs,
     closeProjectSettings,
     openSettings,
     openServers,
     openUsage,
+    openDocs,
     openProjectSettings,
   } = useOverlays();
   const [usageTick, setUsageTick] = useState(0);
@@ -279,7 +283,7 @@ export function MainView() {
   const sideChatIdRef = useRef("");
   const viewingChatRef = useRef(true);
   viewingChatRef.current =
-    editor.focus === "chat" && !showSettings && !showUsage && !showServers && !projectSettings;
+    editor.focus === "chat" && !showSettings && !showUsage && !showDocs && !showServers && !projectSettings;
   runningIdRef.current = runningId;
   const pendingRef = useLiveRef(pendingByChat);
   const editingRef = useRef<PendingEdit | null>(null);
@@ -670,7 +674,7 @@ export function MainView() {
     const ro = new ResizeObserver(apply);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [editor.focus, showSettings, showUsage, showServers, activeId]);
+  }, [editor.focus, showSettings, showUsage, showDocs, showServers, activeId]);
 
   const holdScrollForOlder = useCallback(() => {
     const el = scroller.current;
@@ -835,6 +839,7 @@ export function MainView() {
     setFolderOpen,
     setShowSettings,
     setShowUsage,
+    setShowDocs,
     setShowServers,
     setProjectSettings,
     setCollapsedProjects,
@@ -1282,6 +1287,7 @@ export function MainView() {
     (path: string, mode: "preview" | "pin" = "pin", view: "edit" | "diff" = "edit") => {
       setShowSettings(false);
       setShowUsage(false);
+      setShowDocs(false);
       setShowServers(false);
       setProjectSettings(null);
       setEditor((prev) => {
@@ -1311,6 +1317,7 @@ export function MainView() {
   const editMcpServer = useCallback((server: DetectedMcpServer) => {
     setShowSettings(false);
     setShowUsage(false);
+    setShowDocs(false);
     setShowServers(false);
     setProjectSettings(null);
     setEditor((prev) => pinEditorTab(prev, mcpEditorPath(server.source)));
@@ -1363,6 +1370,7 @@ export function MainView() {
     (skill: DetectedSkill) => {
       setShowSettings(false);
       setShowUsage(false);
+      setShowDocs(false);
       setShowServers(false);
       setProjectSettings(null);
       const path = skill.source.startsWith("~/") ? skillEditorPath(skill.source) : skill.source;
@@ -1374,7 +1382,7 @@ export function MainView() {
   const showLanding = false;
   const chatKind = parseConversationKind(conversations.find((c) => c.id === activeId)?.kind);
   const chatAcceptsDrop =
-    !showSettings && !showUsage && !showServers && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
+    !showSettings && !showUsage && !showDocs && !showServers && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
   const addImagePathsRef = useRef(addPromptImagePaths);
   addImagePathsRef.current = addPromptImagePaths;
   const fileDragRef = useRef(fileDrag);
@@ -1421,7 +1429,7 @@ export function MainView() {
   }, []);
 
   useEffect(() => {
-    if (showLanding || showSettings || showUsage || showServers || editor.focus === "file") return;
+    if (showLanding || showSettings || showUsage || showDocs || showServers || editor.focus === "file") return;
     // A split gives the focused chat its own scroller. The window ref is empty then,
     // and that pane follows itself. This listener is only the single-chat column.
     const el = scroller.current;
@@ -1440,7 +1448,7 @@ export function MainView() {
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [showLanding, showSettings, showUsage, showServers, editor.focus, splitChatIds.join("|")]);
+  }, [showLanding, showSettings, showUsage, showDocs, showServers, editor.focus, splitChatIds.join("|")]);
 
   const sidebarRef = useRef<SidebarSlice | null>(null);
   if (!sidebarRef.current) sidebarRef.current = {
@@ -1476,6 +1484,7 @@ export function MainView() {
     setJourneyColor,
     showSettings,
     showUsage,
+    showDocs,
     startNewChat,
     toggleJourney,
     toggleProjectCollapsed,
@@ -1498,6 +1507,7 @@ export function MainView() {
     sidebar.setProjectMenu !== setProjectMenu ||
     sidebar.showSettings !== showSettings ||
     sidebar.showUsage !== showUsage ||
+    sidebar.showDocs !== showDocs ||
     sidebar.workspace !== workspace;
   if (sidebarChanged) {
     sidebarRef.current = {
@@ -1534,6 +1544,7 @@ export function MainView() {
       setJourneyColor,
       showSettings,
       showUsage,
+      showDocs,
       startNewChat,
       toggleJourney,
       toggleProjectCollapsed,
@@ -1593,6 +1604,7 @@ export function MainView() {
     closeServers,
     closeSettings,
     closeUsage,
+    closeDocs,
     collapsedProjects,
     composerDockRef,
     composerPad,
@@ -1635,6 +1647,7 @@ export function MainView() {
     openSettings,
     openSidebarChat,
     openUsage,
+    openDocs,
     openWorkspaceFile,
     pendingClosePath,
     pendingDeleteProject,
@@ -1702,6 +1715,7 @@ export function MainView() {
     setProjectMenu,
     setShowSettings,
     setShowUsage,
+    setShowDocs,
     settingsTab,
     setSettingsTab,
     setSidebarWidth,
@@ -1710,6 +1724,7 @@ export function MainView() {
     showServers,
     showSettings,
     showUsage,
+    showDocs,
     sidebarDragging,
     sidebarWidth,
     sidebarCollapsed,

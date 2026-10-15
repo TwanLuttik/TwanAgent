@@ -162,6 +162,7 @@ export type LibraryDeps = {
   setFolderOpen: Update<boolean>;
   setShowSettings: Update<boolean>;
   setShowUsage: Update<boolean>;
+  setShowDocs: Update<boolean>;
   setShowServers: Update<boolean>;
   setProjectSettings: Update<{ path: string; name: string } | null>;
   setCollapsedProjects: Update<string[]>;
@@ -194,7 +195,7 @@ export function useLibrary(deps: LibraryDeps) {
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
     runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
-    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowServers, setProjectSettings,
+    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowDocs, setShowServers, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
@@ -501,6 +502,7 @@ async function ensureChatPlan(path: string, id: string, modelId: string | null |
 async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!runningWsRef.current) hideSubagents();
@@ -606,6 +608,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
 async function openSidebarChat(path: string, id: string) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!path) return;
@@ -700,6 +703,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!path) return;
@@ -1321,6 +1325,7 @@ async function createJourneyFromChat(id: string, path = workspace) {
 async function openJourneyKnowledge(id: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (path && !isSameProject(path, workspace)) {

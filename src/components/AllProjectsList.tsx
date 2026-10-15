@@ -10,7 +10,7 @@ import {
 } from "@dnd-kit/core";
 import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { CSS, type Transform } from "@dnd-kit/utilities";
 import {
   isAppProject,
   isProjectCollapsed,
@@ -257,6 +257,12 @@ export function AllProjectsList({
   );
 }
 
+/** Move the held row without stretching it to the height of the row it passes over. */
+function rowDragTransform(transform: Transform | null): string | undefined {
+  if (!transform) return undefined;
+  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+}
+
 function ProjectSection({
   id,
   header,
@@ -270,7 +276,7 @@ function ProjectSection({
   return (
     <section
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{ transform: rowDragTransform(transform), transition }}
       className={isDragging ? "relative z-10 opacity-70" : undefined}
     >
       {header({ ...attributes, ...listeners })}

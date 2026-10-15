@@ -465,6 +465,11 @@ export function readFile(workspace: string, path: string): Promise<string> {
   return invoke("dev_read_file", { workspace, path });
 }
 
+/** A local PDF as base64. The webview cannot fetch the asset URL itself. */
+export function readPdf(workspace: string, path: string): Promise<string> {
+  return invoke("dev_read_pdf", { workspace, path });
+}
+
 /** Content search. Works for a local folder and a cloud project. */
 export function grep(workspace: string, pattern: string, path = "", glob = ""): Promise<string> {
   return invoke("dev_grep", { workspace, pattern, path, glob });

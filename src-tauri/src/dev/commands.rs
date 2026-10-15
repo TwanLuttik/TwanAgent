@@ -268,6 +268,19 @@ pub async fn dev_read_file(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_read_pdf(
+    state: State<'_, AppState>,
+    workspace: String,
+    path: String,
+) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    if remote_files(&state, &root)?.is_some() {
+        return Err(Error::Other("Open this PDF from a local project.".into()));
+    }
+    off_main(move || super::files::read_pdf_base64(&root, &path)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_read_user_mcp(path: String) -> Result<String> {
     super::mcp::read_user_mcp(&path)
 }

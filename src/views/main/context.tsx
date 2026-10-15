@@ -37,6 +37,7 @@ export type MainModel = {
   closeServers: MainFn;
   closeSettings: MainFn;
   closeUsage: MainFn;
+  closeDocs: MainFn;
   collapsedProjects: any;
   composerDockRef: any;
   composerPad: any;
@@ -81,6 +82,7 @@ export type MainModel = {
   openSettings: MainFn;
   openSidebarChat: MainFn;
   openUsage: MainFn;
+  openDocs: MainFn;
   openWorkspaceFile: MainFn;
   pendingClosePath: any;
   pendingDeleteProject: any;
@@ -145,6 +147,7 @@ export type MainModel = {
   setProjectMenu: MainFn;
   setShowSettings: MainFn;
   setShowUsage: MainFn;
+  setShowDocs: MainFn;
   settingsTab: any;
   setSettingsTab: MainFn;
   setSidebarWidth: MainFn;
@@ -153,6 +156,7 @@ export type MainModel = {
   showServers: any;
   showSettings: any;
   showUsage: any;
+  showDocs: any;
   sidebarDragging: any;
   sidebarWidth: any;
   sidebarCollapsed: boolean;
@@ -212,6 +216,7 @@ export type SidebarSlice = {
   setJourneyColor: MainFn;
   showSettings: boolean;
   showUsage: boolean;
+  showDocs: boolean;
   startNewChat: MainFn;
   toggleJourney: MainFn;
   toggleProjectCollapsed: MainFn;
