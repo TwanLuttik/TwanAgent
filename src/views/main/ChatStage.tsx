@@ -40,7 +40,7 @@ import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS } from "../../components/WindowButtons";
 import { CenterTabs } from "./AppChrome";
-import { useMain } from "./context";
+import { useMain, useSidebar } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
 export function ChatStage() {
@@ -101,6 +101,7 @@ export function ChatStage() {
     setSidebarCollapsed,
     workspace,
   } = useMain();
+  const { openProjectFromSidebar, rememberOpenedProject } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || showServers || projectSettings);
   const [settingsAlive, setSettingsAlive] = useState(showSettings);
   if (showSettings && !settingsAlive) setSettingsAlive(true);
@@ -325,6 +326,10 @@ export function ChatStage() {
                 selectedPath={editor.activePath}
                 onOpenFile={openWorkspaceFile}
                 onRefresh={bumpFiles}
+                onOpenWorkspace={(path) => {
+                  rememberOpenedProject(path);
+                  openProjectFromSidebar(path);
+                }}
                 onCollapse={() => setPaneCollapsed(true)}
                 pending={paneWorkspace !== workspace}
               />

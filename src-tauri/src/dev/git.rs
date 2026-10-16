@@ -93,6 +93,23 @@ pub struct GitIdentity {
     pub configured: bool,
 }
 
+/// One checkout from `git worktree list --porcelain`. The first block is the main worktree.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitWorktree {
+    pub path: String,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub detached: bool,
+    pub main: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitWorktreeAdd {
+    pub worktrees: Vec<GitWorktree>,
+    pub opened: String,
+}
+
 enum GitText {
     Output(String),
     NotRepo,
@@ -585,7 +602,7 @@ pub fn parse_git_branches(text: &str) -> GitBranches {
             continue;
         }
         let is_current = raw.starts_with('*');
-        let name = raw.trim_start_matches('*').trim();
+        let name = raw.trim_start_matches(['*', '+']).trim();
         if name.is_empty() || name.starts_with('(') {
             continue;
         }
@@ -774,6 +791,282 @@ pub fn git_switch(target: &GitTarget, name: &str) -> Result<GitBranches> {
     }
     git_run(target, &["switch", "--", &name])?;
     git_branches(target)
+}
+
+/// Porcelain blocks, blank-line separated. The first block is the main worktree.
+pub fn parse_worktree_list(text: &str) -> Vec<GitWorktree> {
+    let mut rows = Vec::new();
+    for block in text.split("\n\n") {
+        let mut path = None;
+        let mut head = None;
+        let mut branch = None;
+        let mut bare = false;
+        let mut detached = false;
+        let mut saw = false;
+        for line in block.lines() {
+            let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
+            saw = true;
+            if let Some(rest) = line.strip_prefix("worktree ") {
+                let value = rest.trim();
+                if !value.is_empty() {
+                    path = Some(value.to_string());
+                }
+            } else if let Some(rest) = line.strip_prefix("HEAD ") {
+                let value = rest.trim();
+                if !value.is_empty() {
+                    head = Some(value.to_string());
+                }
+            } else if let Some(rest) = line.strip_prefix("branch ") {
+                branch = Some(worktree_branch_name(rest));
+            } else if line == "bare" {
+                bare = true;
+            } else if line == "detached" {
+                detached = true;
+            }
+        }
+        if !saw {
+            continue;
+        }
+        let Some(path) = path else { continue };
+        rows.push(GitWorktree {
+            path,
+            head,
+            branch,
+            bare,
+            detached,
+            main: rows.is_empty(),
+        });
+    }
+    rows
+}
+
+fn worktree_branch_name(raw: &str) -> String {
+    raw.trim()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(raw.trim())
+        .to_string()
+}
+
+pub fn git_worktrees(target: &GitTarget) -> Result<Vec<GitWorktree>> {
+    match git_text(target, &["worktree", "list", "--porcelain"])? {
+        GitText::NotRepo => Ok(Vec::new()),
+        GitText::Output(text) => Ok(parse_worktree_list(&text)),
+    }
+}
+
+/// `<parent>/<repo>-worktrees/<branch>`, with `/` in the branch turned into `-`.
+pub fn worktree_destination(main_path: &Path, branch: &str) -> Result<PathBuf> {
+    let branch = sanitize_git_branch(branch)?;
+    let folder = main_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty() && name != "." && name != "..")
+        .ok_or_else(|| Error::Other("repository folder has no name".into()))?;
+    let parent = main_path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| Error::Other("repository folder has no parent".into()))?;
+    let name = worktree_folder_name(&branch)?;
+    let root = parent.join(format!("{folder}-worktrees"));
+    let dest = root.join(&name);
+    if path_is_inside(&dest, main_path) {
+        return Err(Error::Other("worktree would be inside the repository".into()));
+    }
+    Ok(dest)
+}
+
+fn worktree_folder_name(branch: &str) -> Result<String> {
+    let flat = branch.replace('/', "-");
+    super::projects::sanitize_project_name(&flat)
+}
+
+fn path_is_inside(path: &Path, root: &Path) -> bool {
+    crate::paths::is_under(path, root)
+}
+
+fn same_checkout(left: &str, right: &Path) -> bool {
+    let Ok(canon) = fs::canonicalize(right) else {
+        return crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
+            &right.to_string_lossy(),
+        ));
+    };
+    crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
+        &canon.to_string_lossy(),
+    )) || crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
+        &right.to_string_lossy(),
+    ))
+}
+
+fn main_worktree_path(rows: &[GitWorktree]) -> Result<PathBuf> {
+    rows.iter()
+        .find(|row| row.main)
+        .map(|row| PathBuf::from(&row.path))
+        .ok_or_else(|| Error::Other("not a git repository".into()))
+}
+
+/// Check `branch` out in a sibling folder. `create` makes the branch from HEAD when it is new.
+pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Result<GitWorktreeAdd> {
+    if target.remote.is_some() {
+        return Err(Error::Other(
+            "worktrees are only created for a project on this Mac".into(),
+        ));
+    }
+    let branch = sanitize_git_branch(branch)?;
+    let listed = git_worktrees(target)?;
+    if listed.is_empty() {
+        return Err(Error::Other("not a git repository".into()));
+    }
+    if listed.iter().any(|row| row.bare) {
+        return Err(Error::Other("a bare repository cannot grow a worktree".into()));
+    }
+    if listed.iter().any(|row| row.branch.as_deref() == Some(branch.as_str())) {
+        return Err(Error::Conflict(format!("{branch} is already checked out")));
+    }
+    let main = main_worktree_path(&listed)?;
+    let dest = worktree_destination(&main, &branch)?;
+    if dest.exists() {
+        return Err(Error::Conflict(format!(
+            "{} already exists",
+            dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        )));
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let dest_str = dest
+        .to_str()
+        .ok_or_else(|| Error::Other("worktree path is not valid".into()))?
+        .to_string();
+    let branch_exists = git_branches(target)?
+        .branches
+        .iter()
+        .any(|name| name == &branch);
+    let added = if create && !branch_exists {
+        git_run(target, &["worktree", "add", "-b", &branch, &dest_str, "HEAD"])
+    } else if branch_exists {
+        git_run(target, &["worktree", "add", &dest_str, &branch])
+    } else {
+        Err(Error::Other(format!("branch {branch} does not exist")))
+    };
+    if let Err(err) = added {
+        if dest.exists() && fs::read_dir(&dest).ok().is_some_and(|mut rows| rows.next().is_none()) {
+            let _ = fs::remove_dir(&dest);
+        }
+        return Err(err);
+    }
+    let worktrees = git_worktrees(target)?;
+    let opened = worktrees
+        .iter()
+        .find(|row| same_checkout(&row.path, &dest))
+        .map(|row| row.path.clone())
+        .unwrap_or(dest_str);
+    Ok(GitWorktreeAdd { worktrees, opened })
+}
+
+/// Rename a linked worktree's branch and move its folder to match. The main checkout stays put.
+pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Result<GitWorktreeAdd> {
+    if target.remote.is_some() {
+        return Err(Error::Other(
+            "worktrees are only renamed for a project on this Mac".into(),
+        ));
+    }
+    let branch = sanitize_git_branch(branch)?;
+    let listed = git_worktrees(target)?;
+    let Some(row) = listed.iter().find(|row| same_checkout(&row.path, Path::new(path))) else {
+        return Err(Error::Other("that worktree is not in this repository".into()));
+    };
+    if row.main {
+        return Err(Error::Other("the main checkout cannot be renamed".into()));
+    }
+    if row.detached || row.branch.as_deref().is_none_or(str::is_empty) {
+        return Err(Error::Other("a detached worktree has no branch to rename".into()));
+    }
+    let current = row.branch.clone().unwrap_or_default();
+    let here = row.path.clone();
+    let already_home =
+        current == branch && same_checkout(&here, &worktree_destination(&main_worktree_path(&listed)?, &branch)?);
+    if already_home {
+        return Ok(GitWorktreeAdd {
+            worktrees: listed,
+            opened: here,
+        });
+    }
+    if listed.iter().any(|item| item.path != row.path && item.branch.as_deref() == Some(branch.as_str())) {
+        return Err(Error::Conflict(format!("{branch} is already checked out")));
+    }
+    let main = main_worktree_path(&listed)?;
+    let repo = GitTarget::local(&main)?;
+    let dest = worktree_destination(&main, &branch)?;
+    let moving = !same_checkout(&row.path, &dest);
+    if moving && dest.exists() {
+        return Err(Error::Conflict(format!(
+            "{} already exists",
+            dest.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        )));
+    }
+    if current != branch {
+        let taken = git_branches(&repo)?
+            .branches
+            .iter()
+            .any(|name| name == &branch);
+        if taken {
+            return Err(Error::Conflict(format!("{branch} already exists")));
+        }
+        // Running this in the main checkout would rename main. The branch lives here.
+        let linked = GitTarget::local(Path::new(&here))?;
+        git_run(&linked, &["branch", "-m", &branch])?;
+    }
+    let from = here;
+    if moving {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| Error::Other("worktree path is not valid".into()))?
+            .to_string();
+        if let Err(err) = git_run(&repo, &["worktree", "move", &from, &dest_str]) {
+            if current != branch {
+                let linked = GitTarget::local(Path::new(&from))?;
+                let _ = git_run(&linked, &["branch", "-m", &current]);
+            }
+            return Err(err);
+        }
+    }
+    let worktrees = git_worktrees(target)?;
+    let opened = worktrees
+        .iter()
+        .find(|item| item.branch.as_deref() == Some(branch.as_str()))
+        .map(|item| item.path.clone())
+        .unwrap_or_else(|| dest.to_string_lossy().into_owned());
+    Ok(GitWorktreeAdd { worktrees, opened })
+}
+
+/// Remove a linked worktree. Refuses the main checkout, the open folder, and a dirty tree.
+pub fn git_worktree_remove(target: &GitTarget, path: &str) -> Result<Vec<GitWorktree>> {
+    if target.remote.is_some() {
+        return Err(Error::Other(
+            "worktrees are only removed for a project on this Mac".into(),
+        ));
+    }
+    let listed = git_worktrees(target)?;
+    let Some(row) = listed.iter().find(|row| same_checkout(&row.path, Path::new(path))) else {
+        return Err(Error::Other("that worktree is not in this repository".into()));
+    };
+    if row.main {
+        return Err(Error::Other("the main checkout cannot be removed".into()));
+    }
+    if same_checkout(&row.path, &target.root) {
+        return Err(Error::Other("switch away from this worktree before removing it".into()));
+    }
+    let remove_path = row.path.clone();
+    git_run(target, &["worktree", "remove", "--", &remove_path])?;
+    git_worktrees(target)
 }
 
 pub fn git_create_branch(target: &GitTarget, name: &str, checkout: bool) -> Result<GitBranches> {
@@ -1306,7 +1599,150 @@ mod tests {
         assert_eq!(rows[0].subject, "Hello");
     }
 
-    fn init_repo(path: &Path) {
+    #[test]
+fn parse_worktree_list_reads_main_linked_detached_and_bare() {
+    let text = "\
+worktree /work/billing
+HEAD abcdef1234567890abcdef1234567890abcdef12
+branch refs/heads/main
+
+worktree /work/billing-worktrees/feat-login
+HEAD 1234567890abcdef1234567890abcdef12345678
+branch refs/heads/feat/login
+
+worktree /work/billing-worktrees/notes
+HEAD 9999999999999999999999999999999999999999
+detached
+
+worktree /work/billing.git
+HEAD abcdef1234567890abcdef1234567890abcdef12
+bare
+";
+    let rows = parse_worktree_list(text);
+    assert_eq!(rows.len(), 4);
+    assert!(rows[0].main);
+    assert_eq!(rows[0].path, "/work/billing");
+    assert_eq!(rows[0].branch.as_deref(), Some("main"));
+    assert!(!rows[0].bare && !rows[0].detached);
+    assert!(!rows[1].main);
+    assert_eq!(rows[1].branch.as_deref(), Some("feat/login"));
+    assert_eq!(rows[1].path, "/work/billing-worktrees/feat-login");
+    assert!(rows[2].detached);
+    assert_eq!(rows[2].branch, None);
+    assert!(rows[3].bare);
+    assert!(parse_worktree_list("").is_empty());
+    assert!(parse_worktree_list("fatal: not a git repository\n").is_empty());
+}
+
+#[test]
+fn worktree_destination_is_a_sibling_and_flattens_slashes() {
+    let main = Path::new("/work/billing");
+    let dest = worktree_destination(main, "feat/login").unwrap();
+    assert_eq!(dest, PathBuf::from("/work/billing-worktrees/feat-login"));
+    assert!(worktree_destination(main, "foo;rm").is_err());
+    assert!(worktree_destination(main, "").is_err());
+}
+
+#[test]
+fn git_worktrees_lists_a_real_add() {
+    let dir = temp_ws();
+    init_repo(dir.path());
+    let target = local(dir.path());
+    let added = git_worktree_add(&target, "feat/login", true).unwrap();
+    assert!(added.opened.contains("feat-login"));
+    let names: Vec<_> = added
+        .worktrees
+        .iter()
+        .filter_map(|row| row.branch.clone())
+        .collect();
+    assert!(names.iter().any(|name| name == "main"));
+    assert!(names.iter().any(|name| name == "feat/login"));
+    let linked = added
+        .worktrees
+        .iter()
+        .find(|row| row.branch.as_deref() == Some("feat/login"))
+        .unwrap();
+    assert!(!linked.main);
+    assert!(Path::new(&linked.path).join("README.md").is_file());
+    let main_branch = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&main_branch.stdout).trim(), "main");
+    let again = git_worktree_add(&target, "feat/login", true).unwrap_err();
+    assert!(again.to_string().contains("already checked out"));
+}
+
+#[test]
+fn git_worktree_remove_refuses_a_dirty_tree_and_keeps_the_branch() {
+    let dir = temp_ws();
+    init_repo(dir.path());
+    let target = local(dir.path());
+    let added = git_worktree_add(&target, "feature", true).unwrap();
+    let linked = added
+        .worktrees
+        .iter()
+        .find(|row| !row.main)
+        .unwrap()
+        .path
+        .clone();
+    fs::write(Path::new(&linked).join("note.txt"), "dirty\n").unwrap();
+    let dirty = git_worktree_remove(&target, &linked).unwrap_err();
+    assert!(Path::new(&linked).exists(), "{dirty}");
+    fs::remove_file(Path::new(&linked).join("note.txt")).unwrap();
+    let left = git_worktree_remove(&target, &linked).unwrap();
+    assert!(!Path::new(&linked).exists());
+    assert!(left.iter().all(|row| row.main || row.path != linked));
+    let branches = git_branches(&target).unwrap();
+    assert!(branches.branches.iter().any(|name| name == "feature"));
+    let main = git_worktree_remove(&target, dir.path().to_str().unwrap()).unwrap_err();
+    assert!(main.to_string().contains("main checkout"));
+}
+
+#[test]
+fn git_worktree_rename_moves_the_branch_and_the_folder() {
+    let dir = temp_ws();
+    init_repo(dir.path());
+    let target = local(dir.path());
+    let added = git_worktree_add(&target, "wip", true).unwrap();
+    let linked = added
+        .worktrees
+        .iter()
+        .find(|row| !row.main)
+        .unwrap()
+        .path
+        .clone();
+    fs::write(Path::new(&linked).join("note.txt"), "kept\n").unwrap();
+    let renamed = git_worktree_rename(&target, &linked, "feat/login").unwrap();
+    assert!(!Path::new(&linked).exists());
+    assert!(renamed.opened.contains("feat-login"));
+    let row = renamed
+        .worktrees
+        .iter()
+        .find(|row| row.branch.as_deref() == Some("feat/login"))
+        .unwrap();
+    assert!(!row.main);
+    assert_eq!(
+        fs::read_to_string(Path::new(&row.path).join("note.txt")).unwrap(),
+        "kept\n"
+    );
+    let branches = git_branches(&local(dir.path())).unwrap();
+    assert!(branches.branches.iter().any(|name| name == "feat/login"));
+    assert!(!branches.branches.iter().any(|name| name == "wip"));
+    let same = git_worktree_rename(&target, &row.path, "feat/login").unwrap();
+    assert_eq!(same.opened, row.path);
+    let main = git_worktree_rename(&target, dir.path().to_str().unwrap(), "other").unwrap_err();
+    assert!(main.to_string().contains("main checkout"));
+}
+
+#[test]
+fn git_worktrees_reports_a_missing_repo() {
+    let dir = temp_ws();
+    assert!(git_worktrees(&local(dir.path())).unwrap().is_empty());
+}
+
+fn init_repo(path: &Path) {
         fs::write(path.join("README.md"), "hi").unwrap();
         let git = |args: &[&str]| {
             let out = Command::new("git")

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { filterProjectRows, folderName, projectKey, type ChatImage, type ProjectRow } from "../lib/core";
+import { subscribeWorktreeLists, worktreeChoices, worktreeListsFor, type WorktreeChoice } from "../lib/worktree.ts";
 import { applyMention, draftMentionSpans, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/mention";
 import {
   expandPasteTokens,
@@ -58,6 +59,9 @@ export function Composer({
   projects = [],
   showProject = true,
   onOpenProject,
+  onOpenWorktree,
+  onCreateWorktree,
+  suggestedWorktree = "",
   onOpenFolder,
   models,
   model,
@@ -100,6 +104,12 @@ export function Composer({
   /** Hidden once the open chat already has messages. A saved chat cannot move projects. */
   showProject?: boolean;
   onOpenProject?: (path: string) => void;
+  /** Switch the open folder to another checkout of the same repo. */
+  onOpenWorktree?: (path: string) => void;
+  /** Create a checkout. An empty name means the model should name it from the first message. */
+  onCreateWorktree?: (branch: string) => void;
+  /** Branch the model suggested for this chat, used when the name field is left empty. */
+  suggestedWorktree?: string;
   onOpenFolder: () => void;
   models: Model[];
   model: string;
@@ -676,7 +686,162 @@ export function Composer({
           </button>
         </div>
       </div>
+      {onOpenWorktree ? (
+        <WorktreeBar
+          workspace={workspace}
+          suggested={suggestedWorktree}
+          onOpen={onOpenWorktree}
+          onCreate={onCreateWorktree}
+        />
+      ) : null}
     </form>
+  );
+}
+
+function WorktreeBar({
+  workspace,
+  suggested,
+  onOpen,
+  onCreate,
+}: {
+  workspace: string;
+  suggested: string;
+  onOpen: (path: string) => void;
+  onCreate?: (branch: string) => void;
+}) {
+  const [tick, setTick] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const [draft, setDraft] = useState("");
+  const button = useRef<HTMLButtonElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => subscribeWorktreeLists(() => setTick((n) => n + 1)), []);
+  const { current, rows } = worktreeChoices(workspace, worktreeListsFor(workspace));
+  void tick;
+  useEffect(() => {
+    if (!naming) return;
+    field.current?.focus();
+  }, [naming]);
+  if (!current) return null;
+  const label = current.main ? `${current.branch} · main` : current.branch;
+  const generated = suggested.trim();
+  function create() {
+    if (!onCreate) return;
+    // A blank field uses the name already generated for this chat.
+    const name = draft.trim() || generated;
+    setOpen(false);
+    setNaming(false);
+    setDraft("");
+    onCreate(name);
+  }
+  return (
+    <div className="mt-1 flex items-center px-1">
+      <button
+        ref={button}
+        type="button"
+        aria-label="Worktree"
+        aria-expanded={open}
+        title={current.path}
+        onClick={() => {
+          setOpen((value) => !value);
+          setNaming(false);
+          setDraft("");
+        }}
+        className={`flex h-6 max-w-full items-center gap-1.5 rounded-md px-1.5 text-[11px] hover:bg-wash ${
+          open ? "bg-wash text-ink" : "text-muted hover:text-ink"
+        }`}
+      >
+        <Symbol name="arrow.triangle.branch" className={`size-3 shrink-0 ${current.main ? "text-muted" : "text-accent"}`} />
+        <span className="min-w-0 truncate">{label}</span>
+        <Symbol name="chevron.down" className="size-2.5 shrink-0 opacity-70" />
+      </button>
+      <PopMenu
+        open={open}
+        anchor={button}
+        label="Worktrees"
+        align="start"
+        width={260}
+        placement="below"
+        onClose={() => {
+          setOpen(false);
+          setNaming(false);
+        }}
+      >
+        <div className="max-h-56 overflow-auto py-1">
+          {rows.map((row) => (
+            <WorktreeChoiceRow
+              key={row.path}
+              row={row}
+              onPick={() => {
+                setOpen(false);
+                if (!row.current) onOpen(row.path);
+              }}
+            />
+          ))}
+        </div>
+        {onCreate ? (
+          <div className="border-t border-line/20 p-1">
+            {naming ? (
+              <div className="px-1 py-0.5">
+                <input
+                  ref={field}
+                  value={draft}
+                  aria-label="New worktree name"
+                  placeholder={generated || "Press enter to create"}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      create();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setNaming(false);
+                      setDraft("");
+                    }
+                  }}
+                  className="h-7 w-full bg-transparent px-1.5 text-[12px] text-ink outline-none placeholder:text-muted"
+                />
+              </div>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => setNaming(true)}
+                className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink/80 hover:bg-wash"
+              >
+                <Symbol name="plus" className="size-3.5 shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate">
+                  {generated ? `New worktree · ${generated}` : "New worktree"}
+                </span>
+              </button>
+            )}
+          </div>
+        ) : null}
+      </PopMenu>
+    </div>
+  );
+}
+
+function WorktreeChoiceRow({ row, onPick }: { row: WorktreeChoice; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={row.current}
+      title={row.path}
+      onClick={onPick}
+      className={`flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] hover:bg-wash ${
+        row.current ? "font-medium text-ink" : "text-ink/80"
+      }`}
+    >
+      <Symbol name="arrow.triangle.branch" className={`size-3.5 shrink-0 ${row.current ? "text-accent" : "text-muted"}`} />
+      <span className="min-w-0 flex-1 truncate">{row.branch}</span>
+      <span className="shrink-0 text-[10px] text-muted">{row.main ? "main" : row.name}</span>
+      <Symbol name="checkmark" className={`size-3 shrink-0 text-accent ${row.current ? "opacity-100" : "opacity-0"}`} />
+    </button>
   );
 }
 
@@ -1395,6 +1560,13 @@ function ModelSelect({
     setMenuAbove(frame.top - 320 - 6 >= 8);
   }, [open]);
 
+  // The menu stays mounted. Switching chats must not leave the previous provider filtered in.
+  useEffect(() => {
+    if (open) return;
+    const current = models.find((row) => row.id === value);
+    setFocus(current ? modelProvider(current) : null);
+  }, [open, models, value]);
+
   useEffect(() => {
     if (!open) return;
     function onDoc(ev: MouseEvent) {
@@ -1929,6 +2101,7 @@ function PopMenu({
   label,
   align = "start",
   width,
+  placement = "auto",
   onClose,
   children,
 }: {
@@ -1937,6 +2110,8 @@ function PopMenu({
   label: string;
   align?: "start" | "end";
   width: number;
+  /** `below` stays under the anchor even when the window is short. */
+  placement?: "auto" | "below";
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -1954,7 +2129,7 @@ function PopMenu({
       const left = align === "end" ? frame.right - width : frame.left;
       const clamped = Math.min(Math.max(8, left), window.innerWidth - width - 8);
       const gap = 6;
-      const above = frame.top - height - gap >= 8;
+      const above = placement === "below" ? false : frame.top - height - gap >= 8;
       setBox({
         left: clamped,
         top: above ? frame.top - gap - height : frame.bottom + gap,
@@ -1968,7 +2143,7 @@ function PopMenu({
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, anchor, align, width, children]);
+  }, [open, anchor, align, width, placement, children]);
 
   useEffect(() => {
     if (!open) return;

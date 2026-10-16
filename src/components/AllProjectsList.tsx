@@ -20,6 +20,7 @@ import {
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
 import { projectGitKey, type ProjectGit } from "../lib/project-git";
+import type { WorktreeChild } from "../lib/worktree.ts";
 import * as api from "../lib/tauri";
 import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
@@ -36,6 +37,9 @@ export function AllProjectsList({
   onOpenSettings,
   onDeleteProject,
   onReorderProject,
+  worktreesFor,
+  onRemoveWorktree,
+  renderWorktree,
   renderList,
   archiveOpen,
   onToggleArchive,
@@ -52,11 +56,15 @@ export function AllProjectsList({
   onOpenSettings: (path: string, name: string) => void;
   onDeleteProject: (path: string) => void;
   onReorderProject?: (fromPath: string, toPath: string) => void;
+  worktreesFor?: (path: string) => WorktreeChild[];
+  onRemoveWorktree?: (path: string) => void;
+  renderWorktree?: (child: WorktreeChild) => ReactNode;
   renderList: (group: ProjectChatGroup, options: { showArchived: boolean }) => ReactNode;
   archiveOpen: Record<string, boolean>;
   onToggleArchive: (path: string) => void;
   gitByProject?: Record<string, ProjectGit>;
 }) {
+  const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
   const [gitMenu, setGitMenu] = useState<{ x: number; y: number; path: string; remote: boolean } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
@@ -112,6 +120,7 @@ export function AllProjectsList({
         const showArchived = Boolean(archiveOpen[projectKey(group.path)]);
         const hasArchived = projectHasArchived(group.conversations);
         const git = gitByProject?.[projectGitKey(group.path)] ?? null;
+        const worktrees = worktreesFor?.(group.path) ?? [];
         const visibleEmpty = showArchived
           ? !hasArchived
           : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
@@ -198,6 +207,27 @@ export function AllProjectsList({
                 onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
               />
             )}
+            {closed || showArchived
+              ? null
+              : worktrees.map((child) => {
+                  const childKey = projectKey(child.path);
+                  const childClosed = Boolean(closedWorktrees[childKey]);
+                  return (
+                    <div key={childKey}>
+                      <WorktreeRow
+                        child={child}
+                        closed={childClosed}
+                        current={isSameProject(child.path, activeWorkspace)}
+                        onToggle={() =>
+                          setClosedWorktrees((prev) => ({ ...prev, [childKey]: !prev[childKey] }))
+                        }
+                        onOpen={() => onOpenProject(child.path)}
+                        onRemove={onRemoveWorktree ? () => onRemoveWorktree(child.path) : undefined}
+                      />
+                      {childClosed || !renderWorktree ? null : renderWorktree(child)}
+                    </div>
+                  );
+                })}
             {closed ? null : visibleEmpty ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}
@@ -321,6 +351,57 @@ function ProjectGitRow({
       >
         <Symbol name="ellipsis" className="size-3.5" />
       </button>
+    </div>
+  );
+}
+
+function WorktreeRow({
+  child,
+  closed,
+  current,
+  onToggle,
+  onOpen,
+  onRemove,
+}: {
+  child: WorktreeChild;
+  closed: boolean;
+  current: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <div className="group/wt flex items-center gap-1 rounded-[6px] py-[3px] pr-1 pl-1 text-[12px] select-none hover:bg-wash">
+      <button
+        type="button"
+        aria-label={closed ? `Expand ${child.branch}` : `Collapse ${child.branch}`}
+        onClick={onToggle}
+        className="flex size-6 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
+      >
+        <Symbol name={closed ? "chevron.right" : "chevron.down"} className="size-3" />
+      </button>
+      <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+        <Symbol name="arrow.triangle.branch" className={`size-3.5 shrink-0 ${current ? "text-accent" : "text-muted"}`} />
+        <span className={`min-w-0 flex-1 truncate ${current ? "font-medium text-ink" : "text-ink/80"}`} title={child.branch}>
+          {child.branch}
+        </span>
+        <span className="shrink-0 truncate text-[10px] text-muted">{child.name}</span>
+      </button>
+      {onRemove && !current ? (
+        <button
+          type="button"
+          aria-label={`Remove worktree ${child.branch}`}
+          title="Remove worktree"
+          onClick={(ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            onRemove();
+          }}
+          className="flex size-6 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:bg-wash-strong hover:text-err group-hover/wt:opacity-100 focus-visible:opacity-100"
+        >
+          <Symbol name="xmark" className="size-3" />
+        </button>
+      ) : null}
     </div>
   );
 }

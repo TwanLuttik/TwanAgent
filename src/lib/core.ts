@@ -1016,6 +1016,41 @@ export function liveTranscriptItems(
   );
 }
 
+export type WorktreeCheckout = {
+  name: string;
+  branch: string;
+  mainName: string;
+};
+
+export type WorktreeListRow = {
+  path: string;
+  branch?: string | null;
+  detached?: boolean;
+  main?: boolean;
+};
+
+/** The open folder when it is a linked checkout. The main checkout returns null. */
+export function worktreeCheckoutFor(
+  workspace: string,
+  worktrees: WorktreeListRow[] | null | undefined,
+): WorktreeCheckout | null {
+  if (!workspace || !worktrees?.length) return null;
+  const key = projectKey(workspace);
+  const here = worktrees.find((row) => projectKey(row.path) === key);
+  if (!here || here.main) return null;
+  const main = worktrees.find((row) => row.main);
+  const branch = here.detached ? "detached" : here.branch?.trim() || "";
+  const mainName = main?.path ? folderName(main.path) : "";
+  if (!branch || !mainName) return null;
+  return { name: folderName(here.path), branch, mainName };
+}
+
+/** One line when this folder is a linked worktree, not the main checkout. */
+export function worktreeSystemLine(checkout?: WorktreeCheckout | null): string {
+  if (!checkout?.name || !checkout.branch || !checkout.mainName) return "";
+  return `This checkout is worktree ${checkout.name} on branch ${checkout.branch}. The main checkout is ${checkout.mainName}. Edits here do not change the other checkout.`;
+}
+
 export function systemPrompt(
   workspace: string,
   permission: PermissionMode = "ask",
@@ -1025,19 +1060,22 @@ export function systemPrompt(
   remote?: RemoteWorkspace | null,
   modelId?: string,
   planLine?: string,
+  worktree?: WorktreeCheckout | null,
 ): ChatMessage {
   const knowledgeBlock = (knowledge ?? "").trim()
     ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
     : "";
   const extra = extraSystemLines(mcpServers, skills);
   const remoteLine = remoteWorkspaceLine(remote);
-  const place = remoteLine ? `\n${remoteLine}` : "";
+  const worktreeLine = worktreeSystemLine(worktree);
+  const place = [remoteLine, worktreeLine].filter(Boolean).join("\n");
+  const placeBlock = place ? `\n${place}` : "";
   const who = agentIdentityLine(modelId);
   const planning = (planLine ?? "").trim();
   return {
     role: "system",
     content: `${who}
-Workspace: ${workspace}${place}
+Workspace: ${workspace}${placeBlock}
 ${permissionSystemLine(permission)}${planning ? `\n${planning}` : ""}
 For independent research, planning, or parallel work, call spawn_subagent. Each child has its own context and reports a summary when it finishes. Use explore to investigate, plan for implementation plans, and general-purpose when the child may edit files.
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
@@ -1058,8 +1096,9 @@ export function withSystem(
   remote?: RemoteWorkspace | null,
   modelId?: string,
   planLine?: string,
+  worktree?: WorktreeCheckout | null,
 ): ChatMessage[] {
-  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId, planLine);
+  const base = system ?? systemPrompt(workspace, permission, knowledge, mcpServers, skills, remote, modelId, planLine, worktree);
   const extra = system ? extraSystemLines(mcpServers, skills) : "";
   const content =
     extra && !String(base.content ?? "").includes(extra.trim())

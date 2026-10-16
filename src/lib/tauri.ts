@@ -192,6 +192,16 @@ export function minimaxAccountUsageCached(): Promise<ApiAccountUsage | null> {
   return invoke("dev_minimax_account_usage_cached");
 }
 
+/** Weekly pool, or a prepaid balance, for the signed-in Grok account. An API key has neither. */
+export function xaiAccountUsage(): Promise<ApiAccountUsage> {
+  return invoke("dev_xai_account_usage");
+}
+
+/** The last Grok allowance saved in the app database. Null until one has loaded. */
+export function xaiAccountUsageCached(): Promise<ApiAccountUsage | null> {
+  return invoke("dev_xai_account_usage_cached");
+}
+
 export type UsageDbInfo = {
   path: string;
   bytes: number;
@@ -250,6 +260,15 @@ export type GitCommit = {
   subject: string;
 };
 export type GitIdentity = { name: string; email: string; configured: boolean };
+export type GitWorktree = {
+  path: string;
+  head?: string | null;
+  branch?: string | null;
+  bare: boolean;
+  detached: boolean;
+  main: boolean;
+};
+export type GitWorktreeAdd = { worktrees: GitWorktree[]; opened: string };
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -652,6 +671,23 @@ export function gitShow(workspace: string, hash: string): Promise<string> {
 
 export function gitFileAt(workspace: string, path: string, revision = "HEAD"): Promise<string> {
   return invoke("dev_git_file_at", { workspace, path, revision });
+}
+
+export function gitWorktrees(workspace: string): Promise<GitWorktree[]> {
+  return invoke("dev_git_worktrees", { workspace });
+}
+
+export function gitWorktreeAdd(workspace: string, branch: string, create = true): Promise<GitWorktreeAdd> {
+  return invoke("dev_git_worktree_add", { workspace, branch, create });
+}
+
+/** Rename a linked worktree's branch and move its folder. Chats stay with the folder. */
+export function gitWorktreeRename(workspace: string, path: string, branch: string): Promise<GitWorktreeAdd> {
+  return invoke("dev_git_worktree_rename", { workspace, path, branch });
+}
+
+export function gitWorktreeRemove(workspace: string, path: string): Promise<GitWorktree[]> {
+  return invoke("dev_git_worktree_remove", { workspace, path });
 }
 
 export function stopCommand(id: string): Promise<void> {

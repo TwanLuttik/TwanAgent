@@ -810,6 +810,7 @@ export function MainView() {
     runningWsRef,
     modelRef,
     workspaceRef,
+    activeIdRef,
     runningIdRef,
     abortRef,
     turnsRef,
@@ -925,6 +926,7 @@ export function MainView() {
     setUsageByChat,
     setUsageTick,
     bumpFiles,
+    adoptWorktreeName: (ws, branch) => void libraryRef.current?.adoptWorktreeName(ws, branch),
     setShellQueue,
     setPlanQueue,
     planByChatRef,
@@ -962,11 +964,13 @@ export function MainView() {
     toggleProjectCollapsed,
     reorderProjects,
     deleteProjectFromSidebar,
+    forgetProjectRow,
     applyWorkspace,
     assignDraftProject,
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
+    rememberOpenedProject,
     openChat,
     toggleSubagent,
     removeChat,
@@ -1460,6 +1464,7 @@ export function MainView() {
     createJourneyFromChat,
     deleteJourney,
     deleteProjectFromSidebar,
+    forgetProjectRow,
     journeys,
     legacyProjectsRoot,
     messages,
@@ -1469,6 +1474,7 @@ export function MainView() {
     openingId,
     openJourneyKnowledge,
     openProjectFromSidebar,
+    rememberOpenedProject,
     openProjectSettings,
     openSidebarChat,
     projectSettings,
@@ -1520,6 +1526,7 @@ export function MainView() {
       createJourneyFromChat,
       deleteJourney,
       deleteProjectFromSidebar,
+      forgetProjectRow,
       journeys,
       legacyProjectsRoot,
       messages,
@@ -1529,6 +1536,7 @@ export function MainView() {
       openingId,
       openJourneyKnowledge,
       openProjectFromSidebar,
+      rememberOpenedProject,
       openProjectSettings,
       openSidebarChat,
       projectSettings,
@@ -1556,11 +1564,13 @@ export function MainView() {
     live.createJourneyFromChat = createJourneyFromChat;
     live.deleteJourney = deleteJourney;
     live.deleteProjectFromSidebar = deleteProjectFromSidebar;
+    live.forgetProjectRow = forgetProjectRow;
     live.moveConversation = moveConversation;
     live.openChat = openChat;
     live.openListedChat = openListedChat;
     live.openJourneyKnowledge = openJourneyKnowledge;
     live.openProjectFromSidebar = openProjectFromSidebar;
+    live.rememberOpenedProject = rememberOpenedProject;
     live.openProjectSettings = openProjectSettings;
     live.openSidebarChat = openSidebarChat;
     live.removeChat = removeChat;

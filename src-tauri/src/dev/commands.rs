@@ -9,7 +9,8 @@ use super::files::{
 use super::git::{
     git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
     git_label, git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with,
-    git_switch, git_sync, git_unstage, GitCommit, GitIdentity, GitRepoSummary, GitTarget,
+    git_switch, git_sync, git_unstage, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
+    GitCommit, GitIdentity, GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
 };
 use super::paths::{expand_folder_path, path_string};
 use super::project_location::ProjectsLocation;
@@ -644,6 +645,91 @@ pub async fn dev_git_show(
 ) -> Result<String> {
     let target = git_target(&state, &workspace)?;
     off_main(move || git_show(&target, &hash)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_worktrees(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Vec<GitWorktree>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_worktrees(&target)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_worktree_add(
+    app: AppHandle,
+    workspace: String,
+    branch: String,
+    create: Option<bool>,
+) -> Result<GitWorktreeAdd> {
+    let state = app.state::<AppState>();
+    let target = git_target(&state, &workspace)?;
+    let create = create.unwrap_or(true);
+    let added = off_main(move || git_worktree_add(&target, &branch, create)).await?;
+    let root = expand_folder_path(&added.opened)?;
+    let state = app.state::<AppState>();
+    // A linked checkout is a child of its repo, not another project in the sidebar.
+    let canon = state.register_workspace(&app, &root)?;
+    Ok(GitWorktreeAdd {
+        worktrees: added.worktrees,
+        opened: path_string(&canon),
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_worktree_rename(
+    app: AppHandle,
+    workspace: String,
+    path: String,
+    branch: String,
+) -> Result<GitWorktreeAdd> {
+    let state = app.state::<AppState>();
+    let target = git_target(&state, &workspace)?;
+    let data_dir = state.data_dir.clone();
+    let from = path.clone();
+    let renamed = off_main(move || {
+        let added = git_worktree_rename(&target, &from, &branch)?;
+        crate::dev::project_location::relocate_project_records(&data_dir, &from, &added.opened)?;
+        Ok(added)
+    })
+    .await?;
+    if same_project_path(&path, &renamed.opened) {
+        return Ok(renamed);
+    }
+    let state = app.state::<AppState>();
+    if let Ok(root) = expand_folder_path(&path) {
+        let _ = state.forget_workspace(&root);
+    }
+    if let Ok(conn) = crate::appdb::open(&state.data_dir) {
+        let _ = crate::appdb::remove_project(&conn, &path);
+    }
+    let root = expand_folder_path(&renamed.opened)?;
+    let canon = state.register_workspace(&app, &root)?;
+    Ok(GitWorktreeAdd {
+        worktrees: renamed.worktrees,
+        opened: path_string(&canon),
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_worktree_remove(
+    app: AppHandle,
+    workspace: String,
+    path: String,
+) -> Result<Vec<GitWorktree>> {
+    let state = app.state::<AppState>();
+    let target = git_target(&state, &workspace)?;
+    let remove_path = path.clone();
+    let rows = off_main(move || git_worktree_remove(&target, &remove_path)).await?;
+    let state = app.state::<AppState>();
+    if let Ok(root) = expand_folder_path(&path) {
+        let _ = state.forget_workspace(&root);
+    }
+    if let Ok(conn) = crate::appdb::open(&state.data_dir) {
+        let _ = crate::appdb::remove_project(&conn, &path);
+    }
+    Ok(rows)
 }
 
 #[tauri::command(rename_all = "snake_case")]

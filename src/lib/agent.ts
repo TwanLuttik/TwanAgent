@@ -1,7 +1,7 @@
 import type { ToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./context.ts";
-import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, type ChatMessage, type ThinkingBlock } from "./core.ts";
+import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, worktreeCheckoutFor, type ChatMessage, type ThinkingBlock, type WorktreeListRow } from "./core.ts";
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
@@ -333,6 +333,8 @@ export type TurnOpts = {
   mcpServers?: DetectedMcpServer[];
   skills?: DetectedSkill[];
   remote?: RemoteWorkspace | null;
+  /** Linked worktrees of this repo. The prompt names one only when the open folder is not the main checkout. */
+  worktrees?: WorktreeListRow[] | null;
   /** Chat that owns this turn. Shell output is shown there while the command runs. */
   conversationId?: string;
 };
@@ -425,18 +427,24 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     const permission = parsePermissionMode(opts.getPermission?.());
     const context = messagesForContext(transcript, compaction).messages;
     const planLine = opts.plan?.enabled ? planModeLine(opts.plan) : "";
-    let result = await streamCompletion(
-      withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
-      opts,
-      imageCache,
+    const checkout = worktreeCheckoutFor(opts.workspace, opts.worktrees);
+    const prompt = withSystem(
+      opts.workspace,
+      context,
+      opts.system,
+      permission,
+      opts.journeyKnowledge,
+      opts.mcpServers,
+      opts.skills,
+      opts.remote,
+      opts.model,
+      planLine,
+      checkout,
     );
+    let result = await streamCompletion(prompt, opts, imageCache);
     if (opts.signal.aborted) return transcript;
     if (result.error && isRetryableChatError(result.error)) {
-      result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
-        opts,
-        imageCache,
-      );
+      result = await streamCompletion(prompt, opts, imageCache);
     }
     if (opts.signal.aborted) return transcript;
     if (result.error && !compactedAfterOverflow && isContextLengthError(result.error) && opts.allowSpawn !== false) {
@@ -461,11 +469,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     }
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
-      result = await streamCompletion(
-        withSystem(opts.workspace, context, opts.system, permission, opts.journeyKnowledge, opts.mcpServers, opts.skills, opts.remote, opts.model, planLine),
-        opts,
-        imageCache,
-      );
+      result = await streamCompletion(prompt, opts, imageCache);
       if (opts.signal.aborted) return transcript;
       if (result.error) {
         opts.onError(result.error);
