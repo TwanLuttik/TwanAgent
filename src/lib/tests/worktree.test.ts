@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { projectKey } from "../core.ts";
 import type { GitWorktree } from "../tauri.ts";
 import {
   groupProjectsByWorktree,
+  keptTabChatIds,
+  projectTabChats,
+  rememberTabTitle,
+  tabTitleFor,
+  publishWorktreeChats,
+  linkedWorktrees,
   publishWorktreeLists,
   freshWorktreeName,
   hideOpenWorktreeMarker,
@@ -15,6 +22,8 @@ import {
   worktreeNameFromPrompt,
   worktreeNameFromSuggestion,
   worktreeNamePrompt,
+  sharedRepoTabs,
+  tabProjectKey,
   worktreeRepoKey,
 } from "../worktree.ts";
 
@@ -141,6 +150,50 @@ describe("groupProjectsByWorktree", () => {
 
   it("shares one repo key for every checkout of the same git dir", () => {
     const list = [main, login];
+    publishWorktreeLists({ [main.path]: list });
+    assert.deepEqual(linkedWorktrees().map((row) => row.path), [login.path]);
+    assert.equal(tabProjectKey(login.path), tabProjectKey(main.path));
+    const folded = sharedRepoTabs(
+      {
+        [projectKey(main.path)]: [{ id: "weather" }],
+        [projectKey(login.path)]: [{ id: "docs" }],
+      },
+      { [main.path]: list },
+    );
+    assert.deepEqual(folded[projectKey(main.path)], [{ id: "weather" }]);
+    assert.equal(projectKey(login.path) in folded, false);
+    const adopted = sharedRepoTabs({ [projectKey(login.path)]: [{ id: "docs" }] }, { [main.path]: list });
+    assert.deepEqual(adopted[projectKey(main.path)], [{ id: "docs" }]);
+    assert.equal(tabProjectKey("/work/other"), "/work/other");
+    const open = [
+      { id: "weather", title: "Weather", created_at: "", updated_at: "" },
+      { id: "ping", title: "ping", created_at: "", updated_at: "" },
+    ];
+    // The worktree list has not arrived. Opening it must not drop the main tabs.
+    assert.deepEqual(
+      [...keptTabChatIds(login.path, [{ id: "docs", title: "Docs", created_at: "", updated_at: "" }], ["weather", "ping", "docs"])].sort(),
+      ["docs", "ping", "weather"],
+    );
+    publishWorktreeChats({
+      [main.path]: [{ id: "main-chat", title: "Weather", created_at: "", updated_at: "" }],
+      [login.path]: [{ id: "tree-chat", title: "Docs", created_at: "", updated_at: "" }],
+    });
+    assert.deepEqual(
+      projectTabChats(login.path).map((row) => row.id),
+      ["main-chat", "tree-chat"],
+    );
+    assert.deepEqual(
+      [...keptTabChatIds(login.path, [{ id: "docs", title: "Docs", created_at: "", updated_at: "" }], ["weather", "ping", "docs"])].sort(),
+      ["docs", "main-chat"],
+    );
+    assert.deepEqual([...keptTabChatIds(main.path, open, ["weather", "ping"])].sort(), ["ping", "tree-chat", "weather"]);
+    void open;
+    publishWorktreeLists({});
+    publishWorktreeChats({});
+    assert.equal(projectTabChats(login.path).length, 0);
+    rememberTabTitle("weather", "whats the weather today");
+    rememberTabTitle("weather", "Chat");
+    assert.equal(tabTitleFor("weather"), "whats the weather today");
     assert.equal(worktreeRepoKey(main.path, list), worktreeRepoKey(login.path, list));
     assert.equal(worktreeRepoKey("/work/other", null), "/work/other");
     assert.equal(worktreeForPath(login.path, list)?.branch, "feat/login");

@@ -13,6 +13,7 @@ import {
 import {
   expandCollapsedProject,
   isAppProject,
+  isLinkedWorktreePath,
   isSameProject,
   moveProjectGroup,
   patchSidebarConversations,
@@ -43,7 +44,7 @@ import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
 import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
-import { publishWorktreeList, worktreeForPath, worktreeListsFor } from "../lib/worktree";
+import { publishWorktreeList, tabProjectKey, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
 import { providerProfile } from "../lib/provider";
@@ -519,7 +520,9 @@ function applyWorkspace(path: string) {
   setDraftImages({});
   setUsageByChat({});
   setFolderOpen(false);
-  expandProject(path);
+  // A linked checkout stays collapsed under its repo. Expanding it here is the
+  // flash of a folder before the conversation settles back underneath.
+  if (!isLinkedWorktreePath(path, worktreeListsFor(path))) expandProject(path);
 }
 
 const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => void>(() => {});
@@ -843,7 +846,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   }
   // Both sides of a split stay mounted. Clicking one only changes which pane is
   // focused. Reloading it paints "Loading…" on a chat that is already on screen.
-  const openTabs = tabs[projectKey(path)] ?? [];
+  const openTabs = tabs[tabProjectKey(path)] ?? [];
   const showing = splitGroupForChat(openTabs, activeId);
   const clicked = splitGroupForChat(openTabs, id);
   if (showing && clicked && showing.id === clicked.id) {
@@ -1175,7 +1178,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
   }
   if (!archived) return;
   setChatTabsByProject((prev) => {
-    const key = projectKey(path);
+    const key = tabProjectKey(path);
     const tabs = prev[key];
     if (!tabs) return prev;
     const closed = closeTabChat(tabs, id);

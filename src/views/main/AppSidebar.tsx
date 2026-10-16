@@ -10,7 +10,7 @@ import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } 
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
-import { groupProjectsByWorktree, publishWorktreeLists, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
+import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
@@ -332,6 +332,11 @@ function ProjectsNav({
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
+  const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
+  const sidebarGroups = allProjectGroups.filter((group: { path: string }) => {
+    void worktreeTick;
+    return !linkedWorktrees().some((row) => projectKey(row.path) === projectKey(group.path));
+  });
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -450,13 +455,17 @@ function ProjectsNav({
     .join("\n");
   useEffect(() => {
     const paths = worktreeChatPaths.split("\n").filter(Boolean);
-    if (!paths.length) {
+    // The main checkout is not in that list. Its titles still belong on the shared strip.
+    const asked = workspace && !paths.some((path) => projectKey(path) === projectKey(workspace))
+      ? [...paths, workspace]
+      : paths;
+    if (!asked.length) {
       setWorktreeChats((prev) => (Object.keys(prev).length ? {} : prev));
       return;
     }
     let cancelled = false;
     void Promise.all(
-      paths.map(async (path) => {
+      asked.map(async (path) => {
         try {
           return [projectKey(path), await api.listConversations(path)] as const;
         } catch {
@@ -467,12 +476,16 @@ function ProjectsNav({
       if (cancelled) return;
       const next: Record<string, ConversationSummary[]> = {};
       for (const [key, chats] of rows) next[key] = chats;
-      setWorktreeChats((prev) => (sameWorktreeChats(prev, next) ? prev : next));
+      setWorktreeChats((prev) => {
+        if (sameWorktreeChats(prev, next)) return prev;
+        publishWorktreeChats(next);
+        return next;
+      });
     });
     return () => {
       cancelled = true;
     };
-  }, [worktreeChatPaths, setWorktreeChats]);
+  }, [worktreeChatPaths, workspace, setWorktreeChats]);
 
   function sameWorktreeChats(
     prev: Record<string, ConversationSummary[]>,
@@ -631,7 +644,7 @@ function ProjectsNav({
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
         <AllProjectsList
-          groups={allProjectGroups}
+          groups={sidebarGroups}
           activeWorkspace={workspace}
           projectsRoot={projectsRoot}
           legacyProjectsRoot={legacyProjectsRoot}

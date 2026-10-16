@@ -111,6 +111,23 @@ fn same_project_path(left: &str, right: &str) -> bool {
     crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(right))
 }
 
+fn is_linked_worktree(root: &Path) -> bool {
+    let Ok(target) = super::git::GitTarget::local(root) else {
+        return false;
+    };
+    let Ok(rows) = super::git::git_worktrees(&target) else {
+        return false;
+    };
+    let Ok(canon) = std::fs::canonicalize(root) else {
+        return false;
+    };
+    rows.iter().any(|row| {
+        !row.main
+            && !row.bare
+            && std::fs::canonicalize(&row.path).ok().as_ref() == Some(&canon)
+    })
+}
+
 fn remember_project(state: &AppState, root: &Path) {
     let Ok(conn) = crate::appdb::open(&state.data_dir) else {
         return;
@@ -126,7 +143,10 @@ pub async fn dev_open_folder(app: AppHandle, path: String) -> Result<String> {
         let root = expand_folder_path(&path)?;
         let state = app.state::<AppState>();
         let canon = state.register_workspace(&app, &root)?;
-        remember_project(&state, &canon);
+        // A linked checkout stays under its repo. Saving it here puts the folder back at the top.
+        if !is_linked_worktree(&canon) {
+            remember_project(&state, &canon);
+        }
         Ok(path_string(&canon))
     })
     .await

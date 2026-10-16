@@ -1,8 +1,12 @@
 import { folderName, projectKey, type ProjectRow } from "./core.ts";
-import type { GitWorktree } from "./tauri.ts";
+import type { ConversationSummary, GitWorktree } from "./tauri.ts";
 
 /** Lists the sidebar loaded, keyed by the main checkout. A turn reads this without asking git again. */
 const lists = new Map<string, GitWorktree[]>();
+/** Conversations of a linked checkout, keyed by that folder. The tab strip reads titles from here. */
+const chats = new Map<string, ConversationSummary[]>();
+/** Last title painted for a chat. Switching checkouts must not replace it with "Chat". */
+const tabTitles = new Map<string, string>();
 const listeners = new Set<() => void>();
 let revision = 0;
 
@@ -20,12 +24,95 @@ export function publishWorktreeLists(next: Record<string, GitWorktree[]>): void 
   for (const listener of listeners) listener();
 }
 
+/** Every linked checkout the sidebar has loaded, whatever repo it belongs to. */
+export function linkedWorktrees(): GitWorktree[] {
+  const out: GitWorktree[] = [];
+  const seen = new Set<string>();
+  for (const rows of lists.values()) {
+    for (const row of rows) {
+      if (row.main || row.bare) continue;
+      const key = projectKey(row.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+  }
+  return out;
+}
+
 export function worktreeListsFor(workspace: string): GitWorktree[] {
   const key = projectKey(workspace);
   for (const rows of lists.values()) {
     if (rows.some((row) => projectKey(row.path) === key)) return rows;
   }
   return [];
+}
+
+export function publishWorktreeChats(next: Record<string, ConversationSummary[]>): void {
+  chats.clear();
+  for (const [key, rows] of Object.entries(next)) {
+    chats.set(projectKey(key), rows);
+  }
+  revision += 1;
+  for (const listener of listeners) listener();
+}
+
+/** True once this folder's conversations have been published. An empty publish still counts. */
+export function worktreeChatsKnown(path: string): boolean {
+  return chats.has(projectKey(path));
+}
+
+/**
+ * Chats the open strip may drop. A checkout whose list has not arrived keeps every
+ * tab already on the strip. Once it arrives, only the chats it still lists stay.
+ */
+export function keptTabChatIds(
+  openPath: string,
+  openChats: readonly { id: string }[],
+  currentIds: readonly string[],
+): Set<string> {
+  const kept = new Set(openChats.map((row) => row.id));
+  const rows = worktreeListsFor(openPath);
+  if (!rows.length) return kept;
+  let waiting = false;
+  for (const row of rows) {
+    const folder = projectKey(row.path);
+    if (folder === projectKey(openPath)) continue;
+    if (!worktreeChatsKnown(row.path)) {
+      waiting = true;
+      continue;
+    }
+    for (const chat of chats.get(folder) ?? []) kept.add(chat.id);
+  }
+  // One checkout is still loading. Hold the tabs already open until its list arrives.
+  if (waiting) for (const id of currentIds) kept.add(id);
+  return kept;
+}
+
+export function rememberTabTitle(id: string, title: string): void {
+  const clean = title.trim();
+  if (!id || !clean || clean === "Chat" || tabTitles.get(id) === clean) return;
+  tabTitles.set(id, clean);
+}
+
+export function tabTitleFor(id: string): string {
+  return tabTitles.get(id) ?? "";
+}
+
+/** Every conversation that belongs on this repo's tab strip, including linked checkouts. */
+export function projectTabChats(workspace: string): ConversationSummary[] {
+  const rows = worktreeListsFor(workspace);
+  const keys = new Set((rows.length ? rows : [{ path: workspace }]).map((row) => projectKey(row.path)));
+  const seen = new Set<string>();
+  const out: ConversationSummary[] = [];
+  for (const key of keys) {
+    for (const chat of chats.get(key) ?? []) {
+      if (seen.has(chat.id)) continue;
+      seen.add(chat.id);
+      out.push(chat);
+    }
+  }
+  return out;
 }
 
 export function subscribeWorktreeLists(listener: () => void): () => void {
@@ -54,6 +141,31 @@ export function publishWorktreeList(workspace: string, rows: GitWorktree[]): voi
   }
   if (rows.length) next[key] = rows;
   publishWorktreeLists(next);
+}
+
+/** The folder the open tabs belong to. A linked checkout shares the main checkout's strip. */
+export function tabProjectKey(path: string): string {
+  return worktreeRepoKey(path, worktreeListsFor(path));
+}
+
+/**
+ * One strip for the whole repo. Tabs saved under a linked checkout, or under the
+ * folder before git answered, move onto the main checkout. The first copy wins.
+ */
+export function sharedRepoTabs<T>(tabs: Record<string, T>, lists: Record<string, GitWorktree[]>): Record<string, T> {
+  const out: Record<string, T> = { ...tabs };
+  for (const rows of Object.values(lists)) {
+    if (!rows.length) continue;
+    const repo = worktreeRepoKey(rows[0]?.path ?? "", rows);
+    if (!repo) continue;
+    for (const row of rows) {
+      const key = projectKey(row.path);
+      if (key === repo || !(key in out)) continue;
+      if (!(repo in out)) out[repo] = out[key]!;
+      delete out[key];
+    }
+  }
+  return out;
 }
 
 export function worktreeRepoKey(path: string, worktrees: GitWorktree[] | null | undefined): string {
