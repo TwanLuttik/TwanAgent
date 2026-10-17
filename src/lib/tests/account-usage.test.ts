@@ -118,6 +118,28 @@ describe("forecastAccounts", () => {
     assert.equal(rows[1]?.usedPercent, 59);
   });
 
+  it("keeps Grok on one weekly row", () => {
+    const now = Date.parse("2026-07-20T12:00:00Z");
+    const account = accountFromUsage(
+      "xai",
+      parseAccountUsage({
+        provider: "xai",
+        connected: true,
+        label: "SuperGrok",
+        windows: [{ id: "credits", label: "Week", used_percent: 42.5, resets_at: "2026-07-26T00:00:00Z" }],
+        balance_cents: 1250,
+        balance_currency: "USD",
+      }),
+      now,
+    );
+    assert.equal(account.name, "Grok");
+    assert.equal(account.detail, "SuperGrok");
+    const rows = forecastAccounts(account, [], now);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.window?.label, "Week");
+    assert.equal(rows[0]?.usedPercent, 42.5);
+  });
+
   it("keeps Claude on one row", () => {
     const now = Date.parse("2026-07-20T12:00:00Z");
     const account = accountFromUsage(

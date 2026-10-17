@@ -192,6 +192,8 @@ export type SidebarSlice = {
   createJourneyFromChat: MainFn;
   deleteJourney: MainFn;
   deleteProjectFromSidebar: MainFn;
+  /** Drop a project row without deleting its folder. A linked worktree uses this. */
+  forgetProjectRow: MainFn;
   journeys: JourneySummary[];
   legacyProjectsRoot: string;
   messages: MainModel["messages"];
@@ -201,6 +203,9 @@ export type SidebarSlice = {
   openingId: string;
   openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
+  /** Open a folder even when it is already the current project. Deleting a worktree uses this. */
+  switchToProject: MainFn;
+  rememberOpenedProject: MainFn;
   openProjectSettings: MainFn;
   openSidebarChat: MainFn;
   projectSettings: MainModel["projectSettings"];

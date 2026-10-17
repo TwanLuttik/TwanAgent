@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
@@ -29,6 +29,7 @@ import {
   type TabMenu,
 } from "../lib/split-pane";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
+import { keptTabChatIds, linkedWorktrees, projectTabChats, rememberTabTitle, sharedRepoTabs, subscribeWorktreeLists, tabProjectKey, tabTitleFor, worktreeListsFor, worktreeNameRevision } from "../lib/worktree";
 import {
   clearLiveStream,
   clearSecondaryLiveStream,
@@ -810,6 +811,7 @@ export function MainView() {
     runningWsRef,
     modelRef,
     workspaceRef,
+    activeIdRef,
     runningIdRef,
     abortRef,
     turnsRef,
@@ -925,6 +927,7 @@ export function MainView() {
     setUsageByChat,
     setUsageTick,
     bumpFiles,
+    adoptWorktreeName: (ws, branch) => void libraryRef.current?.adoptWorktreeName(ws, branch),
     setShellQueue,
     setPlanQueue,
     planByChatRef,
@@ -962,11 +965,14 @@ export function MainView() {
     toggleProjectCollapsed,
     reorderProjects,
     deleteProjectFromSidebar,
+    forgetProjectRow,
     applyWorkspace,
     assignDraftProject,
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
+    switchToProject,
+    rememberOpenedProject,
     openChat,
     toggleSubagent,
     removeChat,
@@ -982,12 +988,28 @@ export function MainView() {
     moveConversation,
   } = library;
 
-  const chatTabKey = workspace ? projectKey(workspace) : "";
+  const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
+  const chatTabKey = workspace ? tabProjectKey(workspace) : "";
+  useEffect(() => {
+    if (!workspace || !activeId) return;
+    const key = tabProjectKey(workspace);
+    // Git has not said this folder shares a repo yet. Revealing now would pin the
+    // chat under the worktree path, and the shared strip would never show it.
+    const linked = linkedWorktrees().some((row) => projectKey(row.path) === projectKey(workspace));
+    if (linked && key === projectKey(workspace)) return;
+    setChatTabsByProject((prev) => {
+      const folded = sharedRepoTabs(prev, { [key]: worktreeListsFor(workspace) });
+      const tabs = folded[key] ?? [];
+      const next = revealTabChat(tabs, activeId);
+      if (next === tabs && folded === prev) return prev;
+      return next === tabs ? folded : { ...folded, [key]: next };
+    });
+  }, [workspace, activeId, worktreeTick]);
   const codeTabOpen = editor.tabs.length > 0;
   const tabItems = withCodeTab(chatTabKey ? (chatTabsByProject[chatTabKey] ?? []) : [], codeTabOpen);
   useEffect(() => {
     if (!workspace) return;
-    const key = projectKey(workspace);
+    const key = tabProjectKey(workspace);
     setChatTabsByProject((prev) => {
       const current = prev[key] ?? [];
       const next = withCodeTab(current, codeTabOpen);
@@ -996,8 +1018,8 @@ export function MainView() {
   }, [workspace, codeTabOpen]);
   useEffect(() => {
     if (!workspace) return;
-    saveProjectOpenTabs(workspace, tabItems.map(tabItemToStored));
-  }, [workspace, tabItems]);
+    saveProjectOpenTabs(chatTabKey, tabItems.map(tabItemToStored));
+  }, [workspace, chatTabKey, tabItems]);
   const activeTabKey = (() => {
     if (editor.focus === "file") return "code";
     const item = tabItems.find((row) => {
@@ -1009,15 +1031,15 @@ export function MainView() {
   })();
   useEffect(() => {
     if (!workspace || !activeTabKey) return;
-    saveActiveTab(workspace, activeTabKey);
-  }, [workspace, activeTabKey]);
+    saveActiveTab(chatTabKey, activeTabKey);
+  }, [workspace, chatTabKey, activeTabKey]);
   const restoredTabFor = useRef("");
   useEffect(() => {
     if (!workspace || !activeId) return;
-    const key = projectKey(workspace);
+    const key = tabProjectKey(workspace);
     if (restoredTabFor.current === key) return;
     restoredTabFor.current = key;
-    const saved = loadActiveTab(workspace);
+    const saved = loadActiveTab(key);
     if (!saved.startsWith("split:")) return;
     // A sidebar click names one chat. Restoring the split would replace it
     // with the pane that was focused last time.
@@ -1031,18 +1053,20 @@ export function MainView() {
   const seenChats = useRef({ key: "", ids: new Set<string>() });
   useEffect(() => {
     if (!workspace || conversations.length === 0) return;
-    const key = projectKey(workspace);
+    void worktreeTick;
+    const key = tabProjectKey(workspace);
     if (seenChats.current.key !== key) seenChats.current = { key, ids: new Set() };
-    const known = new Set(conversations.map((row) => row.id));
+    const current = chatTabsByProject[key] ?? [];
+    const known = keptTabChatIds(workspace, conversations, chatIdsInTabs(current));
     const seen = seenChats.current.ids;
     setChatTabsByProject((prev) => {
-      const current = prev[key] ?? [];
-      const next = current.flatMap((item) => pruneMissingTab(item, known, seen));
+      const rows = prev[key] ?? [];
+      const next = rows.flatMap((item) => pruneMissingTab(item, known, seen));
       const same = next.length === current.length && next.every((item, index) => item === current[index]);
       return same ? prev : { ...prev, [key]: next };
     });
     known.forEach((id) => seen.add(id));
-  }, [workspace, conversations]);
+  }, [workspace, conversations, allProjectGroups, worktreeTick, chatTabsByProject]);
   const openSplit = splitGroupForChat(tabItems, activeId);
   const splitChatIds = openSplit ? [...openSplit.chatIds] : [];
   const sideChatId = splitChatIds.find((id) => id !== activeId) ?? "";
@@ -1096,33 +1120,27 @@ export function MainView() {
     return subscribeLiveStream(paint);
   }, [sideChatId]);
   const chatTabs = chatIdsInTabs(tabItems).map((id) => {
+    void worktreeTick;
     // The open list is empty until the project finishes loading. The sidebar
     // already has this project's titles, so the strip does not say "Chat" first.
     const row =
       conversations.find((item) => item.id === id) ??
-      allProjectGroups.find((group) => isSameProject(group.path, workspace))?.conversations.find((item) => item.id === id);
+      projectTabChats(workspace).find((item) => item.id === id) ??
+      allProjectGroups.flatMap((group) => group.conversations).find((item) => item.id === id);
+    const title = row?.title?.trim() || tabTitleFor(id) || "Chat";
+    rememberTabTitle(id, title);
     return {
       id,
-      title: row?.title?.trim() || "Chat",
+      title,
       kind: row?.kind === "terminal" ? ("terminal" as const) : ("chat" as const),
       running: chatHasRunningTurn(runningTurns, id),
     };
   });
 
-  useEffect(() => {
-    if (!workspace || !activeId) return;
-    const key = projectKey(workspace);
-    setChatTabsByProject((prev) => {
-      const tabs = prev[key] ?? [];
-      const next = revealTabChat(tabs, activeId);
-      return next === tabs ? prev : { ...prev, [key]: next };
-    });
-  }, [workspace, activeId]);
-
   const closeChatTab = useCallback(
     (id: string) => {
       if (!workspace || !id) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       const result = closeTabChat(chatTabsByProject[key] ?? [], id);
       if (!result.removed) return;
       setChatTabsByProject((prev) => ({ ...prev, [key]: result.items }));
@@ -1153,7 +1171,7 @@ export function MainView() {
       if (!workspace || ids.length < 2) return;
       const blocked = ids.some((id) => conversations.find((item) => item.id === id)?.kind === "terminal");
       if (blocked) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       setChatTabsByProject((prev) => {
         const current = prev[key] ?? [];
         const next = splitSelectedChats(current, ids);
@@ -1168,7 +1186,7 @@ export function MainView() {
   const moveChatTab = useCallback(
     (fromKey: string, toKey: string) => {
       if (!workspace) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       setChatTabsByProject((prev) => {
         const current = prev[key] ?? [];
         const next = moveTabItem(current, fromKey, toKey);
@@ -1181,7 +1199,7 @@ export function MainView() {
   const setSplitShare = useCallback(
     (groupId: string, share: number) => {
       if (!workspace || !groupId) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       setChatTabsByProject((prev) => {
         const current = prev[key] ?? [];
         const next = setSplitShareItems(current, groupId, share);
@@ -1196,7 +1214,7 @@ export function MainView() {
       if (!workspace || !id) return;
       const row = conversations.find((item) => item.id === id);
       if (row?.kind === "terminal") return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       setChatTabsByProject((prev) => {
         const current = prev[key] ?? [];
         const next = splitChatTab(current, id);
@@ -1211,7 +1229,7 @@ export function MainView() {
   const unsplitChat = useCallback(
     (groupId: string) => {
       if (!workspace || !groupId) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       setChatTabsByProject((prev) => {
         const current = prev[key] ?? [];
         const next = unsplitGroup(current, groupId);
@@ -1226,7 +1244,7 @@ export function MainView() {
   const revealSplitRef = useRef<(id: string) => boolean>(() => false);
   revealSplitRef.current = (id: string) => {
     if (!id || !workspace) return false;
-    const key = projectKey(workspace);
+    const key = tabProjectKey(workspace);
     const items = chatTabsByProject[key] ?? [];
     if (!splitGroupForChat(items, id)) return false;
     setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
@@ -1248,7 +1266,7 @@ export function MainView() {
   const focusSplitChatPane = useCallback(
     (groupId: string, pane: 0 | 1) => {
       if (!workspace) return;
-      const key = projectKey(workspace);
+      const key = tabProjectKey(workspace);
       const group = (chatTabsByProject[key] ?? []).find(
         (item) => item.kind === "split" && item.group.id === groupId,
       );
@@ -1460,6 +1478,7 @@ export function MainView() {
     createJourneyFromChat,
     deleteJourney,
     deleteProjectFromSidebar,
+    forgetProjectRow,
     journeys,
     legacyProjectsRoot,
     messages,
@@ -1469,6 +1488,8 @@ export function MainView() {
     openingId,
     openJourneyKnowledge,
     openProjectFromSidebar,
+    switchToProject,
+    rememberOpenedProject,
     openProjectSettings,
     openSidebarChat,
     projectSettings,
@@ -1520,6 +1541,7 @@ export function MainView() {
       createJourneyFromChat,
       deleteJourney,
       deleteProjectFromSidebar,
+      forgetProjectRow,
       journeys,
       legacyProjectsRoot,
       messages,
@@ -1529,6 +1551,8 @@ export function MainView() {
       openingId,
       openJourneyKnowledge,
       openProjectFromSidebar,
+      switchToProject,
+      rememberOpenedProject,
       openProjectSettings,
       openSidebarChat,
       projectSettings,
@@ -1556,11 +1580,14 @@ export function MainView() {
     live.createJourneyFromChat = createJourneyFromChat;
     live.deleteJourney = deleteJourney;
     live.deleteProjectFromSidebar = deleteProjectFromSidebar;
+    live.forgetProjectRow = forgetProjectRow;
     live.moveConversation = moveConversation;
     live.openChat = openChat;
     live.openListedChat = openListedChat;
     live.openJourneyKnowledge = openJourneyKnowledge;
     live.openProjectFromSidebar = openProjectFromSidebar;
+    live.switchToProject = switchToProject;
+    live.rememberOpenedProject = rememberOpenedProject;
     live.openProjectSettings = openProjectSettings;
     live.openSidebarChat = openSidebarChat;
     live.removeChat = removeChat;

@@ -20,6 +20,7 @@ import {
   skipToolIfAborted,
   chatHasRunningTurn,
   patchRunningTurn,
+  composerRowForOpen,
   composerSettingsForChat,
   effortForModel,
   modelForTurn,
@@ -430,6 +431,26 @@ describe("per-conversation pending queue", () => {
       ).model,
       "grok-4.6",
     );
+  });
+
+  it("opens a running chat on the model its turn is sending, not the row copied from the previous chat", () => {
+    const known = { model: "minimax-m2", effort: "high", contextWindow: 200000, permission: "ask" };
+    const saved = { model: "grok-4.7", effort: "low", contextWindow: 256000, permission: "read-only" };
+    assert.deepEqual(composerRowForOpen(known, saved, "grok-4.7"), {
+      model: "grok-4.7",
+      effort: "low",
+      contextWindow: 256000,
+      permission: "read-only",
+    });
+    assert.equal(composerRowForOpen(known, null, "  grok-4.7  ").model, "grok-4.7");
+    assert.deepEqual(composerRowForOpen(known, saved, ""), {
+      model: "grok-4.7",
+      effort: "low",
+      contextWindow: 256000,
+      permission: "read-only",
+    });
+    assert.equal(composerRowForOpen(known, { model: null }, "").model, "minimax-m2");
+    assert.equal(composerRowForOpen(null, null, "").model, undefined);
   });
 
   it("keeps a chat's thinking level only when the model offers it", () => {

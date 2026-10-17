@@ -62,7 +62,7 @@ fn imports_conversations_json_once() {
     assert_eq!(rows[0].kind, "terminal");
     assert_eq!(rows[0].messages.len(), 2);
     assert_eq!(rows[0].context_usage.as_ref().unwrap().prompt_tokens, 10);
-    assert!(json_path(dir.path()).exists());
+    assert!(!json_path(dir.path()).exists());
     fs::write(
         json_path(dir.path()),
         r#"[{"id":"other","title":"Nope","created_at":"t","updated_at":"t","messages":[]}]"#,

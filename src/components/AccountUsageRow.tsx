@@ -26,14 +26,21 @@ function AccountBalance({ usage }: { usage: AccountUsage }) {
 }
 
 const ACCOUNT_ROWS: {
-  id: "anthropic" | "minimax";
+  id: "xai" | "anthropic" | "minimax";
   logo: string;
   logoClass: string;
   barClass: string;
   fallback: string;
-  /** MiniMax reports percent left. Claude reports percent used. */
+  /** MiniMax reports percent left. Grok and Claude report percent used. */
   remaining?: boolean;
 }[] = [
+  {
+    id: "xai",
+    logo: "logo.grok",
+    logoClass: "text-ink",
+    barClass: "bg-ink/70",
+    fallback: "Grok",
+  },
   {
     id: "anthropic",
     logo: "logo.claude",
@@ -51,7 +58,7 @@ const ACCOUNT_ROWS: {
   },
 ];
 
-/** Claude and MiniMax account allowance, shown under the sidebar Usage button. */
+/** Grok, Claude, and MiniMax account allowance, shown under the sidebar Usage button. */
 export function AccountUsageRow({ refresh = 0 }: { refresh?: number }) {
   refreshAccountUsage(refresh);
   return (
@@ -71,7 +78,7 @@ function ProviderAccountUsage({
   fallback,
   remaining = false,
 }: {
-  id: "anthropic" | "minimax";
+  id: "xai" | "anthropic" | "minimax";
   logo: string;
   logoClass: string;
   barClass: string;

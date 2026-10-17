@@ -3,6 +3,11 @@ import { EditorView } from "@codemirror/view";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
 
+/** Soft-wrap long lines inside the editor instead of scrolling sideways. */
+export function editorLineWrapping(): Extension {
+  return EditorView.lineWrapping;
+}
+
 const LIGHT = {
   comment: "#6e6e73",
   keyword: "#9b2393",

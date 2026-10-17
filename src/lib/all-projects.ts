@@ -84,6 +84,9 @@ export function sameSidebarConversation(a: ConversationSummary, b: ConversationS
     (a.journey_id ?? null) === (b.journey_id ?? null) &&
     (a.sort_order ?? 0) === (b.sort_order ?? 0) &&
     (a.model ?? null) === (b.model ?? null) &&
+    (a.effort ?? null) === (b.effort ?? null) &&
+    (a.context_window ?? null) === (b.context_window ?? null) &&
+    (a.permission ?? null) === (b.permission ?? null) &&
     (a.archived ?? false) === (b.archived ?? false)
   );
 }
@@ -201,6 +204,16 @@ function keepServerMark(group: ProjectChatGroup, previous: ProjectChatGroup[]): 
   return { ...group, server: before.server };
 }
 
+/**
+ * A linked worktree is a child of its repo, not its own project.
+ * The open workspace still points at that folder, so a live chat update must not
+ * add it to the top of the sidebar while its conversation opens.
+ */
+export function isLinkedWorktreePath(path: string, worktrees: { path: string; main?: boolean; bare?: boolean }[]): boolean {
+  const key = projectKey(path);
+  return worktrees.some((row) => !row.main && !row.bare && projectKey(row.path) === key);
+}
+
 /** Keep a project's in-memory chats on that project only after they have finished loading. */
 export function applyLiveProjectChats(
   groups: ProjectChatGroup[],
@@ -208,6 +221,7 @@ export function applyLiveProjectChats(
   loadedFor: string,
 ): ProjectChatGroup[] {
   if (!live.workspace || !isSameProject(loadedFor, live.workspace)) return groups;
+  if (!groups.some((group) => isSameProject(group.path, live.workspace))) return groups;
   const patched = groups.map((group) => {
     if (!isSameProject(group.path, live.workspace)) return group;
     // The open project's live list can still be the local mount. Do not put an
@@ -218,18 +232,7 @@ export function applyLiveProjectChats(
         : live.conversations;
     return { ...group, conversations, journeys: live.journeys };
   });
-  if (patched.some((group) => isSameProject(group.path, live.workspace))) return patched;
-  return [
-    {
-      name: folderName(live.workspace),
-      path: live.workspace,
-      remote: groups.find((group) => isSameProject(group.path, live.workspace))?.remote,
-      server: groups.find((group) => isSameProject(group.path, live.workspace))?.server,
-      conversations: live.conversations,
-      journeys: live.journeys,
-    },
-    ...patched,
-  ];
+  return patched;
 }
 
 /** True when two sidebar rows would paint the same card, including the relative-age timestamp. */
@@ -275,6 +278,7 @@ export function placeProjectChats(
   loadedFor = "",
 ): ProjectChatGroup[] {
   if (loadedFor && !isSameProject(loadedFor, path)) return groups;
+  if (!groups.some((group) => isSameProject(group.path, path))) return groups;
   const target = groups.find((group) => isSameProject(group.path, path));
   const shown =
     target?.remote && conversations.some(isLocalCloudDraft)
@@ -288,18 +292,7 @@ export function placeProjectChats(
     if (!own.size || !group.conversations.some((row) => own.has(row.id))) return group;
     return { ...group, conversations: group.conversations.filter((row) => !own.has(row.id)) };
   });
-  if (patched.some((group) => isSameProject(group.path, path))) return patched;
-  return [
-    {
-      name: folderName(path),
-      path,
-      remote: groups.find((group) => isSameProject(group.path, path))?.remote,
-      server: groups.find((group) => isSameProject(group.path, path))?.server,
-      conversations,
-      journeys,
-    },
-    ...patched,
-  ];
+  return patched;
 }
 
 export type ProjectServerMark = NonNullable<ProjectChatGroup["server"]>;

@@ -11,6 +11,7 @@ import {
   loadSidebarCollapsed,
   loadPaneCollapsed,
   loadExpandEdits,
+  loadWrapLines,
   loadFileHoverCard,
   loadActiveTab,
   loadCollapsedProjects,
@@ -48,6 +49,7 @@ import {
   saveMarkdownOpenMode,
   saveOpenFileTree,
   setExpandEdits,
+  setWrapLines,
   setFileHoverCard,
   setLiveSocketDebug,
   setPerfOverlay,
@@ -474,6 +476,34 @@ describe("live socket debug", () => {
     assert.equal(loadLiveSocketDebug(), true);
     setLiveSocketDebug(false);
     assert.equal(loadLiveSocketDebug(), false);
+  });
+});
+
+describe("wrap lines", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to off when nothing is stored", () => {
+    assert.equal(loadWrapLines(), false);
+  });
+
+  it("saves and reloads the preference", () => {
+    setWrapLines(true);
+    assert.equal(loadWrapLines(), true);
+    setWrapLines(false);
+    assert.equal(loadWrapLines(), false);
+  });
+
+  it("treats on/true/1 as enabled", () => {
+    localStorage.setItem("twanagent.wrapLines", "on");
+    assert.equal(loadWrapLines(), true);
+    localStorage.setItem("twanagent.wrapLines", "true");
+    assert.equal(loadWrapLines(), true);
+    localStorage.setItem("twanagent.wrapLines", "1");
+    assert.equal(loadWrapLines(), true);
+    localStorage.setItem("twanagent.wrapLines", "off");
+    assert.equal(loadWrapLines(), false);
   });
 });
 

@@ -40,7 +40,7 @@ import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS } from "../../components/WindowButtons";
 import { CenterTabs } from "./AppChrome";
-import { useMain } from "./context";
+import { useMain, useSidebar } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
 export function ChatStage() {
@@ -101,6 +101,7 @@ export function ChatStage() {
     setSidebarCollapsed,
     workspace,
   } = useMain();
+  const { openProjectFromSidebar, rememberOpenedProject } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || showServers || projectSettings);
   const [settingsAlive, setSettingsAlive] = useState(showSettings);
   if (showSettings && !settingsAlive) setSettingsAlive(true);
@@ -270,13 +271,22 @@ export function ChatStage() {
           )}
           </div>
         </div>
-        {paneWorkspace && (activeId || paneChat) && !fullPage ? (
+        {paneWorkspace && (activeId || paneChat) && !fullPage && paneCollapsed ? (
+          <button
+            type="button"
+            aria-label="Show files"
+            title="Show files"
+            onClick={() => setPaneCollapsed(false)}
+            className="m-2 flex size-9 shrink-0 items-center justify-center self-start rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink"
+          >
+            <Symbol name="sidebar.right" className="size-3.5" />
+          </button>
+        ) : null}
+        {paneWorkspace && (activeId || paneChat) && !fullPage && !paneCollapsed ? (
           <div
             ref={paneSlotRef}
-            className={`relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden ${
-              paneCollapsed ? "mr-2 transition-[width] duration-200 ease-out" : ""
-            }`}
-            style={{ width: paneCollapsed ? 36 : paneWidth }}
+            className="relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden"
+            style={{ width: paneWidth }}
           >
             <div
               role="separator"
@@ -325,20 +335,13 @@ export function ChatStage() {
                 selectedPath={editor.activePath}
                 onOpenFile={openWorkspaceFile}
                 onRefresh={bumpFiles}
+                onOpenWorkspace={(path) => {
+                  rememberOpenedProject(path);
+                  openProjectFromSidebar(path);
+                }}
                 onCollapse={() => setPaneCollapsed(true)}
                 pending={paneWorkspace !== workspace}
               />
-              <button
-                type="button"
-                aria-label="Show files"
-                title="Show files"
-                onClick={() => setPaneCollapsed(false)}
-                className={`absolute top-0 left-0 flex size-9 items-center justify-center rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink ${
-                  paneCollapsed ? "" : "pointer-events-none opacity-0"
-                }`}
-              >
-                <Symbol name="sidebar.right" className="size-3.5" />
-              </button>
             </div>
           </div>
         ) : null}
@@ -674,7 +677,7 @@ function ChatColumn() {
   useEffect(() => {
     if (activeId) rememberSplitPane(activeId, { messages: messagesRef.current });
   }, [activeId, messages]);
-  const transcriptPending = Boolean(openingId) && openingId === activeId;
+  const transcriptPending = Boolean(openingId) && openingId === activeId && messages.length === 0;
   const centeredWithoutStream =
     !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });

@@ -10,6 +10,10 @@ import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } 
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
+import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
+import { forgetPaneWorkspace } from "../../lib/pane-sessions";
+import { saveConversation } from "../../lib/prefs";
+import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
 import type { JourneyColor, JourneySummary } from "../../lib/journey";
@@ -46,6 +50,8 @@ export function AppSidebar() {
   const [usageHover, setUsageHover] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState<Record<string, boolean>>({});
   const [gitByProject, setGitByProject] = useState<Record<string, ProjectGit>>({});
+  const [worktreesByRepo, setWorktreesByRepo] = useState<Record<string, GitWorktree[]>>({});
+  const [worktreeChats, setWorktreeChats] = useState<Record<string, ConversationSummary[]>>({});
   const [todoByChat, setTodoByChat] = useState<Record<string, TodoBadge>>({});
 
   return (
@@ -121,6 +127,10 @@ export function AppSidebar() {
           setArchiveOpen={setArchiveOpen}
           gitByProject={gitByProject}
           setGitByProject={setGitByProject}
+          worktreesByRepo={worktreesByRepo}
+          setWorktreesByRepo={setWorktreesByRepo}
+          worktreeChats={worktreeChats}
+          setWorktreeChats={setWorktreeChats}
           todoByChat={todoByChat}
           setTodoByChat={setTodoByChat}
           openSettings={openSettings}
@@ -268,6 +278,10 @@ function ProjectsNav({
   setArchiveOpen,
   gitByProject,
   setGitByProject,
+  worktreesByRepo,
+  setWorktreesByRepo,
+  worktreeChats,
+  setWorktreeChats,
   todoByChat,
   setTodoByChat,
   openSettings,
@@ -281,6 +295,14 @@ function ProjectsNav({
   setArchiveOpen: (next: Record<string, boolean> | ((prev: Record<string, boolean>) => Record<string, boolean>)) => void;
   gitByProject: Record<string, ProjectGit>;
   setGitByProject: (next: Record<string, ProjectGit> | ((prev: Record<string, ProjectGit>) => Record<string, ProjectGit>)) => void;
+  worktreesByRepo: Record<string, GitWorktree[]>;
+  setWorktreesByRepo: (
+    next: Record<string, GitWorktree[]> | ((prev: Record<string, GitWorktree[]>) => Record<string, GitWorktree[]>),
+  ) => void;
+  worktreeChats: Record<string, ConversationSummary[]>;
+  setWorktreeChats: (
+    next: Record<string, ConversationSummary[]> | ((prev: Record<string, ConversationSummary[]>) => Record<string, ConversationSummary[]>),
+  ) => void;
   todoByChat: Record<string, TodoBadge>;
   setTodoByChat: (next: Record<string, TodoBadge> | ((prev: Record<string, TodoBadge>) => Record<string, TodoBadge>)) => void;
   openSettings: () => void;
@@ -288,15 +310,18 @@ function ProjectsNav({
   openDocs: () => void;
   usageTick: number;
 }) {
+  const { setFlash } = useApp();
   const {
     activeId,
     allProjectGroups,
     collapsedProjects,
     deleteProjectFromSidebar,
+    forgetProjectRow,
     legacyProjectsRoot,
     messages,
     openingId,
     openProjectFromSidebar,
+    switchToProject,
     openProjectSettings,
     projectSettings,
     projectsRoot,
@@ -310,6 +335,11 @@ function ProjectsNav({
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
+  const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
+  const sidebarGroups = allProjectGroups.filter((group: { path: string }) => {
+    void worktreeTick;
+    return !linkedWorktrees().some((row) => projectKey(row.path) === projectKey(group.path));
+  });
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -366,6 +396,163 @@ function ProjectsNav({
     seenGitRefresh.current = gitRefresh;
     loadGitLabels.current(true);
   }, [gitRefresh]);
+
+  const worktreePaths = allProjectGroups
+    .filter((group: { remote?: boolean; server?: unknown }) => !group.remote && !group.server)
+    .map((group: { path: string }) => group.path)
+    .join("\n");
+  const worktreePathsRef = useRef(worktreePaths);
+  worktreePathsRef.current = worktreePaths;
+  const worktreeGeneration = useRef(0);
+  const loadWorktrees = useRef<() => void>(() => {});
+  loadWorktrees.current = () => {
+    const paths = worktreePathsRef.current.split("\n").filter(Boolean);
+    if (!paths.length) {
+      setWorktreesByRepo((prev) => {
+        if (!Object.keys(prev).length) return prev;
+        publishWorktreeLists({});
+        return {};
+      });
+      return;
+    }
+    const generation = ++worktreeGeneration.current;
+    void Promise.all(
+      paths.map(async (path) => {
+        try {
+          return [path, await api.gitWorktrees(path)] as const;
+        } catch {
+          return [path, [] as GitWorktree[]] as const;
+        }
+      }),
+    ).then((rows) => {
+      if (generation !== worktreeGeneration.current) return;
+      const next: Record<string, GitWorktree[]> = {};
+      for (const [path, list] of rows) {
+        if (!list.length) continue;
+        const key = worktreeRepoKey(path, list);
+        if (!next[key] || list.length > next[key].length) next[key] = list;
+      }
+      setWorktreesByRepo((prev) => (sameWorktreeMap(prev, next) ? prev : next));
+      publishWorktreeLists(next);
+      // A linked checkout used to be saved as its own project. It stays a child of the main repo.
+      const linked = new Set<string>();
+      for (const list of Object.values(next)) {
+        for (const row of list) {
+          if (!row.main && !row.bare) linked.add(projectKey(row.path));
+        }
+      }
+      for (const path of paths) {
+        if (linked.has(projectKey(path))) void forgetProjectRow(path);
+      }
+    });
+  };
+  useEffect(() => {
+    loadWorktrees.current();
+  }, [worktreePaths, gitRefresh]);
+
+  const worktreeChatPaths = Object.values(worktreesByRepo)
+    .flatMap((list) => list.filter((row) => !row.main && !row.bare).map((row) => row.path))
+    .join("\n");
+  useEffect(() => {
+    const paths = worktreeChatPaths.split("\n").filter(Boolean);
+    // The main checkout is not in that list. Its titles still belong on the shared strip.
+    const asked = workspace && !paths.some((path) => projectKey(path) === projectKey(workspace))
+      ? [...paths, workspace]
+      : paths;
+    if (!asked.length) {
+      setWorktreeChats((prev) => (Object.keys(prev).length ? {} : prev));
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      asked.map(async (path) => {
+        try {
+          return [projectKey(path), await api.listConversations(path)] as const;
+        } catch {
+          return [projectKey(path), [] as ConversationSummary[]] as const;
+        }
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      const next: Record<string, ConversationSummary[]> = {};
+      for (const [key, chats] of rows) next[key] = chats;
+      setWorktreeChats((prev) => (sameWorktreeChats(prev, next) ? prev : next));
+      publishWorktreeChats(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [worktreeChatPaths, workspace, setWorktreeChats]);
+
+  function sameWorktreeChats(
+    prev: Record<string, ConversationSummary[]>,
+    next: Record<string, ConversationSummary[]>,
+  ): boolean {
+    const keys = Object.keys(next);
+    if (keys.length !== Object.keys(prev).length) return false;
+    return keys.every((key) => {
+      const left = prev[key] ?? [];
+      const right = next[key] ?? [];
+      return (
+        left.length === right.length &&
+        left.every((row, index) => row.id === right[index]?.id && row.title === right[index]?.title && row.updated_at === right[index]?.updated_at)
+      );
+    });
+  }
+
+  function sameWorktreeMap(a: Record<string, GitWorktree[]>, b: Record<string, GitWorktree[]>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return bKeys.every((key) => {
+    const left = a[key] ?? [];
+    const right = b[key] ?? [];
+    return (
+      left.length === right.length &&
+      left.every(
+        (row, index) =>
+          projectKey(row.path) === projectKey(right[index]?.path ?? "") &&
+          (row.branch ?? "") === (right[index]?.branch ?? "") &&
+          row.main === right[index]?.main,
+      )
+    );
+  });
+}
+
+  function worktreesFor(path: string): WorktreeChild[] {
+    const key = projectKey(path);
+    const list =
+      worktreesByRepo[key] ??
+      Object.values(worktreesByRepo).find((rows) => rows.some((row) => row.main && projectKey(row.path) === key));
+    if (!list) return [];
+    return groupProjectsByWorktree([{ name: "", path }], { [key]: list })[0]?.children ?? [];
+  }
+
+  function removeWorktree(path: string) {
+    const list = Object.values(worktreesByRepo).find((rows) =>
+      rows.some((row) => projectKey(row.path) === projectKey(path)),
+    );
+    const owner = list?.find((row) => row.main)?.path || workspace;
+    // The open folder is the one being deleted. Leave it before git removes the directory.
+    if (isSameProject(path, workspace) && owner && !isSameProject(owner, path)) switchToProject(owner);
+    void api
+      .gitWorktreeRemove(owner, path)
+      .then(() => {
+        // The server deleted this checkout's chats. Drop the copy the sidebar is showing.
+        const gone = projectKey(path);
+        setWorktreeChats((prev) => {
+          if (!(gone in prev)) return prev;
+          const next = { ...prev };
+          delete next[gone];
+          queueMicrotask(() => publishWorktreeChats(next));
+          return next;
+        });
+        saveConversation(path, "");
+        forgetPaneWorkspace(path);
+        loadWorktrees.current();
+      })
+      .catch((err) => setFlash({ kind: "err", text: String(err) }));
+  }
 
   const todoWatch = allProjectGroups
     .flatMap((group: { remote?: boolean; path: string; conversations: ConversationSummary[] }) =>
@@ -465,7 +652,7 @@ function ProjectsNav({
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
         <AllProjectsList
-          groups={allProjectGroups}
+          groups={sidebarGroups}
           activeWorkspace={workspace}
           projectsRoot={projectsRoot}
           legacyProjectsRoot={legacyProjectsRoot}
@@ -479,6 +666,20 @@ function ProjectsNav({
           archiveOpen={archiveOpen}
           onToggleArchive={toggleArchive}
           gitByProject={gitByProject}
+          worktreesFor={worktreesFor}
+          onRemoveWorktree={removeWorktree}
+          renderWorktree={(child) => (
+            <div className="pl-4">
+              <ProjectConversations
+                conversations={visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false)}
+                journeys={[]}
+                path={child.path}
+                dimmed={fullPage}
+                todoByChat={todoByChat}
+                loadingId={isSameProject(child.path, workspace) ? openingId : ""}
+              />
+            </div>
+          )}
           renderList={(group, { showArchived }) => (
             <ProjectConversations
               conversations={visibleConversations(group.conversations, showArchived)}
