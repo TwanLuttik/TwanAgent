@@ -30,7 +30,7 @@ export function useCapabilities({
   useEffect(() => {
     let cancelled = false;
     const loadMcp = () => {
-      if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
+      if (cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady)) return;
       if (remoteWorkspace && workspace) {
         void api
           .workspaceCapabilities(workspace)

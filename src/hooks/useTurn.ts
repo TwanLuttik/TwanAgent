@@ -761,7 +761,7 @@ async function send(targetId = activeIdRef.current) {
     : expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(sendingSide ? sideImages : promptImages);
   if (!canSendPrompt(text, images)) return;
-  if (cloudSendWaiting(remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
+  if (cloudSendWaiting(Boolean(workspace), remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
     setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
     return;
   }
@@ -779,15 +779,15 @@ async function send(targetId = activeIdRef.current) {
     });
     return;
   }
+  if (!workspace) {
+    setFolderOpen(true);
+    return;
+  }
   if (!ready) {
     setFlash({ kind: "err", text: runtime?.hint || "Grok isn’t signed in." });
     return;
   }
   let ws = workspace;
-  if (!ws) {
-    setFolderOpen(true);
-    return;
-  }
   try {
     ws = await api.openFolder(ws);
   } catch (e) {

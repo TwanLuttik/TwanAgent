@@ -458,12 +458,12 @@ export function MainView() {
     // replace the empty screen and rebuild the composer. A conversation saved
     // for this project is a click from the sidebar, so it still has to open.
     if (holdEmptyChatRef.current && !loadConversation(workspace)) return;
-    if (cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
+    if (cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady)) return;
     void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
   }, [pathsReady, workspace, remoteKnown, remoteWorkspace, linkReady, reloadConversations, setFlash]);
 
   useEffect(() => {
-    if (!workspace || !opened || cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady)) return;
+    if (!workspace || !opened || cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady)) return;
     let gone = false;
     let timer = 0;
     // The file pane lists the top folder itself. The full walk feeds @ mentions,
@@ -1672,7 +1672,7 @@ export function MainView() {
     recents,
     reloadRuntime,
     remoteWorkspace,
-    cloudConnecting: cloudSendWaiting(remoteKnown, remoteWorkspace, linkReady),
+    cloudConnecting: cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady),
     archiveChat,
     removeChat,
     removePendingAt,
