@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { projectKey } from "../core.ts";
-import type { GitWorktree } from "../tauri.ts";
+import type { GitPullRequest, GitWorktree } from "../tauri.ts";
 import {
   groupProjectsByWorktree,
   keptTabChatIds,
@@ -15,10 +15,12 @@ import {
   hideOpenWorktreeMarker,
   rememberWorktreeName,
   takeWorktreeName,
+  pullRequestChoices,
   worktreeChoices,
   worktreeForPath,
   worktreeListsFor,
   provisionalWorktreeName,
+  promptWithWorktreeName,
   worktreeNameFromPrompt,
   worktreeNameFromSuggestion,
   worktreeNamePrompt,
@@ -119,6 +121,32 @@ describe("groupProjectsByWorktree", () => {
     assert.equal(worktreeChoices(main.path, [main]).current?.main, true);
   });
 
+  it("lists open pull requests and marks one that is already checked out", () => {
+    const request = (number: number, open = true, branch = `pr/${number}`): GitPullRequest => ({
+      number,
+      title: number === 12 ? "Show open pull requests" : "",
+      branch,
+      head: "abc",
+      url: `https://github.com/a/b/pull/${number}`,
+      open,
+    });
+    const checked = tree("/work/billing-worktrees/pr-4", "pr/4");
+    const rows = pullRequestChoices(
+      [request(4, false), request(12), request(4, false), request(9)],
+      [main, checked],
+      checked.path,
+    );
+    assert.deepEqual(
+      rows.map((row) => [row.number, row.open, row.path, row.current]),
+      [
+        [12, true, "", false],
+        [9, true, "", false],
+        [4, false, checked.path, true],
+      ],
+    );
+    assert.deepEqual(pullRequestChoices([], [main]), []);
+  });
+
   it("turns a suggestion into a branch and hides the marker", () => {
     assert.equal(worktreeNameFromSuggestion("Fix the login bug!"), "fix-the-login-bug");
     assert.equal(worktreeNameFromSuggestion("HEAD"), "");
@@ -138,6 +166,28 @@ describe("groupProjectsByWorktree", () => {
     assert.equal(freshWorktreeName("c1", "feat/login"), "feat/login");
     rememberWorktreeName("c1", "feat/login");
     assert.equal(freshWorktreeName("c1", "feat/other"), "");
+  });
+
+  it("asks for a branch name only on a new worktree that has no name", () => {
+    const unnamed = tree("/work/billing-worktrees/wip-m1ab12", provisionalWorktreeName());
+    const prompt = "Read the Meeting-notes-01.txt file";
+    publishWorktreeLists({ [main.path]: [main, login, notes, unnamed] });
+    try {
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-main", main.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-named", login.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-detached", notes.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-unknown", "/work/other"), prompt);
+      const asked = promptWithWorktreeName(prompt, [], "gate-unnamed", unnamed.path);
+      assert.match(asked, /\{\{TwanAgent:branch-name\}\}/);
+      assert.equal(asked.startsWith(`${prompt}\n\n`), true);
+      assert.equal(
+        promptWithWorktreeName(prompt, [{ role: "user" }], "gate-later", unnamed.path),
+        prompt,
+      );
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-unnamed", unnamed.path), prompt);
+    } finally {
+      publishWorktreeLists({});
+    }
   });
 
   it("publishes lists so a turn can find the open checkout", () => {

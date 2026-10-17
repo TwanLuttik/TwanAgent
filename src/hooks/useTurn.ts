@@ -48,12 +48,10 @@ import { providerProfile } from "../lib/provider";
 import {
   freshWorktreeName,
   hideOpenWorktreeMarker,
-  markWorktreeNameAsked,
+  promptWithWorktreeName,
   rememberWorktreeName,
   takeWorktreeName,
   worktreeListsFor,
-  worktreeNameAsked,
-  worktreeNamePrompt,
 } from "../lib/worktree.ts";
 import type { DetectedSkill } from "../lib/skill";
 import {
@@ -757,7 +755,6 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
   return images.length ? { role: "user", content: text, images } : { role: "user", content: text };
 }
 
-/** Ask for a branch name on the first message of a chat that does not have one yet. */
 /** Drop the name marker from what is on screen. A half-written marker stays hidden. */
 function hideWorktreeName(text: string, chatId = "", ws = ""): string {
   const closed = takeWorktreeName(text);
@@ -782,14 +779,6 @@ function storeWorktreeName(messages: ChatMessage[], chatId: string, ws = ""): Ch
     return { ...message, content: taken.text };
   });
   return changed ? next : messages;
-}
-
-function promptWithWorktreeName(text: string, history: ChatMessage[], chatId: string): string {
-  const asked = worktreeNameAsked(chatId) || history.some((message) => message.role === "user");
-  const line = worktreeNamePrompt(asked);
-  if (!line) return text;
-  markWorktreeNameAsked(chatId);
-  return `${text}\n\n${line}`;
 }
 
 function partialReply(id: string): { text: string; reasoning: string } {
@@ -889,7 +878,7 @@ async function send(targetId = activeIdRef.current) {
       return;
     }
   }
-  await runTurn(ws, id, [...history, userMessage(promptWithWorktreeName(text, history, id), images)]);
+  await runTurn(ws, id, [...history, userMessage(promptWithWorktreeName(text, history, id, ws), images)]);
 }
 
 async function runTurn(

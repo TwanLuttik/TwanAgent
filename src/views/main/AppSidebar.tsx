@@ -11,6 +11,8 @@ import { conversationActivityLabel, projectKey, type ChatMessage } from "../../l
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
 import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
+import { forgetPaneWorkspace } from "../../lib/pane-sessions";
+import { saveConversation } from "../../lib/prefs";
 import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
@@ -319,6 +321,7 @@ function ProjectsNav({
     messages,
     openingId,
     openProjectFromSidebar,
+    switchToProject,
     openProjectSettings,
     projectSettings,
     projectsRoot,
@@ -429,11 +432,8 @@ function ProjectsNav({
         const key = worktreeRepoKey(path, list);
         if (!next[key] || list.length > next[key].length) next[key] = list;
       }
-      setWorktreesByRepo((prev) => {
-        if (sameWorktreeMap(prev, next)) return prev;
-        publishWorktreeLists(next);
-        return next;
-      });
+      setWorktreesByRepo((prev) => (sameWorktreeMap(prev, next) ? prev : next));
+      publishWorktreeLists(next);
       // A linked checkout used to be saved as its own project. It stays a child of the main repo.
       const linked = new Set<string>();
       for (const list of Object.values(next)) {
@@ -476,11 +476,8 @@ function ProjectsNav({
       if (cancelled) return;
       const next: Record<string, ConversationSummary[]> = {};
       for (const [key, chats] of rows) next[key] = chats;
-      setWorktreeChats((prev) => {
-        if (sameWorktreeChats(prev, next)) return prev;
-        publishWorktreeChats(next);
-        return next;
-      });
+      setWorktreeChats((prev) => (sameWorktreeChats(prev, next) ? prev : next));
+      publishWorktreeChats(next);
     });
     return () => {
       cancelled = true;
@@ -532,17 +529,28 @@ function ProjectsNav({
   }
 
   function removeWorktree(path: string) {
-    const name = path.split(/[/\\]/).filter(Boolean).pop() || "worktree";
-    if (!window.confirm(`Remove worktree ${name}? Local changes that are not committed will keep it.`)) return;
-    const owner =
-      allProjectGroups.find((group: { path: string }) =>
-        (worktreesByRepo[worktreeRepoKey(group.path, worktreesByRepo[projectKey(group.path)] ?? [])] ?? []).some(
-          (row) => projectKey(row.path) === projectKey(path),
-        ),
-      )?.path || workspace;
+    const list = Object.values(worktreesByRepo).find((rows) =>
+      rows.some((row) => projectKey(row.path) === projectKey(path)),
+    );
+    const owner = list?.find((row) => row.main)?.path || workspace;
+    // The open folder is the one being deleted. Leave it before git removes the directory.
+    if (isSameProject(path, workspace) && owner && !isSameProject(owner, path)) switchToProject(owner);
     void api
       .gitWorktreeRemove(owner, path)
-      .then(() => loadWorktrees.current())
+      .then(() => {
+        // The server deleted this checkout's chats. Drop the copy the sidebar is showing.
+        const gone = projectKey(path);
+        setWorktreeChats((prev) => {
+          if (!(gone in prev)) return prev;
+          const next = { ...prev };
+          delete next[gone];
+          queueMicrotask(() => publishWorktreeChats(next));
+          return next;
+        });
+        saveConversation(path, "");
+        forgetPaneWorkspace(path);
+        loadWorktrees.current();
+      })
       .catch((err) => setFlash({ kind: "err", text: String(err) }));
   }
 
@@ -661,7 +669,7 @@ function ProjectsNav({
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
           renderWorktree={(child) => (
-            <div className="pl-6">
+            <div className="pl-4">
               <ProjectConversations
                 conversations={visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false)}
                 journeys={[]}

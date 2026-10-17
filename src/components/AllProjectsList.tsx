@@ -67,7 +67,9 @@ export function AllProjectsList({
   const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
   const [gitMenu, setGitMenu] = useState<{ x: number; y: number; path: string; remote: boolean } | null>(null);
+  const [worktreeMenu, setWorktreeMenu] = useState<{ x: number; y: number; child: WorktreeChild } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
+  const [pendingWorktree, setPendingWorktree] = useState<WorktreeChild | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
@@ -76,12 +78,15 @@ export function AllProjectsList({
       if (target instanceof Element && target.closest("[role='menu']")) return;
       setMenu(null);
       setGitMenu(null);
+      setWorktreeMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
       if (ev.key === "Escape") {
         setMenu(null);
         setGitMenu(null);
+        setWorktreeMenu(null);
         setPendingDelete(null);
+        setPendingWorktree(null);
       }
     }
     document.addEventListener("mousedown", onDoc, true);
@@ -150,8 +155,8 @@ export function AllProjectsList({
               <button
                 type="button"
                 onClick={() => onOpenProject(group.path)}
-                className={`flex min-w-0 flex-1 items-center gap-1.5 py-[6px] pr-1 text-left text-[12px] font-medium ${
-                  current ? "text-ink" : "text-muted"
+                className={`flex min-w-0 flex-1 items-center gap-1.5 py-[7px] pr-1 text-left text-[13px] font-medium ${
+                  current ? "text-ink" : "text-ink/75"
                 }`}
               >
                 <Symbol
@@ -161,6 +166,12 @@ export function AllProjectsList({
                 <span className="min-w-0 truncate">{group.name}</span>
                 <ProjectMarks remote={group.remote} server={group.server} />
               </button>
+              {git && !showArchived ? (
+                <ProjectGitRow
+                  git={git}
+                  onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
+                />
+              ) : null}
               {hasArchived ? (
                 <button
                   type="button"
@@ -201,15 +212,9 @@ export function AllProjectsList({
                 </button>
               </div>
             )}
-            {closed || showArchived || !git ? null : (
-              <ProjectGitRow
-                git={git}
-                onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
-              />
-            )}
-            {closed || showArchived
-              ? null
-              : worktrees.map((child) => {
+            {closed || showArchived || worktrees.length === 0 ? null : (
+              <div className="mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5">
+                {worktrees.map((child) => {
                   const childKey = projectKey(child.path);
                   const childClosed = Boolean(closedWorktrees[childKey]);
                   return (
@@ -222,18 +227,22 @@ export function AllProjectsList({
                           setClosedWorktrees((prev) => ({ ...prev, [childKey]: !prev[childKey] }))
                         }
                         onOpen={() => onOpenProject(child.path)}
-                        onRemove={onRemoveWorktree ? () => onRemoveWorktree(child.path) : undefined}
+                        onMenu={(x, y) => setWorktreeMenu({ x, y, child })}
                       />
                       {childClosed || !renderWorktree ? null : renderWorktree(child)}
                     </div>
                   );
                 })}
+              </div>
+            )}
             {closed ? null : visibleEmpty ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}
               </p>
             ) : (
-              renderList(group, { showArchived })
+              <div className={worktrees.length ? "pl-2" : undefined}>
+                {renderList(group, { showArchived })}
+              </div>
             )}
           </ProjectSection>
         );
@@ -267,6 +276,35 @@ export function AllProjectsList({
             const path = gitMenu.path;
             setGitMenu(null);
             void api.revealFolder(path).catch(() => undefined);
+          }}
+        />
+      ) : null}
+      {worktreeMenu ? (
+        <WorktreeContextMenu
+          x={worktreeMenu.x}
+          y={worktreeMenu.y}
+          name={worktreeMenu.child.branch}
+          onNewChat={() => {
+            onNewChat(worktreeMenu.child.path);
+            setWorktreeMenu(null);
+          }}
+          onDelete={
+            onRemoveWorktree
+              ? () => {
+                  setPendingWorktree(worktreeMenu.child);
+                  setWorktreeMenu(null);
+                }
+              : undefined
+          }
+        />
+      ) : null}
+      {pendingWorktree ? (
+        <DeleteWorktreeDialog
+          name={pendingWorktree.branch}
+          onCancel={() => setPendingWorktree(null)}
+          onConfirm={() => {
+            onRemoveWorktree?.(pendingWorktree.path);
+            setPendingWorktree(null);
           }}
         />
       ) : null}
@@ -328,13 +366,13 @@ function ProjectGitRow({
     git.dirty ? `${git.dirty}` : "",
   ].filter(Boolean);
   return (
-    <div className="group/git flex items-center gap-1.5 rounded-[6px] py-[3px] pr-1 pl-1 text-[12px] text-muted select-none hover:bg-wash">
-      <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0" />
-      <span className="min-w-0 flex-1 truncate text-ink/80" title={git.branch}>
+    <div className="group/git mr-0.5 flex h-6 max-w-[46%] shrink-0 items-center gap-1 rounded-[6px] pr-0.5 pl-1 text-[11px] text-muted select-none">
+      <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-muted/70" />
+      <span className="min-w-0 truncate" title={git.branch}>
         {git.branch}
       </span>
       {tracking.length ? (
-        <span className="shrink-0 font-mono text-[10px] text-muted tabular-nums">{tracking.join(" ")}</span>
+        <span className="shrink-0 font-mono text-[10px] text-muted/80 tabular-nums">{tracking.join(" ")}</span>
       ) : null}
       <button
         type="button"
@@ -361,48 +399,119 @@ function WorktreeRow({
   current,
   onToggle,
   onOpen,
-  onRemove,
+  onMenu,
 }: {
   child: WorktreeChild;
   closed: boolean;
   current: boolean;
   onToggle: () => void;
   onOpen: () => void;
-  onRemove?: () => void;
+  onMenu: (x: number, y: number) => void;
 }) {
   return (
-    <div className="group/wt flex items-center gap-1 rounded-[6px] py-[3px] pr-1 pl-1 text-[12px] select-none hover:bg-wash">
+    <div
+      className={`group/wt flex h-6 items-center gap-1 rounded-[6px] pr-1 pl-1 text-[11px] select-none hover:bg-wash ${
+        current ? "bg-wash-strong/70" : ""
+      }`}
+      onContextMenu={(ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        onMenu(ev.clientX, ev.clientY);
+      }}
+    >
       <button
         type="button"
         aria-label={closed ? `Expand ${child.branch}` : `Collapse ${child.branch}`}
         onClick={onToggle}
-        className="flex size-6 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
+        className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
       >
-        <Symbol name={closed ? "chevron.right" : "chevron.down"} className="size-3" />
+        <Symbol name={closed ? "chevron.right" : "chevron.down"} className="size-2.5" />
       </button>
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-        <Symbol name="arrow.triangle.branch" className={`size-3.5 shrink-0 ${current ? "text-accent" : "text-muted"}`} />
-        <span className={`min-w-0 flex-1 truncate ${current ? "font-medium text-ink" : "text-ink/80"}`} title={child.branch}>
+        <Symbol name="arrow.triangle.branch" className={`size-3 shrink-0 ${current ? "text-ok" : "text-ok/70"}`} />
+        <span className={`min-w-0 flex-1 truncate ${current ? "font-medium text-ink" : "text-ink/65"}`} title={child.branch}>
           {child.branch}
         </span>
-        <span className="shrink-0 truncate text-[10px] text-muted">{child.name}</span>
       </button>
-      {onRemove && !current ? (
+    </div>
+  );
+}
+
+function WorktreeContextMenu({
+  x,
+  y,
+  name,
+  onNewChat,
+  onDelete,
+}: {
+  x: number;
+  y: number;
+  name: string;
+  onNewChat: () => void;
+  onDelete?: () => void;
+}) {
+  return (
+    <AnchoredMenu x={x} y={y} label={name}>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onNewChat}
+        className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+      >
+        New chat
+      </button>
+      {onDelete ? (
         <button
           type="button"
-          aria-label={`Remove worktree ${child.branch}`}
-          title="Remove worktree"
-          onClick={(ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            onRemove();
-          }}
-          className="flex size-6 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:bg-wash-strong hover:text-err group-hover/wt:opacity-100 focus-visible:opacity-100"
+          role="menuitem"
+          onClick={onDelete}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-err hover:bg-inset"
         >
-          <Symbol name="xmark" className="size-3" />
+          Delete
         </button>
       ) : null}
-    </div>
+    </AnchoredMenu>
+  );
+}
+
+function DeleteWorktreeDialog({
+  name,
+  onCancel,
+  onConfirm,
+}: {
+  name: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20" onMouseDown={onCancel}>
+      <div
+        className="w-[280px] rounded-lg border border-line bg-canvas p-3 shadow-card"
+        onMouseDown={(ev) => ev.stopPropagation()}
+      >
+        <div className="text-[13px] font-medium text-ink">Delete {name}?</div>
+        <p className="mt-1 text-[12px] text-muted">
+          This removes the worktree and deletes its folder. Uncommitted changes keep the folder.
+        </p>
+        <div className="mt-3 flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="rounded-[6px] px-2 py-1.5 text-left text-[13px] text-err hover:bg-wash"
+          >
+            Delete
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-[6px] px-2 py-1.5 text-left text-[13px] text-muted hover:bg-wash"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -1,5 +1,5 @@
 import { folderName, projectKey, type ProjectRow } from "./core.ts";
-import type { ConversationSummary, GitWorktree } from "./tauri.ts";
+import type { ConversationSummary, GitPullRequest, GitWorktree } from "./tauri.ts";
 
 /** Lists the sidebar loaded, keyed by the main checkout. A turn reads this without asking git again. */
 const lists = new Map<string, GitWorktree[]>();
@@ -183,6 +183,19 @@ export type WorktreeChoice = {
   main: boolean;
 };
 
+export type PullRequestChoice = {
+  number: number;
+  title: string;
+  branch: string;
+  url: string;
+  /** Set when that pull request is already checked out in a worktree. */
+  path: string;
+  /** False for a request GitHub has closed or merged. */
+  open: boolean;
+  /** True when the open folder is this pull request's checkout. */
+  current: boolean;
+};
+
 /** Label for the open checkout, plus every checkout of that repo. Empty when this folder is not one. */
 export function worktreeChoices(workspace: string, worktrees: GitWorktree[] | null | undefined): {
   current: WorktreeChoice | null;
@@ -201,6 +214,43 @@ export function worktreeChoices(workspace: string, worktrees: GitWorktree[] | nu
       main: row.main,
     }));
   return { current: rows.find((row) => row.current) ?? null, rows };
+}
+
+/**
+ * Pull requests for the menu. Open ones come first. A closed request stays in the list
+ * so the menu can hide it until it is asked for.
+ * A request whose branch is checked out keeps that path, so picking it just opens the folder.
+ */
+export function pullRequestChoices(
+  requests: GitPullRequest[] | null | undefined,
+  worktrees: GitWorktree[] | null | undefined,
+  workspace = "",
+): PullRequestChoice[] {
+  const rows = (requests ?? []).filter((row) => row.number > 0);
+  if (!rows.length) return [];
+  const checked = new Map<string, string>();
+  for (const tree of worktrees ?? []) {
+    const branch = tree.branch?.trim();
+    if (branch && !tree.bare) checked.set(branch, tree.path);
+  }
+  const seen = new Set<number>();
+  const out: PullRequestChoice[] = [];
+  for (const row of rows) {
+    if (seen.has(row.number)) continue;
+    seen.add(row.number);
+    const branch = row.branch.trim() || `pr/${row.number}`;
+    const path = checked.get(branch) ?? "";
+    out.push({
+      number: row.number,
+      title: row.title.trim(),
+      branch,
+      url: row.url,
+      path,
+      open: row.open !== false,
+      current: Boolean(path && workspace && projectKey(path) === projectKey(workspace)),
+    });
+  }
+  return out.sort((a, b) => Number(b.open) - Number(a.open) || b.number - a.number);
 }
 
 const WORKTREE_NAME = /\{\{TwanAgent:([^}]*)\}\}/g;
@@ -297,7 +347,7 @@ export function worktreeNameFromPrompt(text: string): string {
 }
 
 /**
- * Hidden instruction on the first user message.
+ * Hidden instruction on the first user message of an unnamed checkout.
  * The last line is the only thing the app reads, so the model has to copy it.
  */
 export function worktreeNamePrompt(asked: boolean): string {
@@ -307,6 +357,39 @@ export function worktreeNamePrompt(asked: boolean): string {
     "End your reply with this line and nothing after it. Copy it exactly, with the name filled in:",
     "{{TwanAgent:branch-name}}",
   ].join("\n");
+}
+
+/** Placeholder branch from provisionalWorktreeName, before anyone has named the checkout. */
+export function isProvisionalWorktreeBranch(branch: string | null | undefined): boolean {
+  return /^wip-[a-z0-9]+$/.test((branch ?? "").trim());
+}
+
+/**
+ * True only for a linked checkout that was created with no branch name.
+ * The main checkout, a named worktree, and a detached head do not need one.
+ */
+export function worktreeAwaitingName(workspace: string): boolean {
+  const row = worktreeForPath(workspace, worktreeListsFor(workspace));
+  if (!row || row.main || row.bare || row.detached) return false;
+  return isProvisionalWorktreeBranch(row.branch);
+}
+
+/**
+ * Ask the model to name the branch on the first message of an unnamed new worktree.
+ * A chat on the main checkout, or on a worktree that already has a name, is left as written.
+ */
+export function promptWithWorktreeName(
+  text: string,
+  history: readonly { role: string }[],
+  chatId: string,
+  workspace: string,
+): string {
+  if (!worktreeAwaitingName(workspace)) return text;
+  const asked = worktreeNameAsked(chatId) || history.some((message) => message.role === "user");
+  const line = worktreeNamePrompt(asked);
+  if (!line) return text;
+  markWorktreeNameAsked(chatId);
+  return `${text}\n\n${line}`;
 }
 
 export function worktreeForPath(path: string, worktrees: GitWorktree[] | null | undefined): GitWorktree | null {

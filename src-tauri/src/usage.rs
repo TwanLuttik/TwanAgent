@@ -116,6 +116,7 @@ fn open(data_dir: &Path) -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS usage_events_recorded_at ON usage_events(recorded_at);
         CREATE INDEX IF NOT EXISTS usage_events_workspace ON usage_events(workspace_path);
+        CREATE INDEX IF NOT EXISTS usage_events_conversation ON usage_events(conversation_id);
         ",
     )?;
     let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER", []);
@@ -180,6 +181,26 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
     }))
 }
 
+/// Drop usage rows that belong to a folder that no longer exists. A worktree's chats go with it.
+pub fn forget_workspace_paths(data_dir: &Path, paths: &[String]) -> Result<()> {
+    if paths.is_empty() || !db_path(data_dir).exists() {
+        return Ok(());
+    }
+    let conn = open(data_dir)?;
+    for path in paths {
+        let key = normalize_workspace(path);
+        if key.is_empty() {
+            continue;
+        }
+        conn.execute(
+            "DELETE FROM usage_events
+             WHERE lower(rtrim(replace(workspace_path, '\\', '/'), '/')) = lower(?1)",
+            [key],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn replace_workspace_paths(data_dir: &Path, moves: &[(String, String)]) -> Result<()> {
     if moves.is_empty() || !db_path(data_dir).exists() {
         return Ok(());
@@ -228,6 +249,49 @@ pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent
     Ok(out)
 }
 
+/// Finish stamps for one conversation. Opening a chat only needs these rows,
+/// not the whole usage history.
+pub fn list_for_conversation(
+    data_dir: &Path,
+    conversation_id: &str,
+    workspace_path: &str,
+) -> Result<Vec<UsageEvent>> {
+    let id = conversation_id.trim();
+    if id.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workspace = normalize_workspace(workspace_path);
+    let conn = open(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms
+         FROM usage_events
+         WHERE conversation_id = ?1
+           AND (?2 = '' OR lower(rtrim(replace(workspace_path, '\\', '/'), '/')) = lower(?2))
+         ORDER BY recorded_at ASC, id ASC",
+    )?;
+    let rows = stmt.query_map(params![id, workspace], |row| {
+        Ok(UsageEvent {
+            id: row.get(0)?,
+            recorded_at: row.get(1)?,
+            workspace_path: row.get(2)?,
+            workspace_name: row.get(3)?,
+            conversation_id: row.get(4)?,
+            conversation_title: row.get(5)?,
+            model: row.get(6)?,
+            prompt_tokens: row.get::<_, i64>(7)? as u64,
+            completion_tokens: row.get::<_, i64>(8)? as u64,
+            total_tokens: row.get::<_, i64>(9)? as u64,
+            duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_usage_record(
     state: State<'_, AppState>,
@@ -242,6 +306,19 @@ pub fn dev_usage_list(
     since: Option<String>,
 ) -> Result<Vec<UsageEvent>> {
     list_since(&state.data_dir, since.as_deref())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_usage_for_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    workspace: String,
+) -> Result<Vec<UsageEvent>> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        list_for_conversation(&data_dir, &conversation_id, &workspace)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -316,6 +393,26 @@ mod tests {
         assert!(!cleared.exists);
         assert_eq!(cleared.bytes, 0);
         assert!(list_since(dir.path(), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn lists_one_conversation_without_the_rest_of_the_history() {
+        let dir = tempdir().unwrap();
+        record(dir.path(), rec("/proj/alpha/", 10, 1)).unwrap();
+        let mut other = rec("/proj/alpha", 30, 3);
+        other.conversation_id = "c2".into();
+        record(dir.path(), other).unwrap();
+        record(dir.path(), rec("/proj/beta", 40, 4)).unwrap();
+        let rows = list_for_conversation(dir.path(), "c1", "/proj/alpha").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].conversation_id, "c1");
+        assert_eq!(rows[0].prompt_tokens, 10);
+        assert!(list_for_conversation(dir.path(), "missing", "/proj/alpha")
+            .unwrap()
+            .is_empty());
+        assert!(list_for_conversation(dir.path(), "  ", "/proj/alpha")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

@@ -122,6 +122,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 }
 
 function AccountsPage({ events }: { events: UsageEvent[] }) {
+  const grok = useAccountUsage("xai");
   const claude = useAccountUsage("anthropic");
   const minimax = useAccountUsage("minimax");
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -131,13 +132,17 @@ function AccountsPage({ events }: { events: UsageEvent[] }) {
   }, []);
   const rows = useMemo(() => {
     const accounts = [
+      accountFromUsage("xai", grok.usage, nowMs),
       accountFromUsage("anthropic", claude.usage, nowMs),
       accountFromUsage("minimax", minimax.usage, nowMs),
     ];
     return accounts.flatMap((account) => forecastAccounts(account, events, nowMs));
-  }, [claude.usage, events, minimax.usage, nowMs]);
+  }, [claude.usage, events, grok.usage, minimax.usage, nowMs]);
   const headline = useMemo(() => forecastHeadline(rows, nowMs), [nowMs, rows]);
-  const waiting = (claude.loading && !claude.usage) || (minimax.loading && !minimax.usage);
+  const waiting =
+    (grok.loading && !grok.usage) ||
+    (claude.loading && !claude.usage) ||
+    (minimax.loading && !minimax.usage);
   if (waiting && rows.every((row) => row.account.reconnect)) {
     return <p className="m-0 py-4 text-[12px] text-muted">Checking signed-in accounts…</p>;
   }

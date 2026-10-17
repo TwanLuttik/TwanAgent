@@ -9,8 +9,9 @@ use super::files::{
 use super::git::{
     git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
     git_label, git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with,
-    git_switch, git_sync, git_unstage, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
-    GitCommit, GitIdentity, GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
+    git_pull_request_checkout, git_pull_requests, git_switch, git_sync, git_unstage, git_worktree_add,
+    git_worktree_remove, git_worktree_rename, git_worktrees, GitCommit, GitIdentity, GitPullRequest,
+    GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
 };
 use super::paths::{expand_folder_path, path_string};
 use super::project_location::ProjectsLocation;
@@ -677,6 +678,83 @@ pub async fn dev_git_worktrees(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_pull_requests(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Vec<GitPullRequest>> {
+    let target = git_target(&state, &workspace)?;
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        let rows = git_pull_requests(&target)?;
+        if let Some(repo) = rows.first().map(|row| pull_request_repo(&row.url)).flatten() {
+            if let Ok(conn) = crate::appdb::open(&data_dir) {
+                if let Ok(payload) = serde_json::to_string(&rows) {
+                    let _ = crate::appdb::set_pull_requests(&conn, &repo, &payload);
+                }
+            }
+        }
+        Ok(rows)
+    })
+    .await
+}
+
+/// The list saved after the last refresh. Empty until one has landed, or when this is not GitHub.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_pull_requests_cached(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Vec<GitPullRequest>> {
+    let target = git_target(&state, &workspace)?;
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        let remote = match super::git::git_remote_url(&target) {
+            Some(url) => url,
+            None => return Ok(Vec::new()),
+        };
+        let Some(repo) = super::git::github_repo_slug(&remote) else {
+            return Ok(Vec::new());
+        };
+        let Ok(conn) = crate::appdb::open(&data_dir) else {
+            return Ok(Vec::new());
+        };
+        let Some(payload) = crate::appdb::get_pull_requests(&conn, &repo)? else {
+            return Ok(Vec::new());
+        };
+        Ok(serde_json::from_str(&payload).unwrap_or_default())
+    })
+    .await
+}
+
+fn pull_request_repo(url: &str) -> Option<String> {
+    let rest = url.trim().strip_prefix("https://github.com/")?;
+    let mut parts = rest.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_pull_request_checkout(
+    app: AppHandle,
+    workspace: String,
+    number: u32,
+) -> Result<GitWorktreeAdd> {
+    let state = app.state::<AppState>();
+    let target = git_target(&state, &workspace)?;
+    let added = off_main(move || git_pull_request_checkout(&target, number)).await?;
+    let root = expand_folder_path(&added.opened)?;
+    let state = app.state::<AppState>();
+    let canon = state.register_workspace(&app, &root)?;
+    Ok(GitWorktreeAdd {
+        worktrees: added.worktrees,
+        opened: path_string(&canon),
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn dev_git_worktree_add(
     app: AppHandle,
     workspace: String,
@@ -746,9 +824,11 @@ pub async fn dev_git_worktree_remove(
     if let Ok(root) = expand_folder_path(&path) {
         let _ = state.forget_workspace(&root);
     }
-    if let Ok(conn) = crate::appdb::open(&state.data_dir) {
-        let _ = crate::appdb::remove_project(&conn, &path);
-    }
+    // The folder is gone. Its chats must go too, or checking the branch out again
+    // shows the conversations from the last time.
+    let data_dir = state.data_dir.clone();
+    let forgotten = path.clone();
+    let _ = off_main(move || super::project_location::drop_project_chats(&data_dir, &forgotten)).await;
     Ok(rows)
 }
 

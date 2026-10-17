@@ -203,6 +203,8 @@ export type SidebarSlice = {
   openingId: string;
   openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
+  /** Open a folder even when it is already the current project. Deleting a worktree uses this. */
+  switchToProject: MainFn;
   rememberOpenedProject: MainFn;
   openProjectSettings: MainFn;
   openSidebarChat: MainFn;

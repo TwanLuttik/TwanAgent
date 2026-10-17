@@ -971,6 +971,7 @@ export function MainView() {
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
+    switchToProject,
     rememberOpenedProject,
     openChat,
     toggleSubagent,
@@ -1487,6 +1488,7 @@ export function MainView() {
     openingId,
     openJourneyKnowledge,
     openProjectFromSidebar,
+    switchToProject,
     rememberOpenedProject,
     openProjectSettings,
     openSidebarChat,
@@ -1549,6 +1551,7 @@ export function MainView() {
       openingId,
       openJourneyKnowledge,
       openProjectFromSidebar,
+      switchToProject,
       rememberOpenedProject,
       openProjectSettings,
       openSidebarChat,
@@ -1583,6 +1586,7 @@ export function MainView() {
     live.openListedChat = openListedChat;
     live.openJourneyKnowledge = openJourneyKnowledge;
     live.openProjectFromSidebar = openProjectFromSidebar;
+    live.switchToProject = switchToProject;
     live.rememberOpenedProject = rememberOpenedProject;
     live.openProjectSettings = openProjectSettings;
     live.openSidebarChat = openSidebarChat;

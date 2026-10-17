@@ -269,6 +269,15 @@ export type GitWorktree = {
   main: boolean;
 };
 export type GitWorktreeAdd = { worktrees: GitWorktree[]; opened: string };
+export type GitPullRequest = {
+  number: number;
+  title: string;
+  branch: string;
+  head: string;
+  url: string;
+  /** False once GitHub has closed or merged it. Git still advertises the head. */
+  open?: boolean;
+};
 export type ConversationSummary = {
   id: string;
   title: string;
@@ -675,6 +684,21 @@ export function gitFileAt(workspace: string, path: string, revision = "HEAD"): P
 
 export function gitWorktrees(workspace: string): Promise<GitWorktree[]> {
   return invoke("dev_git_worktrees", { workspace });
+}
+
+/** GitHub pull requests for this repo, open and closed. Empty when it is not a GitHub remote. */
+export function gitPullRequests(workspace: string): Promise<GitPullRequest[]> {
+  return invoke("dev_git_pull_requests", { workspace });
+}
+
+/** The list saved after the last refresh. Empty until one has landed. */
+export function gitPullRequestsCached(workspace: string): Promise<GitPullRequest[]> {
+  return invoke("dev_git_pull_requests_cached", { workspace });
+}
+
+/** Fetch one open pull request into a sibling worktree and return that checkout. */
+export function gitPullRequestCheckout(workspace: string, number: number): Promise<GitWorktreeAdd> {
+  return invoke("dev_git_pull_request_checkout", { workspace, number });
 }
 
 export function gitWorktreeAdd(workspace: string, branch: string, create = true): Promise<GitWorktreeAdd> {
@@ -1412,6 +1436,15 @@ export function usageRecord(event: ApiUsageRecord): Promise<ApiUsageEvent | null
 
 export function usageList(since?: string): Promise<ApiUsageEvent[]> {
   return invoke("dev_usage_list", { since: since ?? null });
+}
+
+/** Finish stamps for one chat. Opening a conversation does not read the whole usage history. */
+export function usageForConversation(conversationId: string, workspace: string): Promise<ApiUsageEvent[]> {
+  return invoke("dev_usage_for_conversation", {
+    conversationId,
+    conversation_id: conversationId,
+    workspace,
+  });
 }
 
 const chatListeners = new Map<string, (ev: ChatEvent) => void>();

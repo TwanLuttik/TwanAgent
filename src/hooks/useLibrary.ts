@@ -701,6 +701,12 @@ function openProjectFromSidebar(path: string) {
   applyWorkspace(path);
 }
 
+/** Open a folder even when it is already showing. Removing the open worktree leaves for the main checkout first. */
+function switchToProject(path: string) {
+  if (!path) return;
+  applyWorkspace(path);
+}
+
 startNewChatRef.current = startNewChat;
 openSettingsRef.current = openSettings;
 
@@ -917,12 +923,22 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
       setCompactionByChat((prev) => ({ ...prev, [id]: remembered.compaction! }));
     }
   }
+  // A chat that is not in memory yet keeps the previous transcript for this one
+  // frame. Swapping in an empty list here re-renders the whole chat on the click,
+  // which is the pause before the sidebar row can highlight.
   setActiveId(id);
+  saveConversation(path, id);
   // A cloud chat that is not in memory yet still reads the sqlite copy before SSH.
   const cachedLookup = hostedChatsRef.current && !painted
     ? api.hostedConversationCached(path, id).catch(() => null)
     : null;
   setOpeningId(painted ? "" : id);
+  // The highlight is already committed. Yield so that paint is not stuck behind
+  // the transcript read, then load. A newer click bumps the generation and this returns.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+  if (generation !== openGeneration.current) return;
   try {
     const cachedTranscript = cachedLookup ? await cachedLookup : null;
     if (generation !== openGeneration.current) return;
@@ -978,14 +994,13 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
         touch: false,
       });
     }
-    saveConversation(path, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
     void ensureChatPlan(path, id, opened?.model);
     if (hostedChatsRef.current) {
       void watchHosted(path, id);
     }
   } finally {
-    setOpeningId("");
+    if (generation === openGeneration.current) setOpeningId("");
   }
 }
 
@@ -1134,10 +1149,8 @@ async function withBackfilledTimes(ws: string, id: string, messages: ChatMessage
   let events = finishEvents.get(id);
   if (!events) {
     try {
-      const rows = await api.usageList();
-      events = rows
-        .filter((row) => row.conversation_id === id && isSameProject(row.workspace_path, ws))
-        .map((row) => ({ at: row.recorded_at, durationMs: row.duration_ms }));
+      const rows = await api.usageForConversation(id, ws);
+      events = rows.map((row) => ({ at: row.recorded_at, durationMs: row.duration_ms }));
     } catch {
       events = [];
     }
@@ -1583,6 +1596,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
+    switchToProject,
     rememberOpenedProject,
     openChat,
     revealListedChatRef,

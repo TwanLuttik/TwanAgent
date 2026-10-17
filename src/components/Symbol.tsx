@@ -546,6 +546,14 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  "arrow.triangle.pull": (
+    <>
+      <circle cx="7.2" cy="6.4" r="2.1" {...stroke} />
+      <circle cx="7.2" cy="17.6" r="2.1" {...stroke} />
+      <circle cx="16.8" cy="12" r="2.1" {...stroke} />
+      <path d="M7.2 8.5v7M9.3 16.4c2.6-.2 4.6-1.6 5.4-3.2" {...stroke} />
+    </>
+  ),
   "arrow.triangle.branch": (
     <>
       <circle cx="7.2" cy="6.4" r="2.1" {...stroke} />

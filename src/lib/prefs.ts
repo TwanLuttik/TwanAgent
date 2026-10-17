@@ -560,6 +560,19 @@ export function setPerfOverlay(on: boolean): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 
+const WRAP_LINES_KEY = "twanagent.wrapLines";
+
+/** Soft-wrap long editor lines so they stay in view. Off by default. */
+export function loadWrapLines(): boolean {
+  const raw = localStorage.getItem(WRAP_LINES_KEY);
+  return raw === "on" || raw === "1" || raw === "true";
+}
+
+export function setWrapLines(on: boolean): void {
+  localStorage.setItem(WRAP_LINES_KEY, on ? "on" : "off");
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
 const EXPAND_EDITS_KEY = "twanagent.expandEdits";
 
 export function loadExpandEdits(): boolean {
