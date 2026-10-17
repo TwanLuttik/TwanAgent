@@ -7,8 +7,8 @@
     "dev": "vite",
     "build": "node scripts/stamp-build.mjs && tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "bundle": "tauri build && node scripts/name-bundle.mjs",
+    "tauri": "node scripts/tauri.mjs",
+    "bundle": "node scripts/tauri.mjs build && node scripts/name-bundle.mjs",
     "dev:mac": "sh scripts/dev-macos-app.sh",
     "test": "node --experimental-strip-types --test src/lib/tests/*.test.ts"
   },
