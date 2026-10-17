@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
+use crate::process::WindowlessCommand;
 use crate::model_providers::event::{
     apply_thinking, apply_tool, finished_thinking as shared_finished_thinking, finished_tools as shared_finished_tools,
     merge_usage as merge_stream_usage, ThinkingBlock, StreamPiece,
@@ -180,6 +181,7 @@ fn which(name: &str) -> Option<PathBuf> {
 fn which_in(name: &str, path: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
     let mut command = Command::new(cmd);
+    command.hide_console_window();
     command.arg(name);
     command.env("PATH", path);
     let out = command.output().ok()?;
@@ -214,7 +216,11 @@ pub fn claude_bin() -> Option<PathBuf> {
 }
 
 pub fn claude_version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let out = Command::new(bin)
+        .hide_console_window()
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

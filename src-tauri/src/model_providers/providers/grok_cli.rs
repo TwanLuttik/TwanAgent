@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::secrets;
+use crate::process::WindowlessCommand;
 
 const FALLBACK_MODELS: &[(&str, &str, &[&str])] = &[
     ("grok-4.6", "Grok 4.6", &["xhigh", "high", "medium", "low"]),
@@ -419,7 +420,11 @@ pub fn grok_bin() -> Option<PathBuf> {
 
 fn which(name: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
-    let out = Command::new(cmd).arg(name).output().ok()?;
+    let out = Command::new(cmd)
+        .hide_console_window()
+        .arg(name)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -433,7 +438,11 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 pub fn grok_version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let out = Command::new(bin)
+        .hide_console_window()
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

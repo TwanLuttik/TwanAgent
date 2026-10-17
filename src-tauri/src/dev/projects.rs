@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::paths::{path_string, resolve_typed_path};
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderSuggestion {
@@ -253,6 +254,7 @@ pub fn clone_repo(root: &Path, url: &str, name: Option<&str>) -> Result<PathBuf>
         .to_str()
         .ok_or_else(|| Error::Other("invalid path".into()))?;
     let mut child = Command::new("git")
+        .hide_console_window()
         .args(["clone", "--", url, dest_str])
         .env("PATH", crate::env_path::command_path())
         .env("GIT_TERMINAL_PROMPT", "0")

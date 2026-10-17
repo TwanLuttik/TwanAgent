@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 use crate::state::AppState;
 use twanagent_service::{decode_frame, encode_frame, ClientFrame, ServerFrame, TurnRequest};
 
@@ -484,6 +485,7 @@ async fn open_live_tunnel(machine: &crate::remote::config::Machine) -> Result<u1
         .port();
     drop(listener);
     let mut command = std::process::Command::new("ssh");
+    command.hide_console_window();
     command
         .arg("-N")
         .arg("-L")

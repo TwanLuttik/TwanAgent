@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
+use crate::process::WindowlessCommand;
 
 pub const PROVIDER_MINIMAX: &str = "minimax";
 pub const DEFAULT_MODEL: &str = "MiniMax-M3";
@@ -225,6 +226,7 @@ fn which(name: &str) -> Option<PathBuf> {
 fn which_in(name: &str, path: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
     let mut command = Command::new(cmd);
+    command.hide_console_window();
     command.arg(name);
     command.env("PATH", path);
     let out = command.output().ok()?;
@@ -241,7 +243,11 @@ fn which_in(name: &str, path: &str) -> Option<PathBuf> {
 }
 
 pub fn mmx_version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let out = Command::new(bin)
+        .hide_console_window()
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

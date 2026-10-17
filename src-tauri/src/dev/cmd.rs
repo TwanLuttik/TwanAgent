@@ -9,6 +9,7 @@ use std::time::Duration;
 use super::paths::resolve_in_workspace;
 use crate::env_path::command_path;
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 
 pub(crate) const CMD_OUTPUT_LIMIT: usize = 80_000;
 const CMD_TIMEOUT_SECS: u64 = 60;
@@ -99,6 +100,7 @@ fn kill_process_group(pid: u32) {
     #[cfg(not(unix))]
     {
         let _ = Command::new("taskkill")
+            .hide_console_window()
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .status();
     }
@@ -384,6 +386,7 @@ fn run_command_with_timeout(
     };
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
+        c.hide_console_window();
         c.args(["/D", "/C"]);
         #[cfg(windows)]
         {

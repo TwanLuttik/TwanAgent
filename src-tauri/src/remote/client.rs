@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use super::config::Machine;
 use super::ssh::{self, AuthUse, ExecRequest, ExecResult, KnownHost, SshConnector, SshSession};
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 
 struct AcceptHandler {
     presented: Arc<Mutex<Option<KnownHost>>>,
@@ -255,6 +256,7 @@ async fn connect_with_system_ssh(
     handler: AcceptHandler,
 ) -> Result<client::Handle<AcceptHandler>> {
     let mut command = tokio::process::Command::new("ssh");
+    command.hide_console_window();
     command
         .arg("-W")
         .arg(format!("{host}:{port}"))
