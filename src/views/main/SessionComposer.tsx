@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import { Composer } from "../../components/Composer";
 import { contextWindowForModel } from "../../lib/context";
-import { providerProfile } from "../../lib/provider";
+import { providerProfile, providerReadyFor } from "../../lib/provider";
 import { fileToBase64, imagesForChat, setImagesForChat } from "../../lib/image";
 import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
@@ -43,7 +43,6 @@ export const SessionComposer = memo(function SessionComposer({
     pickPermission,
     pickPlanMode,
     planMode,
-    ready,
     remoteWorkspace,
     runtime,
     runningTurns,
@@ -83,7 +82,7 @@ export const SessionComposer = memo(function SessionComposer({
   const landing = placement === "landing";
   const projectOpen = !boundId || (focused && messages.length === 0);
   const profile = providerProfile(settings.model);
-  const providerReady = runtime?.providers?.find((row: { id: string; ready: boolean }) => row.id === profile.id)?.ready ?? ready;
+  const providerReady = providerReadyFor(settings.model, runtime?.providers, runtime?.ready).ready;
   const ask = `Ask ${profile.agentName}…`;
   const message = `Message ${profile.agentName}…`;
   const signIn = `Sign in to ${profile.agentName}`;

@@ -108,7 +108,6 @@ export type MainModel = {
   legacyProjectsRoot: any;
   promptImages: any;
   queued: any;
-  ready: any;
   reauthMcpServer: MainFn;
   recents: any;
   reloadRuntime: MainFn;

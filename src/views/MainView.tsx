@@ -361,7 +361,6 @@ export function MainView() {
     });
   }, [activeId]);
 
-  const ready = Boolean(runtime?.ready);
   const models = runtime?.models ?? [];
 
   const workspaceRef = useLiveRef(workspace);
@@ -881,7 +880,6 @@ export function MainView() {
     promptImages,
     mentionFiles,
     busy,
-    ready,
     runtime,
     model,
     effort,
@@ -1667,7 +1665,6 @@ export function MainView() {
     legacyProjectsRoot,
     promptImages,
     queued,
-    ready,
     reauthMcpServer,
     recents,
     reloadRuntime,

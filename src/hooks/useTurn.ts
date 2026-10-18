@@ -44,7 +44,7 @@ import {
   type PlanModeState,
   type PlanPrompt,
 } from "../lib/plan";
-import { providerProfile } from "../lib/provider";
+import { providerProfile, providerReadyFor } from "../lib/provider";
 import type { DetectedSkill } from "../lib/skill";
 import {
   applySubagentToChat,
@@ -109,7 +109,6 @@ export type TurnDeps = {
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
   busy: boolean;
-  ready: boolean;
   runtime: Runtime | null;
   model: string;
   effort: string;
@@ -205,7 +204,7 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, ready, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
@@ -783,8 +782,16 @@ async function send(targetId = activeIdRef.current) {
     setFolderOpen(true);
     return;
   }
-  if (!ready) {
-    setFlash({ kind: "err", text: runtime?.hint || "Grok isn’t signed in." });
+  const sendingChat = targetId ? conversationsRef.current.find((row) => row.id === targetId) : undefined;
+  const focusedChip = !targetId || targetId === activeIdRef.current;
+  const sendingModel = focusedChip ? modelRef.current : sendingChat?.model || modelRef.current;
+  const signedIn = providerReadyFor(sendingModel, runtime?.providers, runtime?.ready);
+  if (!signedIn.ready) {
+    const profile = providerProfile(sendingModel);
+    setFlash({
+      kind: "err",
+      text: signedIn.hint || (profile.id === "xai" ? runtime?.hint || "Grok isn’t signed in." : `Sign in to ${profile.agentName}.`),
+    });
     return;
   }
   let ws = workspace;

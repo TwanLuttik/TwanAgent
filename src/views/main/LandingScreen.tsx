@@ -5,6 +5,7 @@ import { ServersDialog } from "../../components/ServersDialog";
 import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
 import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
+import { providerReadyFor } from "../../lib/provider";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
@@ -20,10 +21,12 @@ export function LandingScreen() {
     openUsage,
     recents,
     runtime,
+    model,
     setFolderOpen,
     startNewChat,
     workspace,
   } = useMain();
+  const signedIn = providerReadyFor(model, runtime?.providers, runtime?.ready);
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-canvas">
       <Flash />
@@ -79,8 +82,8 @@ export function LandingScreen() {
         {fileDrag ? <DropImagesHint /> : null}
         <div className="w-full max-w-[640px]">
           <SessionComposer placement="landing" />
-          {runtime && !runtime.ready && runtime.hint && (
-            <p className="mt-3 text-center text-[12px] text-muted">{runtime.hint}</p>
+          {runtime && !signedIn.ready && (signedIn.hint || runtime.hint) && (
+            <p className="mt-3 text-center text-[12px] text-muted">{signedIn.hint || runtime.hint}</p>
           )}
           {workspace ? (
             <p className="mt-4 text-center">
