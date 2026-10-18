@@ -317,6 +317,26 @@ export function modelForTurn(
 }
 
 /**
+ * The sidebar row the composer should follow when this chat is opened.
+ * A running turn rewrites the row on every step and used to keep the model
+ * from before the turn. Opening it then left the input on the previous chat.
+ * Prefer the model the turn is actually sending, then the row, then disk.
+ */
+export function composerRowForOpen<T extends StoredComposerSettings>(
+  known: T | null | undefined,
+  saved: StoredComposerSettings | null | undefined,
+  turnModel?: string | null,
+): StoredComposerSettings {
+  const running = (turnModel ?? "").trim();
+  return {
+    model: running || saved?.model || known?.model,
+    effort: saved?.effort ?? known?.effort,
+    contextWindow: saved?.contextWindow ?? known?.contextWindow,
+    permission: saved?.permission ?? known?.permission,
+  };
+}
+
+/**
  * Settings for the chat being opened.
  * A value saved on that chat wins. Anything missing stays on the app default.
  * The context size is kept only when the chosen model offers it.

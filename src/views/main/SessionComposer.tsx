@@ -1,5 +1,16 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState, useSyncExternalStore } from "react";
 import { Composer } from "../../components/Composer";
+import { bumpFileRefresh } from "../../lib/file-structure";
+import * as api from "../../lib/tauri";
+import {
+  provisionalWorktreeName,
+  publishWorktreeList,
+  subscribeWorktreeLists,
+  worktreeListsFor,
+  worktreeNameForChat,
+  worktreeNameFromPrompt,
+  worktreeNameRevision,
+} from "../../lib/worktree";
 import { contextWindowForModel } from "../../lib/context";
 import { providerProfile, providerReadyFor } from "../../lib/provider";
 import { fileToBase64, imagesForChat, setImagesForChat } from "../../lib/image";
@@ -57,7 +68,49 @@ export const SessionComposer = memo(function SessionComposer({
     dictate,
   } = useMain();
   const { setFlash } = useApp();
+  const [creatingWorktree, setCreatingWorktree] = useState(false);
+  const [checkingOut, setCheckingOut] = useState(0);
+  const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
+  void worktreeTick;
   const boundId = chatId ?? activeId;
+  const suggestedWorktree =
+    worktreeNameForChat(boundId) ||
+    worktreeNameFromPrompt(
+      String(messages.find((item: { role: string; content?: string | null }) => item.role === "user")?.content ?? ""),
+    );
+  async function openPullRequest(number: number) {
+    if (!workspace || creatingWorktree || checkingOut || !number) return;
+    // A checkout that is already here just opens. The spinner is for the fetch.
+    const branch = `pr/${number}`;
+    const already = worktreeListsFor(workspace).some((row) => row.branch === branch);
+    if (!already) setCheckingOut(number);
+    try {
+      const added = await api.gitPullRequestCheckout(workspace, number);
+      publishWorktreeList(workspace, added.worktrees);
+      bumpFileRefresh();
+      if (added.opened) applyWorkspace(added.opened);
+    } catch (err) {
+      setFlash({ kind: "err", text: String(err) });
+    } finally {
+      setCheckingOut(0);
+    }
+  }
+  async function createWorktree(branch: string) {
+    // An empty name still checks out a folder. A later reply replaces that branch.
+    const name = branch.trim() || suggestedWorktree || provisionalWorktreeName();
+    if (!workspace || creatingWorktree) return;
+    setCreatingWorktree(true);
+    try {
+      const added = await api.gitWorktreeAdd(workspace, name, true);
+      publishWorktreeList(workspace, added.worktrees);
+      bumpFileRefresh();
+      if (added.opened) applyWorkspace(added.opened);
+    } catch (err) {
+      setFlash({ kind: "err", text: String(err) });
+    } finally {
+      setCreatingWorktree(false);
+    }
+  }
   const focused = !boundId || boundId === activeId;
   const row = conversations.find((item: { id: string }) => item.id === boundId);
   const settings = focused
@@ -119,6 +172,16 @@ export const SessionComposer = memo(function SessionComposer({
         if (!boundId) assignDraftProject(path);
         else applyWorkspace(path);
       }}
+      onOpenWorktree={(path) => {
+        // A new chat only picks where the first prompt lands. Opening the folder
+        // would load a conversation that checkout already has.
+        if (!boundId) assignDraftProject(path);
+        else applyWorkspace(path);
+      }}
+      onCreateWorktree={(branch) => void createWorktree(branch)}
+      onOpenPullRequest={(number) => void openPullRequest(number)}
+      checkingOutPullRequest={checkingOut}
+      suggestedWorktree={suggestedWorktree}
       onOpenFolder={openFolder}
       models={models}
       model={settings.model}

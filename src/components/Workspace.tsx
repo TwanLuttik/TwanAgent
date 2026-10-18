@@ -11,7 +11,7 @@ import {
 } from "@dnd-kit/core";
 import { restrictToHorizontalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { CSS, type Transform } from "@dnd-kit/utilities";
 import {
   HEAVY_DIRS,
   formatDiffCount,
@@ -37,7 +37,7 @@ import {
   validEntryName,
   validNewFileName,
 } from "../lib/file-actions";
-import { dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
+import { bumpFileRefresh, dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
 import {
   closedTerminalTabs,
   filePaneNeedsReload,
@@ -65,8 +65,9 @@ import {
   type GitChangesView,
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
-import type { Entry, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary } from "../lib/tauri";
+import type { Entry, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary, GitWorktree } from "../lib/tauri";
 import { Terminal } from "./Terminal";
+import { WorktreeSection } from "./Worktrees";
 import { AnchoredMenu } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
@@ -76,6 +77,7 @@ export const Workspace = memo(function Workspace({
   selectedPath,
   onOpenFile,
   onRefresh,
+  onOpenWorkspace,
   onCollapse,
   pending = false,
 }: {
@@ -83,6 +85,7 @@ export const Workspace = memo(function Workspace({
   selectedPath?: string | null;
   onOpenFile?: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
   onRefresh?: () => void;
+  onOpenWorkspace?: (path: string) => void;
   onCollapse?: () => void;
   /** The project is still opening. Keep the pane frame and cover its contents. */
   pending?: boolean;
@@ -102,6 +105,7 @@ export const Workspace = memo(function Workspace({
   const [summary, setSummary] = useState<GitRepoSummary | null>(null);
   const [identity, setIdentity] = useState<GitIdentity | null>(null);
   const [history, setHistory] = useState<GitCommit[]>([]);
+  const [worktrees, setWorktrees] = useState<GitWorktree[]>([]);
   const [branchError, setBranchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
@@ -211,6 +215,7 @@ export const Workspace = memo(function Workspace({
       setSummary(repo);
       setIdentity(who);
       setHistory(log);
+      setWorktrees(await api.gitWorktrees(workspace).catch(() => [] as GitWorktree[]));
       setBranchError(null);
     } catch (e) {
       setBranchError(String(e));
@@ -537,6 +542,23 @@ export const Workspace = memo(function Workspace({
                   onSync={(action) => void runGit(() => api.gitSync(workspace, action))}
                   onStash={(action) => void runGit(() => api.gitStash(workspace, action))}
                   onShow={(hash) => api.gitShow(workspace, hash)}
+                  workspacePath={workspace}
+                  worktrees={worktrees}
+                  onOpenWorkspace={onOpenWorkspace}
+                  onCreateWorktree={(branch) =>
+                    void runGit(async () => {
+                      const added = await api.gitWorktreeAdd(workspace, branch, true);
+                      bumpFileRefresh();
+                      if (added.opened && onOpenWorkspace) onOpenWorkspace(added.opened);
+                      return added;
+                    })
+                  }
+                  onRemoveWorktree={(path) =>
+                    void runGit(async () => {
+                      if (!window.confirm("Remove this worktree? Uncommitted changes will keep it.")) return;
+                      setWorktrees(await api.gitWorktreeRemove(workspace, path));
+                    })
+                  }
                   changes={changes}
                   selected={selectedPath ?? null}
                   onOpen={(row, mode) => openChange(row, mode)}
@@ -690,6 +712,12 @@ function PaneTabs({
   );
 }
 
+/** Move the held tab without stretching it to the tab it passes over. */
+function paneDragTransform(transform: Transform | null): string | undefined {
+  if (!transform) return undefined;
+  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+}
+
 function PaneTabButton({
   tab,
   active,
@@ -707,7 +735,7 @@ function PaneTabButton({
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{ transform: paneDragTransform(transform), transition }}
       className={`min-w-0 ${isDragging ? "opacity-40" : ""}`}
     >
       <PaneTabFace
@@ -1243,6 +1271,11 @@ function GitPane({
   onSync,
   onStash,
   onShow,
+  workspacePath,
+  worktrees,
+  onOpenWorkspace,
+  onCreateWorktree,
+  onRemoveWorktree,
   changes,
   selected,
   onOpen,
@@ -1265,6 +1298,11 @@ function GitPane({
   onSync: (action: "fetch" | "pull" | "push" | "publish") => void;
   onStash: (action: "push" | "pop" | "list") => void;
   onShow: (hash: string) => Promise<string>;
+  workspacePath: string;
+  worktrees: GitWorktree[];
+  onOpenWorkspace?: (path: string) => void;
+  onCreateWorktree: (branch: string) => void;
+  onRemoveWorktree: (path: string) => void;
   changes: GitChange[];
   selected: string | null;
   onOpen: (row: GitChange, mode?: "preview" | "pin") => void;
@@ -1329,6 +1367,16 @@ function GitPane({
           switching={switching}
           onSwitch={onSwitch}
         />
+        {repo && worktrees.length > 0 ? (
+          <WorktreeSection
+            workspace={workspacePath}
+            worktrees={worktrees}
+            busy={busy || switching}
+            onOpen={(path) => onOpenWorkspace?.(path)}
+            onCreate={onCreateWorktree}
+            onRemove={onRemoveWorktree}
+          />
+        ) : null}
         {tracking ? <p className="px-2 pt-0.5 text-[11px] text-muted">{tracking}</p> : null}
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
         {repo ? (

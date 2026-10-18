@@ -34,12 +34,13 @@ import { PANE_DEFAULT, PANE_MAX, PANE_MIN, loadMarkdownOpenMode, loadPaneWidth, 
 import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
+import { DocsView } from "../DocsView";
 import { UsageView } from "../UsageView";
 import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS } from "../../components/WindowButtons";
 import { CenterTabs } from "./AppChrome";
-import { useMain } from "./context";
+import { useMain, useSidebar } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
 export function ChatStage() {
@@ -50,6 +51,7 @@ export function ChatStage() {
     closeServers,
     closeSettings,
     closeUsage,
+    closeDocs,
     conversations,
     dirtyFiles,
     editor,
@@ -92,13 +94,15 @@ export function ChatStage() {
     showServers,
     showSettings,
     showUsage,
+    showDocs,
     paneCollapsed,
     setPaneCollapsed,
     sidebarCollapsed,
     setSidebarCollapsed,
     workspace,
   } = useMain();
-  const fullPage = Boolean(showSettings || showUsage || showServers || projectSettings);
+  const { openProjectFromSidebar, rememberOpenedProject } = useSidebar();
+  const fullPage = Boolean(showSettings || showUsage || showDocs || showServers || projectSettings);
   const [settingsAlive, setSettingsAlive] = useState(showSettings);
   if (showSettings && !settingsAlive) setSettingsAlive(true);
   const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
@@ -166,7 +170,7 @@ export function ChatStage() {
             onCloseMenu={() => setTabMenu(null)}
           />
         ) : (
-          <div className="min-w-0 flex-1" data-tauri-drag-region="false" />
+          <div className="min-h-11 min-w-0 flex-1 self-stretch" data-tauri-drag-region />
         )}
       </div>
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
@@ -203,8 +207,11 @@ export function ChatStage() {
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
           ) : null}
-          {showUsage && !showSettings && !showServers ? (
+          {showUsage && !showSettings && !showDocs && !showServers ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
+          ) : null}
+          {showDocs && !showSettings && !showServers ? (
+            <DocsView onClose={folderOpen ? undefined : closeDocs} />
           ) : null}
           {showServers && !showSettings ? (
             <ServersDialog onClose={folderOpen ? () => undefined : closeServers} />
@@ -242,6 +249,7 @@ export function ChatStage() {
               onSendToChat={(snippet) => {
                 setShowSettings(false);
                 setShowUsage(false);
+                closeDocs();
                 closeServers();
                 closeProjectSettings();
                 setEditor((prev: typeof editor) => selectChatTab(prev));
@@ -263,13 +271,22 @@ export function ChatStage() {
           )}
           </div>
         </div>
-        {paneWorkspace && (activeId || paneChat) && !fullPage ? (
+        {paneWorkspace && (activeId || paneChat) && !fullPage && paneCollapsed ? (
+          <button
+            type="button"
+            aria-label="Show files"
+            title="Show files"
+            onClick={() => setPaneCollapsed(false)}
+            className="m-2 flex size-9 shrink-0 items-center justify-center self-start rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink"
+          >
+            <Symbol name="sidebar.right" className="size-3.5" />
+          </button>
+        ) : null}
+        {paneWorkspace && (activeId || paneChat) && !fullPage && !paneCollapsed ? (
           <div
             ref={paneSlotRef}
-            className={`relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden ${
-              paneCollapsed ? "mr-2 transition-[width] duration-200 ease-out" : ""
-            }`}
-            style={{ width: paneCollapsed ? 36 : paneWidth }}
+            className="relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden"
+            style={{ width: paneWidth }}
           >
             <div
               role="separator"
@@ -318,20 +335,13 @@ export function ChatStage() {
                 selectedPath={editor.activePath}
                 onOpenFile={openWorkspaceFile}
                 onRefresh={bumpFiles}
+                onOpenWorkspace={(path) => {
+                  rememberOpenedProject(path);
+                  openProjectFromSidebar(path);
+                }}
                 onCollapse={() => setPaneCollapsed(true)}
                 pending={paneWorkspace !== workspace}
               />
-              <button
-                type="button"
-                aria-label="Show files"
-                title="Show files"
-                onClick={() => setPaneCollapsed(false)}
-                className={`absolute top-0 left-0 flex size-9 items-center justify-center rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink ${
-                  paneCollapsed ? "" : "pointer-events-none opacity-0"
-                }`}
-              >
-                <Symbol name="sidebar.right" className="size-3.5" />
-              </button>
             </div>
           </div>
         ) : null}
@@ -667,7 +677,7 @@ function ChatColumn() {
   useEffect(() => {
     if (activeId) rememberSplitPane(activeId, { messages: messagesRef.current });
   }, [activeId, messages]);
-  const transcriptPending = Boolean(openingId) && openingId === activeId;
+  const transcriptPending = Boolean(openingId) && openingId === activeId && messages.length === 0;
   const centeredWithoutStream =
     !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });

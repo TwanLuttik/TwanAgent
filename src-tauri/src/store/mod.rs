@@ -151,6 +151,7 @@ fn open_new(dir: &Path) -> Result<Connection> {
             return Err(e);
         }
         fs::rename(&tmp, &db)?;
+        let _ = fs::remove_file(&json);
         return connect(&db);
     }
     connect(&db)

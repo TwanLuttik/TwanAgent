@@ -22,7 +22,8 @@ import { userMcpRel } from "../lib/mcp";
 import { userSkillRel } from "../lib/skill";
 import { addedFileDiff, deletedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
 import { gitChangeGutter } from "../lib/editor-git-gutter";
-import { editorTheme } from "../lib/editor-theme";
+import { editorLineWrapping, editorTheme } from "../lib/editor-theme";
+import { loadWrapLines, subscribePrefs } from "../lib/prefs";
 import { normalizeGitPath } from "../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
 import { selectionPromptSnippet, selectionRangeFromOffsets } from "../lib/editor-selection";
@@ -85,6 +86,7 @@ export function Editor({
   const dirty = Boolean(buf && buf.draft !== buf.original && !buf.error);
   const media = mediaKindForPath(path);
   const mode = useThemeMode();
+  const wrapLines = useWrapLines();
 
   const buffersRef = useRef(buffers);
   buffersRef.current = buffers;
@@ -265,8 +267,15 @@ export function Editor({
         snippet: selectionPromptSnippet(range),
       });
     });
-    return [...(lang ? [lang] : []), editorTheme(mode), gitChangeGutter(gutterMarks), saveKey, selection];
-  }, [path, mode, save, gutterMarks]);
+    return [
+      ...(lang ? [lang] : []),
+      editorTheme(mode),
+      ...(wrapLines ? [editorLineWrapping()] : []),
+      gitChangeGutter(gutterMarks),
+      saveKey,
+      selection,
+    ];
+  }, [path, mode, save, gutterMarks, wrapLines]);
 
   function setDraft(draft: string) {
     const current = buffersRef.current[path];
@@ -546,6 +555,12 @@ function languageExtension(path: string) {
   const table = langs as Record<string, () => Extension>;
   if (typeof table[ext] === "function") return table[ext]();
   return null;
+}
+
+function useWrapLines(): boolean {
+  const [on, setOn] = useState(() => loadWrapLines());
+  useEffect(() => subscribePrefs(() => setOn(loadWrapLines())), []);
+  return on;
 }
 
 function useThemeMode(): "light" | "dark" {

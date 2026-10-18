@@ -22,6 +22,9 @@ function appVersionLabel(): string {
 
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    include: ["pdfjs-dist"],
+  },
   define: {
     __APP_VERSION_LABEL__: JSON.stringify(appVersionLabel()),
   },

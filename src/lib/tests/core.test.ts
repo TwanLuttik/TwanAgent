@@ -49,6 +49,7 @@ import {
   stampTurnDuration,
   systemPrompt,
   withSystem,
+  worktreeCheckoutFor,
   type ChatMessage,
   type GitDecorChange,
 } from "../core.ts";
@@ -1292,6 +1293,32 @@ describe("withSystem", () => {
     assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "grok-4.6").content), /You are Grok \(grok-4\.6\), a coding agent/);
     assert.match(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-haiku-4-5").content), /You are Claude \(claude-haiku-4-5\), a coding agent/);
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, undefined, "claude-haiku-4-5").content), /You are Grok/);
+  });
+
+  it("describes only the linked checkout, not the main one", () => {
+    const rows = [
+      { path: "/work/billing", branch: "main", main: true },
+      { path: "/work/billing-worktrees/feat-login", branch: "feat/login", main: false },
+    ];
+    assert.equal(worktreeCheckoutFor("/work/billing", rows), null);
+    assert.deepEqual(worktreeCheckoutFor("/work/billing-worktrees/feat-login", rows), {
+      name: "feat-login",
+      branch: "feat/login",
+      mainName: "billing",
+    });
+    assert.equal(worktreeCheckoutFor("/work/other", rows), null);
+  });
+
+  it("names a linked worktree and stays quiet on the main checkout", () => {
+    const linked = systemPrompt("/tmp/app", "ask", undefined, undefined, undefined, null, undefined, undefined, {
+      name: "feat-login",
+      branch: "feat/login",
+      mainName: "billing",
+    });
+    assert.match(String(linked.content), /worktree feat-login on branch feat\/login/);
+    assert.match(String(linked.content), /main checkout is billing/);
+    assert.doesNotMatch(String(linked.content), /\/tmp\/billing/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app").content), /worktree /);
   });
 
   it("tells the model a remote workspace runs commands on the server", () => {

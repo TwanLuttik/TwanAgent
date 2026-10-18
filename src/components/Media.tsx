@@ -64,7 +64,148 @@ export function Media({
   if (kind === "image") {
     return <ImagePreview src={src} path={path} onMeta={onMeta} />;
   }
+  if (kind === "pdf") {
+    return <PdfPreview workspace={workspace} path={path} onMeta={onMeta} />;
+  }
   return <VideoPlayer src={src} onMeta={onMeta} />;
+}
+
+function PdfPreview({
+  workspace,
+  path,
+  onMeta,
+}: {
+  workspace: string;
+  path: string;
+  onMeta?: (meta: MediaMeta | null) => void;
+}) {
+  const [bytes, setBytes] = useState<Uint8Array | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBytes(null);
+    setError(null);
+    onMeta?.({ label: "PDF" });
+    void api
+      .readPdf(workspace, path)
+      .then((encoded) => {
+        if (cancelled) return;
+        setBytes(decodePdf(encoded));
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(String(err));
+          onMeta?.(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onMeta, path, workspace]);
+
+  return (
+    <div className="pdf-pages no-scrollbar min-h-0 flex-1 overflow-auto bg-[#525659]">
+      {error ? (
+        <div className="px-4 py-3 text-[13px] text-err">{error}</div>
+      ) : bytes ? (
+        <PdfPages bytes={bytes} path={path} onFail={(message) => setError(message)} />
+      ) : (
+        <div className="px-4 py-3 text-[12px] text-white/70">Opening…</div>
+      )}
+    </div>
+  );
+}
+
+function decodePdf(encoded: string): Uint8Array {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function PdfPages({
+  bytes,
+  path,
+  onFail,
+}: {
+  bytes: Uint8Array;
+  path: string;
+  onFail: (message: string) => void;
+}) {
+  const [pages, setPages] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const urls: string[] = [];
+    void renderPdfPages(bytes)
+      .then((next) => {
+        if (cancelled) {
+          next.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
+        urls.push(...next);
+        setPages(next);
+      })
+      .catch((err) => {
+        if (!cancelled) onFail(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+      urls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [bytes, onFail]);
+
+  if (!pages.length) {
+    return <div className="px-4 py-3 text-[12px] text-white/70">Opening…</div>;
+  }
+  return (
+    <div className="mx-auto flex w-full max-w-[820px] flex-col gap-4 px-6 py-5">
+      {pages.map((url, index) => (
+        <img key={`${path}-${index}`} src={url} alt={`${path} page ${index + 1}`} className="w-full bg-white shadow-card" />
+      ))}
+    </div>
+  );
+}
+
+async function renderPdfPages(bytes: Uint8Array): Promise<string[]> {
+  const pdfjs = await import("pdfjs-dist");
+  const worker = (await import("pdfjs-dist/build/pdf.worker.min.mjs")) as {
+    WorkerMessageHandler: object;
+  };
+  // The webview content policy blocks a worker script. The parser runs on this thread.
+  const handler = worker.WorkerMessageHandler;
+  (globalThis as { pdfjsWorker?: { WorkerMessageHandler: typeof handler } }).pdfjsWorker = {
+    WorkerMessageHandler: handler,
+  };
+  const doc = await pdfjs.getDocument({
+    data: bytes.slice(),
+    isEvalSupported: false,
+    worker: new pdfjs.PDFWorker(),
+  }).promise;
+  const urls: string[] = [];
+  const scale = Math.min(2, window.devicePixelRatio || 1);
+  try {
+    for (let number = 1; number <= doc.numPages; number += 1) {
+      const page = await doc.getPage(number);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("canvas");
+      await page.render({ canvas, viewport }).promise;
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("png");
+      urls.push(URL.createObjectURL(blob));
+    }
+  } catch (err) {
+    urls.forEach((url) => URL.revokeObjectURL(url));
+    throw err;
+  } finally {
+    await doc.destroy();
+  }
+  return urls;
 }
 
 function ImagePreview({

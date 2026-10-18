@@ -47,6 +47,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
             payload TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pull_requests (
+            repo TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS sidebar_projects (
             project_path TEXT PRIMARY KEY,
             refreshed_at TEXT NOT NULL,
@@ -84,6 +89,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
             collapsed INTEGER NOT NULL DEFAULT 0,
             color TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (project_path, id)
+        );
+        CREATE TABLE IF NOT EXISTS project_path_history (
+            path TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            previous_paths TEXT NOT NULL DEFAULT '[]'
         );
         ",
     )?;
@@ -575,17 +585,63 @@ pub fn sidebar_for(
     Ok((conversations, journeys))
 }
 
+/// Keep a project's sidebar place when its folder path changes. The cache moves with it.
+pub fn rename_project_path(conn: &Connection, from: &str, to: &str) -> Result<bool> {
+    if path_key(from) == path_key(to) {
+        return Ok(false);
+    }
+    let Some(existing) = find_project(conn, from)? else {
+        return Ok(false);
+    };
+    let name = Path::new(to)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| existing.name.clone());
+    if find_project(conn, to)?.is_some() {
+        let _ = remove_project(conn, &existing.path);
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE projects SET path = ?1, name = ?2 WHERE path = ?3",
+        params![to, name, existing.path],
+    )?;
+    let from_key = project_key(&existing.path);
+    let to_key = project_key(to);
+    for table in [
+        "sidebar_projects",
+        "sidebar_transcripts",
+        "sidebar_conversations",
+        "sidebar_journeys",
+    ] {
+        conn.execute(
+            &format!("UPDATE {table} SET project_path = ?1 WHERE project_path = ?2"),
+            params![to_key, from_key],
+        )?;
+    }
+    Ok(true)
+}
+
 pub fn remove_project(conn: &Connection, path: &str) -> Result<bool> {
     let Some(existing) = find_project(conn, path)? else {
+        // A worktree is not a saved project, but its chats are still copied here.
+        clear_sidebar(conn, path)?;
         return Ok(false);
     };
     let n = conn.execute("DELETE FROM projects WHERE path = ?1", [&existing.path])?;
-    let key = project_key(&existing.path);
-    let _ = conn.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key]);
-    let _ = conn.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key]);
-    let _ = conn.execute("DELETE FROM sidebar_transcripts WHERE project_path = ?1", [&key]);
-    let _ = conn.execute("DELETE FROM sidebar_projects WHERE project_path = ?1", [&key]);
+    clear_sidebar(conn, &existing.path)?;
     Ok(n > 0)
+}
+
+/// Drop the copied chat list for one folder. The list is what the sidebar paints,
+/// so leaving it brings the conversations back after the folder is created again.
+pub fn clear_sidebar(conn: &Connection, path: &str) -> Result<()> {
+    let key = project_key(path);
+    conn.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key])?;
+    conn.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key])?;
+    conn.execute("DELETE FROM sidebar_transcripts WHERE project_path = ?1", [&key])?;
+    conn.execute("DELETE FROM sidebar_projects WHERE project_path = ?1", [&key])?;
+    Ok(())
 }
 
 /// One-time import of folders that used to define the sidebar, so nothing already added disappears.
@@ -661,6 +717,34 @@ pub fn get_account_usage(conn: &Connection, provider: &str) -> Result<Option<Str
     .map_err(Error::from)
 }
 
+/// The last pull-request list for one GitHub `owner/repo`. Null until one refresh has landed.
+pub fn get_pull_requests(conn: &Connection, repo: &str) -> Result<Option<String>> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT payload FROM pull_requests WHERE repo = ?1",
+        [repo],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+pub fn set_pull_requests(conn: &Connection, repo: &str, payload: &str) -> Result<()> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return Err(Error::Other("pull request repo is empty".into()));
+    }
+    conn.execute(
+        "INSERT INTO pull_requests (repo, payload, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(repo) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+        params![repo, payload, now_iso()],
+    )?;
+    Ok(())
+}
+
 pub fn set_account_usage(conn: &Connection, provider: &str, payload: &str) -> Result<()> {
     let provider = provider.trim();
     if provider.is_empty() {
@@ -672,6 +756,105 @@ pub fn set_account_usage(conn: &Connection, provider: &str, payload: &str) -> Re
         params![provider, payload, now_iso()],
     )?;
     Ok(())
+}
+
+/// Old path to current path. A moved project keeps its `store.db` through this list.
+pub fn project_path_moves(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (path, raw) = row?;
+        let previous: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        for from in previous {
+            if path_key(&from) != path_key(&path) {
+                out.push((from, path.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Paths a workspace used to live at, so its chat database can be found after a move.
+pub fn previous_paths_for(conn: &Connection, path: &str) -> Result<Vec<String>> {
+    let key = path_key(path);
+    let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (current, raw) = row?;
+        let previous: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        if path_key(&current) == key {
+            out.extend(previous);
+            continue;
+        }
+        if previous.iter().any(|item| path_key(item) == key) {
+            out.push(current);
+        }
+    }
+    Ok(out)
+}
+
+pub fn remember_project_move(conn: &Connection, name: &str, to: &str, from: &str) -> Result<()> {
+    if path_key(from) == path_key(to) {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare("SELECT path, name, previous_paths FROM project_path_history")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut match_path: Option<String> = None;
+    let mut previous = Vec::new();
+    for row in rows {
+        let (path, _, raw) = row?;
+        let stored: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        if path_key(&path) == path_key(to) || stored.iter().any(|item| path_key(item) == path_key(from)) {
+            match_path = Some(path);
+            previous = stored;
+            break;
+        }
+    }
+    if !previous.iter().any(|item| path_key(item) == path_key(from)) {
+        previous.push(from.to_string());
+    }
+    let encoded = serde_json::to_string(&previous)?;
+    if let Some(old) = match_path {
+        conn.execute("DELETE FROM project_path_history WHERE path = ?1", [&old])?;
+    }
+    conn.execute(
+        "INSERT INTO project_path_history (path, name, previous_paths) VALUES (?1, ?2, ?3)
+         ON CONFLICT(path) DO UPDATE SET name = excluded.name, previous_paths = excluded.previous_paths",
+        params![to, name, encoded],
+    )?;
+    Ok(())
+}
+
+/// Drop a project and every path it used to have. Returns those paths so their chat stores can go too.
+pub fn forget_project_paths(conn: &Connection, path: &str) -> Result<Vec<String>> {
+    let key = path_key(path);
+    let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut related = vec![path.to_string()];
+    let mut drop_paths = Vec::new();
+    for row in rows {
+        let (current, raw) = row?;
+        let previous: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        let hit = path_key(&current) == key || previous.iter().any(|item| path_key(item) == key);
+        if !hit {
+            continue;
+        }
+        related.push(current.clone());
+        related.extend(previous);
+        drop_paths.push(current);
+    }
+    for item in drop_paths {
+        conn.execute("DELETE FROM project_path_history WHERE path = ?1", [item])?;
+    }
+    Ok(related)
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
@@ -760,6 +943,39 @@ mod tests {
         assert!(remove_project(&conn, &added.path).unwrap());
         assert!(list_projects(&conn).unwrap().is_empty());
         assert!(!remove_project(&conn, &added.path).unwrap());
+    }
+
+    #[test]
+    fn rename_project_path_keeps_the_sidebar_place_and_cache() {
+        let data = tempdir().unwrap();
+        let from = tempdir().unwrap();
+        let to = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        let added = add_project(&conn, from.path()).unwrap();
+        let chat = crate::dev::ConversationSummary {
+            id: "c1".into(),
+            title: "Hello".into(),
+            created_at: "t0".into(),
+            updated_at: "t1".into(),
+            kind: "chat".into(),
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        };
+        replace_sidebar(&conn, &added.path, &[chat], &[]).unwrap();
+        let next = path_string(to.path());
+        assert!(rename_project_path(&conn, &added.path, &next).unwrap());
+        let rows = list_projects(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, next);
+        let (chats, _) = sidebar_for(&conn, &next).unwrap();
+        assert_eq!(chats[0].title, "Hello");
+        assert!(sidebar_for(&conn, &added.path).unwrap().0.is_empty());
+        assert!(!rename_project_path(&conn, "/missing", &next).unwrap());
     }
 
     #[test]
@@ -945,6 +1161,21 @@ mod tests {
         assert!(get_provider_key(&conn, "anthropic").unwrap().is_none());
         assert!(list_settings(&conn).unwrap().is_empty());
         assert!(set_provider_key(&conn, "  ", "nope").is_err());
+    }
+
+    #[test]
+    fn pull_request_cache_roundtrip() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        assert!(get_pull_requests(&conn, "TwanLuttik/TwanAgent").unwrap().is_none());
+        set_pull_requests(&conn, "TwanLuttik/TwanAgent", r#"[{"number":5}]"#).unwrap();
+        set_pull_requests(&conn, "TwanLuttik/TwanAgent", r#"[{"number":6}]"#).unwrap();
+        set_pull_requests(&conn, "other/repo", "[]").unwrap();
+        assert_eq!(
+            get_pull_requests(&conn, "TwanLuttik/TwanAgent").unwrap().as_deref(),
+            Some(r#"[{"number":6}]"#)
+        );
+        assert!(set_pull_requests(&conn, "  ", "[]").is_err());
     }
 
     #[test]
