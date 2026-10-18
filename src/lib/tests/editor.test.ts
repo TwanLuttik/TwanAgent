@@ -366,6 +366,12 @@ describe("mediaKindForPath", () => {
     assert.equal(mediaKindForPath("take.MOV"), "video");
   });
 
+  it("opens a pdf in the preview instead of the text editor", () => {
+    assert.equal(mediaKindForPath("docs/spec.PDF"), "pdf");
+    assert.equal(mediaKindForPath("notes/readme.pdf"), "pdf");
+    assert.equal(mediaMimeForPath("docs/spec.pdf"), "application/pdf");
+  });
+
   it("leaves text, svg, and unknown files to the editor", () => {
     assert.equal(mediaKindForPath("src/App.tsx"), null);
     assert.equal(mediaKindForPath("logo.svg"), null);

@@ -13,6 +13,7 @@ import {
 import {
   expandCollapsedProject,
   isAppProject,
+  isLinkedWorktreePath,
   isSameProject,
   moveProjectGroup,
   patchSidebarConversations,
@@ -42,7 +43,8 @@ import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForCha
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { publishWorktreeList, tabProjectKey, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
 import { providerProfile } from "../lib/provider";
@@ -115,6 +117,7 @@ export type LibraryDeps = {
   modelRef: RefObject<string>;
   /** Workspace currently on screen. Turn saves must follow this, not the workspace from when the turn started. */
   workspaceRef: RefObject<string>;
+  activeIdRef: RefObject<string>;
   runningIdRef: RefObject<string>;
   abortRef: RefObject<AbortController | null>;
   turnsRef: RefObject<Map<string, AbortController>>;
@@ -162,6 +165,7 @@ export type LibraryDeps = {
   setFolderOpen: Update<boolean>;
   setShowSettings: Update<boolean>;
   setShowUsage: Update<boolean>;
+  setShowDocs: Update<boolean>;
   setShowServers: Update<boolean>;
   setProjectSettings: Update<{ path: string; name: string } | null>;
   setCollapsedProjects: Update<string[]>;
@@ -192,9 +196,9 @@ export function useLibrary(deps: LibraryDeps) {
     workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats, projectsRoot,
     legacyProjectsRoot,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
-    runningWsRef, modelRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
+    runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
-    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowServers, setProjectSettings,
+    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowDocs, setShowServers, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setChatTabsByProject, setFlash, bumpFiles,
@@ -381,6 +385,45 @@ function assignDraftProject(path: string) {
   expandProject(path);
 }
 
+/** Keep the open chat when its worktree folder is renamed out from under it. */
+function retargetOpenChat(from: string, to: string, chatId: string) {
+  if (!chatId || !isSameProject(from, workspaceRef.current)) return;
+  sidebarLoadedForRef.current = to;
+  saveWorkspace(to);
+  setRecents(pushRecentWorkspace(to));
+  setWorkspace(to);
+  setAllProjectGroups((prev) => {
+    const current = prev.find((group) => isSameProject(group.path, from));
+    const kept = prev.filter((group) => !isSameProject(group.path, from));
+    return upsertProjectGroup(kept, to, {
+      name: current?.name,
+      conversations: current?.conversations ?? conversationsRef.current,
+      journeys: current?.journeys ?? [],
+    });
+  });
+  expandProject(to);
+}
+
+/** A reply named this checkout after it was created. Move the branch and follow the folder. */
+async function adoptWorktreeName(ws: string, branch: string) {
+  const name = branch.trim();
+  if (!ws || !name) return;
+  const current = worktreeForPath(ws, worktreeListsFor(ws));
+  if (!current || current.main || current.detached) return;
+  if ((current.branch ?? "").trim() === name) return;
+  const chatId = runningIdRef.current;
+  try {
+    const renamed = await api.gitWorktreeRename(ws, ws, name);
+    publishWorktreeList(renamed.opened || ws, renamed.worktrees);
+    bumpFiles();
+    if (renamed.opened && !isSameProject(renamed.opened, ws)) {
+      retargetOpenChat(ws, renamed.opened, chatId);
+    }
+  } catch (e) {
+    setFlash({ kind: "err", text: String(e) });
+  }
+}
+
 function applyWorkspace(path: string) {
   const savedId = loadConversation(path);
   if (!isSameProject(path, workspace)) {
@@ -422,7 +465,7 @@ function applyWorkspace(path: string) {
     if (live && prefer) {
       const cached = liveByChatRef.current.get(prefer);
       const group = allProjectGroups.find((row) => isSameProject(row.path, path));
-      showChatSettings(group?.conversations.find((row) => row.id === prefer));
+      showOpenedChatSettings(prefer, group?.conversations.find((row) => row.id === prefer));
       setActiveId(prefer);
       runningIdRef.current = prefer;
       setRunningId(prefer);
@@ -477,7 +520,9 @@ function applyWorkspace(path: string) {
   setDraftImages({});
   setUsageByChat({});
   setFolderOpen(false);
-  expandProject(path);
+  // A linked checkout stays collapsed under its repo. Expanding it here is the
+  // flash of a folder before the conversation settles back underneath.
+  if (!isLinkedWorktreePath(path, worktreeListsFor(path))) expandProject(path);
 }
 
 const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => void>(() => {});
@@ -501,6 +546,7 @@ async function ensureChatPlan(path: string, id: string, modelId: string | null |
 async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!runningWsRef.current) hideSubagents();
@@ -606,6 +652,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
 async function openSidebarChat(path: string, id: string) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!path) return;
@@ -625,11 +672,38 @@ async function openSidebarChat(path: string, id: string) {
   await openChat(id, chatTabsByProjectRef.current, path);
 }
 
+/** Take a linked checkout out of the project list. The folder and its chats stay. */
+async function forgetProjectRow(path: string) {
+  if (!path) return;
+  try {
+    await api.removeProject(path);
+  } catch (e) {
+    setFlash({ kind: "err", text: String(e) });
+    return;
+  }
+  setAllProjectGroups((prev) => removeProjectGroup(prev, path));
+}
+
+function rememberOpenedProject(path: string, name = "") {
+  if (!path) return;
+  setAllProjectGroups((prev) => {
+    if (prev.some((group) => isSameProject(group.path, path))) return prev;
+    return upsertProjectGroup(prev, path, { name: name || undefined, conversations: [], journeys: [] });
+  });
+  setRecents(pushRecentWorkspace(path));
+}
+
 function openProjectFromSidebar(path: string) {
   if (isSameProject(path, workspace)) {
     toggleProjectCollapsed(path);
     return;
   }
+  applyWorkspace(path);
+}
+
+/** Open a folder even when it is already showing. Removing the open worktree leaves for the main checkout first. */
+function switchToProject(path: string) {
+  if (!path) return;
   applyWorkspace(path);
 }
 
@@ -687,6 +761,71 @@ function showChatSettings(row: {
   );
 }
 
+/**
+ * Model the turn on screen is sending.
+ * That chip belongs to the chat that was open when the turn started. A turn
+ * started in the background keeps the model on its own row instead.
+ */
+function runningTurnModel(id: string): string {
+  if (!chatHasRunningTurn(runningTurns, id)) return "";
+  if ((runningIdRef.current || runningId) !== id) return "";
+  if (activeIdRef.current && activeIdRef.current !== id) return "";
+  return (modelRef.current || "").trim();
+}
+
+function showOpenedChatSettings(
+  id: string,
+  known: {
+    model?: string | null;
+    effort?: string | null;
+    context_window?: number | null;
+    permission?: string | null;
+  } | null | undefined,
+  saved?: {
+    model?: string | null;
+    effort?: string | null;
+    context_window?: number | null;
+    permission?: string | null;
+  } | null,
+) {
+  const row = composerRowForOpen(
+    {
+      model: known?.model,
+      effort: known?.effort,
+      contextWindow: known?.context_window,
+      permission: known?.permission,
+    },
+    saved
+      ? {
+          model: saved.model,
+          effort: saved.effort,
+          contextWindow: saved.context_window,
+          permission: saved.permission,
+        }
+      : null,
+    runningTurnModel(id),
+  );
+  showChatSettings({
+    model: row.model,
+    effort: row.effort,
+    context_window: row.contextWindow,
+    permission: row.permission,
+  });
+}
+
+/** A running chat paints from memory and used to return before its saved model was read. */
+function refreshOpenedChatSettings(id: string, path: string, generation: number) {
+  const known = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
+  const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(path, id);
+  void load.then((full) => {
+    if (generation !== openGeneration.current || shownId.current !== id) return;
+    if (full.compaction?.summary && full.compaction.through > 0) {
+      setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
+    }
+    showOpenedChatSettings(id, known, full);
+  }).catch(() => undefined);
+}
+
 /** Point the composer at this chat's turn, or clear it when the chat is idle. Other turns keep running. */
 function retargetForegroundTurn(id: string) {
   const shown = foregroundRunningId(runningTurns, id);
@@ -700,6 +839,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!path) return;
@@ -712,7 +852,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   }
   // Both sides of a split stay mounted. Clicking one only changes which pane is
   // focused. Reloading it paints "Loading…" on a chat that is already on screen.
-  const openTabs = tabs[projectKey(path)] ?? [];
+  const openTabs = tabs[tabProjectKey(path)] ?? [];
   const showing = splitGroupForChat(openTabs, activeId);
   const clicked = splitGroupForChat(openTabs, id);
   if (showing && clicked && showing.id === clicked.id) {
@@ -723,7 +863,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   const parked = !openLive ? splitPaneCache(id) : null;
   if (openLive) {
     const turn = runningTurns[id];
-    showChatSettings(conversations.find((row) => row.id === id));
+    showOpenedChatSettings(id, conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id));
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -735,17 +875,12 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
     setTurnStartedAt(turn?.startedAt ?? 0);
     showSubagents(id);
     abortRef.current = turnsRef.current.get(id) ?? null;
-    const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(path, id);
-    void load.then((full) => {
-      if (full.compaction?.summary && full.compaction.through > 0) {
-        setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
-      }
-    }).catch(() => undefined);
+    refreshOpenedChatSettings(id, path, generation);
     saveConversation(path, id);
     return;
   }
   if (runningId === id && turnMessagesRef.current) {
-    showChatSettings(conversations.find((row) => row.id === id));
+    showOpenedChatSettings(id, conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id));
     setActiveId(id);
     runningIdRef.current = id;
     setRunningId(id);
@@ -756,6 +891,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
     setRunningActivity(turnLiveRef.current.activity);
     setTurnStartedAt(runningTurns[id]?.startedAt ?? 0);
     showSubagents(id);
+    refreshOpenedChatSettings(id, path, generation);
     saveConversation(path, id);
     return;
   }
@@ -774,7 +910,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
   setLiveTools([]);
   setRunningActivity(null);
   setTurnStartedAt(0);
-  showChatSettings(conversations.find((row) => row.id === id));
+  showOpenedChatSettings(id, conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id));
   const cached = shownMessages.current.get(id);
   const remembered = !cached && hostedChatsRef.current
     ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${id}`)
@@ -787,12 +923,22 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
       setCompactionByChat((prev) => ({ ...prev, [id]: remembered.compaction! }));
     }
   }
+  // A chat that is not in memory yet keeps the previous transcript for this one
+  // frame. Swapping in an empty list here re-renders the whole chat on the click,
+  // which is the pause before the sidebar row can highlight.
   setActiveId(id);
+  saveConversation(path, id);
   // A cloud chat that is not in memory yet still reads the sqlite copy before SSH.
   const cachedLookup = hostedChatsRef.current && !painted
     ? api.hostedConversationCached(path, id).catch(() => null)
     : null;
   setOpeningId(painted ? "" : id);
+  // The highlight is already committed. Yield so that paint is not stuck behind
+  // the transcript read, then load. A newer click bumps the generation and this returns.
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+  if (generation !== openGeneration.current) return;
   try {
     const cachedTranscript = cachedLookup ? await cachedLookup : null;
     if (generation !== openGeneration.current) return;
@@ -813,7 +959,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
       ? await api.getHostedConversation(path, id)
       : await api.getConversation(path, id);
     if (generation !== openGeneration.current) return;
-    const known = conversations.find((row) => row.id === id);
+    const known = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
     setConversations((rows) =>
       patchSidebarConversations(
         rows,
@@ -831,12 +977,7 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
       ),
     );
     if (generation !== openGeneration.current) return;
-    showChatSettings({
-      model: full.model ?? known?.model,
-      effort: full.effort ?? known?.effort,
-      context_window: full.context_window ?? known?.context_window,
-      permission: full.permission ?? known?.permission,
-    });
+    showOpenedChatSettings(id, known, full);
     const loaded = await withBackfilledTimes(path, id, (full.messages as ChatMessage[]) ?? []);
     const withNotice =
       full.compaction?.summary && full.compaction.through > 0
@@ -853,20 +994,19 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
         touch: false,
       });
     }
-    saveConversation(path, id);
     const opened = conversationsRef.current.find((row) => row.id === id);
     void ensureChatPlan(path, id, opened?.model);
     if (hostedChatsRef.current) {
       void watchHosted(path, id);
     }
   } finally {
-    setOpeningId("");
+    if (generation === openGeneration.current) setOpeningId("");
   }
 }
 
 /** Move focus inside a split without fetching the chat again. The other pane keeps what it was showing. */
 function focusVisibleSplitChat(id: string, fromId: string, shown: ChatMessage[]) {
-  showChatSettings(conversations.find((row) => row.id === id));
+  showOpenedChatSettings(id, conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id));
   const leaving = getLiveStream();
   if (fromId) {
     rememberSplitPane(fromId, {
@@ -1009,10 +1149,8 @@ async function withBackfilledTimes(ws: string, id: string, messages: ChatMessage
   let events = finishEvents.get(id);
   if (!events) {
     try {
-      const rows = await api.usageList();
-      events = rows
-        .filter((row) => row.conversation_id === id && isSameProject(row.workspace_path, ws))
-        .map((row) => ({ at: row.recorded_at, durationMs: row.duration_ms }));
+      const rows = await api.usageForConversation(id, ws);
+      events = rows.map((row) => ({ at: row.recorded_at, durationMs: row.duration_ms }));
     } catch {
       events = [];
     }
@@ -1053,7 +1191,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
   }
   if (!archived) return;
   setChatTabsByProject((prev) => {
-    const key = projectKey(path);
+    const key = tabProjectKey(path);
     const tabs = prev[key];
     if (!tabs) return prev;
     const closed = closeTabChat(tabs, id);
@@ -1321,6 +1459,7 @@ async function createJourneyFromChat(id: string, path = workspace) {
 async function openJourneyKnowledge(id: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
+  setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (path && !isSameProject(path, workspace)) {
@@ -1450,11 +1589,15 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     reorderProjects,
     clearWorkspace,
     deleteProjectFromSidebar,
+    forgetProjectRow,
+    adoptWorktreeName,
     applyWorkspace,
     assignDraftProject,
     startNewChat,
     openSidebarChat,
     openProjectFromSidebar,
+    switchToProject,
+    rememberOpenedProject,
     openChat,
     revealListedChatRef,
     toggleSubagent,

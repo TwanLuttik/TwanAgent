@@ -208,7 +208,7 @@ export function selectChatTab(state: EditorState): EditorState {
   return { ...state, focus: "chat" };
 }
 
-export type MediaKind = "image" | "video";
+export type MediaKind = "image" | "video" | "pdf";
 
 const IMAGE_MIME: Record<string, string> = {
   png: "image/png",
@@ -232,6 +232,10 @@ const VIDEO_MIME: Record<string, string> = {
   ogv: "video/ogg",
   mov: "video/quicktime",
   mkv: "video/x-matroska",
+};
+
+const PDF_MIME: Record<string, string> = {
+  pdf: "application/pdf",
 };
 
 function fileExtension(path: string): string {
@@ -274,12 +278,13 @@ export function mediaKindForPath(path: string): MediaKind | null {
   const ext = fileExtension(path);
   if (ext in IMAGE_MIME) return "image";
   if (ext in VIDEO_MIME) return "video";
+  if (ext in PDF_MIME) return "pdf";
   return null;
 }
 
 export function mediaMimeForPath(path: string): string | null {
   const ext = fileExtension(path);
-  return IMAGE_MIME[ext] ?? VIDEO_MIME[ext] ?? null;
+  return IMAGE_MIME[ext] ?? VIDEO_MIME[ext] ?? PDF_MIME[ext] ?? null;
 }
 
 export function formatPlayerTime(seconds: number): string {

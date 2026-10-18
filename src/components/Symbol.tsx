@@ -54,6 +54,19 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  book: (
+    <>
+      <path d="M6.2 4.2h9.2A2.4 2.4 0 0 1 17.8 6.6V20.2H8.2A2 2 0 0 0 6.2 18.2Z" {...stroke} />
+      <path d="M6.2 4.2A2 2 0 0 0 4.2 6.2v12" {...stroke} />
+      <path d="M9.2 8.2h5.2M9.2 11.4h5.2" {...stroke} />
+    </>
+  ),
+  "book.fill": (
+    <>
+      <path d="M6.2 4.2h9.2A2.4 2.4 0 0 1 17.8 6.6V20.2H8.2A2 2 0 0 0 6.2 18.2Z" fill="currentColor" />
+      <path d="M6.2 4.2A2 2 0 0 0 4.2 6.2v12" {...stroke} />
+    </>
+  ),
   doc: (
     <>
       <path d="M7.8 3.4h5.4L19.6 9.8V19.6A1.6 1.6 0 0 1 18 21.2H7.8A1.6 1.6 0 0 1 6.2 19.6V5A1.6 1.6 0 0 1 7.8 3.4Z" {...stroke} />
@@ -532,6 +545,14 @@ const ICONS: Record<string, ReactNode> = {
       d="M5.2 6.2h13.6A2.2 2.2 0 0 1 21 8.4v6.4a2.2 2.2 0 0 1-2.2 2.2H11l-3.8 3v-3H5.2A2.2 2.2 0 0 1 3 14.8V8.4A2.2 2.2 0 0 1 5.2 6.2Z"
       fill="currentColor"
     />
+  ),
+  "arrow.triangle.pull": (
+    <>
+      <circle cx="7.2" cy="6.4" r="2.1" {...stroke} />
+      <circle cx="7.2" cy="17.6" r="2.1" {...stroke} />
+      <circle cx="16.8" cy="12" r="2.1" {...stroke} />
+      <path d="M7.2 8.5v7M9.3 16.4c2.6-.2 4.6-1.6 5.4-3.2" {...stroke} />
+    </>
   ),
   "arrow.triangle.branch": (
     <>

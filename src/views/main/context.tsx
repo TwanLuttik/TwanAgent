@@ -37,6 +37,7 @@ export type MainModel = {
   closeServers: MainFn;
   closeSettings: MainFn;
   closeUsage: MainFn;
+  closeDocs: MainFn;
   collapsedProjects: any;
   composerDockRef: any;
   composerPad: any;
@@ -81,6 +82,7 @@ export type MainModel = {
   openSettings: MainFn;
   openSidebarChat: MainFn;
   openUsage: MainFn;
+  openDocs: MainFn;
   openWorkspaceFile: MainFn;
   pendingClosePath: any;
   pendingDeleteProject: any;
@@ -144,6 +146,7 @@ export type MainModel = {
   setProjectMenu: MainFn;
   setShowSettings: MainFn;
   setShowUsage: MainFn;
+  setShowDocs: MainFn;
   settingsTab: any;
   setSettingsTab: MainFn;
   setSidebarWidth: MainFn;
@@ -152,6 +155,7 @@ export type MainModel = {
   showServers: any;
   showSettings: any;
   showUsage: any;
+  showDocs: any;
   sidebarDragging: any;
   sidebarWidth: any;
   sidebarCollapsed: boolean;
@@ -187,6 +191,8 @@ export type SidebarSlice = {
   createJourneyFromChat: MainFn;
   deleteJourney: MainFn;
   deleteProjectFromSidebar: MainFn;
+  /** Drop a project row without deleting its folder. A linked worktree uses this. */
+  forgetProjectRow: MainFn;
   journeys: JourneySummary[];
   legacyProjectsRoot: string;
   messages: MainModel["messages"];
@@ -196,6 +202,9 @@ export type SidebarSlice = {
   openingId: string;
   openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
+  /** Open a folder even when it is already the current project. Deleting a worktree uses this. */
+  switchToProject: MainFn;
+  rememberOpenedProject: MainFn;
   openProjectSettings: MainFn;
   openSidebarChat: MainFn;
   projectSettings: MainModel["projectSettings"];
@@ -211,6 +220,7 @@ export type SidebarSlice = {
   setJourneyColor: MainFn;
   showSettings: boolean;
   showUsage: boolean;
+  showDocs: boolean;
   startNewChat: MainFn;
   toggleJourney: MainFn;
   toggleProjectCollapsed: MainFn;

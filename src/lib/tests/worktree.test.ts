@@ -1,0 +1,252 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { projectKey } from "../core.ts";
+import type { GitPullRequest, GitWorktree } from "../tauri.ts";
+import {
+  groupProjectsByWorktree,
+  keptTabChatIds,
+  projectTabChats,
+  rememberTabTitle,
+  tabTitleFor,
+  publishWorktreeChats,
+  linkedWorktrees,
+  publishWorktreeLists,
+  freshWorktreeName,
+  hideOpenWorktreeMarker,
+  rememberWorktreeName,
+  takeWorktreeName,
+  pullRequestChoices,
+  worktreeChoices,
+  worktreeForPath,
+  worktreeListsFor,
+  provisionalWorktreeName,
+  promptWithWorktreeName,
+  worktreeNameFromPrompt,
+  worktreeNameFromSuggestion,
+  worktreeNamePrompt,
+  sharedRepoTabs,
+  tabProjectKey,
+  worktreeRepoKey,
+} from "../worktree.ts";
+
+function tree(path: string, branch: string | null, main = false, extra: Partial<GitWorktree> = {}): GitWorktree {
+  return {
+    path,
+    head: "abc",
+    branch,
+    bare: false,
+    detached: branch == null,
+    main,
+    ...extra,
+  };
+}
+
+const main = tree("/work/billing", "main", true);
+const login = tree("/work/billing-worktrees/feat-login", "feat/login");
+const notes = tree("/work/billing-worktrees/notes", null);
+
+describe("groupProjectsByWorktree", () => {
+  it("leaves projects alone when they have no worktree list", () => {
+    const rows = [
+      { name: "Billing", path: "/work/billing" },
+      { name: "Other", path: "/work/other" },
+    ];
+    const grouped = groupProjectsByWorktree(rows, {});
+    assert.equal(grouped.length, 2);
+    assert.deepEqual(grouped[0].children, []);
+    assert.equal(grouped[1].path, "/work/other");
+  });
+
+  it("nests linked checkouts under the main project and drops them from the top", () => {
+    const rows = [
+      { name: "Billing", path: "/work/billing" },
+      { name: "feat-login", path: "/work/billing-worktrees/feat-login" },
+      { name: "notes", path: "/work/billing-worktrees/notes" },
+      { name: "Other", path: "/work/other" },
+    ];
+    const list = [main, login, notes];
+    const grouped = groupProjectsByWorktree(rows, {
+      "/work/billing": list,
+      "/work/billing-worktrees/feat-login": list,
+      "/work/billing-worktrees/notes": list,
+    });
+    assert.deepEqual(
+      grouped.map((row) => row.path),
+      ["/work/billing", "/work/other"],
+    );
+    assert.deepEqual(
+      grouped[0].children.map((child) => [child.name, child.branch]),
+      [
+        ["feat-login", "feat/login"],
+        ["notes", "detached"],
+      ],
+    );
+  });
+
+  it("nests under the main project when only the linked checkout published the list", () => {
+    const grouped = groupProjectsByWorktree(
+      [
+        { name: "Billing", path: main.path },
+        { name: "feat-login", path: login.path },
+      ],
+      { [login.path]: [main, login] },
+    );
+    assert.deepEqual(
+      grouped.map((row) => row.path),
+      [main.path],
+    );
+    assert.deepEqual(grouped[0].children.map((child) => child.path), [login.path]);
+  });
+
+  it("still nests when only the linked checkout was asked", () => {
+    const grouped = groupProjectsByWorktree([{ name: "feat-login", path: login.path }], {
+      [login.path]: [main, login],
+    });
+    assert.equal(grouped.length, 1);
+    assert.equal(grouped[0].path, login.path);
+    assert.equal(grouped[0].children.length, 1);
+    assert.equal(grouped[0].children[0].path, login.path);
+  });
+
+  it("labels the open checkout and lists the rest of the repo", () => {
+    const list = [main, login];
+    const open = worktreeChoices(login.path, list);
+    assert.equal(open.current?.branch, "feat/login");
+    assert.equal(open.current?.current, true);
+    assert.deepEqual(
+      open.rows.map((row) => row.branch),
+      ["main", "feat/login"],
+    );
+    assert.equal(worktreeChoices("/work/other", list).current, null);
+    assert.equal(worktreeChoices(main.path, [main]).current?.main, true);
+  });
+
+  it("lists open pull requests and marks one that is already checked out", () => {
+    const request = (number: number, open = true, branch = `pr/${number}`): GitPullRequest => ({
+      number,
+      title: number === 12 ? "Show open pull requests" : "",
+      branch,
+      head: "abc",
+      url: `https://github.com/a/b/pull/${number}`,
+      open,
+    });
+    const checked = tree("/work/billing-worktrees/pr-4", "pr/4");
+    const rows = pullRequestChoices(
+      [request(4, false), request(12), request(4, false), request(9)],
+      [main, checked],
+      checked.path,
+    );
+    assert.deepEqual(
+      rows.map((row) => [row.number, row.open, row.path, row.current]),
+      [
+        [12, true, "", false],
+        [9, true, "", false],
+        [4, false, checked.path, true],
+      ],
+    );
+    assert.deepEqual(pullRequestChoices([], [main]), []);
+  });
+
+  it("turns a suggestion into a branch and hides the marker", () => {
+    assert.equal(worktreeNameFromSuggestion("Fix the login bug!"), "fix-the-login-bug");
+    assert.equal(worktreeNameFromSuggestion("HEAD"), "");
+    assert.equal(worktreeNameFromSuggestion("deadbeef"), "");
+    const taken = takeWorktreeName("I'll start on the form.\n{{TwanAgent:feat/login-form}}");
+    assert.equal(taken.name, "feat/login-form");
+    assert.equal(taken.text, "I'll start on the form.");
+    assert.equal(takeWorktreeName("no marker").name, "");
+    assert.equal(hideOpenWorktreeMarker("Done. {{TwanAgent:feat").text, "Done.");
+    assert.equal(hideOpenWorktreeMarker("Done. {{not a name").pending, false);
+    assert.match(worktreeNamePrompt(false), /\{\{TwanAgent:branch-name\}\}/);
+    assert.equal(worktreeNamePrompt(true), "");
+    assert.equal(worktreeNameFromPrompt("  Fix the login bug please  "), "fix-the-login-bug-please");
+    assert.equal(worktreeNameFromPrompt(""), "");
+    assert.equal(provisionalWorktreeName("feat/login"), "wip-featlogin");
+    assert.match(provisionalWorktreeName(), /^wip-[a-z0-9]+$/);
+    assert.equal(freshWorktreeName("c1", "feat/login"), "feat/login");
+    rememberWorktreeName("c1", "feat/login");
+    assert.equal(freshWorktreeName("c1", "feat/other"), "");
+  });
+
+  it("asks for a branch name only on a new worktree that has no name", () => {
+    const unnamed = tree("/work/billing-worktrees/wip-m1ab12", provisionalWorktreeName());
+    const prompt = "Read the Meeting-notes-01.txt file";
+    publishWorktreeLists({ [main.path]: [main, login, notes, unnamed] });
+    try {
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-main", main.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-named", login.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-detached", notes.path), prompt);
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-unknown", "/work/other"), prompt);
+      const asked = promptWithWorktreeName(prompt, [], "gate-unnamed", unnamed.path);
+      assert.match(asked, /\{\{TwanAgent:branch-name\}\}/);
+      assert.equal(asked.startsWith(`${prompt}\n\n`), true);
+      assert.equal(
+        promptWithWorktreeName(prompt, [{ role: "user" }], "gate-later", unnamed.path),
+        prompt,
+      );
+      assert.equal(promptWithWorktreeName(prompt, [], "gate-unnamed", unnamed.path), prompt);
+    } finally {
+      publishWorktreeLists({});
+    }
+  });
+
+  it("publishes lists so a turn can find the open checkout", () => {
+    publishWorktreeLists({ [main.path]: [main, login] });
+    assert.equal(worktreeListsFor(login.path).length, 2);
+    assert.equal(worktreeListsFor("/work/other").length, 0);
+    publishWorktreeLists({});
+    assert.equal(worktreeListsFor(login.path).length, 0);
+  });
+
+  it("shares one repo key for every checkout of the same git dir", () => {
+    const list = [main, login];
+    publishWorktreeLists({ [main.path]: list });
+    assert.deepEqual(linkedWorktrees().map((row) => row.path), [login.path]);
+    assert.equal(tabProjectKey(login.path), tabProjectKey(main.path));
+    const folded = sharedRepoTabs(
+      {
+        [projectKey(main.path)]: [{ id: "weather" }],
+        [projectKey(login.path)]: [{ id: "docs" }],
+      },
+      { [main.path]: list },
+    );
+    assert.deepEqual(folded[projectKey(main.path)], [{ id: "weather" }]);
+    assert.equal(projectKey(login.path) in folded, false);
+    const adopted = sharedRepoTabs({ [projectKey(login.path)]: [{ id: "docs" }] }, { [main.path]: list });
+    assert.deepEqual(adopted[projectKey(main.path)], [{ id: "docs" }]);
+    assert.equal(tabProjectKey("/work/other"), "/work/other");
+    const open = [
+      { id: "weather", title: "Weather", created_at: "", updated_at: "" },
+      { id: "ping", title: "ping", created_at: "", updated_at: "" },
+    ];
+    // The worktree list has not arrived. Opening it must not drop the main tabs.
+    assert.deepEqual(
+      [...keptTabChatIds(login.path, [{ id: "docs", title: "Docs", created_at: "", updated_at: "" }], ["weather", "ping", "docs"])].sort(),
+      ["docs", "ping", "weather"],
+    );
+    publishWorktreeChats({
+      [main.path]: [{ id: "main-chat", title: "Weather", created_at: "", updated_at: "" }],
+      [login.path]: [{ id: "tree-chat", title: "Docs", created_at: "", updated_at: "" }],
+    });
+    assert.deepEqual(
+      projectTabChats(login.path).map((row) => row.id),
+      ["main-chat", "tree-chat"],
+    );
+    assert.deepEqual(
+      [...keptTabChatIds(login.path, [{ id: "docs", title: "Docs", created_at: "", updated_at: "" }], ["weather", "ping", "docs"])].sort(),
+      ["docs", "main-chat"],
+    );
+    assert.deepEqual([...keptTabChatIds(main.path, open, ["weather", "ping"])].sort(), ["ping", "tree-chat", "weather"]);
+    void open;
+    publishWorktreeLists({});
+    publishWorktreeChats({});
+    assert.equal(projectTabChats(login.path).length, 0);
+    rememberTabTitle("weather", "whats the weather today");
+    rememberTabTitle("weather", "Chat");
+    assert.equal(tabTitleFor("weather"), "whats the weather today");
+    assert.equal(worktreeRepoKey(main.path, list), worktreeRepoKey(login.path, list));
+    assert.equal(worktreeRepoKey("/work/other", null), "/work/other");
+    assert.equal(worktreeForPath(login.path, list)?.branch, "feat/login");
+    assert.equal(worktreeForPath("/work/missing", list), null);
+  });
+});

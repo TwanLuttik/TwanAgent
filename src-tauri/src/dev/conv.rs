@@ -1,11 +1,12 @@
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::paths::workspace_id;
-use super::types::{
-    default_conversation_kind, Conversation, ConversationSummary, Journey, SidebarItem,
-};
+use super::types::{Conversation, ConversationSummary, Journey, SidebarItem};
+#[cfg(test)]
+use super::types::default_conversation_kind;
 use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::store;
@@ -19,11 +20,7 @@ pub(crate) fn conv_path(data_dir: &Path, workspace: &str) -> PathBuf {
     conv_dir(data_dir, workspace).join("conversations.json")
 }
 
-pub(crate) fn load_conversations_json(
-    data_dir: &Path,
-    workspace: &str,
-) -> Result<Vec<Conversation>> {
-    let path = conv_path(data_dir, workspace);
+fn read_conversations_json(path: &Path) -> Result<Vec<Conversation>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -34,24 +31,45 @@ pub(crate) fn load_conversations_json(
     Ok(serde_json::from_str(&data)?)
 }
 
-pub(crate) fn save_conversations_json(
-    data_dir: &Path,
-    workspace: &str,
-    rows: &[Conversation],
-) -> Result<()> {
-    let dir = conv_dir(data_dir, workspace);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join("conversations.json");
-    let tmp = dir.join("conversations.json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(rows)?)?;
-    #[cfg(windows)]
-    {
+/// The JSON for this workspace, including a store that still lives under an older path.
+fn conversations_json_path(data_dir: &Path, workspace: &str) -> Option<PathBuf> {
+    let primary = conv_path(data_dir, workspace);
+    if primary.exists() {
+        return Some(primary);
+    }
+    let stored = conv_store_dir(data_dir, workspace).join("conversations.json");
+    stored.exists().then_some(stored)
+}
+
+/// Read a leftover `conversations.json` into `store.db`, then remove the file.
+/// A database that already has chats is left alone and the JSON stays until that is true.
+pub(crate) fn import_conversations_json(data_dir: &Path, workspace: &str) -> Result<bool> {
+    let Some(path) = conversations_json_path(data_dir, workspace) else {
+        return Ok(false);
+    };
+    let rows = read_conversations_json(&path)?;
+    let dir = conv_store_dir(data_dir, workspace);
+    let imported = store::with_conn(&dir, |conn| {
+        // An older open already copied these chats. The file is only a leftover.
+        if !store::list_conversation_summaries(conn)?.is_empty() {
+            return Ok(true);
+        }
+        for row in &rows {
+            store::save_conversation(conn, row)?;
+        }
+        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        if !ids.is_empty() {
+            store::reorder_conversations(conn, &ids)?;
+        }
+        Ok(true)
+    })?;
+    if imported {
         if path.exists() {
             fs::remove_file(&path)?;
         }
+        let _ = fs::remove_file(path.with_extension("json.tmp"));
     }
-    fs::rename(tmp, path)?;
-    Ok(())
+    Ok(imported)
 }
 
 pub(crate) fn conv_store_dir(data_dir: &Path, workspace: &str) -> PathBuf {
@@ -69,16 +87,8 @@ pub(crate) fn with_store<T>(
 #[cfg(test)]
 pub(crate) fn load_conversations(data_dir: &Path, workspace: &str) -> Result<Vec<Conversation>> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::with_conn(&dir, store::list_conversations) {
-        Ok(rows) => Ok(rows),
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                Err(e)
-            } else {
-                load_conversations_json(data_dir, workspace)
-            }
-        }
-    }
+    let _ = import_conversations_json(data_dir, workspace);
+    store::with_conn(&dir, store::list_conversations)
 }
 
 /// Copy the rows the sidebar paints into app.db. The project database stays the source.
@@ -96,19 +106,8 @@ fn remember_sidebar(state: &AppState, workspace: &str) {
 
 fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::with_conn(&dir, store::list_conversation_summaries) {
-        Ok(rows) => Ok(rows),
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                Err(e)
-            } else {
-                Ok(load_conversations_json(data_dir, workspace)?
-                    .into_iter()
-                    .map(summary_from)
-                    .collect())
-            }
-        }
-    }
+    let _ = import_conversations_json(data_dir, workspace);
+    store::with_conn(&dir, store::list_conversation_summaries)
 }
 
 #[cfg(test)]
@@ -118,7 +117,7 @@ pub(crate) fn save_conversations(
     rows: &[Conversation],
 ) -> Result<()> {
     let dir = conv_store_dir(data_dir, workspace);
-    match store::with_conn(&dir, |conn| {
+    store::with_conn(&dir, |conn| {
         let existing = store::list_conversations(conn)?;
         for row in existing {
             if !rows.iter().any(|c| c.id == row.id) {
@@ -131,18 +130,10 @@ pub(crate) fn save_conversations(
         let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
         store::reorder_conversations(conn, &ids)?;
         Ok(())
-    }) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                Err(e)
-            } else {
-                save_conversations_json(data_dir, workspace, rows)
-            }
-        }
-    }
+    })
 }
 
+#[cfg(test)]
 pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
     ConversationSummary {
         id: c.id,
@@ -217,32 +208,26 @@ fn list_conversations_blocking(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_get_conversation(
+pub async fn dev_get_conversation(
     state: State<'_, AppState>,
     id: String,
     workspace: Option<String>,
 ) -> Result<Conversation> {
     let workspace = workspace.unwrap_or_default();
+    let data_dir = state.data_dir.clone();
     // A cloud chat is not in the mount database. The id finds the copy saved from the server.
-    if workspace.trim().is_empty() || remote_workspace(&state, &workspace) {
-        let conn = crate::appdb::open(&state.data_dir)?;
-        return crate::appdb::sidebar_transcript_by_id(&conn, &id)?
-            .ok_or_else(|| Error::NotFound("conversation not found".into()));
-    }
-    let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::with_conn(&dir, |conn| store::get_conversation(conn, &id)) {
-        Ok(row) => Ok(row),
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                Err(e)
-            } else {
-                load_conversations_json(&state.data_dir, &workspace)?
-                    .into_iter()
-                    .find(|c| c.id == id)
-                    .ok_or_else(|| Error::NotFound("conversation not found".into()))
-            }
+    let remote = workspace.trim().is_empty() || remote_workspace(&state, &workspace);
+    crate::dev::commands::off_main(move || {
+        if remote {
+            let conn = crate::appdb::open(&data_dir)?;
+            return crate::appdb::sidebar_transcript_by_id(&conn, &id)?
+                .ok_or_else(|| Error::NotFound("conversation not found".into()));
         }
-    }
+        let _ = import_conversations_json(&data_dir, &workspace);
+        let dir = conv_store_dir(&data_dir, &workspace);
+        store::with_conn(&dir, |conn| store::get_conversation(conn, &id))
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -252,27 +237,12 @@ pub fn dev_save_conversation(
     conversation: Conversation,
 ) -> Result<Conversation> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation)) {
-        Ok(()) => {
-            remember_sidebar(&state, &workspace);
-            Ok(conversation)
-        }
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                return Err(e);
-            }
-            let mut rows = load_conversations_json(&state.data_dir, &workspace)?;
-            if let Some(existing) = rows.iter_mut().find(|c| c.id == conversation.id) {
-                *existing = conversation.clone();
-            } else {
-                rows.insert(0, conversation.clone());
-            }
-            save_conversations_json(&state.data_dir, &workspace, &rows)?;
-            Ok(conversation)
-        }
-    }
+    store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation))?;
+    remember_sidebar(&state, &workspace);
+    Ok(conversation)
 }
 
+#[cfg(test)]
 pub fn apply_conversation_order(rows: Vec<Conversation>, ids: &[String]) -> Vec<Conversation> {
     let original: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
     let mut by_id: HashMap<String, Conversation> = HashMap::new();
@@ -300,23 +270,9 @@ pub fn dev_reorder_conversations(
     ids: Vec<String>,
 ) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::with_conn(&dir, |conn| store::reorder_conversations(conn, &ids)) {
-        Ok(rows) => {
-            remember_sidebar(&state, &workspace);
-            Ok(rows)
-        }
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                return Err(e);
-            }
-            let rows = apply_conversation_order(
-                load_conversations_json(&state.data_dir, &workspace)?,
-                &ids,
-            );
-            save_conversations_json(&state.data_dir, &workspace, &rows)?;
-            Ok(rows.into_iter().map(summary_from).collect())
-        }
-    }
+    let rows = store::with_conn(&dir, |conn| store::reorder_conversations(conn, &ids))?;
+    remember_sidebar(&state, &workspace);
+    Ok(rows)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -327,25 +283,9 @@ pub fn dev_archive_conversation(
     archived: bool,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::with_conn(&dir, |conn| {
-        store::set_conversation_archived(conn, &id, archived)
-    }) {
-        Ok(()) => {
-            remember_sidebar(&state, &workspace);
-            Ok(())
-        }
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                return Err(e);
-            }
-            let mut rows = load_conversations_json(&state.data_dir, &workspace)?;
-            let Some(row) = rows.iter_mut().find(|c| c.id == id) else {
-                return Err(Error::NotFound("conversation not found".into()));
-            };
-            row.archived = archived;
-            save_conversations_json(&state.data_dir, &workspace, &rows)
-        }
-    }
+    store::with_conn(&dir, |conn| store::set_conversation_archived(conn, &id, archived))?;
+    remember_sidebar(&state, &workspace);
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -355,20 +295,9 @@ pub fn dev_delete_conversation(
     id: String,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    match store::with_conn(&dir, |conn| store::delete_conversation(conn, &id)) {
-        Ok(()) => {
-            remember_sidebar(&state, &workspace);
-            Ok(())
-        }
-        Err(e) => {
-            if store::db_path(&dir).exists() {
-                return Err(e);
-            }
-            let mut rows = load_conversations_json(&state.data_dir, &workspace)?;
-            rows.retain(|c| c.id != id);
-            save_conversations_json(&state.data_dir, &workspace, &rows)
-        }
-    }
+    store::with_conn(&dir, |conn| store::delete_conversation(conn, &id))?;
+    remember_sidebar(&state, &workspace);
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -645,6 +574,7 @@ mod tests {
         )
         .unwrap();
         let loaded = load_conversations(dir.path(), &ws).unwrap();
+        assert!(!path.exists(), "the imported json should be removed");
         assert_eq!(loaded[0].kind, "chat");
         let summary = super::summary_from(loaded.into_iter().next().unwrap());
         assert_eq!(summary.kind, "chat");

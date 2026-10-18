@@ -8,7 +8,6 @@ use crate::error::Result;
 use crate::paths::same_dir;
 
 const LOCATION_FILE: &str = "projects-location.json";
-const LOCATION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ProjectPathMove {
@@ -79,7 +78,10 @@ pub fn published_location(data_dir: &Path, root: &Path, legacy: &Path) -> Projec
     ProjectsLocation {
         root: path_string(root),
         legacy_root: path_string(legacy),
-        moves: moves_of(&load_file(data_dir)),
+        moves: load_moves(data_dir)
+            .into_iter()
+            .map(|(from, to)| ProjectPathMove { from, to })
+            .collect(),
     }
 }
 
@@ -87,29 +89,26 @@ pub fn migrate(data_dir: &Path, new_root: &Path) -> Result<ProjectsLocation> {
     fs::create_dir_all(new_root)?;
     let new_root = canonical_dir(new_root);
     let legacy = data_dir.join("projects");
-    let mut file = load_file(data_dir);
-    file.version = LOCATION_VERSION;
-    file.root = path_string(&new_root);
+    import_location_json(data_dir);
 
     let mut remember = Vec::new();
     if legacy.is_dir() && !same_dir(&legacy, &new_root) {
         for name in child_dir_names(&legacy) {
-            match migrate_child(data_dir, &legacy, &new_root, &name, &mut file) {
+            match migrate_child(data_dir, &legacy, &new_root, &name) {
                 Ok(Some(path)) => remember.push(path),
                 Ok(None) => {}
                 Err(err) => eprintln!("left project {name} in place: {err}"),
             }
         }
     }
-    heal_moved_projects(data_dir, &legacy, &new_root, &mut file);
+    heal_moved_projects(data_dir, &legacy, &new_root);
     for name in child_dir_names(&new_root) {
         let path = new_root.join(name);
         if path.is_dir() {
             remember.push(path);
         }
     }
-    save_file(data_dir, &file)?;
-    let _ = crate::usage::replace_workspace_paths(data_dir, &move_pairs(&file));
+    let _ = crate::usage::replace_workspace_paths(data_dir, &load_moves(data_dir));
     let _ = crate::workspace::remember_roots(data_dir, &new_root, &remember);
     Ok(published_location(
         data_dir,
@@ -118,24 +117,30 @@ pub fn migrate(data_dir: &Path, new_root: &Path) -> Result<ProjectsLocation> {
     ))
 }
 
-pub fn forget_project(data_dir: &Path, path: &str) -> Vec<String> {
-    let mut file = load_file(data_dir);
-    let key = path_key(path);
-    let mut related = vec![path.to_string()];
-    file.projects.retain(|project| {
-        let hit = path_key(&project.path) == key
-            || project
-                .previous_paths
-                .iter()
-                .any(|prev| path_key(prev) == key);
-        if hit {
-            related.push(project.path.clone());
-            related.extend(project.previous_paths.iter().cloned());
+/// Delete the chat database, the sidebar copy, and usage rows for one folder.
+/// A removed worktree must not bring its conversations back when the folder is created again.
+pub fn drop_project_chats(data_dir: &Path, path: &str) -> Result<()> {
+    let related = forget_project(data_dir, path);
+    for item in &related {
+        let _ = fs::remove_dir_all(conv_dir(data_dir, item));
+    }
+    if let Ok(conn) = crate::appdb::open(data_dir) {
+        for item in &related {
+            let _ = crate::appdb::remove_project(&conn, item);
+            // The sidebar copy is keyed by the path, not by a saved project row.
+            // A worktree has no project row, so removing the project alone leaves its chats.
+            let _ = crate::appdb::clear_sidebar(&conn, item);
         }
-        !hit
-    });
-    let _ = save_file(data_dir, &file);
-    related
+    }
+    let _ = crate::usage::forget_workspace_paths(data_dir, &related);
+    Ok(())
+}
+
+pub fn forget_project(data_dir: &Path, path: &str) -> Vec<String> {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return vec![path.to_string()];
+    };
+    crate::appdb::forget_project_paths(&conn, path).unwrap_or_else(|_| vec![path.to_string()])
 }
 
 pub fn resolve_conv_dir(data_dir: &Path, workspace: &str) -> PathBuf {
@@ -165,7 +170,6 @@ fn migrate_child(
     legacy: &Path,
     new_root: &Path,
     name: &str,
-    file: &mut LocationFile,
 ) -> Result<Option<PathBuf>> {
     let src = legacy.join(name);
     let dest = new_root.join(name);
@@ -182,12 +186,12 @@ fn migrate_child(
     let to = display_path(&dest);
     for from in &froms {
         relocate_store(data_dir, from, &to);
-        remember_move(file, name, &to, from);
+        remember_move(data_dir, name, &to, from);
     }
     Ok(Some(dest))
 }
 
-fn heal_moved_projects(data_dir: &Path, legacy: &Path, new_root: &Path, file: &mut LocationFile) {
+fn heal_moved_projects(data_dir: &Path, legacy: &Path, new_root: &Path) {
     if same_dir(legacy, new_root) {
         return;
     }
@@ -205,57 +209,52 @@ fn heal_moved_projects(data_dir: &Path, legacy: &Path, new_root: &Path, file: &m
                 continue;
             }
             relocate_store(data_dir, &from, &to);
-            remember_move(file, &name, &to, &from);
+            remember_move(data_dir, &name, &to, &from);
         }
     }
 }
 
-fn remember_move(file: &mut LocationFile, name: &str, to: &str, from: &str) {
-    if path_key(from) == path_key(to) {
+fn remember_move(data_dir: &Path, name: &str, to: &str, from: &str) {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
         return;
-    }
-    if let Some(row) = file.projects.iter_mut().find(|project| {
-        path_key(&project.path) == path_key(to)
-            || project
-                .previous_paths
-                .iter()
-                .any(|prev| path_key(prev) == path_key(from))
-    }) {
-        row.name = name.to_string();
-        row.path = to.to_string();
-        if !row
-            .previous_paths
-            .iter()
-            .any(|prev| path_key(prev) == path_key(from))
-        {
-            row.previous_paths.push(from.to_string());
-        }
-        return;
-    }
-    file.projects.push(TrackedProject {
-        name: name.to_string(),
-        path: to.to_string(),
-        previous_paths: vec![from.to_string()],
-    });
+    };
+    let _ = crate::appdb::remember_project_move(&conn, name, to, from);
 }
 
 fn store_aliases(data_dir: &Path, workspace: &str) -> Vec<(String, bool)> {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return Vec::new();
+    };
+    let Ok(previous) = crate::appdb::previous_paths_for(&conn, workspace) else {
+        return Vec::new();
+    };
     let key = path_key(workspace);
-    let mut out = Vec::new();
-    for project in load_file(data_dir).projects {
-        if path_key(&project.path) == key {
-            for prev in project.previous_paths {
-                out.push((prev, true));
-            }
-        } else if project
-            .previous_paths
-            .iter()
-            .any(|prev| path_key(prev) == key)
-        {
-            out.push((project.path, false));
-        }
+    previous
+        .into_iter()
+        .map(|path| {
+            let adopt = path_key(&path) != key;
+            (path, adopt)
+        })
+        .collect()
+}
+
+/// Point chats, the sidebar cache, and usage at a worktree after its folder moves.
+pub fn relocate_project_records(data_dir: &Path, from: &str, to: &str) -> Result<()> {
+    if path_key(from) == path_key(to) {
+        return Ok(());
     }
-    out
+    relocate_store(data_dir, from, to);
+    let name = Path::new(to)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "worktree".into());
+    remember_move(data_dir, &name, to, from);
+    if let Ok(conn) = crate::appdb::open(data_dir) {
+        let _ = crate::appdb::rename_project_path(&conn, from, to);
+    }
+    let _ = crate::usage::replace_workspace_paths(data_dir, &[(from.to_string(), to.to_string())]);
+    Ok(())
 }
 
 fn relocate_store(data_dir: &Path, from: &str, to: &str) {
@@ -381,53 +380,38 @@ fn path_key(path: &str) -> String {
     crate::paths::native_source(path).to_ascii_lowercase()
 }
 
-fn moves_of(file: &LocationFile) -> Vec<ProjectPathMove> {
-    let mut moves = Vec::new();
-    for project in &file.projects {
-        for from in &project.previous_paths {
-            if path_key(from) == path_key(&project.path) {
-                continue;
-            }
-            moves.push(ProjectPathMove {
-                from: from.clone(),
-                to: project.path.clone(),
-            });
-        }
-    }
-    moves
-}
-
-fn move_pairs(file: &LocationFile) -> Vec<(String, String)> {
-    moves_of(file)
-        .into_iter()
-        .map(|item| (item.from, item.to))
-        .collect()
+fn load_moves(data_dir: &Path) -> Vec<(String, String)> {
+    crate::appdb::open(data_dir)
+        .and_then(|conn| crate::appdb::project_path_moves(&conn))
+        .unwrap_or_default()
 }
 
 fn location_path(data_dir: &Path) -> PathBuf {
     data_dir.join(LOCATION_FILE)
 }
 
-fn load_file(data_dir: &Path) -> LocationFile {
-    let Ok(raw) = fs::read_to_string(location_path(data_dir)) else {
-        return LocationFile::default();
+/// Copy `projects-location.json` into `app.db` once, then remove the file.
+fn import_location_json(data_dir: &Path) {
+    let path = location_path(data_dir);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return;
     };
-    serde_json::from_str(&raw).unwrap_or_default()
-}
-
-fn save_file(data_dir: &Path, file: &LocationFile) -> Result<()> {
-    fs::create_dir_all(data_dir)?;
-    let tmp = data_dir.join("projects-location.json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(file)?)?;
-    #[cfg(windows)]
-    {
-        let dest = location_path(data_dir);
-        if dest.exists() {
-            fs::remove_file(&dest)?;
+    let file: LocationFile = serde_json::from_str(&raw).unwrap_or_default();
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let mut copied = true;
+    for project in &file.projects {
+        for from in &project.previous_paths {
+            if crate::appdb::remember_project_move(&conn, &project.name, &project.path, from).is_err() {
+                copied = false;
+            }
         }
     }
-    fs::rename(tmp, location_path(data_dir))?;
-    Ok(())
+    if copied {
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(data_dir.join("projects-location.json.tmp"));
+    }
 }
 
 #[cfg(test)]
@@ -529,6 +513,10 @@ mod tests {
         let usage = crate::usage::list_since(data.path(), None).unwrap();
         assert_eq!(usage[0].workspace_path, moved.to);
 
+        assert!(
+            !data.path().join("projects-location.json").exists(),
+            "the location json should be imported into app.db"
+        );
         let again = migrate(data.path(), dest.path()).unwrap();
         assert!(again
             .moves
@@ -583,6 +571,104 @@ mod tests {
             .any(|item| path_key(&item.from) == path_key(&old)));
         let loaded = load_conversations(data.path(), &display_path(&dest_project)).unwrap();
         assert_eq!(loaded[0].title, "Healed");
+    }
+
+    #[test]
+    fn relocate_project_records_keeps_the_chats_under_the_new_path() {
+        let data = temp_dir();
+        let from = temp_dir();
+        let to = temp_dir();
+        write_legacy_conv(
+            data.path(),
+            from.path(),
+            r#"[{"id":"c1","title":"Moved","created_at":"t","updated_at":"t","messages":[]}]"#,
+        );
+        let old = display_path(from.path());
+        let next = display_path(to.path());
+        let conn = crate::appdb::open(data.path()).unwrap();
+        crate::appdb::add_project(&conn, from.path()).unwrap();
+        drop(conn);
+        crate::usage::record(
+            data.path(),
+            crate::usage::UsageRecord {
+                workspace_path: old.clone(),
+                workspace_name: "wip".into(),
+                conversation_id: "c1".into(),
+                conversation_title: "Moved".into(),
+                model: "grok".into(),
+                prompt_tokens: 2,
+                completion_tokens: 1,
+                total_tokens: 3,
+                duration_ms: None,
+            },
+        )
+        .unwrap();
+        relocate_project_records(data.path(), &old, &next).unwrap();
+        assert_eq!(load_conversations(data.path(), &next).unwrap()[0].title, "Moved");
+        assert_eq!(load_conversations(data.path(), &old).unwrap()[0].title, "Moved");
+        let conn = crate::appdb::open(data.path()).unwrap();
+        let rows = crate::appdb::list_projects(&conn).unwrap();
+        assert!(rows.iter().any(|row| path_key(&row.path) == path_key(&next)));
+        assert!(!rows.iter().any(|row| path_key(&row.path) == path_key(&old)));
+        let usage = crate::usage::list_since(data.path(), None).unwrap();
+        assert_eq!(usage[0].workspace_path, next);
+    }
+
+    #[test]
+    fn drop_project_chats_removes_the_store_the_sidebar_and_usage() {
+        let data = temp_dir();
+        let project = temp_dir();
+        write_legacy_conv(
+            data.path(),
+            project.path(),
+            r#"[{"id":"c1","title":"Gone","created_at":"t","updated_at":"t","messages":[]}]"#,
+        );
+        let path = display_path(project.path());
+        let conn = crate::appdb::open(data.path()).unwrap();
+        crate::appdb::add_project(&conn, project.path()).unwrap();
+        let chat = crate::dev::ConversationSummary {
+            id: "c1".into(),
+            title: "Gone".into(),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+            kind: "chat".into(),
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        };
+        crate::appdb::replace_sidebar(&conn, &path, &[chat.clone()], &[]).unwrap();
+        // The sidebar reads a second copy stored under the lowercased path, with no project row.
+        // That is the copy a deleted worktree kept showing.
+        crate::appdb::replace_sidebar(&conn, &path.to_ascii_lowercase(), &[chat], &[]).unwrap();
+        drop(conn);
+        crate::usage::record(
+            data.path(),
+            crate::usage::UsageRecord {
+                workspace_path: path.clone(),
+                workspace_name: "pr-5".into(),
+                conversation_id: "c1".into(),
+                conversation_title: "Gone".into(),
+                model: "grok".into(),
+                prompt_tokens: 2,
+                completion_tokens: 1,
+                total_tokens: 3,
+                duration_ms: None,
+            },
+        )
+        .unwrap();
+        drop_project_chats(data.path(), &path).unwrap();
+        assert!(load_conversations(data.path(), &path).unwrap().is_empty());
+        let conn = crate::appdb::open(data.path()).unwrap();
+        assert!(crate::appdb::sidebar_for(&conn, &path).unwrap().0.is_empty());
+        assert!(crate::appdb::sidebar_for(&conn, &path.to_ascii_lowercase()).unwrap().0.is_empty());
+        assert!(!crate::appdb::sidebar_cached(&conn, &path).unwrap());
+        assert!(!crate::appdb::sidebar_cached(&conn, &path.to_ascii_lowercase()).unwrap());
+        assert!(crate::appdb::list_projects(&conn).unwrap().is_empty());
+        assert!(crate::usage::list_since(data.path(), None).unwrap().is_empty());
     }
 
     #[test]

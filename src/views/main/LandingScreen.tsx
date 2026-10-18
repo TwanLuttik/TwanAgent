@@ -19,6 +19,7 @@ export function LandingScreen() {
     openSettings,
     showServers,
     openUsage,
+    openDocs,
     recents,
     runtime,
     model,
@@ -45,6 +46,15 @@ export function LandingScreen() {
           }`}
         >
           <Symbol name="server.rack" className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label="Docs"
+          title="Docs"
+          onClick={openDocs}
+          className="mr-1 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+        >
+          <Symbol name="book" className="size-3.5" />
         </button>
         <button
           type="button"

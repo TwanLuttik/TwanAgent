@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { AccountForecastView } from "../components/AccountForecast";
 import { UsageChart } from "../components/UsageChart";
 import { UsageLineChart } from "../components/UsageLineChart";
+import { accountFromUsage, forecastAccounts, forecastHeadline } from "../lib/account-forecast";
+import { useAccountUsage } from "../lib/account-usage-store";
 import { formatTokenCount } from "../lib/context";
 import {
   buildUsageSnapshot,
@@ -45,7 +48,9 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 
   useEffect(() => {
     let gone = false;
-    const since = new Date(rangeStartMs(range)).toISOString();
+    // Accounts need a week of history for the pace bars. The token page filters
+    // the same rows down to the selected range.
+    const since = new Date(rangeStartMs(90)).toISOString();
     void api
       .usageList(since)
       .then((rows) => {
@@ -60,7 +65,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     return () => {
       gone = true;
     };
-  }, [range]);
+  }, []);
 
   const all = useMemo(() => buildUsageSnapshot(events, { range }), [events, range]);
   const snap = useMemo(
@@ -81,23 +86,98 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
-      <div className="mx-auto grid w-full max-w-[920px] gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="m-0 text-[18px] font-semibold tracking-tight">Usage</h1>
-            <p className="mt-1 mb-0 max-w-[46ch] text-[12px] leading-relaxed text-muted">
-              New tokens only. A tool round does not count the prompt again. Cost is an xAI, Anthropic, and MiniMax
-              list-price estimate, with cached tokens priced as fresh input.
-            </p>
+      <div className="mx-auto grid w-full max-w-[1080px] gap-8">
+        <section className="grid gap-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="m-0 text-[18px] font-semibold tracking-tight">Token usage</h1>
+              <p className="mt-1 mb-0 max-w-[52ch] text-[12px] leading-relaxed text-muted">
+                New tokens only. A tool round does not count the prompt again. Cost is an xAI, Anthropic, and MiniMax list-price estimate, with cached tokens priced as fresh input.
+              </p>
+            </div>
+            <Segmented label="Usage range" value={range} options={RANGES} onChange={setRange} />
           </div>
-          <Segmented
-            label="Usage range"
-            value={range}
-            options={RANGES}
-            onChange={setRange}
+          {error ? <p className="m-0 text-[12px] text-err">{error}</p> : null}
+          <TokenUsage
+            range={range}
+            workspacePath={workspacePath}
+            setWorkspacePath={setWorkspacePath}
+            focusModel={focusModel}
+            setFocusModel={setFocusModel}
+            all={all}
+            snap={snap}
+            trend={trend}
+            cost={cost}
+            share={share}
+            projectMax={projectMax}
+            promptShare={promptShare}
           />
-        </div>
-        {error ? <p className="m-0 text-[12px] text-err">{error}</p> : null}
+        </section>
+        <section className="border-t border-line/40 pt-6">
+          <AccountsPage events={events} />
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function AccountsPage({ events }: { events: UsageEvent[] }) {
+  const grok = useAccountUsage("xai");
+  const claude = useAccountUsage("anthropic");
+  const minimax = useAccountUsage("minimax");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const rows = useMemo(() => {
+    const accounts = [
+      accountFromUsage("xai", grok.usage, nowMs),
+      accountFromUsage("anthropic", claude.usage, nowMs),
+      accountFromUsage("minimax", minimax.usage, nowMs),
+    ];
+    return accounts.flatMap((account) => forecastAccounts(account, events, nowMs));
+  }, [claude.usage, events, grok.usage, minimax.usage, nowMs]);
+  const headline = useMemo(() => forecastHeadline(rows, nowMs), [nowMs, rows]);
+  const waiting =
+    (grok.loading && !grok.usage) ||
+    (claude.loading && !claude.usage) ||
+    (minimax.loading && !minimax.usage);
+  if (waiting && rows.every((row) => row.account.reconnect)) {
+    return <p className="m-0 py-4 text-[12px] text-muted">Checking signed-in accounts…</p>;
+  }
+  return <AccountForecastView rows={rows} headline={headline} nowMs={nowMs} />;
+}
+
+function TokenUsage({
+  range,
+  workspacePath,
+  setWorkspacePath,
+  focusModel,
+  setFocusModel,
+  all,
+  snap,
+  trend,
+  cost,
+  share,
+  projectMax,
+  promptShare,
+}: {
+  range: UsageRange;
+  workspacePath: string | null;
+  setWorkspacePath: (path: string | null) => void;
+  focusModel: string | null;
+  setFocusModel: (model: string | null) => void;
+  all: ReturnType<typeof buildUsageSnapshot>;
+  snap: ReturnType<typeof buildUsageSnapshot>;
+  trend: ReturnType<typeof buildUsageTrend>;
+  cost: ReturnType<typeof estimateUsageCost>;
+  share: (UsageModel & { percent: number })[];
+  projectMax: number;
+  promptShare: number;
+}) {
+  return (
+    <>
         <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
           <Stat
             label="Tokens"
@@ -233,8 +313,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
             )}
           </section>
         </div>
-      </div>
-    </div>
+    </>
   );
 }
 

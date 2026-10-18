@@ -45,6 +45,14 @@ import {
   type PlanPrompt,
 } from "../lib/plan";
 import { providerProfile, providerReadyFor } from "../lib/provider";
+import {
+  freshWorktreeName,
+  hideOpenWorktreeMarker,
+  promptWithWorktreeName,
+  rememberWorktreeName,
+  takeWorktreeName,
+  worktreeListsFor,
+} from "../lib/worktree.ts";
 import type { DetectedSkill } from "../lib/skill";
 import {
   applySubagentToChat,
@@ -154,6 +162,8 @@ export type TurnDeps = {
   setUsageByChat: Update<Record<string, ChatUsage>>;
   setUsageTick: Update<number>;
   bumpFiles: () => void;
+  /** Rename the open linked worktree once a reply names a branch. */
+  adoptWorktreeName?: (ws: string, branch: string) => void;
   setShellQueue: Update<ShellRequest[]>;
   setPlanQueue: Update<PlanRequest[]>;
   planByChatRef: RefObject<Map<string, GrokPlan>>;
@@ -207,7 +217,7 @@ export function bindTurn(deps: TurnDeps) {
     workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
-    setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles,
+    setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles, adoptWorktreeName,
     setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
     deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
@@ -744,6 +754,32 @@ function userMessage(text: string, images: ChatImage[]): ChatMessage {
   return images.length ? { role: "user", content: text, images } : { role: "user", content: text };
 }
 
+/** Drop the name marker from what is on screen. A half-written marker stays hidden. */
+function hideWorktreeName(text: string, chatId = "", ws = ""): string {
+  const closed = takeWorktreeName(text);
+  const fresh = closed.name ? freshWorktreeName(chatId, closed.name) : "";
+  if (closed.name) rememberWorktreeName(chatId, closed.name);
+  if (fresh && ws) adoptWorktreeName?.(ws, fresh);
+  return hideOpenWorktreeMarker(closed.text).text;
+}
+
+/** Save the suggested branch and take the marker out of the stored reply. */
+function storeWorktreeName(messages: ChatMessage[], chatId: string, ws = ""): ChatMessage[] {
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const content = String(message.content ?? "");
+    const taken = takeWorktreeName(content);
+    if (!taken.name && taken.text === content) return message;
+    const fresh = taken.name ? freshWorktreeName(chatId, taken.name) : "";
+    if (taken.name) rememberWorktreeName(chatId, taken.name);
+    if (fresh && ws) adoptWorktreeName?.(ws, fresh);
+    changed = true;
+    return { ...message, content: taken.text };
+  });
+  return changed ? next : messages;
+}
+
 function partialReply(id: string): { text: string; reasoning: string } {
   const live = liveByChatRef.current.get(id);
   return { text: live?.streamText ?? "", reasoning: live?.streamReasoning ?? "" };
@@ -849,7 +885,7 @@ async function send(targetId = activeIdRef.current) {
       return;
     }
   }
-  await runTurn(ws, id, [...history, userMessage(text, images)]);
+  await runTurn(ws, id, [...history, userMessage(promptWithWorktreeName(text, history, id, ws), images)]);
 }
 
 async function runTurn(
@@ -907,6 +943,11 @@ async function runTurn(
   // chat was created with the previous conversation's model.
   const unanswered = !next.some((message) => message.role === "assistant");
   const chosenModel = modelForTurn(next, chat?.model, chip.model);
+  // Opening this chat while it runs reads the model from the row. Without this,
+  // the row still says the model from before the turn and the input stays there.
+  if (chosenModel && chosenModel !== (chat?.model || "").trim()) {
+    rememberChatSettings(id, { model: chosenModel });
+  }
   const turnSettings = composerSettingsForChat(
     {
       model: unanswered ? null : chosenModel,
@@ -1039,10 +1080,11 @@ async function runTurn(
       mcpServers: mcpServersRef.current,
       skills: skillsRef.current,
       remote: remoteRef.current,
+      worktrees: worktreeListsFor(ws),
       conversationId: id,
       onDelta: (chunk) => {
         const live = liveByChatRef.current.get(id);
-        const streamText = `${live?.streamText ?? ""}` + chunk;
+        const streamText = hideWorktreeName(`${live?.streamText ?? ""}` + chunk, id, ws);
         rememberLive(id, { streamText });
         if (visible()) setStreamText(streamText);
       },
@@ -1174,7 +1216,7 @@ async function runTurn(
       signal: ac.signal,
     });
     latestMessages = stampTurnDuration(
-      commitPartialReply(closeDanglingToolCalls(done), partialReply(id)),
+      commitPartialReply(closeDanglingToolCalls(storeWorktreeName(done, id, ws)), partialReply(id)),
       Date.now() - startedAt,
       nowIso(),
     );

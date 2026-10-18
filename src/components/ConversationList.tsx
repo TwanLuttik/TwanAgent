@@ -20,7 +20,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { CSS, type Transform } from "@dnd-kit/utilities";
 import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
@@ -420,6 +420,12 @@ function itemKey(kind: "journey" | "chat", id: string) {
   return `${kind}:${id}`;
 }
 
+/** Move the held row without stretching it to the height of the row it passes over. */
+function rowDragTransform(transform: Transform | null): string | undefined {
+  if (!transform) return undefined;
+  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+}
+
 function parseItemKey(key: string): { kind: "journey" | "conversation"; id: string } | null {
   if (key.startsWith("journey:")) return { kind: "journey", id: key.slice("journey:".length) };
   if (key.startsWith("chat:")) return { kind: "conversation", id: key.slice("chat:".length) };
@@ -476,7 +482,7 @@ const SortableRow = memo(function SortableRow({
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{ transform: rowDragTransform(transform), transition }}
       className={`relative ${item.kind === "chat" ? "group/chat touch-none" : "group"}`}
       role="listitem"
       {...drag}

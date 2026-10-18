@@ -124,6 +124,21 @@ describe("applyLiveProjectChats", () => {
     assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["real"]);
   });
 
+  it("does not turn an open linked worktree into its own project folder", () => {
+    const groups = buildProjectGroups(
+      [{ name: "billing", path: "/work/billing" }],
+      [],
+      { "/work/billing": { conversations: [chat("main-chat")], journeys: [] } },
+    );
+    const live = {
+      workspace: "/work/billing-worktrees/feat-login",
+      conversations: [chat("wt", "Fix the login")],
+      journeys: [],
+    };
+    assert.equal(applyLiveProjectChats(groups, live, live.workspace), groups);
+    assert.equal(placeProjectChats(groups, live.workspace, live.conversations, [], live.workspace), groups);
+  });
+
   it("updates only the project whose chats have finished loading", () => {
     const groups = buildProjectGroups(
       [
@@ -387,6 +402,18 @@ describe("patchSidebarConversations", () => {
     assert.equal(aged[0]?.updated_at, "2026-09-16T12:00:20.000Z");
     const titled = patchSidebarConversations(rows, [{ ...rows[0], title: "Ship it" }], now);
     assert.equal(titled[0]?.title, "Ship it");
+  });
+
+  it("replaces the row when the composer model, effort, context, or permission changes", () => {
+    const rows = [{ ...chat("a1", "Fix the login"), model: "minimax-m2", effort: "high", context_window: 200000, permission: "ask" }];
+    const model = patchSidebarConversations(rows, [{ ...rows[0], model: "grok-4.7" }], now);
+    assert.equal(model[0]?.model, "grok-4.7");
+    const effort = patchSidebarConversations(rows, [{ ...rows[0], effort: "low" }], now);
+    assert.equal(effort[0]?.effort, "low");
+    const window = patchSidebarConversations(rows, [{ ...rows[0], context_window: 256000 }], now);
+    assert.equal(window[0]?.context_window, 256000);
+    const permission = patchSidebarConversations(rows, [{ ...rows[0], permission: "read-only" }], now);
+    assert.equal(permission[0]?.permission, "read-only");
   });
 
   it("replaces the row when the title changes", () => {

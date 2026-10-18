@@ -1,5 +1,7 @@
 use std::fs;
 use std::io::Read;
+
+use base64::Engine;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,6 +10,7 @@ use super::types::{DevEntry, FilePreview, TreeSnapshot};
 use crate::error::{Error, Result};
 
 const READ_LIMIT: usize = 400_000;
+const PDF_READ_LIMIT: u64 = 80 * 1024 * 1024;
 const WRITE_LIMIT: usize = 2_000_000;
 const PREVIEW_BYTES: usize = 8_192;
 const PREVIEW_LINES: usize = 8;
@@ -147,6 +150,31 @@ pub fn read_file(workspace: &Path, rel: &str) -> Result<String> {
         return Err(Error::Other("binary file".into()));
     }
     String::from_utf8(buf).map_err(|_| Error::Other("file is not valid UTF-8".into()))
+}
+
+/// A PDF as base64. The webview cannot fetch `asset://` itself, so the bytes come from here.
+pub fn read_pdf_base64(workspace: &Path, rel: &str) -> Result<String> {
+    let path = resolve_in_workspace(workspace, rel)?;
+    if !path.is_file() {
+        return Err(Error::Other("not a file".into()));
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !name.ends_with(".pdf") {
+        return Err(Error::Other("not a PDF".into()));
+    }
+    let len = fs::metadata(&path)?.len();
+    if len > PDF_READ_LIMIT {
+        return Err(Error::Other("This PDF is too large to open.".into()));
+    }
+    let bytes = fs::read(&path)?;
+    if bytes.len() < 5 || &bytes[..5] != b"%PDF-" {
+        return Err(Error::Other("This file is not a PDF.".into()));
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 pub fn resolve_file(workspace: &Path, rel: &str) -> Result<String> {

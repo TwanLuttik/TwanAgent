@@ -20,6 +20,7 @@ import {
   loadSpaceCorner,
   loadSpaceCornerImage,
   loadSpaceCornerScene,
+  loadWrapLines,
   saveMarkdownOpenMode,
   setExpandEdits,
   setFileHoverCard,
@@ -28,6 +29,7 @@ import {
   setSpaceCorner,
   setSpaceCornerImage,
   setSpaceCornerScene,
+  setWrapLines,
   type SpaceCornerImage,
   type MarkdownOpenMode,
 } from "../lib/prefs";
@@ -116,6 +118,7 @@ export function SettingsView({
   const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
   const [liveSocketDebug, setLiveSocketDebugOn] = useState(() => loadLiveSocketDebug());
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
+  const [wrapLines, setWrapLinesOn] = useState(() => loadWrapLines());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const [xaiKey, setXaiKey] = useState("");
   const keyStatus = providerStatus.xai;
@@ -289,6 +292,15 @@ export function SettingsView({
                 onChange={(next) => {
                   setLiveSocketDebugOn(next);
                   setLiveSocketDebug(next);
+                }}
+              />
+              <Toggle
+                title="Wrap lines"
+                text="Break long lines in the code editor onto the next row so you don't have to scroll sideways."
+                checked={wrapLines}
+                onChange={(next) => {
+                  setWrapLinesOn(next);
+                  setWrapLines(next);
                 }}
               />
               <Toggle
