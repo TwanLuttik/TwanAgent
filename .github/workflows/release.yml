@@ -1,6 +1,6 @@
 name: Release
 
-# macOS is the only supported platform. Push a v* tag, or run this by hand,
+# Push a v* tag, or run this by hand,
 # to build the app and attach it to a GitHub release.
 on:
   workflow_dispatch:
@@ -79,9 +79,104 @@ jobs:
           tagName: v__VERSION__
           releaseName: TwanAgent v__VERSION__
           releaseBody: |
-            macOS only. Download `TwanAgent.app.tar.gz`, unpack it, and move TwanAgent to Applications.
+            macOS: download `TwanAgent.app.tar.gz`, unpack it, and move TwanAgent to Applications.
+
+            Windows: download the x64 `TwanAgent_*-setup.exe` installer. Windows builds are unsigned.
 
             An ad-hoc signed build still needs to be allowed once in System Settings, Privacy & Security. A Developer ID signature and notarization need the Apple secrets listed in the workflow file.
           releaseDraft: false
           prerelease: true
           args: --target universal-apple-darwin --bundles app --skip-stapling
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Setup MSVC and Windows SDK
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure LLVM for Whisper bindings
+        run: |
+          $llvmBin = Join-Path $env:ProgramFiles 'LLVM/bin'
+          if (!(Test-Path (Join-Path $llvmBin 'libclang.dll'))) {
+            throw 'The Windows runner needs LLVM with libclang.'
+          }
+          $resourceDir = & (Join-Path $llvmBin 'clang.exe') --print-resource-dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $msvcInclude = Join-Path $env:VCToolsInstallDir 'include'
+          "LIBCLANG_PATH=$llvmBin" >> $env:GITHUB_ENV
+          "BINDGEN_EXTRA_CLANG_ARGS=--target=x86_64-pc-windows-msvc -resource-dir `"$resourceDir`" -isystem `"$msvcInclude`"" >> $env:GITHUB_ENV
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend from the committed lockfile
+        run: |
+          bun install --frozen-lockfile --no-save
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- package-lock.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Bun imports package-lock.json and writes a transient bun.lock even with --no-save.
+          if (Test-Path 'bun.lock') { Remove-Item -LiteralPath 'bun.lock' }
+
+      - name: Frontend tests
+        run: bun run test
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+
+      - name: Check Windows target
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+
+      - name: Build unsigned NSIS installer
+        run: bun run tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign --ci
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: TwanAgent-windows-x86_64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  publish-windows:
+    name: Attach Windows installer to release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: TwanAgent-windows-x86_64
+          path: windows-installer
+      - name: Upload to the existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release upload "v$version" windows-installer/*-setup.exe --clobber

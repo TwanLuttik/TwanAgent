@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::grok_cli::grok_home;
+use crate::process::WindowlessCommand;
 
 use super::files::{read_file, write_file};
 use super::paths::home_dir;
@@ -137,6 +138,7 @@ pub(crate) fn open_path(path: &Path) -> Result<()> {
         std::process::Command::new("open").arg(path).status()
     } else if cfg!(target_os = "windows") {
         std::process::Command::new("cmd")
+            .hide_console_window()
             .args(["/C", "start", "", &path.to_string_lossy()])
             .status()
     } else {

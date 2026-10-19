@@ -38,7 +38,7 @@ import { DocsView } from "../DocsView";
 import { UsageView } from "../UsageView";
 import { useLiveStream, useLiveStreamEmpty } from "../../lib/live-stream";
 import { Symbol } from "../../components/Symbol";
-import { isMacOS } from "../../components/WindowButtons";
+import { isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
 import { CenterTabs } from "./AppChrome";
 import { useMain, useSidebar } from "./context";
 import { SessionComposer } from "./SessionComposer";
@@ -129,14 +129,14 @@ export function ChatStage() {
 
   return (
     <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
-      <div className="chrome-tab-row relative z-10 flex h-11 shrink-0 items-center bg-transparent">
-        {sidebarCollapsed && isMacOS() ? (
+      <div className="chrome-tab-row relative z-10 flex h-11 shrink-0 items-stretch bg-transparent" data-tauri-drag-region>
+        {sidebarCollapsed ? (
           <button
             type="button"
             aria-label="Show sidebar"
             title="Show sidebar"
             onClick={() => setSidebarCollapsed(false)}
-            className="ml-9 mr-2 flex size-7 shrink-0 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+            className={`${isMacOS() ? "ml-9 mr-2" : "ml-2"} flex size-7 shrink-0 items-center justify-center self-center rounded-[6px] text-muted hover:bg-wash hover:text-ink`}
           >
             <Symbol name="sidebar.left" className="size-3.5" />
           </button>
@@ -172,6 +172,7 @@ export function ChatStage() {
         ) : (
           <div className="min-h-11 min-w-0 flex-1 self-stretch" data-tauri-drag-region />
         )}
+        {isWindows() ? <WindowButtons /> : null}
       </div>
       <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">

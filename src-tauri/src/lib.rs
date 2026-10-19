@@ -11,6 +11,7 @@ pub use model_providers::minimax;
 mod image;
 mod paths;
 mod perf;
+mod process;
 mod pty;
 mod secrets;
 mod speech;

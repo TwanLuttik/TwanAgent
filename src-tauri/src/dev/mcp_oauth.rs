@@ -16,6 +16,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 
 use super::mcp::{mcp_name_ok, read_user_mcp, USER_MCP_FILES};
 
@@ -530,6 +531,7 @@ fn open_browser(url: &str) -> Result<()> {
         std::process::Command::new("open").arg(url).status()
     } else if cfg!(target_os = "windows") {
         std::process::Command::new("cmd")
+            .hide_console_window()
             .args(["/C", "start", "", url])
             .status()
     } else {

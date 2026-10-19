@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { agentIdentityLine, agentNameFor, contextWindowForProvider, isClaudeModel, isMinimaxModel, providerFor } from "../provider.ts";
+import { agentIdentityLine, agentNameFor, contextWindowForProvider, isClaudeModel, isMinimaxModel, providerFor, providerReadyFor } from "../provider.ts";
 
 describe("providerFor", () => {
   it("classifies only the Claude catalog as anthropic", () => {
@@ -28,6 +28,36 @@ describe("providerFor", () => {
     assert.equal(providerFor("not-a-model"), "xai");
     assert.equal(isMinimaxModel("not-a-model"), false);
     assert.equal(isMinimaxModel(""), false);
+  });
+});
+
+describe("providerReadyFor", () => {
+  const rows = [
+    { id: "xai", ready: false, hint: "Install the Grok CLI, or add an xAI API key in Settings." },
+    { id: "anthropic", ready: false, hint: "Claude isn’t signed in." },
+    { id: "minimax", ready: true, hint: "Using MiniMax" },
+  ];
+
+  it("lets MiniMax send when only MiniMax is signed in", () => {
+    assert.deepEqual(providerReadyFor("MiniMax-M3", rows, false), {
+      ready: true,
+      hint: "Using MiniMax",
+    });
+    assert.equal(providerReadyFor("MiniMax-M2.7", rows).ready, true);
+  });
+
+  it("still blocks Grok and Claude on their own rows", () => {
+    assert.deepEqual(providerReadyFor("grok-4.6", rows, false), {
+      ready: false,
+      hint: "Install the Grok CLI, or add an xAI API key in Settings.",
+    });
+    assert.equal(providerReadyFor("claude-sonnet-4-6", rows).ready, false);
+  });
+
+  it("uses the Grok flag only when provider rows are missing", () => {
+    assert.deepEqual(providerReadyFor("grok-4.6", [], false), { ready: false, hint: "" });
+    assert.deepEqual(providerReadyFor("grok-4.6", undefined, true), { ready: true, hint: "" });
+    assert.deepEqual(providerReadyFor("MiniMax-M3", undefined, false), { ready: true, hint: "" });
   });
 });
 

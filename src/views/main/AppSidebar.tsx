@@ -5,7 +5,7 @@ import { ConversationList } from "../../components/ConversationList";
 import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
-import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
+import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
 import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
@@ -82,7 +82,7 @@ export function AppSidebar() {
       </div>
       <div className={sidebarCollapsed ? "hidden" : "contents"}>
       <div className={`relative z-30 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
-        <WindowButtons />
+        {isWindows() ? null : <WindowButtons />}
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         <PanelToggle
           label="Hide sidebar"

@@ -87,11 +87,18 @@ fn grok_command(workspace: &Path, session_id: Option<&str>) -> Result<CommandBui
 }
 
 fn apply_pty_env(cmd: &mut CommandBuilder, workspace: &Path) {
-    cmd.cwd(workspace);
+    // canonicalize on Windows returns `\\?\C:\...`. cmd.exe treats that prefix as a UNC
+    // path, prints "UNC paths are not supported", and falls back to the Windows directory.
+    cmd.cwd(pty_cwd(workspace));
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     // Same family as VS Code / Cursor: Grok and other TUIs enable SGR mouse for xterm.js.
     cmd.env("TERM_PROGRAM", "vscode");
+}
+
+/// A working directory cmd.exe and PowerShell will actually enter.
+fn pty_cwd(workspace: &Path) -> PathBuf {
+    PathBuf::from(crate::paths::native_source(&workspace.to_string_lossy()))
 }
 
 pub fn spawn_pty(app: AppHandle, workspace: &Path, cols: u16, rows: u16) -> Result<String> {
@@ -353,6 +360,21 @@ mod tests {
     #[test]
     fn default_shell_is_nonempty() {
         assert!(!default_shell().is_empty());
+    }
+
+    #[test]
+    fn pty_cwd_drops_the_windows_verbatim_prefix() {
+        let got = pty_cwd(Path::new(r"\\?\C:\Users\twanl\twanagent-dev\projects\windows-testings"));
+        let rendered = got.to_string_lossy();
+        assert!(!rendered.starts_with(r"\\?\"), "{rendered}");
+        assert!(
+            rendered.contains(r"Users\twanl\twanagent-dev\projects\windows-testings")
+                || rendered.contains("Users/twanl/twanagent-dev/projects/windows-testings"),
+            "{rendered}"
+        );
+        let unc = pty_cwd(Path::new(r"\\?\UNC\server\share\project")).to_string_lossy().into_owned();
+        assert!(!unc.contains("UNC"), "{unc}");
+        assert!(unc.contains("server") && unc.contains("share") && unc.contains("project"), "{unc}");
     }
 
     #[test]

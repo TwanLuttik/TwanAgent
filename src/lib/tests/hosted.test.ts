@@ -58,12 +58,13 @@ describe("hosted turns", () => {
   });
 
   it("holds send until a cloud project has connected", () => {
-    assert.equal(cloudSendWaiting(false, null, false), true);
-    assert.equal(cloudSendWaiting(true, null, false), false);
-    assert.equal(cloudSendWaiting(true, { paired: true, online: true }, false), true);
-    assert.equal(cloudSendWaiting(true, { paired: true, online: true }, true), false);
-    assert.equal(cloudSendWaiting(true, { paired: true, online: false }, false), false);
-    assert.equal(cloudSendWaiting(true, { paired: false, online: true }, false), false);
+    assert.equal(cloudSendWaiting(false, false, null, false), false);
+    assert.equal(cloudSendWaiting(true, false, null, false), true);
+    assert.equal(cloudSendWaiting(true, true, null, false), false);
+    assert.equal(cloudSendWaiting(true, true, { paired: true, online: true }, false), true);
+    assert.equal(cloudSendWaiting(true, true, { paired: true, online: true }, true), false);
+    assert.equal(cloudSendWaiting(true, true, { paired: true, online: false }, false), false);
+    assert.equal(cloudSendWaiting(true, true, { paired: false, online: true }, false), false);
   });
 
   it("does not keep a local transcript when the server refuses", async () => {

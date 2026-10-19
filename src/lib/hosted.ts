@@ -26,10 +26,12 @@ export function hostedTurnStaysOnServer(remote: { paired?: boolean; online?: boo
  * A local project, or a server that is already up, does not wait.
  */
 export function cloudSendWaiting(
+  hasWorkspace: boolean,
   known: boolean,
   remote: { paired?: boolean; online?: boolean } | null | undefined,
   linkReady: boolean,
 ): boolean {
+  if (!hasWorkspace) return false;
   if (!known) return true;
   if (!remote?.paired || remote.online === false) return false;
   return !linkReady;

@@ -585,6 +585,11 @@ mod tests {
         assert!(glob.contains("'**/*.ts'"));
         assert!(remote_glob_command("/srv/billing", "", "src").is_err());
         assert!(remote_glob_command("/srv/billing", "*.ts", "/etc").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_search_scripts_find_files_and_skip_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();

@@ -9,6 +9,7 @@ use std::time::Duration;
 use super::paths::resolve_in_workspace;
 use crate::env_path::command_path;
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 
 pub(crate) const CMD_OUTPUT_LIMIT: usize = 80_000;
 const CMD_TIMEOUT_SECS: u64 = 60;
@@ -99,6 +100,7 @@ fn kill_process_group(pid: u32) {
     #[cfg(not(unix))]
     {
         let _ = Command::new("taskkill")
+            .hide_console_window()
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .status();
     }
@@ -115,6 +117,7 @@ fn set_nonblocking(fd: i32) {
 }
 
 /// Append newly available bytes. Returns how many were added, so a live view can show only those.
+#[cfg(not(windows))]
 fn read_available(file: &mut impl Read, buf: &mut Vec<u8>) -> usize {
     let before = buf.len();
     let mut chunk = [0u8; 8192];
@@ -132,6 +135,56 @@ fn read_available(file: &mut impl Read, buf: &mut Vec<u8>) -> usize {
             }
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(err) if err.kind() == ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+    buf.len().saturating_sub(before)
+}
+
+#[cfg(windows)]
+fn read_available(
+    file: &mut (impl Read + std::os::windows::io::AsRawHandle),
+    buf: &mut Vec<u8>,
+) -> usize {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn PeekNamedPipe(
+            handle: *mut c_void,
+            buffer: *mut c_void,
+            size: u32,
+            read: *mut u32,
+            available: *mut u32,
+            left: *mut u32,
+        ) -> i32;
+    }
+    let before = buf.len();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let mut available = 0;
+        // Windows pipes are blocking. Peek before reading so silence on either stream cannot
+        // prevent polling the other stream, child exit, or timeout. This is the sole reader.
+        let ok = unsafe {
+            PeekNamedPipe(
+                file.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 || available == 0 {
+            break;
+        }
+        let take = chunk.len().min(available as usize);
+        match file.read(&mut chunk[..take]) {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = (CMD_OUTPUT_LIMIT + 1).saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
     }
@@ -185,7 +238,8 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn kill_command_tree(child: &mut std::process::Child) {
+#[cfg(not(windows))]
+fn kill_command_tree(child: &mut std::process::Child) -> Result<()> {
     #[cfg(unix)]
     {
         let pid = child.id() as i32;
@@ -198,6 +252,24 @@ fn kill_command_tree(child: &mut std::process::Child) {
         let _ = child.kill();
     }
     let _ = child.wait();
+    Ok(())
+}
+
+#[cfg(windows)]
+fn kill_command_tree(child: &mut std::process::Child) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    // Kill descendants while the shell is still alive; child.kill() alone leaves servers behind.
+    let result = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &child.id().to_string()])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let _ = child.kill();
+    let _ = child.wait();
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(Error::Other(format!("could not stop Windows command tree: {status}"))),
+        Err(err) => Err(Error::Other(format!("could not stop Windows command tree: {err}"))),
+    }
 }
 
 pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
@@ -208,6 +280,11 @@ pub fn run_command(workspace: &Path, command: &str) -> Result<String> {
 /// The runner then returns once the shell exits and leaves that process alive.
 /// `&&`, `|&`, and redirects such as `2>&1` or `&>` are not a background job.
 pub fn command_detaches(command: &str) -> bool {
+    // cmd.exe uses & to chain commands. Windows commands remain foreground jobs subject to
+    // timeout; there is no portable shell syntax for a tracked detached job on Windows.
+    if cfg!(windows) {
+        return false;
+    }
     let mut quote: Option<char> = None;
     let mut escaped = false;
     let chars: Vec<char> = command.chars().collect();
@@ -271,6 +348,22 @@ pub fn run_command_streaming(
     workspace: &Path,
     command: &str,
     id: &str,
+    on_chunk: impl FnMut(&str),
+) -> Result<String> {
+    run_command_with_timeout(
+        workspace,
+        command,
+        id,
+        Duration::from_secs(CMD_TIMEOUT_SECS),
+        on_chunk,
+    )
+}
+
+fn run_command_with_timeout(
+    workspace: &Path,
+    command: &str,
+    id: &str,
+    timeout: Duration,
     mut on_chunk: impl FnMut(&str),
 ) -> Result<String> {
     let root = resolve_in_workspace(workspace, "")?;
@@ -293,7 +386,18 @@ pub fn run_command_streaming(
     };
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
-        c.args(["/C", &script]);
+        c.hide_console_window();
+        c.args(["/D", "/C"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // cmd.exe does not use the normal Windows argument-quoting rules. The tool input
+            // is already a shell script; preserve its quotes rather than backslash-escaping them.
+            c.raw_arg(&script);
+            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        #[cfg(not(windows))]
+        c.arg(&script);
         c
     } else {
         let mut c = Command::new("sh");
@@ -339,7 +443,7 @@ pub fn run_command_streaming(
     let limit = if detaches {
         Duration::from_secs(CMD_DETACH_SECS)
     } else {
-        Duration::from_secs(CMD_TIMEOUT_SECS)
+        timeout
     };
     let outcome = loop {
         let out_added = read_available(&mut stdout, &mut out_buf);
@@ -366,13 +470,13 @@ pub fn run_command_streaming(
                     if detached_pid(&out_buf).is_some() {
                         break CommandWait::Detached;
                     }
-                    if started.elapsed() > Duration::from_secs(CMD_TIMEOUT_SECS) {
+                    if started.elapsed() > timeout {
                         break CommandWait::Detached;
                     }
                     thread::sleep(Duration::from_millis(40));
                     continue;
                 }
-                kill_command_tree(&mut child);
+                kill_command_tree(&mut child)?;
                 forget_command(id);
                 let out_added = read_available(&mut stdout, &mut out_buf);
                 let err_added = read_available(&mut stderr, &mut err_buf);
@@ -465,6 +569,19 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    #[cfg(windows)]
+    fn windows_powershell_command(script: &str) -> String {
+        use base64::Engine;
+        let binary = std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        assert!(binary.is_file(), "system PowerShell must be installed");
+        // EncodedCommand takes UTF-16LE. The outer quotes are cmd.exe's /C envelope;
+        // the inner quotes protect the absolute executable path independently of PATH.
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("\"\"{}\" -NoProfile -NonInteractive -EncodedCommand {encoded}\"", binary.display())
+    }
+
     #[test]
     fn run_command_stays_in_workspace() {
         let dir = temp_ws();
@@ -502,6 +619,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn command_detaches_only_for_a_background_job() {
         assert!(command_detaches("swift run HelloWorld &"));
         assert!(command_detaches("npm start > log.txt 2>&1 &"));
@@ -516,6 +634,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_command_leaves_a_background_job_running() {
         let dir = temp_ws();
         let started = std::time::Instant::now();
@@ -549,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_command_keeps_background_startup_output() {
         let dir = temp_ws();
         let out = run_command(dir.path(), "echo hello-bg &").unwrap();
@@ -557,19 +677,82 @@ mod tests {
         assert!(!out.contains('\u{1e}'), "{out}");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_command_chains_are_foreground() {
+        for command in [
+            "echo first & echo second",
+            "echo first && echo second",
+            "echo quoted ^& ampersand",
+            "echo tail &",
+        ] {
+            assert!(!command_detaches(command), "{command}");
+        }
+        let dir = temp_ws();
+        let out = run_command(dir.path(), "echo first & echo second").unwrap();
+        assert!(out.contains("first") && out.contains("second"), "{out}");
+        assert!(!out.contains("still running"), "{out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_stderr_streams_without_stdout_and_silent_commands_time_out() {
+        let dir = temp_ws();
+        let mut seen = String::new();
+        let out = run_command_streaming(dir.path(), "echo error-only 1>&2", "", |chunk| {
+            seen.push_str(chunk)
+        })
+        .unwrap();
+        assert!(
+            out.contains("error-only") && seen.contains("error-only"),
+            "{out}"
+        );
+        let started = std::time::Instant::now();
+        let out = run_command_with_timeout(
+            dir.path(),
+            "for /L %i in (1,0,2) do @rem wait",
+            "",
+            Duration::from_millis(150),
+            |_| {},
+        )
+        .unwrap();
+        assert!(out.contains("timed out"), "{out}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_timeout_terminates_the_shell_child() {
+        let dir = temp_ws();
+        let mut seen = String::new();
+        let out = run_command_with_timeout(
+            dir.path(),
+            &windows_powershell_command("Write-Output $PID; Start-Sleep -Seconds 30"),
+            "",
+            Duration::from_secs(2),
+            |chunk| seen.push_str(chunk),
+        ).unwrap();
+        assert!(out.contains("timed out"), "{out}");
+        let pid = seen.lines().find_map(|line| line.trim().parse::<u32>().ok())
+            .expect("child must report its PID before timing out");
+        let pid = sysinfo::Pid::from_u32(pid);
+        let mut system = sysinfo::System::new();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+        assert!(system.process(pid).is_none(), "timeout left the shell child alive");
+    }
+
     #[test]
     fn run_command_reads_large_stdout() {
         let dir = temp_ws();
-        let cmd = if cfg!(windows) {
-            "powershell -NoProfile -Command \"$s='x'*200000; Write-Output $s\""
-        } else {
-            "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
-        };
-        let out = run_command(dir.path(), cmd).unwrap();
+        #[cfg(windows)]
+        let cmd = windows_powershell_command("$s='x'*200000; Write-Output $s");
+        #[cfg(not(windows))]
+        let cmd = "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'";
+        let out = run_command(dir.path(), &cmd).unwrap();
         assert!(
             out.len() >= CMD_OUTPUT_LIMIT,
-            "expected large output, got {}",
-            out.len()
+            "expected large output, got {}: {:?}",
+            out.len(), &out[..out.len().min(200)]
         );
         assert!(out.contains("truncated"));
     }

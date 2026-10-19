@@ -4,7 +4,8 @@ import { FolderDialog } from "../../components/FolderDialog";
 import { ServersDialog } from "../../components/ServersDialog";
 import { SpaceCorner } from "../../components/SpaceCorner";
 import { Symbol } from "../../components/Symbol";
-import { headerBarClass, isMacOS, WindowButtons } from "../../components/WindowButtons";
+import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
+import { providerReadyFor } from "../../lib/provider";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
 
@@ -21,16 +22,18 @@ export function LandingScreen() {
     openDocs,
     recents,
     runtime,
+    model,
     setFolderOpen,
     startNewChat,
     workspace,
   } = useMain();
+  const signedIn = providerReadyFor(model, runtime?.providers, runtime?.ready);
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-canvas">
       <Flash />
       <SpaceCorner />
-      <div className={`relative z-10 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
-        <WindowButtons />
+      <div className={`relative z-10 flex shrink-0 items-stretch ${headerBarClass()}`} data-tauri-drag-region>
+        {isWindows() ? null : <WindowButtons />}
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         <button
           type="button"
@@ -38,7 +41,7 @@ export function LandingScreen() {
           aria-pressed={showServers}
           title="Servers"
           onClick={showServers ? closeServers : openServers}
-          className={`mr-1 flex size-7 items-center justify-center rounded-[6px] hover:bg-wash hover:text-ink ${
+          className={`mr-1 flex size-7 items-center justify-center self-center rounded-[6px] hover:bg-wash hover:text-ink ${
             showServers ? "bg-wash-strong text-ink" : "text-muted"
           }`}
         >
@@ -49,7 +52,7 @@ export function LandingScreen() {
           aria-label="Docs"
           title="Docs"
           onClick={openDocs}
-          className="mr-1 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          className="mr-1 flex size-7 items-center justify-center self-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
         >
           <Symbol name="book" className="size-3.5" />
         </button>
@@ -58,7 +61,7 @@ export function LandingScreen() {
           aria-label="Usage"
           title="Usage"
           onClick={openUsage}
-          className="mr-1 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          className="mr-1 flex size-7 items-center justify-center self-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
         >
           <Symbol name="chart.xyaxis.line" className="size-3.5" />
         </button>
@@ -67,10 +70,11 @@ export function LandingScreen() {
           aria-label="Settings"
           title={isMacOS() ? "Settings ⌘," : "Settings Ctrl+,"}
           onClick={openSettings}
-          className="mr-1 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          className="mr-1 flex size-7 items-center justify-center self-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
         >
           <Symbol name="gearshape" className="size-3.5" />
         </button>
+        {isWindows() ? <WindowButtons /> : null}
       </div>
       {folderOpen ? (
         <FolderDialog
@@ -89,8 +93,8 @@ export function LandingScreen() {
         {fileDrag ? <DropImagesHint /> : null}
         <div className="w-full max-w-[640px]">
           <SessionComposer placement="landing" />
-          {runtime && !runtime.ready && runtime.hint && (
-            <p className="mt-3 text-center text-[12px] text-muted">{runtime.hint}</p>
+          {runtime && !signedIn.ready && (signedIn.hint || runtime.hint) && (
+            <p className="mt-3 text-center text-[12px] text-muted">{signedIn.hint || runtime.hint}</p>
           )}
           {workspace ? (
             <p className="mt-4 text-center">

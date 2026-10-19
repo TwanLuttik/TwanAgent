@@ -12,6 +12,7 @@ use super::paths::resolve_in_workspace;
 use super::types::{GitBranches, GitChange};
 use crate::env_path::command_path;
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 use crate::remote::config::{Machine, RemoteProject};
 use crate::remote::ssh::{ExecRequest, Pool};
 
@@ -395,6 +396,7 @@ fn git_run(target: &GitTarget, args: &[&str]) -> Result<String> {
 
 fn local_git(root: &Path, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("git");
+    cmd.hide_console_window();
     cmd.args(args)
         .current_dir(root)
         .env("PATH", command_path())
@@ -1735,6 +1737,7 @@ mod tests {
             );
         };
         git(&["init", "-b", "main"]);
+        git(&["config", "--local", "commit.gpgsign", "false"]);
         git(&["config", "user.email", "dev@example.com"]);
         git(&["config", "user.name", "Dev"]);
         git(&["add", "."]);
@@ -2106,6 +2109,7 @@ fn init_repo(path: &Path) {
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         };
         git(&["init", "-b", "main"]);
+        git(&["config", "--local", "commit.gpgsign", "false"]);
         git(&["config", "user.email", "dev@example.com"]);
         git(&["config", "user.name", "Dev"]);
         git(&["add", "."]);

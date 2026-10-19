@@ -19,6 +19,7 @@ use super::projects::FolderSuggestion;
 use super::projects::{clone_repo, create_project, delete_project, list_projects, suggest_folders};
 use super::types::{DevEntry, FilePreview, GitBranches, GitChange, TreeSnapshot};
 use crate::error::{Error, Result};
+use crate::process::WindowlessCommand;
 use crate::state::AppState;
 
 /// Git and file reads block. Run them off the webview thread so a refresh does not freeze the UI.
@@ -1123,6 +1124,7 @@ pub fn dev_open_url(url: String) -> Result<()> {
         std::process::Command::new("open").arg(&url).status()
     } else if cfg!(target_os = "windows") {
         std::process::Command::new("cmd")
+            .hide_console_window()
             .args(["/C", "start", "", &url])
             .status()
     } else {

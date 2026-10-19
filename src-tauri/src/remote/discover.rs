@@ -6,6 +6,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::error::Result;
+use crate::process::WindowlessCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LanHost {
@@ -218,7 +219,11 @@ pub fn parse_ssh_config_hosts(text: &str) -> Vec<(String, String)> {
 /// The address is `<machine>@orb`, which `~/.orbstack/ssh/config` turns into a working SSH login.
 /// A bare LAN address for the same VM is not reachable from this Mac.
 pub fn orbstack_hosts() -> Vec<(String, String)> {
-    let Ok(out) = std::process::Command::new("orb").arg("list").output() else {
+    let Ok(out) = std::process::Command::new("orb")
+        .hide_console_window()
+        .arg("list")
+        .output()
+    else {
         return Vec::new();
     };
     if !out.status.success() {
@@ -245,7 +250,11 @@ pub fn parse_orb_list(text: &str) -> Vec<(String, String)> {
 }
 
 fn tailscale_hosts() -> Vec<(String, String)> {
-    let Ok(out) = std::process::Command::new("tailscale").arg("status").output() else {
+    let Ok(out) = std::process::Command::new("tailscale")
+        .hide_console_window()
+        .arg("status")
+        .output()
+    else {
         return Vec::new();
     };
     if !out.status.success() {
@@ -284,7 +293,11 @@ fn gateway_hosts() -> Vec<(String, String)> {
 
 #[cfg(unix)]
 fn unix_gateways() -> Vec<(String, String)> {
-    let Ok(out) = std::process::Command::new("route").args(["-n", "get", "default"]).output() else {
+    let Ok(out) = std::process::Command::new("route")
+        .hide_console_window()
+        .args(["-n", "get", "default"])
+        .output()
+    else {
         return Vec::new();
     };
     if !out.status.success() {

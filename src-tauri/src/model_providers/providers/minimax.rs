@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::grok_cli::{effort_label, parse_cli_version, DevEffort, DevModel};
+use crate::process::WindowlessCommand;
 
 pub const PROVIDER_MINIMAX: &str = "minimax";
 pub const DEFAULT_MODEL: &str = "MiniMax-M3";
@@ -219,11 +220,15 @@ fn bin_names() -> &'static [&'static str] {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
+    which_in(name, &crate::env_path::command_path())
+}
+
+fn which_in(name: &str, path: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
     let mut command = Command::new(cmd);
+    command.hide_console_window();
     command.arg(name);
-    #[cfg(unix)]
-    command.env("PATH", crate::env_path::command_path());
+    command.env("PATH", path);
     let out = command.output().ok()?;
     if !out.status.success() {
         return None;
@@ -238,7 +243,11 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 pub fn mmx_version(bin: &Path) -> Option<String> {
-    let out = Command::new(bin).arg("--version").output().ok()?;
+    let out = Command::new(bin)
+        .hide_console_window()
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -857,6 +866,23 @@ fn write_oauth(home: &Path, previous: &MmxConfig, oauth: &MmxOAuth) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn where_finds_a_binary_using_the_explicit_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("twanagent-mmx-probe.cmd");
+        fs::write(&bin, "@echo off\r\n").unwrap();
+        let system = std::env::var("SystemRoot").unwrap();
+        let short = format!(r"{system}\System32");
+        assert_eq!(which_in("twanagent-mmx-probe.cmd", &short), None);
+        let merged = crate::env_path::merge_command_path(
+            &short, &[dir.path().to_string_lossy().into_owned()],
+        );
+        assert_eq!(
+            which_in("twanagent-mmx-probe.cmd", &merged).as_deref(), Some(bin.as_path()),
+        );
+    }
 
     #[test]
     fn catalog_lists_the_text_models() {

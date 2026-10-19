@@ -6,5 +6,6 @@ export {
   isMinimaxModel,
   providerFor,
   providerProfile,
+  providerReadyFor,
 } from "./model-providers/index.ts";
-export type { ProviderId, ProviderProfile } from "./model-providers/index.ts";
+export type { ProviderId, ProviderProfile, ProviderReadyRow } from "./model-providers/index.ts";

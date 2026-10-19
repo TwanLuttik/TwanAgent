@@ -117,7 +117,7 @@ function MacDot({
 
 function MetroButtons({ maximized }: { maximized: boolean }) {
   return (
-    <div className="flex items-stretch" data-tauri-drag-region="false">
+    <div className="flex h-11 shrink-0 items-stretch" data-window-controls data-tauri-drag-region="false">
       <WinBtn label="Minimize" onClick={() => void getCurrentWindow().minimize()}>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
           <path d="M1 5h8" fill="none" stroke="currentColor" strokeWidth="1.2" />
@@ -160,7 +160,7 @@ function WinBtn({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className={`flex h-8 w-11 items-center justify-center text-ink ${hover}`}
+      className={`flex h-11 w-11 items-center justify-center text-ink ${hover}`}
     >
       {children}
     </button>

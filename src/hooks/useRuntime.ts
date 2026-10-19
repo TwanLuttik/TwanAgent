@@ -4,6 +4,36 @@ import { loadContextWindow, loadEffort, loadModel } from "../lib/prefs";
 import * as api from "../lib/tauri";
 import type { Runtime } from "../lib/tauri";
 
+/** Shown only when no runtime has loaded and the probe itself fails. */
+function grokFallbackRuntime(): Runtime {
+  return {
+    installed: false,
+    logged_in: false,
+    version: null,
+    email: null,
+    default_model: "grok-4.6",
+    default_effort: "high",
+    models: [
+      {
+        id: "grok-4.6",
+        name: "Grok 4.6",
+        efforts: [
+          { id: "xhigh", label: "Extra high" },
+          { id: "high", label: "High" },
+          { id: "medium", label: "Medium" },
+          { id: "low", label: "Low" },
+        ],
+        context_window: 256000,
+        context_windows: [256000, 500000],
+        provider: "xai",
+      },
+    ],
+    has_key: false,
+    ready: false,
+    hint: "Install the Grok CLI, or add an xAI API key in Settings.",
+  };
+}
+
 /** Grok install, login, and the model list. Checked once when the app opens. */
 export function useRuntime() {
   const [runtime, setRuntime] = useState<Runtime | null>(null);
@@ -28,34 +58,10 @@ export function useRuntime() {
     void api
       .runtime()
       .then(applyRuntime)
-      .catch(() =>
-        applyRuntime({
-          installed: false,
-          logged_in: false,
-          version: null,
-          email: null,
-          default_model: "grok-4.6",
-          default_effort: "high",
-          models: [
-            {
-              id: "grok-4.6",
-              name: "Grok 4.6",
-              efforts: [
-                { id: "xhigh", label: "Extra high" },
-                { id: "high", label: "High" },
-                { id: "medium", label: "Medium" },
-                { id: "low", label: "Low" },
-              ],
-              context_window: 256000,
-              context_windows: [256000, 500000],
-              provider: "xai",
-            },
-          ],
-          has_key: false,
-          ready: false,
-          hint: "Install the Grok CLI, or add an xAI API key in Settings.",
-        }),
-      );
+      .catch(() => {
+        // A failed probe must not wipe a MiniMax or Claude login with a Grok-only snapshot.
+        setRuntime((current) => current ?? grokFallbackRuntime());
+      });
   }, [applyRuntime]);
 
   useEffect(() => {

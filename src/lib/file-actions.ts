@@ -69,12 +69,12 @@ export function canDropOnDir(paths: string[], dest: string, nodes: Map<string, F
   });
 }
 
-/** A new file needs a name and an extension, such as `notes.md`. */
+/** A new file needs an extension or a dotfile name, such as `notes.md` or `.env`. */
 export function validNewFileName(name: string): boolean {
   const trimmed = name.trim();
   if (!validEntryName(trimmed)) return false;
   const dot = trimmed.lastIndexOf(".");
-  return dot > 0 && dot < trimmed.length - 1;
+  return dot >= 0 && dot < trimmed.length - 1;
 }
 
 export function nextFolderName(siblings: string[]): string {

@@ -44,7 +44,7 @@ import {
   type PlanModeState,
   type PlanPrompt,
 } from "../lib/plan";
-import { providerProfile } from "../lib/provider";
+import { providerProfile, providerReadyFor } from "../lib/provider";
 import {
   freshWorktreeName,
   hideOpenWorktreeMarker,
@@ -117,7 +117,6 @@ export type TurnDeps = {
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
   busy: boolean;
-  ready: boolean;
   runtime: Runtime | null;
   model: string;
   effort: string;
@@ -215,7 +214,7 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, ready, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles, adoptWorktreeName,
@@ -797,7 +796,7 @@ async function send(targetId = activeIdRef.current) {
     : expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(sendingSide ? sideImages : promptImages);
   if (!canSendPrompt(text, images)) return;
-  if (cloudSendWaiting(remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
+  if (cloudSendWaiting(Boolean(workspace), remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
     setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
     return;
   }
@@ -815,15 +814,23 @@ async function send(targetId = activeIdRef.current) {
     });
     return;
   }
-  if (!ready) {
-    setFlash({ kind: "err", text: runtime?.hint || "Grok isn’t signed in." });
-    return;
-  }
-  let ws = workspace;
-  if (!ws) {
+  if (!workspace) {
     setFolderOpen(true);
     return;
   }
+  const sendingChat = targetId ? conversationsRef.current.find((row) => row.id === targetId) : undefined;
+  const focusedChip = !targetId || targetId === activeIdRef.current;
+  const sendingModel = focusedChip ? modelRef.current : sendingChat?.model || modelRef.current;
+  const signedIn = providerReadyFor(sendingModel, runtime?.providers, runtime?.ready);
+  if (!signedIn.ready) {
+    const profile = providerProfile(sendingModel);
+    setFlash({
+      kind: "err",
+      text: signedIn.hint || (profile.id === "xai" ? runtime?.hint || "Grok isn’t signed in." : `Sign in to ${profile.agentName}.`),
+    });
+    return;
+  }
+  let ws = workspace;
   try {
     ws = await api.openFolder(ws);
   } catch (e) {
