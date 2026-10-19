@@ -203,7 +203,6 @@ textarea.text-transparent::selection {
   app-region: no-drag !important;
 }
 
-.chrome-tab-row,
 .chrome-tab-row .chrome-tab,
 .chrome-tab-row .chrome-tab-group {
   -webkit-app-region: no-drag !important;
