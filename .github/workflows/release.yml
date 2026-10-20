@@ -120,7 +120,13 @@ jobs:
           arch: x64
 
       - name: Install NASM
-        run: choco install nasm -y
+        run: |
+          choco install nasm -y
+          $nasm = Join-Path $env:ProgramFiles 'NASM'
+          if (!(Test-Path (Join-Path $nasm 'nasm.exe'))) {
+            throw 'NASM installed, but nasm.exe was not found.'
+          }
+          "$nasm" >> $env:GITHUB_PATH
 
       - name: Configure LLVM for Whisper bindings
         run: |
