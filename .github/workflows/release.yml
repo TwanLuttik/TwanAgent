@@ -119,6 +119,9 @@ jobs:
         with:
           arch: x64
 
+      - name: Install NASM
+        run: choco install nasm -y
+
       - name: Configure LLVM for Whisper bindings
         run: |
           $llvmBin = Join-Path $env:ProgramFiles 'LLVM/bin'
