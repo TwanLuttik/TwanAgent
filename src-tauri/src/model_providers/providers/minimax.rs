@@ -224,7 +224,7 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 /// `where` can print `RUNNER~1` for a directory whose real name is `runneradmin`.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn same_windows_path(found: &Path, expected: &Path) -> bool {
     fn key(path: &Path) -> String {
         path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
