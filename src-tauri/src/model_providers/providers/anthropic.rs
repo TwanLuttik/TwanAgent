@@ -178,6 +178,21 @@ fn which(name: &str) -> Option<PathBuf> {
 }
 
 /// `which` against an explicit PATH. A Dock-launched app does not inherit the shell PATH.
+/// `where` can print `RUNNER~1` for a directory whose real name is `runneradmin`.
+#[cfg(windows)]
+fn same_windows_path(found: &Path, expected: &Path) -> bool {
+    fn key(path: &Path) -> String {
+        path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
+    }
+    if key(found) == key(expected) {
+        return true;
+    }
+    let (Ok(found), Ok(expected)) = (fs::canonicalize(found), fs::canonicalize(expected)) else {
+        return false;
+    };
+    key(&found) == key(&expected)
+}
+
 fn which_in(name: &str, path: &str) -> Option<PathBuf> {
     let cmd = if cfg!(windows) { "where" } else { "which" };
     let mut command = Command::new(cmd);
@@ -1571,9 +1586,9 @@ mod tests {
         let merged = crate::env_path::merge_command_path(
             &short, &[dir.path().to_string_lossy().into_owned()],
         );
-        assert_eq!(
-            which_in("twanagent-which-probe.cmd", &merged).as_deref(), Some(bin.as_path()),
-        );
+        let found = which_in("twanagent-which-probe.cmd", &merged).expect("where finds the probe");
+        // `where` prints the short 8.3 path. The temp directory is the long name.
+        assert!(same_windows_path(&found, &bin), "{found:?} vs {bin:?}");
     }
 
     #[test]

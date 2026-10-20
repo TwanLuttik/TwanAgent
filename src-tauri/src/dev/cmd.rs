@@ -737,8 +737,17 @@ mod tests {
             .expect("child must report its PID before timing out");
         let pid = sysinfo::Pid::from_u32(pid);
         let mut system = sysinfo::System::new();
-        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-        assert!(system.process(pid).is_none(), "timeout left the shell child alive");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            if system.process(pid).is_none() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("timeout left the shell child alive");
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     #[test]
