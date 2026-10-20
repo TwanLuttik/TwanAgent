@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -1264,11 +1263,14 @@ fn dir_size_except(path: &Path, skip: &[&str]) -> u64 {
                 return;
             }
         }
-        // A second hard link must not be counted twice.
-        if meta.nlink() > 1 && !seen.insert(meta.ino()) {
-            return;
+        // A second hard link must not be counted twice. Windows has no inode,
+        // so the same bytes can be counted again there.
+        if let Some(id) = file_identity(&meta) {
+            if !seen.insert(id) {
+                return;
+            }
         }
-        *total = total.saturating_add(meta.blocks().saturating_mul(512));
+        *total = total.saturating_add(occupied_bytes(&meta));
         if !meta.is_dir() {
             return;
         }
@@ -1282,6 +1284,37 @@ fn dir_size_except(path: &Path, skip: &[&str]) -> u64 {
     let mut total = 0u64;
     walk(path, skip, &mut HashSet::new(), &mut total);
     total
+}
+
+/// Allocated blocks on Unix. The file length elsewhere, which is what Windows metadata can report.
+fn occupied_bytes(meta: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.blocks().saturating_mul(512)
+    }
+    #[cfg(not(unix))]
+    {
+        meta.len()
+    }
+}
+
+/// An inode when this file has another hard link. `None` means count it every time it is seen.
+fn file_identity(meta: &fs::Metadata) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() > 1 {
+            Some(meta.ino())
+        } else {
+            None
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
 }
 
 fn app_data_size(data_dir: &Path, workspace: &Path) -> u64 {
