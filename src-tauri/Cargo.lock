@@ -5649,7 +5649,7 @@ dependencies = [
 
 [[package]]
 name = "twanagent"
-version = "1.0.0-beta.2"
+version = "1.0.0-beta.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5686,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "twanagent-service"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.7"
 dependencies = [
  "base64 0.22.1",
  "chrono",

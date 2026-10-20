@@ -337,11 +337,21 @@ function clearWorkspace() {
   setFolderOpen(false);
 }
 
-async function deleteProjectFromSidebar(path: string) {
+async function deleteProjectFromSidebar(path: string, mode: "list" | "files" | "worktrees" = "list") {
+  if (mode === "worktrees") {
+    try {
+      await api.deleteProjectWorktrees(path);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+      return;
+    }
+    return;
+  }
   setProjectSettings((current) => (current && isSameProject(current.path, path) ? null : current));
   try {
-    // App-owned folders are deleted. A folder added from elsewhere is only forgotten.
-    if (isAppProject(path, projectsRoot) || isAppProject(path, legacyProjectsRoot)) {
+    // Deleting files removes the folder. Removing from the list only forgets it,
+    // except for a project the app created, which has nowhere else to live.
+    if (mode === "files" || isAppProject(path, projectsRoot) || isAppProject(path, legacyProjectsRoot)) {
       await api.deleteProject(path);
     } else {
       await api.removeProject(path);

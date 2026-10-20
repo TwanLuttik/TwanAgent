@@ -438,6 +438,24 @@ export function deleteProject(path: string): Promise<void> {
   return invoke("dev_delete_project", { path });
 }
 
+export type ProjectRemoval = {
+  project: number;
+  worktrees: number;
+  app: number;
+  worktree_count: number;
+  app_managed: boolean;
+};
+
+/** Bytes the project folder, its worktrees, and their app data would free. */
+export function projectRemoval(path: string): Promise<ProjectRemoval> {
+  return invoke("dev_project_removal", { path });
+}
+
+/** Delete every linked worktree. The main checkout stays. Returns the folders that were removed. */
+export function deleteProjectWorktrees(path: string): Promise<string[]> {
+  return invoke("dev_delete_project_worktrees", { path });
+}
+
 export function cloneRepo(url: string, name?: string): Promise<string> {
   return invoke("dev_clone_repo", { url, name: name ?? null });
 }

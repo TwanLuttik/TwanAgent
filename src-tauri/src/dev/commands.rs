@@ -10,8 +10,9 @@ use super::git::{
     git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
     git_label, git_log, git_set_identity, git_show, git_stage, git_stash, git_status_with,
     git_pull_request_checkout, git_pull_requests, git_switch, git_sync, git_unstage, git_worktree_add,
-    git_worktree_remove, git_worktree_rename, git_worktrees, GitCommit, GitIdentity, GitPullRequest,
-    GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
+    git_worktree_remove, git_worktree_rename, git_worktrees, project_removal, remove_project_worktrees,
+    GitCommit, GitIdentity, GitPullRequest, GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
+    ProjectRemoval,
 };
 use super::paths::{expand_folder_path, path_string};
 use super::project_location::ProjectsLocation;
@@ -181,6 +182,34 @@ pub async fn dev_clone_repo(app: AppHandle, url: String, name: Option<String>) -
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn dev_project_removal(state: State<'_, AppState>, path: String) -> Result<ProjectRemoval> {
+    let data_dir = state.data_dir.clone();
+    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    off_main(move || {
+        let root = expand_folder_path(&path)?;
+        let target = GitTarget::local_in(&root, &[roots[0].clone(), roots[1].clone()], &data_dir)?;
+        Ok(project_removal(
+            &target,
+            &data_dir,
+            &[&roots[0], &roots[1]],
+        ))
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_delete_project_worktrees(state: State<'_, AppState>, path: String) -> Result<Vec<String>> {
+    let data_dir = state.data_dir.clone();
+    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    off_main(move || {
+        let root = expand_folder_path(&path)?;
+        let target = GitTarget::local_in(&root, &[roots[0].clone(), roots[1].clone()], &data_dir)?;
+        remove_project_worktrees(&target, &data_dir)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()> {
     if let Ok(conn) = crate::appdb::open(&state.data_dir) {
         let _ = crate::appdb::remove_project(&conn, &path);
@@ -188,11 +217,20 @@ pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()
     if let Ok(root) = expand_folder_path(&path) {
         let _ = state.forget_workspace(&root);
     }
-    // Only folders inside the app projects directory are deleted from disk.
-    // A project added from somewhere else is only removed from the app database.
+    // App projects are deleted by the projects helper, which refuses anything outside
+    // that folder. An added project asked to be deleted too, so its folder goes directly.
+    let external = expand_folder_path(&path).ok();
     let dest = match delete_project(&project_roots(&state), &path) {
         Ok(dest) => dest,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            if let Some(root) = external.as_deref() {
+                let _ = std::fs::remove_dir_all(super::git::external_worktree_root(&state.data_dir, root));
+                if root.is_dir() {
+                    std::fs::remove_dir_all(root)?;
+                }
+            }
+            return Ok(());
+        }
     };
     let mut wipe = super::project_location::forget_project(&state.data_dir, &path);
     wipe.push(path_string(&dest));
@@ -1042,7 +1080,11 @@ pub async fn dev_git_project_summary(state: State<'_, AppState>, path: String) -
 fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
     let root = state.require_workspace(workspace)?;
     let Some(project) = crate::remote::project_for_workspace(state, &root)? else {
-        return GitTarget::local(&root);
+        return GitTarget::local_in(
+            &root,
+            &[state.projects_root.clone(), state.legacy_projects_root.clone()],
+            &state.data_dir,
+        );
     };
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?

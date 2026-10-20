@@ -661,7 +661,24 @@ function ProjectsNav({
           onOpenProject={openProjectFromSidebar}
           onNewChat={(path) => void startNewChat("chat", undefined, path)}
           onOpenSettings={openProjectSettings}
-          onDeleteProject={(path) => void deleteProjectFromSidebar(path)}
+          onDeleteProject={(path, mode) => {
+            const gone = mode === "worktrees"
+              ? (worktreesFor(path) ?? []).map((child) => projectKey(child.path))
+              : [];
+            void deleteProjectFromSidebar(path, mode).then(() => {
+              if (mode !== "worktrees") return;
+              if (gone.length) {
+                setWorktreeChats((prev) => {
+                  if (!gone.some((key) => key in prev)) return prev;
+                  const next = { ...prev };
+                  for (const key of gone) delete next[key];
+                  queueMicrotask(() => publishWorktreeChats(next));
+                  return next;
+                });
+              }
+              loadWorktrees.current();
+            });
+          }}
           onReorderProject={(fromPath, toPath) => void reorderProjects(fromPath, toPath)}
           archiveOpen={archiveOpen}
           onToggleArchive={toggleArchive}

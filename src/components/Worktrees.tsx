@@ -30,15 +30,15 @@ export function WorktreeSection({
   const [name, setName] = useState("");
   if (worktrees.length === 0) return null;
   return (
-    <div className="px-1 pt-1">
-      <div className="flex items-center gap-1 px-1">
-        <span className="min-w-0 flex-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Worktrees</span>
+    <div className="mt-0.5 px-0.5">
+      <div className="flex items-center gap-1 px-1.5">
+        <span className="min-w-0 flex-1 text-[10px] font-semibold tracking-[0.06em] text-muted uppercase">Worktrees</span>
         <button
           type="button"
           disabled={busy}
           title="New worktree"
           onClick={() => setOpen((value) => !value)}
-          className="rounded-[6px] px-1.5 py-0.5 text-[11px] text-muted hover:bg-wash hover:text-ink disabled:opacity-40"
+          className="rounded-[6px] px-1.5 py-0.5 text-[11px] font-medium text-muted hover:bg-wash hover:text-ink disabled:opacity-40"
         >
           {open ? "Cancel" : "New"}
         </button>
@@ -60,12 +60,12 @@ export function WorktreeSection({
             onChange={(ev) => setName(ev.target.value)}
             placeholder="feat/name"
             aria-label="New worktree branch"
-            className="min-w-0 flex-1 rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
+            className="min-w-0 flex-1 rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none placeholder:text-muted/70"
           />
           <button
             type="submit"
             disabled={busy || !name.trim()}
-            className="rounded-[6px] bg-wash px-2 py-1 text-[11px] text-ink hover:bg-wash-strong disabled:opacity-40"
+            className="rounded-[6px] bg-accent px-2 py-1 text-[11px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-wash disabled:text-muted"
           >
             Create
           </button>
@@ -76,19 +76,24 @@ export function WorktreeSection({
           const here = samePath(row.path, workspace);
           const label = row.detached ? "detached" : row.branch || folderName(row.path);
           return (
-            <div key={row.path} className="group/wt flex items-center gap-1 rounded-[6px] pr-1 hover:bg-wash">
+            <div
+              key={row.path}
+              className={`group/wt flex items-center gap-1 rounded-[6px] pr-1 ${here ? "bg-accent/10" : "hover:bg-wash"}`}
+            >
               <button
                 type="button"
                 disabled={here}
                 onClick={() => onOpen(row.path)}
                 title={row.path}
-                className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-[4px] text-left text-[12px] disabled:opacity-100 ${
-                  here ? "text-ink" : "text-ink/80"
+                className={`flex min-w-0 flex-1 items-center gap-1.5 px-1.5 py-[3px] text-left text-[12px] disabled:opacity-100 ${
+                  here ? "text-ink" : "text-ink/75"
                 }`}
               >
                 <Symbol name="arrow.triangle.branch" className={`size-3.5 shrink-0 ${here ? "text-accent" : "text-muted"}`} />
-                <span className="min-w-0 flex-1 truncate">{label}</span>
-                <span className="shrink-0 text-[10px] text-muted">{row.main ? "main" : folderName(row.path)}</span>
+                <span className={`min-w-0 flex-1 truncate ${here ? "font-medium" : ""}`}>{label}</span>
+                <span className={`shrink-0 rounded px-1 text-[10px] ${here ? "bg-accent/15 text-accent" : "text-muted/80"}`}>
+                  {row.main ? "main" : folderName(row.path)}
+                </span>
               </button>
               {!row.main && !here ? (
                 <button

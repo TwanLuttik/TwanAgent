@@ -1,6 +1,6 @@
 [package]
 name = "twanagent-service"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.7"
 edition = "2021"
 license = "MIT"
 description = "TwanAgent project engine, shared by the app and the headless server"

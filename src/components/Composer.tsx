@@ -871,7 +871,7 @@ function WorktreeBar({
                   onClick={() => setShowClosed((value) => !value)}
                   className="flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] text-muted hover:bg-wash hover:text-ink"
                 >
-                  <Symbol name={showClosed ? "chevron.down" : "chevron.right"} className="size-3 shrink-0" />
+                  <Symbol name={showClosed ? "chevron.up" : "chevron.right"} className="size-3 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">
                     {showClosed ? "Hide closed" : `Closed · ${closedPulls.length}`}
                   </span>

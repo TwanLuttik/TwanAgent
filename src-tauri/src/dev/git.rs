@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -19,12 +20,17 @@ use crate::remote::ssh::{ExecRequest, Pool};
 const GIT_TIMEOUT_SECS: u64 = 60;
 const OUTPUT_LIMIT: usize = 2_000_000;
 const UNTRACKED_LINE_CAP: u64 = 2_000_000;
+const WORKTREE_DIR: &str = "worktrees";
+const WORKTREE_EXCLUDE: &str = "/worktrees/";
 
 /// One git invocation. Local commands spawn `git`. Remote commands run the same argv over SSH.
 #[derive(Clone)]
 pub struct GitTarget {
     pub root: PathBuf,
     remote: Option<RemoteGit>,
+    /// App projects roots and the app data directory. Empty in tests, which keeps
+    /// worktrees inside the temporary repository.
+    worktree_place: Option<(Vec<PathBuf>, PathBuf)>,
 }
 
 #[derive(Clone)]
@@ -40,6 +46,16 @@ impl GitTarget {
         Ok(Self {
             root: resolve_in_workspace(workspace, "")?,
             remote: None,
+            worktree_place: None,
+        })
+    }
+
+    /// Same as `local`, but a project outside `app_roots` checks worktrees out under `data_dir`.
+    pub fn local_in(workspace: &Path, app_roots: &[PathBuf], data_dir: &Path) -> Result<Self> {
+        Ok(Self {
+            root: resolve_in_workspace(workspace, "")?,
+            remote: None,
+            worktree_place: Some((app_roots.to_vec(), data_dir.to_path_buf())),
         })
     }
 
@@ -58,6 +74,7 @@ impl GitTarget {
                 pool,
                 secret,
             }),
+            worktree_place: None,
         })
     }
 }
@@ -871,34 +888,86 @@ pub fn git_worktrees(target: &GitTarget) -> Result<Vec<GitWorktree>> {
     }
 }
 
-/// `<parent>/<repo>-worktrees/<branch>`, with `/` in the branch turned into `-`.
-pub fn worktree_destination(main_path: &Path, branch: &str) -> Result<PathBuf> {
+/// Where a new worktree is checked out. `inside` is `<repo>/worktrees/<branch>` for a
+/// project the app owns. `None` is a folder the user opened from somewhere else, so the
+/// checkout goes under the app data directory and the project folder is left alone.
+pub struct WorktreeHome {
+    pub inside: bool,
+    pub root: PathBuf,
+}
+
+/// `<root>/<branch>`, with `/` in the branch turned into `-`.
+pub fn worktree_destination(home: &WorktreeHome, branch: &str) -> Result<PathBuf> {
     let branch = sanitize_git_branch(branch)?;
-    let folder = main_path
+    let name = worktree_folder_name(&branch)?;
+    if home.inside && name == WORKTREE_DIR {
+        return Err(Error::Other("worktree folder would nest inside itself".into()));
+    }
+    Ok(home.root.join(name))
+}
+
+/// A project under the app projects folder keeps worktrees inside itself.
+/// Anything else, including a folder opened from another location, uses app data.
+pub fn worktree_home(main_path: &Path, app_roots: &[&Path], data_dir: &Path) -> WorktreeHome {
+    // `git worktree list` returns the real path. On macOS that drops a `/var` -> `/private/var`
+    // symlink, so compare the resolved folders rather than the path the app stored.
+    let main_real = fs::canonicalize(main_path).unwrap_or_else(|_| main_path.to_path_buf());
+    let owned = app_roots.iter().any(|root| {
+        let root_real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        crate::paths::is_under(&main_real, &root_real)
+            && main_real.parent().is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
+    });
+    if owned {
+        return WorktreeHome {
+            inside: true,
+            root: main_path.join(WORKTREE_DIR),
+        };
+    }
+    WorktreeHome {
+        inside: false,
+        root: external_worktree_root(data_dir, main_path),
+    }
+}
+
+/// `<data>/worktrees/<project>-<id>`. Removing an external project deletes this folder.
+pub fn external_worktree_root(data_dir: &Path, main_path: &Path) -> PathBuf {
+    let name = main_path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty() && name != "." && name != "..")
-        .ok_or_else(|| Error::Other("repository folder has no name".into()))?;
-    let parent = main_path
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .ok_or_else(|| Error::Other("repository folder has no parent".into()))?;
-    let name = worktree_folder_name(&branch)?;
-    let root = parent.join(format!("{folder}-worktrees"));
-    let dest = root.join(&name);
-    if path_is_inside(&dest, main_path) {
-        return Err(Error::Other("worktree would be inside the repository".into()));
+        .unwrap_or_else(|| "project".into());
+    let folder = super::projects::sanitize_project_name(&name).unwrap_or_else(|_| "project".into());
+    let id = super::paths::workspace_id(&crate::paths::native_source(&main_path.to_string_lossy()));
+    data_dir.join(WORKTREE_DIR).join(format!("{folder}-{id}"))
+}
+
+/// Tell git to ignore `worktrees/` without touching a committed `.gitignore`.
+/// Git refuses `worktree add` inside the working tree unless this path is excluded.
+fn ensure_worktree_excluded(main_path: &Path) -> Result<()> {
+    let git_dir = main_path.join(".git");
+    if !git_dir.is_dir() {
+        return Ok(());
     }
-    Ok(dest)
+    let info = git_dir.join("info");
+    fs::create_dir_all(&info)?;
+    let exclude = info.join("exclude");
+    let current = fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
+        return Ok(());
+    }
+    let mut next = current;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(WORKTREE_EXCLUDE);
+    next.push('\n');
+    fs::write(&exclude, next)?;
+    Ok(())
 }
 
 fn worktree_folder_name(branch: &str) -> Result<String> {
     let flat = branch.replace('/', "-");
     super::projects::sanitize_project_name(&flat)
-}
-
-fn path_is_inside(path: &Path, root: &Path) -> bool {
-    crate::paths::is_under(path, root)
 }
 
 fn same_checkout(left: &str, right: &Path) -> bool {
@@ -921,7 +990,17 @@ fn main_worktree_path(rows: &[GitWorktree]) -> Result<PathBuf> {
         .ok_or_else(|| Error::Other("not a git repository".into()))
 }
 
-/// Check `branch` out in a sibling folder. `create` makes the branch from HEAD when it is new.
+/// Where this repository's new worktrees go. An existing checkout keeps its own folder.
+fn home_for(target: &GitTarget, main: &Path) -> WorktreeHome {
+    let (roots, data_dir) = target
+        .worktree_place
+        .clone()
+        .unwrap_or_else(|| (Vec::new(), PathBuf::new()));
+    let root_refs: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    worktree_home(main, &root_refs, &data_dir)
+}
+
+/// Check `branch` out in this project's worktree folder. `create` makes the branch from HEAD when it is new.
 pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Result<GitWorktreeAdd> {
     if target.remote.is_some() {
         return Err(Error::Other(
@@ -940,7 +1019,11 @@ pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Resul
         return Err(Error::Conflict(format!("{branch} is already checked out")));
     }
     let main = main_worktree_path(&listed)?;
-    let dest = worktree_destination(&main, &branch)?;
+    let home = home_for(target, &main);
+    if home.inside {
+        ensure_worktree_excluded(&main)?;
+    }
+    let dest = worktree_destination(&home, &branch)?;
     if dest.exists() {
         return Err(Error::Conflict(format!(
             "{} already exists",
@@ -1000,8 +1083,11 @@ pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Resu
     }
     let current = row.branch.clone().unwrap_or_default();
     let here = row.path.clone();
-    let already_home =
-        current == branch && same_checkout(&here, &worktree_destination(&main_worktree_path(&listed)?, &branch)?);
+    let already_home = current == branch
+        && same_checkout(
+            &here,
+            &worktree_destination(&home_for(target, &main_worktree_path(&listed)?), &branch)?,
+        );
     if already_home {
         return Ok(GitWorktreeAdd {
             worktrees: listed,
@@ -1013,7 +1099,7 @@ pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Resu
     }
     let main = main_worktree_path(&listed)?;
     let repo = GitTarget::local(&main)?;
-    let dest = worktree_destination(&main, &branch)?;
+    let dest = worktree_destination(&home_for(target, &main), &branch)?;
     let moving = !same_checkout(&row.path, &dest);
     if moving && dest.exists() {
         return Err(Error::Conflict(format!(
@@ -1059,6 +1145,148 @@ pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Resu
         .map(|item| item.path.clone())
         .unwrap_or_else(|| dest.to_string_lossy().into_owned());
     Ok(GitWorktreeAdd { worktrees, opened })
+}
+
+/// How much disk one remove choice would free. `project` is the main checkout.
+/// `worktrees` is every linked checkout. `app` is the chats and other app data for those folders.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectRemoval {
+    pub project: u64,
+    pub worktrees: u64,
+    pub app: u64,
+    pub worktree_count: u32,
+    pub app_managed: bool,
+}
+
+/// Bytes the main checkout, its linked worktrees, and their app data take.
+/// A folder that is not a git repo reports no worktrees.
+pub fn project_removal(target: &GitTarget, data_dir: &Path, app_roots: &[&Path]) -> ProjectRemoval {
+    let here = fs::canonicalize(&target.root).unwrap_or_else(|_| target.root.clone());
+    let app_managed = app_roots.iter().any(|root| {
+        let root_real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        crate::paths::is_under(&here, &root_real)
+            && here.parent().is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
+    });
+    let listed = git_worktrees(target).unwrap_or_default();
+    let linked: Vec<&GitWorktree> = listed.iter().filter(|row| !row.main && !row.bare).collect();
+    let main = listed.iter().find(|row| row.main);
+    let skip = linked
+        .iter()
+        .map(|row| {
+            fs::canonicalize(&row.path)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| row.path.clone())
+        })
+        .collect::<Vec<_>>();
+    let skip_refs = skip.iter().map(String::as_str).collect::<Vec<_>>();
+    let project = main
+        .map(|row| dir_size_except(Path::new(&row.path), &skip_refs))
+        .unwrap_or_else(|| dir_size_except(&target.root, &skip_refs));
+    let mut worktrees = 0u64;
+    let mut app = app_data_size(data_dir, &target.root);
+    for row in &linked {
+        worktrees += dir_size(Path::new(&row.path));
+        app += app_data_size(data_dir, Path::new(&row.path));
+    }
+    // External checkouts live together under one app-data folder. Count that once
+    // when git has not listed the children yet.
+    if linked.is_empty() && !app_managed {
+        let home = external_worktree_root(data_dir, &target.root);
+        if home.is_dir() {
+            worktrees += dir_size(&home);
+        }
+    }
+    ProjectRemoval {
+        project,
+        worktrees,
+        app,
+        worktree_count: linked.len() as u32,
+        app_managed,
+    }
+}
+
+/// Remove every linked worktree and the app data stored for those folders.
+/// The main checkout and its branch stay. A dirty worktree is left in place.
+pub fn remove_project_worktrees(target: &GitTarget, data_dir: &Path) -> Result<Vec<String>> {
+    if target.remote.is_some() {
+        return Err(Error::Other(
+            "worktrees are only removed for a project on this Mac".into(),
+        ));
+    }
+    let listed = git_worktrees(target)?;
+    let mut removed = Vec::new();
+    let mut blocked = Vec::new();
+    for row in listed.iter().filter(|row| !row.main && !row.bare) {
+        match git_run(target, &["worktree", "remove", "--", &row.path]) {
+            Ok(_) => {
+                let _ = super::project_location::drop_project_chats(data_dir, &row.path);
+                removed.push(row.path.clone());
+            }
+            Err(_) => blocked.push(row.path.clone()),
+        }
+    }
+    if let Some(main) = listed.iter().find(|row| row.main) {
+        let home = external_worktree_root(data_dir, Path::new(&main.path));
+        if home.is_dir() {
+            let _ = fs::remove_dir_all(&home);
+        }
+    }
+    if removed.is_empty() && !blocked.is_empty() {
+        return Err(Error::Other(
+            "worktrees still have uncommitted changes, so nothing was removed".into(),
+        ));
+    }
+    Ok(removed)
+}
+
+/// Disk space a folder occupies, following the same files `du` would. A missing folder is zero.
+fn dir_size(path: &Path) -> u64 {
+    dir_size_except(path, &[])
+}
+
+/// Like `dir_size`, but a nested path in `skip` is left out. Linked worktrees live inside the
+/// main checkout, and their space belongs to the worktree choice, not the project choice.
+fn dir_size_except(path: &Path, skip: &[&str]) -> u64 {
+    fn walk(path: &Path, skip: &[&str], seen: &mut HashSet<u64>, total: &mut u64) {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if meta.file_type().is_symlink() {
+            return;
+        }
+        if meta.is_dir() {
+            if path.file_name().is_some_and(|name| name == ".git") {
+                return;
+            }
+            let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            let text = crate::paths::native_source(&canon.to_string_lossy());
+            if skip.iter().any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text)) {
+                return;
+            }
+        }
+        // A second hard link must not be counted twice.
+        if meta.nlink() > 1 && !seen.insert(meta.ino()) {
+            return;
+        }
+        *total = total.saturating_add(meta.blocks().saturating_mul(512));
+        if !meta.is_dir() {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            walk(&entry.path(), skip, seen, total);
+        }
+    }
+    let mut total = 0u64;
+    walk(path, skip, &mut HashSet::new(), &mut total);
+    total
+}
+
+fn app_data_size(data_dir: &Path, workspace: &Path) -> u64 {
+    let id = super::paths::workspace_id(&crate::paths::native_source(&workspace.to_string_lossy()));
+    dir_size(&data_dir.join("dev").join(id))
 }
 
 /// Remove a linked worktree. Refuses the main checkout, the open folder, and a dirty tree.
@@ -1541,7 +1769,7 @@ pub fn parse_pull_request_states(text: &str) -> Option<HashMap<u32, PullRequestI
     Some(out)
 }
 
-/// Fetch one open pull request and check it out in a sibling worktree.
+/// Fetch one open pull request and check it out in a worktree inside the project.
 pub fn git_pull_request_checkout(target: &GitTarget, number: u32) -> Result<GitWorktreeAdd> {
     if target.remote.is_some() {
         return Err(Error::Other(
@@ -1935,21 +2163,46 @@ bare
 }
 
 #[test]
-fn worktree_destination_is_a_sibling_and_flattens_slashes() {
+fn worktree_destination_lives_inside_the_project_and_flattens_slashes() {
     let main = Path::new("/work/billing");
-    let dest = worktree_destination(main, "feat/login").unwrap();
-    assert_eq!(dest, PathBuf::from("/work/billing-worktrees/feat-login"));
-    assert!(worktree_destination(main, "foo;rm").is_err());
-    assert!(worktree_destination(main, "").is_err());
+    let home = WorktreeHome { inside: true, root: main.join("worktrees") };
+    let dest = worktree_destination(&home, "feat/login").unwrap();
+    assert_eq!(dest, PathBuf::from("/work/billing/worktrees/feat-login"));
+    assert!(worktree_destination(&home, "foo;rm").is_err());
+    assert!(worktree_destination(&home, "").is_err());
+}
+
+#[test]
+fn an_opened_folder_keeps_worktrees_in_app_data() {
+    let projects = Path::new("/Users/me/twanagent-dev/projects");
+    let owned = Path::new("/Users/me/twanagent-dev/projects/billing");
+    let opened = Path::new("/Users/me/code/billing");
+    let data = Path::new("/Users/me/Library/Application Support/app.twanagent.desktop-dev");
+    let inside = worktree_home(owned, &[projects], data);
+    assert!(inside.inside);
+    assert_eq!(inside.root, PathBuf::from("/Users/me/twanagent-dev/projects/billing/worktrees"));
+    let outside = worktree_home(opened, &[projects], data);
+    assert!(!outside.inside);
+    let dest = worktree_destination(&outside, "feat/login").unwrap();
+    assert!(dest.starts_with(data.join("worktrees")));
+    assert!(dest.ends_with("feat-login"));
+    assert!(!dest.starts_with(opened));
+    assert_eq!(
+        external_worktree_root(data, opened),
+        outside.root,
+    );
 }
 
 #[test]
 fn git_worktrees_lists_a_real_add() {
     let dir = temp_ws();
-    init_repo(dir.path());
-    let target = local(dir.path());
+    let (repo, target) = owned_repo(&dir);
     let added = git_worktree_add(&target, "feat/login", true).unwrap();
+    assert!(added.opened.contains("worktrees"));
     assert!(added.opened.contains("feat-login"));
+    assert!(fs::canonicalize(&added.opened).unwrap().starts_with(fs::canonicalize(&repo).unwrap()));
+    let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(exclude.lines().any(|line| line.trim() == "/worktrees/"));
     let names: Vec<_> = added
         .worktrees
         .iter()
@@ -1966,7 +2219,7 @@ fn git_worktrees_lists_a_real_add() {
     assert!(Path::new(&linked.path).join("README.md").is_file());
     let main_branch = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(dir.path())
+        .current_dir(&repo)
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&main_branch.stdout).trim(), "main");
@@ -1977,8 +2230,7 @@ fn git_worktrees_lists_a_real_add() {
 #[test]
 fn git_worktree_remove_refuses_a_dirty_tree_and_keeps_the_branch() {
     let dir = temp_ws();
-    init_repo(dir.path());
-    let target = local(dir.path());
+    let (repo, target) = owned_repo(&dir);
     let added = git_worktree_add(&target, "feature", true).unwrap();
     let linked = added
         .worktrees
@@ -1996,15 +2248,14 @@ fn git_worktree_remove_refuses_a_dirty_tree_and_keeps_the_branch() {
     assert!(left.iter().all(|row| row.main || row.path != linked));
     let branches = git_branches(&target).unwrap();
     assert!(branches.branches.iter().any(|name| name == "feature"));
-    let main = git_worktree_remove(&target, dir.path().to_str().unwrap()).unwrap_err();
+    let main = git_worktree_remove(&target, repo.to_str().unwrap()).unwrap_err();
     assert!(main.to_string().contains("main checkout"));
 }
 
 #[test]
 fn git_worktree_rename_moves_the_branch_and_the_folder() {
     let dir = temp_ws();
-    init_repo(dir.path());
-    let target = local(dir.path());
+    let (repo, target) = owned_repo(&dir);
     let added = git_worktree_add(&target, "wip", true).unwrap();
     let linked = added
         .worktrees
@@ -2016,6 +2267,7 @@ fn git_worktree_rename_moves_the_branch_and_the_folder() {
     fs::write(Path::new(&linked).join("note.txt"), "kept\n").unwrap();
     let renamed = git_worktree_rename(&target, &linked, "feat/login").unwrap();
     assert!(!Path::new(&linked).exists());
+    assert!(renamed.opened.contains("worktrees"));
     assert!(renamed.opened.contains("feat-login"));
     let row = renamed
         .worktrees
@@ -2027,13 +2279,70 @@ fn git_worktree_rename_moves_the_branch_and_the_folder() {
         fs::read_to_string(Path::new(&row.path).join("note.txt")).unwrap(),
         "kept\n"
     );
-    let branches = git_branches(&local(dir.path())).unwrap();
+    let branches = git_branches(&local(&repo)).unwrap();
     assert!(branches.branches.iter().any(|name| name == "feat/login"));
     assert!(!branches.branches.iter().any(|name| name == "wip"));
     let same = git_worktree_rename(&target, &row.path, "feat/login").unwrap();
     assert_eq!(same.opened, row.path);
-    let main = git_worktree_rename(&target, dir.path().to_str().unwrap(), "other").unwrap_err();
+    let main = git_worktree_rename(&target, repo.to_str().unwrap(), "other").unwrap_err();
     assert!(main.to_string().contains("main checkout"));
+}
+
+#[test]
+fn an_opened_folder_checks_a_worktree_out_beside_app_data() {
+    let dir = temp_ws();
+    let projects = dir.path().join("projects");
+    let data = dir.path().join("app-data");
+    let opened = dir.path().join("code").join("billing");
+    fs::create_dir_all(&opened).unwrap();
+    init_repo(&opened);
+    let target = GitTarget::local_in(&opened, &[projects], &data).unwrap();
+    let added = git_worktree_add(&target, "feat/login", true).unwrap();
+    let opened_canon = fs::canonicalize(&added.opened).unwrap();
+    let home = fs::canonicalize(external_worktree_root(&data, &fs::canonicalize(&opened).unwrap())).unwrap();
+    assert!(opened_canon.starts_with(&home));
+    assert!(added.opened.contains("feat-login"));
+    assert!(!opened.join("worktrees").exists());
+    assert!(Path::new(&added.opened).join("README.md").is_file());
+    fs::remove_dir_all(&home).unwrap();
+    assert!(!opened_canon.exists());
+}
+
+#[test]
+fn project_removal_splits_the_main_checkout_from_its_worktrees() {
+    let dir = temp_ws();
+    let (repo, target) = owned_repo(&dir);
+    let added = git_worktree_add(&target, "feat/login", true).unwrap();
+    let linked = added
+        .worktrees
+        .iter()
+        .find(|row| !row.main)
+        .unwrap()
+        .path
+        .clone();
+    fs::write(Path::new(&linked).join("big.bin"), vec![1u8; 64 * 1024]).unwrap();
+    let commit = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(&linked).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    commit(&["add", "big.bin"]);
+    commit(&["commit", "-m", "add a large file"]);
+    let data = dir.path().join("app-data");
+    let projects = dir.path().join("projects");
+    fs::create_dir_all(&data).unwrap();
+    let report = project_removal(&target, &data, &[&projects]);
+    assert!(report.app_managed);
+    assert_eq!(report.worktree_count, 1);
+    assert!(report.worktrees >= 64 * 1024, "worktrees {}", report.worktrees);
+    assert!(report.project > 0);
+    assert!(report.project < report.worktrees, "project {} includes the worktree", report.project);
+    let removed = remove_project_worktrees(&target, &data).unwrap();
+    assert_eq!(removed, vec![linked.clone()]);
+    assert!(!Path::new(&linked).exists());
+    assert!(repo.join("README.md").is_file());
+    let after = project_removal(&target, &data, &[&projects]);
+    assert_eq!(after.worktree_count, 0);
+    assert_eq!(after.worktrees, 0);
 }
 
 #[test]
@@ -2096,6 +2405,15 @@ fn pull_request_checkout_refuses_a_repo_without_github() {
     let err = git_pull_request_checkout(&local(dir.path()), 4).unwrap_err();
     assert!(err.to_string().contains("GitHub"));
     assert!(git_pull_requests(&local(dir.path())).unwrap().is_empty());
+}
+
+fn owned_repo(dir: &tempfile::TempDir) -> (PathBuf, GitTarget) {
+    let projects = dir.path().join("projects");
+    let repo = projects.join("billing");
+    fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    let target = GitTarget::local_in(&repo, &[projects], &dir.path().join("app-data")).unwrap();
+    (repo, target)
 }
 
 fn init_repo(path: &Path) {

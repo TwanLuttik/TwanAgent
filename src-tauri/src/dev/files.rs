@@ -22,6 +22,7 @@ const TREE_SKIP: &[&str] = &[
     "dist",
     "build",
     ".git",
+    "worktrees",
     "__pycache__",
     ".next",
     ".turbo",
@@ -752,6 +753,8 @@ mod tests {
         assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
         fs::create_dir_all(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join("node_modules/pkg.js"), "x").unwrap();
+        fs::create_dir_all(dir.path().join("worktrees/feat-login")).unwrap();
+        fs::write(dir.path().join("worktrees/feat-login/README.md"), "x").unwrap();
         assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
         rename_path(dir.path(), "src/a.txt", "b.txt").unwrap();
         let renamed = tree_snapshot(dir.path()).unwrap();

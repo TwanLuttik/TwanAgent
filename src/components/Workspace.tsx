@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type ReactNode, type RefObject } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   DndContext,
   DragOverlay,
@@ -67,7 +68,6 @@ import {
 import * as api from "../lib/tauri";
 import type { Entry, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary, GitWorktree } from "../lib/tauri";
 import { Terminal } from "./Terminal";
-import { WorktreeSection } from "./Worktrees";
 import { AnchoredMenu } from "./ContextMenu";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
@@ -1315,6 +1315,7 @@ function GitPane({
   const [showNew, setShowNew] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const [commitHash, setCommitHash] = useState<string | null>(null);
   const [commitText, setCommitText] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -1323,13 +1324,6 @@ function GitPane({
   const staged = changes.filter((row) => row.staged);
   const unstaged = changes.filter((row) => !row.staged || row.unstaged || row.status === "untracked");
   const repo = branches.repo !== false && (summary?.repo !== false);
-  const tracking = summary
-    ? [
-        summary.ahead ? `↑${summary.ahead}` : "",
-        summary.behind ? `↓${summary.behind}` : "",
-        summary.upstream ? summary.upstream : "",
-      ].filter(Boolean).join(" ")
-    : "";
 
   useEffect(() => {
     if (!identity) return;
@@ -1360,27 +1354,25 @@ function GitPane({
 
   return (
     <>
-      <div className="px-1.5 pt-1.5">
+      <div className="shrink-0 px-1.5 pt-1">
         <BranchSwitch
           current={summary?.detached ? summary.commit : branches.current}
           names={branches.branches}
           switching={switching}
           onSwitch={onSwitch}
+          upstream={summary?.upstream ?? null}
+          ahead={summary?.ahead ?? 0}
+          behind={summary?.behind ?? 0}
+          workspace={workspacePath}
+          worktrees={repo ? worktrees : []}
+          busy={busy}
+          onOpenWorktree={(path) => onOpenWorkspace?.(path)}
+          onCreateWorktree={onCreateWorktree}
+          onRemoveWorktree={onRemoveWorktree}
         />
-        {repo && worktrees.length > 0 ? (
-          <WorktreeSection
-            workspace={workspacePath}
-            worktrees={worktrees}
-            busy={busy || switching}
-            onOpen={(path) => onOpenWorkspace?.(path)}
-            onCreate={onCreateWorktree}
-            onRemove={onRemoveWorktree}
-          />
-        ) : null}
-        {tracking ? <p className="px-2 pt-0.5 text-[11px] text-muted">{tracking}</p> : null}
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
         {repo ? (
-          <div className="flex items-center gap-0.5 px-1 pt-0.5">
+          <div className="mt-0.5 flex items-center gap-0.5 rounded-[8px] bg-wash/70 px-0.5 py-0.5">
             <GitIconButton label="Fetch" icon="arrow.2.circlepath" disabled={busy} onClick={() => onSync("fetch")} />
             <GitIconButton label="Pull" icon="square.and.arrow.down" disabled={busy} onClick={() => onSync("pull")} />
             <GitIconButton
@@ -1389,7 +1381,7 @@ function GitPane({
               disabled={busy}
               onClick={() => onSync(summary?.upstream ? "push" : "publish")}
             />
-            <div className="relative" ref={moreRef}>
+            <div className="relative ml-auto" ref={moreRef}>
               <GitIconButton
                 label="More"
                 icon="ellipsis"
@@ -1401,7 +1393,7 @@ function GitPane({
                 <div
                   role="menu"
                   aria-label="Git actions"
-                  className="absolute top-full left-0 z-20 mt-1 min-w-[148px] rounded-md border border-line bg-canvas py-1 shadow-card"
+                  className="absolute top-full right-0 z-20 mt-1 min-w-[148px] rounded-md border border-line bg-canvas py-1 shadow-card"
                 >
                   <GitMenuItem
                     label="Stash changes"
@@ -1428,23 +1420,11 @@ function GitPane({
                 </div>
               ) : null}
             </div>
-            {showNew ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNew(false);
-                  setNewBranch("");
-                }}
-                className="ml-auto px-1.5 text-[11px] text-muted hover:text-ink"
-              >
-                Cancel
-              </button>
-            ) : null}
           </div>
         ) : null}
         {showNew ? (
           <form
-            className="flex gap-1 px-1 pt-1"
+            className="flex gap-1 px-0.5 pt-1"
             onSubmit={(ev) => {
               ev.preventDefault();
               const next = newBranch.trim();
@@ -1458,9 +1438,19 @@ function GitPane({
               value={newBranch}
               onChange={(ev) => setNewBranch(ev.target.value)}
               placeholder="feature/name"
-              className="min-w-0 flex-1 rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
+              className="min-w-0 flex-1 rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none placeholder:text-muted/70"
             />
             <GitAction label="Create" disabled={busy || !newBranch.trim()} onClick={() => undefined} submit />
+            <button
+              type="button"
+              onClick={() => {
+                setShowNew(false);
+                setNewBranch("");
+              }}
+              className="rounded-[6px] px-1.5 text-[11px] text-muted hover:bg-wash hover:text-ink"
+            >
+              Cancel
+            </button>
           </form>
         ) : null}
       </div>
@@ -1479,21 +1469,21 @@ function GitPane({
         </form>
       ) : null}
       {changes.length > 0 ? (
-        <div className="px-1.5 pt-1">
+        <div className="shrink-0 px-1.5 pt-1.5">
           <button
             type="button"
             onClick={onOpenAll}
-            className={`flex w-full items-center gap-1.5 rounded-[6px] px-2 py-1 text-left text-[12px] ${
+            className={`flex w-full items-center gap-1.5 rounded-[7px] px-2 py-[5px] text-left text-[12px] ${
               selected === ALL_DIFF_PATH ? "bg-wash-strong text-ink" : "text-ink hover:bg-wash"
             }`}
           >
-            <Symbol name="doc" className="size-3.5 shrink-0 text-muted" />
-            <span className="min-w-0 flex-1 truncate">View diff</span>
+            <Symbol name="doc" className="size-3.5 shrink-0 text-accent" />
+            <span className="min-w-0 flex-1 truncate font-medium">View diff</span>
             {totals.additions > 0 ? (
-              <span className="font-medium text-ok">+{formatDiffCount(totals.additions)}</span>
+              <span className="rounded bg-ok/12 px-1 font-mono text-[10px] font-medium text-ok tabular-nums">+{formatDiffCount(totals.additions)}</span>
             ) : null}
             {totals.deletions > 0 ? (
-              <span className="font-medium text-err">-{formatDiffCount(totals.deletions)}</span>
+              <span className="rounded bg-err/12 px-1 font-mono text-[10px] font-medium text-err tabular-nums">-{formatDiffCount(totals.deletions)}</span>
             ) : null}
           </button>
           <form
@@ -1511,7 +1501,7 @@ function GitPane({
               onChange={(ev) => setMessage(ev.target.value)}
               placeholder={staged.length ? "Commit message" : "Stage files to commit"}
               rows={2}
-              className="resize-none rounded-[6px] bg-wash px-2 py-1 text-[12px] text-ink outline-none"
+              className="resize-none rounded-[6px] bg-wash px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-muted/70"
             />
             <div className="flex items-center gap-1">
               <GitAction label={unstaged.length ? `Stage ${unstaged.length}` : "Stage"} disabled={busy || unstaged.length === 0} onClick={() => onStage(unstaged.map((row) => row.path))} />
@@ -1529,7 +1519,7 @@ function GitPane({
               <button
                 type="submit"
                 disabled={busy || !message.trim() || staged.length === 0}
-                className="rounded-[6px] bg-accent/15 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/25 disabled:opacity-40"
+                className="rounded-[6px] bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-wash disabled:text-muted disabled:opacity-100"
               >
                 {busy ? "Working…" : "Commit"}
               </button>
@@ -1537,7 +1527,7 @@ function GitPane({
           </form>
         </div>
       ) : null}
-      <div className="flex h-7 items-center justify-between gap-2 px-3">
+      <div className="mt-1 flex h-7 shrink-0 items-center justify-between gap-2 border-t border-line/40 px-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Changes</span>
           <div className="flex items-center rounded-[6px] bg-wash p-px" role="group" aria-label="Change list layout">
@@ -1567,7 +1557,7 @@ function GitPane({
             </button>
           </div>
         </div>
-        <span className="text-[11px] text-muted">{changes.length}</span>
+        <span className="rounded-full bg-wash px-1.5 py-px text-[10px] font-medium text-muted tabular-nums">{changes.length}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {changes.length === 0 ? (
@@ -1602,29 +1592,47 @@ function GitPane({
             />
           ))
         )}
-        {history.length ? (
-          <div className="mt-2 border-t border-line/50 pt-1">
-            <p className="px-2 py-1 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">History</p>
-            {history.map((row) => (
-              <button
-                key={row.hash}
-                type="button"
-                title={`${row.short} ${row.subject}\n${row.author}`}
-                onClick={() => {
-                  void onShow(row.hash).then(setCommitText).catch((e) => setCommitText(String(e)));
-                }}
-                className="flex w-full items-baseline gap-2 rounded-[6px] px-2 py-[3px] text-left text-[12px] hover:bg-wash"
-              >
-                <span className="shrink-0 font-mono text-[10px] text-muted">{row.short}</span>
-                <span className="min-w-0 flex-1 truncate text-ink/90">{row.subject}</span>
-              </button>
-            ))}
+      </div>
+      {history.length ? (
+        <div className="mt-auto flex h-[7.25rem] max-h-[32%] shrink-0 flex-col border-t border-line/60 bg-canvas/30">
+          <div className="flex h-6 shrink-0 items-center justify-between px-3">
+            <span className="text-[10px] font-semibold tracking-[0.06em] text-muted uppercase">History</span>
+            <span className="text-[10px] text-muted/80 tabular-nums">{history.length}</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-1.5">
+            {history.map((row) => {
+              const open = commitText !== null && commitHash === row.hash;
+              const when = relativeCommitTime(row.at);
+              return (
+                <button
+                  key={row.hash}
+                  type="button"
+                  title={`${row.short} ${row.subject}\n${row.author}${when ? ` · ${when}` : ""}`}
+                  onClick={() => {
+                    if (open) {
+                      setCommitHash(null);
+                      setCommitText(null);
+                      return;
+                    }
+                    setCommitHash(row.hash);
+                    void onShow(row.hash).then(setCommitText).catch((e) => setCommitText(String(e)));
+                  }}
+                  className={`flex w-full items-center gap-1.5 rounded-[5px] px-1.5 py-[2px] text-left text-[11px] leading-4 ${
+                    open ? "bg-wash-strong" : "hover:bg-wash"
+                  }`}
+                >
+                  <span className="w-12 shrink-0 font-mono text-[10px] text-accent/80">{row.short}</span>
+                  <span className="min-w-0 flex-1 truncate text-ink/85">{row.subject}</span>
+                  {when ? <span className="shrink-0 text-[10px] text-muted/70">{when}</span> : null}
+                </button>
+              );
+            })}
             {commitText ? (
-              <pre className="mt-1 max-h-48 overflow-auto rounded-[6px] bg-wash px-2 py-1 font-mono text-[10px] whitespace-pre-wrap text-ink/80">{commitText}</pre>
+              <pre className="mt-1 max-h-32 overflow-auto rounded-[6px] bg-wash px-2 py-1 font-mono text-[10px] leading-snug whitespace-pre-wrap text-ink/75">{commitText}</pre>
             ) : null}
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -1704,7 +1712,7 @@ function GitAction({
       type={submit ? "submit" : "button"}
       disabled={disabled}
       onClick={submit ? undefined : onClick}
-      className="rounded-[6px] bg-wash px-2 py-1 text-[11px] text-ink hover:bg-wash-strong disabled:opacity-40"
+      className="rounded-[6px] border border-line/50 bg-panel px-2 py-1 text-[11px] font-medium text-ink hover:border-line hover:bg-wash-strong disabled:border-transparent disabled:bg-wash disabled:text-muted disabled:opacity-100"
     >
       {label}
     </button>
@@ -1815,16 +1823,16 @@ function ChangeFileRow({
         type="button"
         onClick={() => onOpen(row, "preview")}
         onDoubleClick={() => onOpen(row, "pin")}
-        className="flex min-w-0 flex-1 items-center gap-2 py-[2px] text-left"
+        className="flex min-w-0 flex-1 items-center gap-1.5 py-[2px] text-left"
       >
-        <span className={`w-3 shrink-0 text-[10px] font-semibold ${statusTone(row.status)}`}>
+        <span className={`flex size-3.5 shrink-0 items-center justify-center rounded-[3px] text-[9px] font-semibold ${statusChip(row.status)}`}>
           {statusMark(row.status)}
         </span>
         <FileIcon name={row.path} className="size-3.5 text-muted" />
-        <span className="min-w-0 flex-1 truncate text-ok" title={row.original ? `${row.original} → ${row.path}` : row.path}>
+        <span className="min-w-0 flex-1 truncate text-ink/90" title={row.original ? `${row.original} → ${row.path}` : row.path}>
           {label}
         </span>
-        {row.staged ? <span className="shrink-0 text-[10px] text-muted">staged</span> : null}
+        {row.staged ? <span className="shrink-0 rounded bg-accent/12 px-1 text-[9px] font-medium text-accent">staged</span> : null}
         <GitLineStats {...gitLineStats(row)} />
       </button>
       <button
@@ -1851,21 +1859,54 @@ function ChangeFileRow({
   );
 }
 
+const GIT_MENU_EASE = [0.22, 1, 0.36, 1] as const;
+
 function BranchSwitch({
   current,
   names,
   switching,
   onSwitch,
+  upstream,
+  ahead,
+  behind,
+  workspace,
+  worktrees,
+  busy,
+  onOpenWorktree,
+  onCreateWorktree,
+  onRemoveWorktree,
 }: {
   current: string | null;
   names: string[];
   switching: boolean;
   onSwitch: (name: string) => void;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  workspace: string;
+  worktrees: GitWorktree[];
+  busy: boolean;
+  onOpenWorktree: (path: string) => void;
+  onCreateWorktree: (branch: string) => void;
+  onRemoveWorktree: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const [draft, setDraft] = useState("");
   const ref = useRef<HTMLDivElement>(null);
-  const label = current || (names.length ? "Detached HEAD" : "No git repo");
-  const canSwitch = names.length > 0 && !switching;
+  const button = useRef<HTMLButtonElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const here = worktrees.find((row) => sameGitPath(row.path, workspace)) ?? null;
+  const label = here
+    ? here.detached
+      ? "detached"
+      : here.branch || current || folderName(here.path)
+    : current || (names.length ? "Detached HEAD" : "No git repo");
+  const canOpen = (names.length > 0 || worktrees.length > 0) && !switching;
+  const checkedOut = new Set(
+    worktrees.map((row) => (row.detached ? "" : row.branch || "")).filter(Boolean),
+  );
+  const otherBranches = names.filter((name) => name !== current && !checkedOut.has(name));
 
   useEffect(() => {
     if (!open) return;
@@ -1883,51 +1924,208 @@ function BranchSwitch({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (naming) field.current?.focus();
+  }, [naming]);
+
+  function close() {
+    setOpen(false);
+    setNaming(false);
+    setDraft("");
+  }
+
+  function createWorktree() {
+    const name = draft.trim();
+    if (!name || busy) return;
+    close();
+    onCreateWorktree(name);
+  }
+
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={button}
         type="button"
-        disabled={!canSwitch}
-        aria-haspopup="listbox"
+        disabled={!canOpen}
+        aria-haspopup="menu"
         aria-expanded={open}
-        title={current ? `Branch ${current}` : label}
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-[6px] px-2 py-[5px] text-left text-[12px] text-ink hover:bg-wash disabled:opacity-50"
+        title={here?.path || (current ? `Branch ${current}` : label)}
+        onClick={() => {
+          if (open) close();
+          else setOpen(true);
+        }}
+        className={`flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-wash disabled:opacity-50 ${
+          open ? "bg-wash text-ink" : "text-ink"
+        }`}
       >
-        <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-muted" />
+        <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate font-medium">{switching ? "Switching…" : label}</span>
-        {canSwitch ? <Symbol name="chevron.down" className="size-3 shrink-0 text-muted" /> : null}
+        {ahead > 0 ? <span className="shrink-0 text-[10px] font-medium text-ok">↑{ahead}</span> : null}
+        {behind > 0 ? <span className="shrink-0 text-[10px] font-medium text-warn">↓{behind}</span> : null}
+        {canOpen ? <Symbol name="chevron.down" className={`size-2.5 shrink-0 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} /> : null}
       </button>
-      {open ? (
-        <div
-          role="listbox"
-          aria-label="Branches"
-          className="absolute top-full right-0 left-0 z-20 mt-1 max-h-56 overflow-auto rounded-md border border-line bg-canvas py-1 shadow-card"
-        >
-          {names.map((name) => {
-            const selected = name === current;
-            return (
-              <button
-                key={name}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                onClick={() => {
-                  setOpen(false);
-                  onSwitch(name);
-                }}
-                className={`flex w-full items-center px-2.5 py-1.5 text-left text-[12px] hover:bg-inset ${
-                  selected ? "font-medium text-ink" : "text-ink/80"
-                }`}
-              >
-                <span className="min-w-0 truncate">{name}</span>
-              </button>
-            );
-          })}
+      <GitPopMenu open={open} anchor={button} label="Branches and worktrees">
+        <div className="max-h-72 overflow-auto py-1">
+          {worktrees.length ? (
+            <>
+              <p className="px-2.5 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.04em] text-muted uppercase">Worktrees</p>
+              {worktrees.map((row) => {
+                const selected = sameGitPath(row.path, workspace);
+                const name = row.detached ? "detached" : row.branch || folderName(row.path);
+                return (
+                  <div key={row.path} className="group/wt flex items-center pr-1 hover:bg-wash">
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      title={row.path}
+                      disabled={selected}
+                      onClick={() => {
+                        close();
+                        onOpenWorktree(row.path);
+                      }}
+                      className={`flex h-7 min-w-0 flex-1 items-center gap-2 px-2.5 text-left text-[12px] disabled:opacity-100 ${
+                        selected ? "font-medium text-ink" : "text-ink/80"
+                      }`}
+                    >
+                      <Symbol name="arrow.triangle.branch" className={`size-3.5 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
+                      <span className="min-w-0 flex-1 truncate">{name}</span>
+                      <span className="shrink-0 text-[10px] font-normal text-muted">{row.main ? "main" : folderName(row.path)}</span>
+                      <Symbol name="checkmark" className={`size-3 shrink-0 text-accent ${selected ? "opacity-100" : "opacity-0"}`} />
+                    </button>
+                    {!row.main && !selected ? (
+                      <button
+                        type="button"
+                        aria-label={`Remove worktree ${name}`}
+                        title="Remove worktree"
+                        disabled={busy}
+                        onClick={() => onRemoveWorktree(row.path)}
+                        className="flex size-5 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:bg-wash-strong hover:text-err group-hover/wt:opacity-100 disabled:opacity-40"
+                      >
+                        <Symbol name="xmark" className="size-3" />
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+          {otherBranches.length ? (
+            <>
+              <p className={`px-2.5 pb-0.5 text-[10px] font-semibold tracking-[0.04em] text-muted uppercase ${worktrees.length ? "pt-2" : "pt-1"}`}>
+                Branches
+              </p>
+              {otherBranches.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  role="menuitem"
+                  title={upstream && name === current ? upstream : undefined}
+                  onClick={() => {
+                    close();
+                    onSwitch(name);
+                  }}
+                  className="flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash"
+                >
+                  <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-muted" />
+                  <span className="min-w-0 flex-1 truncate">{name}</span>
+                </button>
+              ))}
+            </>
+          ) : null}
+          {!worktrees.length && !otherBranches.length ? (
+            <p className="px-2.5 py-2 text-[12px] text-muted">No other branches</p>
+          ) : null}
         </div>
-      ) : null}
+        <div className="border-t border-line/20 p-1">
+          {naming ? (
+            <div className="px-1 py-0.5">
+              <input
+                ref={field}
+                value={draft}
+                aria-label="New worktree name"
+                placeholder="feat/name"
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    createWorktree();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setNaming(false);
+                    setDraft("");
+                  }
+                }}
+                className="h-7 w-full bg-transparent px-1.5 text-[12px] text-ink outline-none placeholder:text-muted"
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => setNaming(true)}
+              className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink/80 hover:bg-wash disabled:opacity-40"
+            >
+              <Symbol name="plus" className="size-3.5 shrink-0 text-accent" />
+              <span className="min-w-0 flex-1 truncate">New worktree</span>
+            </button>
+          )}
+        </div>
+      </GitPopMenu>
     </div>
   );
+}
+
+function GitPopMenu({
+  open,
+  anchor,
+  label,
+  children,
+}: {
+  open: boolean;
+  anchor: RefObject<HTMLElement | null>;
+  label: string;
+  children: ReactNode;
+}) {
+  const [above, setAbove] = useState(false);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const frame = anchor.current?.getBoundingClientRect();
+    if (!frame) return;
+    setAbove(frame.bottom + 280 > window.innerHeight && frame.top > 280);
+  }, [open, anchor]);
+  return (
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          role="menu"
+          aria-label={label}
+          initial={{ opacity: 0, y: above ? 6 : -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: above ? 6 : -6 }}
+          transition={{ duration: 0.16, ease: GIT_MENU_EASE }}
+          className={`absolute right-0 left-0 z-30 overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
+            above ? "bottom-full mb-1 origin-bottom" : "top-full mt-1 origin-top"
+          }`}
+        >
+          {children}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function sameGitPath(a: string, b: string): boolean {
+  return a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function folderName(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts[parts.length - 1] || path;
 }
 
 function Tree({
@@ -2231,6 +2429,24 @@ function GitLineStats({ additions, deletions }: { additions: number; deletions: 
   );
 }
 
+function relativeCommitTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `${days}d`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 8) return `${weeks}w`;
+  const months = Math.round(days / 30);
+  if (months < 18) return `${months}mo`;
+  return `${Math.round(days / 365)}y`;
+}
+
 function statusMark(status: string): string {
   if (status === "added" || status === "untracked") return "A";
   if (status === "deleted") return "D";
@@ -2239,8 +2455,9 @@ function statusMark(status: string): string {
   return "M";
 }
 
-function statusTone(status: string): string {
-  if (status === "added" || status === "untracked") return "text-ok";
-  if (status === "deleted" || status === "conflict") return "text-err";
-  return "text-warn";
+function statusChip(status: string): string {
+  if (status === "added" || status === "untracked") return "bg-ok/15 text-ok";
+  if (status === "deleted" || status === "conflict") return "bg-err/15 text-err";
+  if (status === "renamed") return "bg-accent/15 text-accent";
+  return "bg-warn/15 text-warn";
 }

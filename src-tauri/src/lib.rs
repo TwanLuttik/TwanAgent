@@ -245,6 +245,8 @@ pub fn run() {
             dev::commands::dev_suggest_folders,
             dev::commands::dev_create_project,
             dev::commands::dev_delete_project,
+            dev::commands::dev_project_removal,
+            dev::commands::dev_delete_project_worktrees,
             dev::commands::dev_clone_repo,
             dev::commands::dev_tree_signature,
             dev::commands::dev_list_dir,

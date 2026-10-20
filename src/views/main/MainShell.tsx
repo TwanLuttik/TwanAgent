@@ -77,13 +77,14 @@ export function MainShell() {
         {pendingDeleteProject ? (
           <DeleteProjectDialog
             name={pendingDeleteProject.name}
+            path={pendingDeleteProject.path}
             appManaged={
               isAppProject(pendingDeleteProject.path, projectsRoot) ||
               isAppProject(pendingDeleteProject.path, legacyProjectsRoot)
             }
             onCancel={() => setPendingDeleteProject(null)}
-            onConfirm={() => {
-              void deleteProjectFromSidebar(pendingDeleteProject.path);
+            onConfirm={(mode) => {
+              void deleteProjectFromSidebar(pendingDeleteProject.path, mode);
               setPendingDeleteProject(null);
             }}
           />
