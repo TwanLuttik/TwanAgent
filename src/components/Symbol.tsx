@@ -201,6 +201,7 @@ const ICONS: Record<string, ReactNode> = {
   tag: <path d="M4 4.8h6.4L20 14.4l-5.6 5.6L4.8 10.4V4.8Z M7.4 8.2h.01" {...stroke} />,
   "tag.fill": <path d="M4 4.8h6.4L20 14.4l-5.6 5.6L4.8 10.4V4.8Z" fill="currentColor" />,
   plus: <path d="M12 5v14M5 12h14" {...thick} />,
+  minus: <path d="M5 12h14" {...thick} />,
   ellipsis: (
     <>
       <circle cx="6" cy="12" r="1.7" fill="currentColor" />
