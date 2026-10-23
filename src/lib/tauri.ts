@@ -335,6 +335,8 @@ export type ApiUsageEvent = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Prompt tokens served from cache. Already inside `prompt_tokens`. */
+  cache_read_tokens?: number;
   duration_ms?: number | null;
 };
 export type ApiUsageRecord = {
@@ -346,6 +348,8 @@ export type ApiUsageRecord = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Prompt tokens served from cache. Already inside `prompt_tokens`. */
+  cache_read_tokens?: number;
   duration_ms?: number | null;
 };
 export type LiveSocketEvent = {
@@ -508,8 +512,13 @@ export function treeSignature(workspace: string): Promise<TreeSnapshot> {
   return invoke("dev_tree_signature", { workspace });
 }
 
-export function readFile(workspace: string, path: string): Promise<string> {
-  return invoke("dev_read_file", { workspace, path });
+export function readFile(
+  workspace: string,
+  path: string,
+  offset?: number,
+  limit?: number,
+): Promise<string> {
+  return invoke("dev_read_file", { workspace, path, offset, limit });
 }
 
 /** A local PDF as base64. The webview cannot fetch the asset URL itself. */

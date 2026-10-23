@@ -40,6 +40,7 @@ import {
   toolTrailSummary,
   toolTrailTypeCountText,
   toolTrailTypeCounts,
+  toolTrailKind,
   toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
@@ -166,6 +167,14 @@ describe("conversation activity", () => {
       activityFromToolCall({ id: "3", name: "read_file", arguments: '{"path":"src/main.tsx"}' }),
       { kind: "tool", label: "Read src/main.tsx" },
     );
+    assert.deepEqual(
+      activityFromToolCall({
+        id: "4",
+        name: "read_file",
+        arguments: '{"path":"src/app.ts","offset":10,"limit":51}',
+      }),
+      { kind: "tool", label: "Read src/app.ts (10 - 60)" },
+    );
     assert.equal(conversationActivityLabel({ kind: "tool", label: "Read src/main.tsx" }), "Read src/main.tsx");
   });
 });
@@ -209,6 +218,23 @@ describe("tool helpers", () => {
       "Run membership UI tests",
     );
     assert.equal(toolSummary("read_file", { path: "src/lib.rs" }), "Read src/lib.rs");
+    assert.equal(
+      toolSummary("read_file", { path: "src/app.ts", offset: 10, limit: 51 }),
+      "Read src/app.ts (10 - 60)",
+    );
+    assert.equal(
+      toolSummary("read_file", { path: "src/app.ts", offset: "10", limit: "51" }),
+      "Read src/app.ts (10 - 60)",
+    );
+    assert.equal(toolSummary("read_file", { path: "src/app.ts", offset: 10 }), "Read src/app.ts (10+)");
+    assert.equal(
+      toolDetail({
+        id: "r",
+        name: "read_file",
+        arguments: '{"path":"src/app.ts","offset":10,"limit":51}',
+      }),
+      "src/app.ts (10 - 60)",
+    );
     assert.equal(toolSummary("grep", { pattern: "answer" }), "Search answer");
     assert.equal(toolSummary("glob", { pattern: "**/*.ts" }), "Find **/*.ts");
     assert.equal(
@@ -398,10 +424,12 @@ describe("tool helpers", () => {
     assert.equal(items[1]?.kind === "thinking" && items[1].content, "The banner bug is probably in the membership page.");
     assert.equal(items[4]?.kind === "thinking" && items[4].content, "The join rule is in the API.");
     assert.deepEqual(foldToolTrailRows(items[3]?.kind === "tools" ? items[3].labels : []), [
-      { label: "Read 1 file", change: null, detail: "" },
+      { label: "Read src/a.ts", change: null, detail: "" },
     ]);
     assert.deepEqual(foldToolTrailRows(items[5]?.kind === "tools" ? items[5].labels : []), [
-      { label: "Read 3 files", change: null, detail: "" },
+      { label: "Read src/b.ts", change: null, detail: "" },
+      { label: "Read src/c.ts", change: null, detail: "" },
+      { label: "Read src/d.ts", change: null, detail: "" },
     ]);
   });
 
@@ -419,9 +447,11 @@ describe("tool helpers", () => {
       [
         { label: "Run membership UI tests and typecheck Next", change: null, detail: "" },
         { label: "Run membership CTA and feed time tests", change: null, detail: "" },
-        { label: "Read 1 file", change: null, detail: "" },
+        { label: "Read src/a.ts", change: null, detail: "" },
         { label: "Run membership tests with bracket-safe globs", change: null, detail: "" },
-        { label: "Read 3 files", change: null, detail: "" },
+        { label: "Read src/b.ts", change: null, detail: "" },
+        { label: "Read src/c.ts", change: null, detail: "" },
+        { label: "Read src/d.ts", change: null, detail: "" },
       ],
     );
     assert.deepEqual(foldToolTrailRows(["List .", "List src"]), [
@@ -517,8 +547,128 @@ describe("tool helpers", () => {
     assert.equal(tools?.kind, "tools");
     if (tools?.kind !== "tools") return;
     assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
-      { label: "Read 2 files", change: null, detail: "src/a.ts\nsrc/b.ts" },
+      { label: "Read src/a.ts", change: null, detail: "src/a.ts" },
+      { label: "Read src/b.ts", change: null, detail: "src/b.ts" },
     ]);
+  });
+
+  it("shows the line range a read asked for", () => {
+    const items = transcriptItems([
+      { role: "user", content: "read a slice" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "1",
+            name: "read_file",
+            arguments: '{"path":"src/app.ts","offset":10,"limit":51}',
+          },
+        ],
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Read src/app.ts (10 - 60)"]);
+    assert.deepEqual(tools.commands, ["src/app.ts (10 - 60)"]);
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
+      { label: "Read src/app.ts (10 - 60)", change: null, detail: "src/app.ts (10 - 60)" },
+    ]);
+  });
+
+  it("nests identical ranged reads and keeps a whole-file read separate", () => {
+    assert.deepEqual(
+      foldToolTrailRows(
+        ["Read src/app.ts (10 - 60)", "Read src/app.ts (10 - 60)"],
+        [null, null],
+        ["src/app.ts (10 - 60)", "src/app.ts (10 - 60)"],
+      ),
+      [
+        {
+          label: "Read app.ts ×2",
+          change: null,
+          detail: "",
+          children: [
+            { label: "Read src/app.ts (10 - 60)", change: null, detail: "src/app.ts (10 - 60)" },
+            { label: "Read src/app.ts (10 - 60)", change: null, detail: "src/app.ts (10 - 60)" },
+          ],
+        },
+      ],
+    );
+    assert.deepEqual(
+      foldToolTrailRows(
+        ["Read src/app.ts", "Read src/app.ts (10 - 60)"],
+        [null, null],
+        ["src/app.ts", "src/app.ts (10 - 60)"],
+      ),
+      [
+        { label: "Read src/app.ts", change: null, detail: "src/app.ts" },
+        { label: "Read src/app.ts (10 - 60)", change: null, detail: "src/app.ts (10 - 60)" },
+      ],
+    );
+  });
+
+  it("keeps a single edit's line counts on that row", () => {
+    const edit = {
+      path: "src/app.ts",
+      name: "app.ts",
+      additions: 1,
+      deletions: 1,
+      added: ["two"],
+      removed: ["one"],
+    };
+    assert.deepEqual(foldToolTrailRows(["Edit app.ts"], [edit], [""]), [
+      { label: "Edit app.ts", change: edit, detail: "" },
+    ]);
+  });
+
+  it("nests repeated reads and edits of one file under that file", () => {
+    const edit = {
+      path: "src/app.ts",
+      name: "app.ts",
+      additions: 1,
+      deletions: 1,
+      added: ["two"],
+      removed: ["one"],
+    };
+    assert.deepEqual(
+      foldToolTrailRows(
+        ["Read src/app.ts", "Read src/app.ts", "Read src/other.ts"],
+        [null, null, null],
+        ["src/app.ts", "src/app.ts", "src/other.ts"],
+      ),
+      [
+        {
+          label: "Read app.ts ×2",
+          change: null,
+          detail: "",
+          children: [
+            { label: "Read src/app.ts", change: null, detail: "src/app.ts" },
+            { label: "Read src/app.ts", change: null, detail: "src/app.ts" },
+          ],
+        },
+        { label: "Read src/other.ts", change: null, detail: "src/other.ts" },
+      ],
+    );
+    assert.deepEqual(
+      foldToolTrailRows(
+        ["Edit app.ts", "Write app.ts"],
+        [edit, { ...edit, deletions: 0, removed: [] }],
+        ["", ""],
+      ),
+      [
+        {
+          label: "Edit app.ts ×2",
+          change: { ...edit, additions: 2, deletions: 1, added: ["two", "two"], removed: ["one"] },
+          detail: "",
+          children: [
+            { label: "Edit app.ts", change: edit, detail: "" },
+            { label: "Write app.ts", change: { ...edit, deletions: 0, removed: [] }, detail: "" },
+          ],
+        },
+      ],
+    );
   });
 
   it("keeps a live thought under earlier tool rounds", () => {
@@ -978,7 +1128,9 @@ describe("tool trail collapse", () => {
       ],
     );
     assert.equal(toolTrailTypeCountText("Read", 15), "Read ×15");
-    assert.equal(toolTrailTypeIcon("Read"), "doc");
+    assert.equal(toolTrailTypeIcon("Read"), "doc.text.magnifyingglass");
+    assert.equal(toolTrailKind("Run cargo test"), "$");
+    assert.equal(toolTrailTypeIcon("$"), "terminal");
     assert.equal(toolTrailTypeIcon("Search"), "magnifyingglass");
     assert.equal(toolTrailTypeIcon("Find"), "magnifyingglass");
     assert.equal(toolTrailTypeIcon("$"), "terminal");

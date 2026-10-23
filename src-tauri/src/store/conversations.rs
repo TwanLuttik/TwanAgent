@@ -4,7 +4,7 @@ use super::{
     insert_conversation, load_messages, next_sort, replace_messages_from, row_to_conversation,
     sync_messages,
 };
-use crate::dev::{Conversation, ConversationSummary};
+use crate::dev::{Conversation, ConversationSummary, DevChatUsage};
 use crate::error::{Error, Result};
 
 struct ConvHead {
@@ -151,19 +151,29 @@ pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
 
 /// Write `messages[from_index..]` and bump `updated_at`. Does not read the row or any message body.
 /// `from_index` is the first sort_order to replace. Earlier rows stay as they are.
-pub fn save_conversation_suffix(
+/// `context_usage` is the last model round. Leave it `None` to keep the stored snapshot.
+pub fn save_conversation_suffix_with_usage(
     conn: &Connection,
     id: &str,
     updated_at: &str,
     messages: &[serde_json::Value],
     from_index: usize,
+    context_usage: Option<&DevChatUsage>,
 ) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| {
-        let n = conn.execute(
-            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
-            params![updated_at, id],
-        )?;
+        let usage = context_usage.map(serde_json::to_string).transpose()?;
+        let n = if usage.is_some() {
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?1, context_usage = ?2 WHERE id = ?3",
+                params![updated_at, usage, id],
+            )?
+        } else {
+            conn.execute(
+                "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                params![updated_at, id],
+            )?
+        };
         if n == 0 {
             return Err(Error::NotFound("conversation not found".into()));
         }

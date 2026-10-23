@@ -316,14 +316,18 @@ pub async fn dev_read_file(
     state: State<'_, AppState>,
     workspace: String,
     path: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
 ) -> Result<String> {
     let root = state.require_workspace(&workspace)?;
     let remote = remote_files(&state, &root)?;
     off_main(move || {
-        if let Some(remote) = remote {
-            return remote.read(&path);
-        }
-        read_file(&root, &path)
+        let text = if let Some(remote) = remote {
+            remote.read(&path)?
+        } else {
+            read_file(&root, &path)?
+        };
+        twanagent_service::numbered_lines(&text, offset, limit).map_err(|err| Error::Other(err.to_string()))
     })
     .await
 }

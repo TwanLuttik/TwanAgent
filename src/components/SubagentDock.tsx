@@ -1,8 +1,8 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
-import { foldToolTrailRows, liveTranscriptItems } from "../lib/core";
+import { foldToolTrailRows, liveTranscriptItems, toolTrailKind, toolTrailTypeIcon, type ToolTrailRow } from "../lib/core";
 import { subagentTypeLabel, type SubagentRecord } from "../lib/subagent";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -153,12 +153,7 @@ function SubagentPill({
                         return (
                           <div key={i} className="space-y-0.5">
                             {foldToolTrailRows(item.labels, item.details, item.commands).map((row, rowIndex) => (
-                              <div key={rowIndex} className="flex min-w-0 items-center gap-2 text-[13px] leading-5 text-muted">
-                                <span className="w-3 shrink-0 text-center text-[11px]" aria-hidden>
-                                  ◆
-                                </span>
-                                <span className="min-w-0 truncate">{row.label}</span>
-                              </div>
+                              <SubagentToolRow key={rowIndex} row={row} />
                             ))}
                           </div>
                         );
@@ -186,6 +181,39 @@ function SubagentPill({
         </AnimatePresence>
       </motion.div>
     </motion.div>
+  );
+}
+
+function SubagentToolRow({ row, nested = false }: { row: ToolTrailRow; nested?: boolean }) {
+  const [open, setOpen] = useState(Boolean(row.children?.length));
+  const nestedRows = row.children ?? [];
+  return (
+    <div>
+      <button
+        type="button"
+        disabled={nestedRows.length === 0}
+        aria-expanded={nestedRows.length ? open : undefined}
+        onClick={() => {
+          if (nestedRows.length) setOpen((value) => !value);
+        }}
+        className={`flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 text-muted ${
+          nestedRows.length ? "w-full hover:text-ink" : "cursor-default"
+        }`}
+      >
+        <Symbol name={toolTrailTypeIcon(toolTrailKind(row.label))} className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{row.label}</span>
+      </button>
+      {open && nestedRows.length ? (
+        <div className={`relative ml-[5px] border-l border-line/70 pl-3 ${nested ? "" : "mt-0.5"}`}>
+          {nestedRows.map((child, index) => (
+            <div key={`${child.label}-${index}`} className="relative">
+              <span className="absolute top-[10px] -left-3 h-px w-2.5 bg-line/70" aria-hidden />
+              <SubagentToolRow row={child} nested />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

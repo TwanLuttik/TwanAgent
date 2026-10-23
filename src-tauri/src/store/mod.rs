@@ -765,7 +765,8 @@ mod journeys;
 
 pub use conversations::{
     delete_conversation, get_conversation, list_conversation_summaries, reorder_conversations,
-    save_conversation, save_conversation_suffix, set_conversation_archived,
+    save_conversation, save_conversation_suffix_with_usage,
+    set_conversation_archived,
 };
 #[cfg(test)]
 pub use conversations::list_conversations;

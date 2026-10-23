@@ -1,19 +1,17 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   foldToolTrailRows,
+  toolTrailKind,
+  toolTrailTypeIcon,
   type ToolFileChange,
+  type ToolTrailRow,
 } from "../lib/core";
 import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
-import { compactDiffRows, lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
+import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
 import { toolRevealNextAt, toolRevealSteps, toolRowsAlreadyShown } from "../lib/tool-reveal";
-import { FileIcon } from "./FileIcon";
-import { useWorkspaceFileLinks } from "./ChatMarkdown";
+import { Symbol } from "./Symbol";
 
-const PEEK_DELAY = 220;
-const PEEK_LINES = 6;
-const PEEK_EASE = [0.22, 1, 0.36, 1] as const;
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
 
 /**
@@ -51,7 +49,7 @@ function useStaggeredCount(total: number, signature: string, seen: number): numb
   useEffect(() => {
     const previous = signatureRef.current;
     const previousCount = previous ? previous.split("\n").length : 0;
-    // A folded row keeps its slot when its label changes, like "Read 1 file" becoming "Read 2 files".
+    // A folded row keeps its slot when its label changes, like "Read app.ts" becoming "Read app.ts ×2".
     const appended =
       total >= queuedRef.current &&
       (signature === previous ||
@@ -101,13 +99,14 @@ function useStaggeredCount(total: number, signature: string, seen: number): numb
 
 export function ToolTrail({
   labels,
-  files = [],
+  files: _files = [],
   details = [],
   commands = [],
   live,
   conversationId = "",
 }: {
   labels: string[];
+  /** Kept for callers. Line counts now render on the edit row itself. */
   files?: ToolFileChange[];
   details?: (ToolFileChange | null)[];
   commands?: string[];
@@ -120,19 +119,17 @@ export function ToolTrail({
   if (rows.length === 0) return null;
   if (!live) {
     if (signature) seenToolSignatures.set(conversationId, signature);
-    return <ToolTrailRows rows={rows} files={files} />;
+    return <ToolTrailRows rows={rows} />;
   }
-  return <LiveToolTrail rows={rows} files={files} signature={signature} conversationId={conversationId} />;
+  return <LiveToolTrail rows={rows} signature={signature} conversationId={conversationId} />;
 }
 
 function LiveToolTrail({
   rows,
-  files,
   signature,
   conversationId,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
-  files: ToolFileChange[];
   signature: string;
   conversationId: string;
 }) {
@@ -143,24 +140,15 @@ function LiveToolTrail({
   useEffect(() => {
     seenToolSignatures.set(conversationId, signature);
   }, [conversationId, signature]);
-  return (
-    <ToolTrailRows
-      rows={visible}
-      files={shown > 0 ? files : []}
-      spinningLast
-      animateFrom={settledOnMount}
-    />
-  );
+  return <ToolTrailRows rows={visible} spinningLast animateFrom={settledOnMount} />;
 }
 
 function ToolTrailRows({
   rows,
-  files,
   spinningLast = false,
   animateFrom = rows.length,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
-  files: ToolFileChange[];
   spinningLast?: boolean;
   /** First row index that should fade in. Earlier rows render in place. */
   animateFrom?: number;
@@ -179,13 +167,22 @@ function ToolTrailRows({
               label={row.label}
               change={row.change}
               detail={row.detail}
+              children={row.children}
               spinning={spinningLast && i === rows.length - 1}
             />
           </motion.div>
         ))}
       </div>
-      <FileChangeBadges files={files} />
     </div>
+  );
+}
+
+function ToolMark({ label }: { label: string }) {
+  return (
+    <Symbol
+      name={toolTrailTypeIcon(toolTrailKind(label))}
+      className="size-3 shrink-0 text-muted/80 transition-colors duration-200 group-hover:text-ink"
+    />
   );
 }
 
@@ -202,30 +199,37 @@ function ToolCallBlock({
   label,
   change,
   detail,
+  children = [],
   spinning = false,
+  counts = true,
 }: {
   label: string;
   change: ToolFileChange | null;
   detail: string;
+  children?: ToolTrailRow[];
   spinning?: boolean;
+  /** Child calls keep their own diff, but the parent already shows the total. */
+  counts?: boolean;
 }) {
   const hasDiff = change != null && (change.added.length > 0 || change.removed.length > 0);
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const command = detail.trim();
   const searching = label.startsWith("Web search");
-  const [open, setOpen] = useState(() => searching || (hasDiff && expandEdits));
-  const canOpen = hasDiff || command.length > 0;
+  const nested = children.length > 0;
+  const [open, setOpen] = useState(() => nested || searching || (hasDiff && expandEdits));
+  const canOpen = nested || hasDiff || command.length > 0;
   const show = open && canOpen;
 
   useEffect(() => subscribePrefs(() => setExpandEditsOn(loadExpandEdits())), []);
   useEffect(() => {
+    if (nested) return;
     if (searching) {
       if (command) setOpen(true);
       return;
     }
     if (!hasDiff) return;
     setOpen(expandEdits);
-  }, [expandEdits, hasDiff, searching, command]);
+  }, [expandEdits, hasDiff, nested, searching, command]);
   return (
     <div className={show ? "py-0.5" : undefined}>
       <button
@@ -239,13 +243,10 @@ function ToolCallBlock({
           canOpen ? "w-full rounded-md hover:text-ink" : "cursor-default"
         }`}
       >
-        <span
-          className="w-3 shrink-0 text-center text-[11px] text-muted/80 transition-colors duration-200 group-hover:text-ink"
-          aria-hidden
-        >
-          ◆
-        </span>
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <ToolMark label={label} />
+        <span className="min-w-0 truncate">{label}</span>
+        {counts && change && (change.additions > 0 || change.deletions > 0) ? <LineChangeCounts change={change} /> : null}
+        <span className="min-w-0 flex-1" />
         {spinning ? <LiveSpinner /> : null}
       </button>
       <AnimatePresence initial={false}>
@@ -258,13 +259,41 @@ function ToolCallBlock({
             transition={REVEAL}
             className="overflow-hidden"
           >
-            <div className="mt-0.5 mb-1 ml-5 min-w-0">
-              {hasDiff && change ? <InlineEditDiff change={change} /> : <ToolDetail text={command} />}
-            </div>
+            {nested ? (
+              <ToolCallTree rows={children} />
+            ) : (
+              <div className="mt-0.5 mb-1 ml-5 min-w-0">
+                {hasDiff && change ? <InlineEditDiff change={change} /> : <ToolDetail text={command} />}
+              </div>
+            )}
           </motion.div>
         ) : null}
       </AnimatePresence>
     </div>
+  );
+}
+
+/** Calls on one file, drawn under the file with a trunk and a branch per call. */
+function ToolCallTree({ rows }: { rows: ToolTrailRow[] }) {
+  return (
+    <div className="relative mt-0.5 mb-1 ml-[5px] border-l border-line/70 pl-3">
+      {rows.map((row, i) => (
+        <div key={`${row.label}-${i}`} className="relative">
+          <span className="absolute top-[10px] -left-3 h-px w-2.5 bg-line/70" aria-hidden />
+          <ToolCallBlock label={row.label} change={row.change} detail={row.detail} counts={false} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Combined additions and deletions, shown once on the edit that owns the file. */
+function LineChangeCounts({ change }: { change: ToolFileChange }) {
+  return (
+    <span className="flex shrink-0 items-baseline gap-1 font-mono text-[11px] leading-none tabular-nums">
+      {change.additions > 0 ? <span className="text-ok">+{change.additions}</span> : null}
+      {change.deletions > 0 ? <span className="text-err">-{change.deletions}</span> : null}
+    </span>
   );
 }
 
@@ -338,123 +367,6 @@ function DiffToneLine({
   );
 }
 
-function FileChangeBadges({ files }: { files: ToolFileChange[] }) {
-  const { onOpenFile } = useWorkspaceFileLinks();
-  if (files.length === 0) return null;
-  return (
-    <div className="flex min-w-0 flex-wrap content-start gap-1 py-[3px]">
-      {files.map((file) => (
-        <FileChangeBadge key={file.path} file={file} onOpen={onOpenFile} />
-      ))}
-    </div>
-  );
-}
 
-function FileChangeBadge({ file, onOpen }: { file: ToolFileChange; onOpen?: (path: string) => void }) {
-  const wrap = useRef<HTMLSpanElement>(null);
-  const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ left: number; top: number; above: boolean } | null>(null);
-  const showTimer = useRef(0);
-  const hideTimer = useRef(0);
-
-  function clearTimers() {
-    window.clearTimeout(showTimer.current);
-    window.clearTimeout(hideTimer.current);
-  }
-
-  function show() {
-    clearTimers();
-    showTimer.current = window.setTimeout(() => setOpen(true), PEEK_DELAY);
-  }
-
-  function hide() {
-    clearTimers();
-    hideTimer.current = window.setTimeout(() => setOpen(false), 120);
-  }
-
-  useEffect(() => () => clearTimers(), []);
-
-  useLayoutEffect(() => {
-    if (!open || !wrap.current) return;
-    const box = wrap.current.getBoundingClientRect();
-    const width = 320;
-    const left = Math.min(Math.max(8, box.left), window.innerWidth - width - 8);
-    const spaceBelow = window.innerHeight - box.bottom;
-    const above = spaceBelow < 200 && box.top > spaceBelow;
-    setPos({
-      left,
-      top: above ? box.top - 8 : box.bottom + 8,
-      above,
-    });
-  }, [open]);
-
-  return (
-    <span
-      ref={wrap}
-      className="inline-flex max-w-full"
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-    >
-      <button
-        type="button"
-        aria-label={`${file.path} +${file.additions} -${file.deletions}`}
-        onClick={(ev) => {
-          ev.stopPropagation();
-          onOpen?.(file.path);
-        }}
-        className="inline-flex max-w-full items-center gap-1 rounded-[5px] bg-inset px-[5px] py-px font-mono text-[10px] leading-none text-ink/80 hover:bg-wash-strong"
-      >
-        <FileIcon name={file.path} className="size-2.5 shrink-0" />
-        <span className="min-w-0 truncate">{file.name}</span>
-        {file.additions > 0 ? <span className="shrink-0 text-ok">+{file.additions}</span> : null}
-        {file.deletions > 0 ? <span className="shrink-0 text-err">-{file.deletions}</span> : null}
-      </button>
-      {createPortal(
-        <AnimatePresence>
-          {open && pos ? (
-            <motion.div
-              key={file.path}
-              role="tooltip"
-              initial={{ opacity: 0, y: pos.above ? 6 : -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: pos.above ? 4 : -4 }}
-              transition={{ duration: 0.16, ease: PEEK_EASE }}
-              className="fixed z-50 w-[300px] overflow-hidden rounded-md border border-line/80 bg-canvas shadow-card"
-              style={{
-                left: pos.left,
-                top: pos.top,
-                transform: pos.above ? "translateY(-100%)" : undefined,
-              }}
-              onMouseEnter={show}
-              onMouseLeave={hide}
-            >
-              <FileChangePeek file={file} />
-            </motion.div>
-          ) : null}
-        </AnimatePresence>,
-        document.body,
-      )}
-    </span>
-  );
-}
-
-function FileChangePeek({ file }: { file: ToolFileChange }) {
-  const rows = compactDiffRows(file.removed, file.added, PEEK_LINES);
-  const changed = lineDiffRows(file.removed, file.added).filter((row) => row.kind !== "same").length;
-  const more = Math.max(0, changed - rows.length);
-  if (rows.length === 0) {
-    return <div className="px-2 py-1.5 text-[11px] text-muted">No line changes</div>;
-  }
-  return (
-    <div className="max-h-[168px] overflow-hidden bg-panel py-1 font-mono text-[11px] leading-[1.45]">
-      {rows.map((row, i) => (
-        <InlineDiffRow key={i} row={row} />
-      ))}
-      {more > 0 ? <div className="px-2 pt-0.5 text-[10px] text-muted">+{more} more</div> : null}
-    </div>
-  );
-}
 
 

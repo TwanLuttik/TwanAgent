@@ -321,11 +321,13 @@ fn base_tools_json() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a UTF-8 text file in the workspace.",
+                "description": "Read a UTF-8 text file in the workspace. Optional offset and limit return a 1-based line range. Use them for large files instead of reading everything. Returned lines are prefixed with their line numbers.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string" }
+                        "path": { "type": "string" },
+                        "offset": { "type": "integer", "description": "1-based starting line. Omit to start at line 1." },
+                        "limit": { "type": "integer", "description": "Max number of lines to return. Omit to read to the end." }
                     },
                     "required": ["path"]
                 }
@@ -1049,6 +1051,25 @@ mod tests {
         assert!(claude.iter().any(|name| name == "grep"));
         assert!(claude.iter().any(|name| name == "glob"));
         assert!(claude.iter().any(|name| name == "update_journey_knowledge"));
+    }
+
+    #[test]
+    fn read_file_tool_accepts_a_line_range() {
+        let tools = tools_json(false);
+        let read = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| {
+                tool.get("function")
+                    .and_then(|row| row.get("name"))
+                    .and_then(|name| name.as_str())
+                    == Some("read_file")
+            })
+            .unwrap();
+        let props = &read["function"]["parameters"]["properties"];
+        assert!(props.get("offset").is_some());
+        assert!(props.get("limit").is_some());
     }
 
     #[test]

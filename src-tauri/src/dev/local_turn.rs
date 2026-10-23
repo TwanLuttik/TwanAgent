@@ -227,23 +227,23 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             Ok(round) => round,
             Err(err) => {
                 fail(app, id, &mut transcript, &err.to_string());
-                save(data_dir, &request.workspace, id, &transcript, saved_len);
-                emit_saved(app, id, &transcript);
+                save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                emit_saved(app, id, &transcript, None);
                 return;
             }
         };
         record_round_usage(data_dir, &request.workspace, id, &model, round.usage.as_ref());
         if stopped(live) || round.error.as_deref() == Some("Stopped.") {
             keep_partial(&mut transcript, &round);
-            save(data_dir, &request.workspace, id, &transcript, saved_len);
-            emit_saved(app, id, &transcript);
+            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref());
             emit(app, id, "stopped", None, None, None);
             return;
         }
         if let Some(error) = round.error {
             fail(app, id, &mut transcript, &error);
-            save(data_dir, &request.workspace, id, &transcript, saved_len);
-            emit_saved(app, id, &transcript);
+            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref());
             return;
         }
         if round.tool_calls.is_empty() {
@@ -252,14 +252,14 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             } else {
                 transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
             }
-            save(data_dir, &request.workspace, id, &transcript, saved_len);
-            emit_saved(app, id, &transcript);
+            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref());
             emit(app, id, "done", None, None, None);
             return;
         }
         transcript.push(assistant_value(&round.text, &round.reasoning, &round.tool_calls, &round.thinking));
-        save(data_dir, &request.workspace, id, &transcript, saved_len);
-        emit_saved(app, id, &transcript);
+        save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+        emit_saved(app, id, &transcript, round.usage.as_ref());
         for call in &round.tool_calls {
             let content = if stopped(live) {
                 "Skipped: stopped.".to_string()
@@ -284,8 +284,8 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
                 "tool_call_id": call.id,
                 "content": stored,
             }));
-            save(data_dir, &request.workspace, id, &transcript, saved_len);
-            emit_saved(app, id, &transcript);
+            save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+            emit_saved(app, id, &transcript, None);
         }
     }
 }
@@ -405,7 +405,10 @@ fn run_tool(
             str_arg(&args, "glob"),
         ),
         "glob" => super::files::glob(workspace, str_arg(&args, "pattern"), str_arg(&args, "path")),
-        "read_file" => super::files::read_file(workspace, str_arg(&args, "path")),
+        "read_file" => super::files::read_file(workspace, str_arg(&args, "path")).and_then(|text| {
+            twanagent_service::numbered_lines(&text, int_arg(&args, "offset"), int_arg(&args, "limit"))
+                .map_err(|err| Error::Other(err.to_string()))
+        }),
         "write_file" => super::files::write_file(workspace, str_arg(&args, "path"), str_arg(&args, "contents"))
             .map(|_| format!("Wrote {}", str_arg(&args, "path"))),
         "edit_file" => super::files::edit_file(
@@ -759,6 +762,7 @@ fn record_round_usage(
             prompt_tokens: usage.prompt_tokens,
             completion_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
             duration_ms: None,
         },
     );
@@ -774,23 +778,34 @@ fn workspace_name(path: &str) -> String {
         .to_string()
 }
 
-fn save(data_dir: &Path, workspace: &str, id: &str, messages: &[Value], from_index: usize) {
+fn save(
+    data_dir: &Path,
+    workspace: &str,
+    id: &str,
+    messages: &[Value],
+    from_index: usize,
+    usage: Option<&super::types::DevChatUsage>,
+) {
     let dir = super::conv::conv_store_dir(data_dir, workspace);
     let updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let _ = crate::store::with_conn(&dir, |conn| {
-        crate::store::save_conversation_suffix(conn, id, &updated_at, messages, from_index)
+        crate::store::save_conversation_suffix_with_usage(
+            conn,
+            id,
+            &updated_at,
+            messages,
+            from_index,
+            usage,
+        )
     });
 }
 
-fn emit_saved(app: &AppHandle, id: &str, messages: &[Value]) {
-    emit(
-        app,
-        id,
-        "saved",
-        None,
-        None,
-        Some(json!({ "id": id, "messages": messages })),
-    );
+fn emit_saved(app: &AppHandle, id: &str, messages: &[Value], usage: Option<&super::types::DevChatUsage>) {
+    let conversation = match usage {
+        Some(usage) => json!({ "id": id, "messages": messages, "context_usage": usage }),
+        None => json!({ "id": id, "messages": messages }),
+    };
+    emit(app, id, "saved", None, None, Some(conversation));
 }
 
 fn stopped(live: &LiveTurn) -> bool {
@@ -818,6 +833,10 @@ fn parse_args(raw: &str) -> serde_json::Map<String, Value> {
 
 fn str_arg<'a>(args: &'a serde_json::Map<String, Value>, key: &str) -> &'a str {
     args.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn int_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
+    args.get(key).and_then(twanagent_service::parse_line_int)
 }
 
 #[cfg(test)]
@@ -870,6 +889,14 @@ mod tests {
         assert_eq!(normalize_permission(""), "ask");
         assert_eq!(normalize_permission("approve-all"), "approve-all");
         assert_eq!(normalize_permission("nope"), "ask");
+    }
+
+    #[test]
+    fn int_arg_reads_string_and_number_line_counts() {
+        let args = parse_args(r#"{"offset":"10","limit":51}"#);
+        assert_eq!(int_arg(&args, "offset"), Some(10));
+        assert_eq!(int_arg(&args, "limit"), Some(51));
+        assert_eq!(int_arg(&args, "missing"), None);
     }
 
     #[test]

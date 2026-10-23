@@ -9,7 +9,7 @@ export type ToolRevealStep = { index: number; delay: number };
  * A shorter list or a fresh batch animates from the start.
  * `0` means nothing has been seen in this open turn yet, so the rows present
  * on first paint (selecting a running conversation) do not animate.
- * Folded labels such as "Read 1 file" change text as the count grows, so a
+ * Folded labels such as "Read app.ts" change text as the count grows, so a
  * same-length list counts as the rows already showing rather than a new batch.
  */
 export function toolRowsAlreadyShown(signature: string, seenSignature: string): number {

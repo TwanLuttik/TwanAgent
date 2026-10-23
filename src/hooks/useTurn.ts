@@ -255,11 +255,21 @@ function applyDetachedEvent(
   id: string,
   ws: string,
   visible: () => boolean,
-  event: { kind: string; text?: string | null; tool?: { id: string; name: string; arguments: string } | null; messages?: ChatMessage[] | null },
+  event: {
+    kind: string;
+    text?: string | null;
+    tool?: { id: string; name: string; arguments: string } | null;
+    messages?: ChatMessage[] | null;
+    usage?: ChatUsage | null;
+  },
 ) {
   if (event.kind === "saved" && event.messages) {
     const messages = event.messages;
     rememberLive(id, { messages, streamText: "", streamReasoning: "" });
+    if (event.usage) {
+      setUsageByChat((prev) => (sameChatUsage(prev[id], event.usage!) ? prev : { ...prev, [id]: event.usage! }));
+      setUsageTick((n) => n + 1);
+    }
     if (visible()) {
       setMessages(messages);
       setStreamText("");

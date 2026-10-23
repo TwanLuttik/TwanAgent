@@ -279,13 +279,36 @@ export function parseToolArgs(raw: string): Record<string, unknown> {
   }
 }
 
+/** A 1-based line number from a tool argument. Strings and whole numbers are accepted. */
+export function toolLineInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim()) {
+    const n = Number(value.trim());
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return undefined;
+}
+
+/** Range shown on a read, such as `(10 - 60)` or `(10+)`. Empty for a whole-file read. */
+export function readLineRangeLabel(args: Record<string, unknown>): string {
+  const offset = toolLineInt(args.offset);
+  const limit = toolLineInt(args.limit);
+  if (offset == null && limit == null) return "";
+  const start = offset ?? 1;
+  if (limit != null) return `(${start} - ${start + limit - 1})`;
+  return `(${start}+)`;
+}
+
 export function needsShellConfirm(name: string): boolean {
   return name === "run_command";
 }
 
 export function toolSummary(name: string, args: Record<string, unknown>): string {
   const path = String(args.path ?? "");
-  if (name === "read_file") return `Read ${path}`;
+  if (name === "read_file") {
+    const range = readLineRangeLabel(args);
+    return range ? `Read ${path} ${range}` : `Read ${path}`;
+  }
   if (name === "grep") {
     const pattern = String(args.pattern ?? args.query ?? "").trim();
     return pattern ? `Search ${pattern}` : "Search";
@@ -419,7 +442,12 @@ export function toolDetail(call: ChatToolCall): string {
   if (call.name === "git_status") return "git status";
   if (call.name === "git_log") return "git log";
   if (call.name === "git_commit") return String(args.message ?? "").trim();
-  if (call.name === "read_file" || call.name === "list_dir") {
+  if (call.name === "read_file") {
+    const path = String(args.path ?? "").trim();
+    const range = readLineRangeLabel(args);
+    return range ? `${path} ${range}` : path;
+  }
+  if (call.name === "list_dir") {
     return String(args.path ?? "").trim();
   }
   if (call.name === "grep") {
@@ -686,17 +714,58 @@ export type TranscriptItem =
       callIds: string[];
     };
 
-export type ToolTrailRow = { label: string; change: ToolFileChange | null; detail: string };
+export type ToolTrailRow = {
+  label: string;
+  change: ToolFileChange | null;
+  detail: string;
+  /** Nested calls on the same file, shown under this row as a tree. */
+  children?: ToolTrailRow[];
+};
 
-function trailGroup(label: string): "read" | "list" | "search" | "find" | null {
+function trailGroup(label: string): "read" | "list" | "search" | "find" | "edit" | null {
   if (label.startsWith("Read ")) return "read";
   if (label.startsWith("List ")) return "list";
   if (label === "Search" || label.startsWith("Search ")) return "search";
   if (label === "Find files" || label.startsWith("Find ")) return "find";
+  if (label.startsWith("Edit ") || label.startsWith("Write ")) return "edit";
   return null;
 }
 
-/** Fold a run of reads or lists into one line, matching the CLI tool list. */
+/** Path a file tool touched, so repeated calls on it can share one tree. */
+function trailFileKey(group: "read" | "list" | "search" | "find" | "edit", command: string, change: ToolFileChange | null): string {
+  if (group === "edit") {
+    const path = change?.path || command.trim();
+    return path ? normalizeGitPath(path) : "";
+  }
+  if (group === "read") {
+    const path = command.trim().replace(/\s+\([^)]+\)$/, "");
+    return path ? `${normalizeGitPath(path)}\0${command.trim()}` : "";
+  }
+  if (group === "list") {
+    const path = command.trim();
+    return path ? normalizeGitPath(path) : "";
+  }
+  return "";
+}
+
+function trailReadPath(command: string): string {
+  return command.trim().replace(/\s+\([^)]+\)$/, "");
+}
+
+function trailFileLabel(group: "read" | "edit", path: string, count: number): string {
+  const name = fileBaseName(path) || path;
+  if (group === "read") return count === 1 ? `Read ${name}` : `Read ${name} ×${count}`;
+  return count === 1 ? `Edit ${name}` : `Edit ${name} ×${count}`;
+}
+
+function oneTrailRow(label: string, change: ToolFileChange | null, detail: string): ToolTrailRow {
+  return { label, change, detail };
+}
+
+/**
+ * Fold a run of the same tool into one line.
+ * Reads, writes, and edits of one file become a tree: the file is the parent and each call is a child.
+ */
 export function foldToolTrailRows(
   labels: string[],
   details: (ToolFileChange | null)[] = [],
@@ -706,36 +775,83 @@ export function foldToolTrailRows(
   let i = 0;
   while (i < labels.length) {
     const group = trailGroup(labels[i] ?? "");
-    if (group) {
-      let j = i + 1;
-      while (j < labels.length && trailGroup(labels[j] ?? "") === group) j += 1;
+    if (!group) {
+      rows.push(oneTrailRow(labels[i] ?? "", details[i] ?? null, commands[i] ?? ""));
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < labels.length && trailGroup(labels[j] ?? "") === group) j += 1;
+    if (group === "read" || group === "edit") {
+      rows.push(...foldFileToolRun(group, labels.slice(i, j), details.slice(i, j), commands.slice(i, j)));
+    } else {
       const count = j - i;
       const paths = commands.slice(i, j).map((item) => item.trim()).filter(Boolean);
-      rows.push({
-        label:
-          group === "read"
+      rows.push(
+        oneTrailRow(
+          group === "list"
             ? count === 1
-              ? "Read 1 file"
-              : `Read ${count} files`
-            : group === "list"
+              ? "List 1 directory"
+              : `List ${count} directories`
+            : group === "search"
               ? count === 1
-                ? "List 1 directory"
-                : `List ${count} directories`
-              : group === "search"
-                ? count === 1
-                  ? "Search 1 time"
-                  : `Search ${count} times`
-                : count === 1
-                  ? "Find 1 pattern"
-                  : `Find ${count} patterns`,
-        change: null,
-        detail: paths.join("\n"),
-      });
+                ? "Search 1 time"
+                : `Search ${count} times`
+              : count === 1
+                ? "Find 1 pattern"
+                : `Find ${count} patterns`,
+          null,
+          paths.join("\n"),
+        ),
+      );
+    }
+    i = j;
+  }
+  return rows;
+}
+
+/** Consecutive calls on one file nest under it. A single call stays one row. */
+function foldFileToolRun(
+  group: "read" | "edit",
+  labels: string[],
+  details: (ToolFileChange | null)[],
+  commands: string[],
+): ToolTrailRow[] {
+  const rows: ToolTrailRow[] = [];
+  let i = 0;
+  while (i < labels.length) {
+    const key = trailFileKey(group, commands[i] ?? "", details[i] ?? null);
+    let j = i + 1;
+    if (key) {
+      while (
+        j < labels.length &&
+        trailFileKey(group, commands[j] ?? "", details[j] ?? null) === key
+      ) {
+        j += 1;
+      }
+    }
+    const count = j - i;
+    if (!key) {
+      rows.push(oneTrailRow(labels[i] ?? "", null, commands[i] ?? ""));
+      i += 1;
+      continue;
+    }
+    const merged = mergeToolFileChanges(details.slice(i, j).flatMap((item) => (item ? [item] : [])))[0] ?? null;
+    if (count === 1) {
+      rows.push(oneTrailRow(labels[i] ?? "", merged, commands[i] ?? ""));
       i = j;
       continue;
     }
-    rows.push({ label: labels[i] ?? "", change: details[i] ?? null, detail: commands[i] ?? "" });
-    i += 1;
+    const children = labels.slice(i, j).map((label, offset) =>
+      oneTrailRow(label, details[i + offset] ?? null, commands[i + offset] ?? ""),
+    );
+    rows.push({
+      label: trailFileLabel(group, group === "read" ? trailReadPath(commands[i] ?? "") : key, count),
+      change: group === "edit" ? merged : null,
+      detail: "",
+      children,
+    });
+    i = j;
   }
   return rows;
 }
@@ -748,7 +864,7 @@ export function toolTrailSummary(count: number): string {
 export function toolTrailKind(label: string): string {
   const trimmed = label.trim();
   if (!trimmed) return "";
-  if (trimmed.startsWith("$ ")) return "$";
+  if (trimmed.startsWith("$ ") || trimmed.startsWith("Run ") || trimmed === "Run") return "$";
   if (trimmed.startsWith("Subagent")) return "Subagent";
   if (trimmed === "Git status") return "Git status";
   if (trimmed.endsWith(" journey knowledge")) return trimmed;
@@ -778,7 +894,7 @@ export function toolTrailTypeIcon(type: string): string {
   if (type === "Web") return "globe";
   if (type === "Git status" || type === "Diff") return "arrow.triangle.branch";
   if (type.includes("journey knowledge")) return "sparkles";
-  if (type === "Read") return "doc";
+  if (type === "Read") return "doc.text.magnifyingglass";
   if (type === "Search") return "magnifyingglass";
   if (type === "Find") return "magnifyingglass";
   if (type === "Write") return "square.and.arrow.down";

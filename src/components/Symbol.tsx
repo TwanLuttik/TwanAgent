@@ -597,6 +597,15 @@ const ICONS: Record<string, ReactNode> = {
       <circle cx="12" cy="12" r="2.4" {...stroke} />
     </>
   ),
+  "doc.text.magnifyingglass": (
+    <>
+      <path d="M6.2 3.6h5.1L16.6 9v2.2" {...stroke} />
+      <path d="M11.2 3.6V8.8h5.4" {...stroke} />
+      <path d="M6.2 3.6A1.5 1.5 0 0 0 4.7 5.1v13.8A1.5 1.5 0 0 0 6.2 20.4H11" {...stroke} />
+      <circle cx="15.7" cy="15.6" r="3.15" {...stroke} />
+      <path d="m18 17.9 2.3 2.3" {...stroke} />
+    </>
+  ),
   "eye.slash": (
     <>
       <path d="M3.4 12s3.2-6.2 8.6-6.2c1.6 0 3 .4 4.2 1" {...stroke} />

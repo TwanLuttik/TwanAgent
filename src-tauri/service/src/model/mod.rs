@@ -80,10 +80,14 @@ pub fn tool_defs() -> Value {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a UTF-8 text file in the workspace.",
+                "description": "Read a UTF-8 text file in the workspace. Optional offset and limit return a 1-based line range. Use them for large files instead of reading everything. Returned lines are prefixed with their line numbers.",
                 "parameters": {
                     "type": "object",
-                    "properties": { "path": { "type": "string" } },
+                    "properties": {
+                        "path": { "type": "string" },
+                        "offset": { "type": "integer", "description": "1-based starting line. Omit to start at line 1." },
+                        "limit": { "type": "integer", "description": "Max number of lines to return. Omit to read to the end." }
+                    },
                     "required": ["path"]
                 }
             }

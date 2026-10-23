@@ -23,6 +23,11 @@ pub fn http_error_message(status: u16, body: &str) -> String {
 /// Stored transcripts keep tool calls flat (`id`, `name`, `arguments`). xAI
 /// rejects that on the next round with `messages[n]: missing field function`.
 /// Nest each call under `function` here, including calls that are already nested.
+///
+/// Attached pictures sit on an `images` sidecar the chat store keeps beside the
+/// text. xAI only reads `content`, so each data URL becomes an `image_url` part
+/// and the `[filename]` marker the composer inserted is dropped. The sidecar
+/// itself is not sent.
 pub fn chat_body(model: &str, effort: Option<&str>, messages: &Value, tools: &Value) -> Value {
     let mut body = serde_json::json!({
         "model": model,
@@ -196,12 +201,128 @@ fn api_messages(messages: &Value) -> Value {
 }
 
 fn api_message(message: &Value) -> Value {
-    let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
-        return message.clone();
-    };
     let mut message = message.clone();
-    message["tool_calls"] = Value::Array(calls.iter().map(api_tool_call).collect());
+    if let Some(calls) = message.get("tool_calls").and_then(Value::as_array).cloned() {
+        message["tool_calls"] = Value::Array(calls.iter().map(api_tool_call).collect());
+    }
+    attach_images(&mut message);
     message
+}
+
+/// Move a stored `images` sidecar into OpenAI content parts. A picture already
+/// present as `image_url` is not attached again. Messages with no picture stay
+/// a plain string, which is what xAI accepted before.
+fn attach_images(message: &mut Value) {
+    let images = message.get("images").and_then(Value::as_array).cloned();
+    message.as_object_mut().map(|fields| fields.remove("images"));
+    let Some(images) = images.filter(|rows| !rows.is_empty()) else {
+        return;
+    };
+    let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+    if role != "user" {
+        return;
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    let urls: Vec<&str> = images
+        .iter()
+        .filter_map(|image| image.get("dataUrl").and_then(Value::as_str))
+        .filter(|url| url.starts_with("data:") && url.contains(";base64,"))
+        .collect();
+    // No bytes means there is nothing to show. Keep the stored text, token and all.
+    if urls.is_empty() {
+        return;
+    }
+    match message.get("content") {
+        Some(Value::String(text)) => {
+            let text = strip_image_tokens(text, &images);
+            if !text.is_empty() {
+                parts.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+        }
+        Some(Value::Array(existing)) => {
+            for part in existing {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    let text = strip_image_tokens(part.get("text").and_then(Value::as_str).unwrap_or(""), &images);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    parts.push(serde_json::json!({ "type": "text", "text": text }));
+                    continue;
+                }
+                parts.push(part.clone());
+            }
+        }
+        _ => {}
+    }
+    for url in urls {
+        let seen = parts.iter().any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("image_url")
+                && part.pointer("/image_url/url").and_then(Value::as_str) == Some(url)
+        });
+        if seen {
+            continue;
+        }
+        parts.push(serde_json::json!({ "type": "image_url", "image_url": { "url": url } }));
+    }
+    if parts.is_empty() {
+        return;
+    }
+    message["content"] = Value::Array(parts);
+}
+
+/// `[filename]` is where the composer drew the chip. The bytes travel as a part.
+fn strip_image_tokens(text: &str, images: &[Value]) -> String {
+    if !text.contains('[') {
+        return text.trim().to_string();
+    }
+    let mut out = text.to_string();
+    for image in images {
+        let name = image.get("name").and_then(Value::as_str).unwrap_or("").trim();
+        let label = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .trim()
+            .replace(['[', ']', '\r', '\n'], "");
+        let label = label.trim();
+        if label.is_empty() {
+            continue;
+        }
+        let token = format!("[{label}]");
+        if out.contains(&token) {
+            out = out.replace(&token, " ");
+        }
+    }
+    let mut collapsed = String::new();
+    let mut spaced = false;
+    let mut line_start = true;
+    for ch in out.chars() {
+        if ch == '\n' {
+            while collapsed.ends_with(' ') {
+                collapsed.pop();
+            }
+            collapsed.push('\n');
+            spaced = false;
+            line_start = true;
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !line_start {
+                spaced = true;
+            }
+            continue;
+        }
+        if spaced {
+            collapsed.push(' ');
+        }
+        collapsed.push(ch);
+        spaced = false;
+        line_start = false;
+    }
+    while collapsed.ends_with(' ') || collapsed.ends_with('\n') {
+        collapsed.pop();
+    }
+    collapsed
 }
 
 fn api_tool_call(call: &Value) -> Value {
@@ -306,6 +427,54 @@ mod tests {
         assert_eq!(calls[1]["function"]["arguments"], "{}");
         assert_eq!(body["messages"][3]["tool_call_id"], "call-1");
         assert_eq!(body["messages"][1]["content"], "search");
+    }
+
+    #[test]
+    fn attached_images_become_content_parts_and_the_filename_token_is_dropped() {
+        let messages = serde_json::json!([{
+            "role": "user",
+            "content": "what is wrong in [shot.png] here",
+            "images": [{
+                "name": "shot.png",
+                "path": "/tmp/shot.png",
+                "dataUrl": "data:image/png;base64,iVBORw0KGgo"
+            }]
+        }]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "what is wrong in here");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo");
+        assert!(body["messages"][0].get("images").is_none());
+    }
+
+    #[test]
+    fn an_image_url_part_is_not_attached_twice() {
+        let url = "data:image/jpeg;base64,abc";
+        let messages = serde_json::json!([{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "look" },
+                { "type": "image_url", "image_url": { "url": url } }
+            ],
+            "images": [{ "name": "a.jpg", "dataUrl": url }]
+        }]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
+        assert!(body["messages"][0].get("images").is_none());
+    }
+
+    #[test]
+    fn a_picture_without_bytes_stays_text() {
+        let messages = serde_json::json!([{
+            "role": "user",
+            "content": "see [shot.png]",
+            "images": [{ "name": "shot.png", "path": "/tmp/shot.png" }]
+        }]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        assert_eq!(body["messages"][0]["content"], "see [shot.png]");
+        assert!(body["messages"][0].get("images").is_none());
     }
 
     #[test]

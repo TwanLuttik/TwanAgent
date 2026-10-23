@@ -1,5 +1,23 @@
 import type { MouseEvent, ReactNode } from "react";
 
+/** Middle-click closes a tab the same way the close button does. */
+function middleClickClose(onClose: (() => void) | undefined) {
+  if (!onClose) return {};
+  return {
+    onMouseDown: (event: MouseEvent<HTMLElement>) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    onAuxClick: (event: MouseEvent<HTMLElement>) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    },
+  };
+}
+
 export function ChromeTabStrip({ children }: { children: ReactNode }) {
   return (
     <div
@@ -48,6 +66,7 @@ export function ChromeTab({
       data-tauri-drag-region="false"
       onClick={onClick}
       onContextMenu={onContextMenu}
+      {...middleClickClose(onClose)}
       className={`chrome-tab ${selected ? "chrome-tab-on" : "chrome-tab-off"}${onClose ? " chrome-tab-closable" : ""}${grouped ? " chrome-tab-grouped" : ""}${marked ? " chrome-tab-marked" : ""}`}
     >
       {grouped ? null : <span className={`chrome-tab-face${selected ? "" : " chrome-tab-face-off"}`} aria-hidden />}

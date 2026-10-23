@@ -1,7 +1,7 @@
 import type { ToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./context.ts";
-import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, worktreeCheckoutFor, type ChatMessage, type ChatToolCall, type ThinkingBlock, type WorktreeListRow } from "./core.ts";
+import { parseToolArgs, toApiMessages, toolActivityLabel, toolLineInt, withSystem, worktreeCheckoutFor, type ChatMessage, type ChatToolCall, type ThinkingBlock, type WorktreeListRow } from "./core.ts";
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
@@ -120,7 +120,12 @@ export async function executeTool(
       case "glob":
         return await api.glob(workspace, String(args.pattern ?? ""), String(args.path ?? ""));
       case "read_file":
-        return await api.readFile(workspace, String(args.path ?? ""));
+        return await api.readFile(
+          workspace,
+          String(args.path ?? ""),
+          toolLineInt(args.offset),
+          toolLineInt(args.limit),
+        );
       case "write_file":
         if (plan?.enabled && isSessionPlanPath(String(args.path ?? ""))) {
           if (!planModeEngaged(plan.getState())) {
@@ -393,6 +398,7 @@ export type LocalTurnEvent = {
   text?: string | null;
   tool?: ChatToolCall | null;
   messages?: ChatMessage[] | null;
+  usage?: ChatUsage | null;
 };
 
 /**
@@ -427,7 +433,11 @@ export async function resumeLocalTurn(input: {
         if (event.stream_id !== input.conversationId) return;
         if (event.kind === "saved" && event.conversation?.messages) {
           latest = event.conversation.messages as ChatMessage[];
-          input.onEvent({ kind: "saved", messages: latest });
+          input.onEvent({
+            kind: "saved",
+            messages: latest,
+            usage: parseChatUsage(event.conversation.context_usage),
+          });
           return;
         }
         if (event.kind === "idle") {

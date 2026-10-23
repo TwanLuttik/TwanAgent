@@ -342,6 +342,7 @@ function SortableTab({
       {...attributes}
       {...listeners}
       onPointerDown={(event) => {
+        // Only a plain left click starts a drag. Middle-click closes the tab.
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return;
         if (event.target instanceof Element && event.target.closest(".chrome-tab-close")) return;
         const width = event.currentTarget.getBoundingClientRect().width;

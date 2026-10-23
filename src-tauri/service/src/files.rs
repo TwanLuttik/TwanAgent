@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use crate::error::{Error, Result};
 
 const READ_LIMIT: usize = 400_000;
@@ -36,6 +38,67 @@ pub fn read_file(workspace: &Path, rel: &str) -> Result<String> {
         return Err(Error::Other("binary file".into()));
     }
     String::from_utf8(buf).map_err(|_| Error::Other("file is not valid UTF-8".into()))
+}
+
+/// Parse a 1-based line number from a tool argument. Strings and whole numbers are accepted.
+pub fn parse_line_int(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                u32::try_from(u).ok()
+            } else if let Some(i) = n.as_i64() {
+                u32::try_from(i).ok()
+            } else {
+                None
+            }
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                trimmed.parse().ok()
+            }
+        }
+        _ => None,
+    }
+}
+
+/// When `offset` or `limit` is set, return that 1-based slice with line numbers.
+/// A whole-file read (both omitted) is returned unchanged.
+pub fn numbered_lines(text: &str, offset: Option<u32>, limit: Option<u32>) -> Result<String> {
+    if offset.is_none() && limit.is_none() {
+        return Ok(text.to_string());
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let start = match offset {
+        Some(0) | None => 1usize,
+        Some(n) => n as usize,
+    };
+    if total == 0 || start > total {
+        return Err(Error::Other(format!(
+            "offset is past the end of the file ({total} lines)"
+        )));
+    }
+    let take = match limit {
+        Some(0) => return Err(Error::Other("limit must be greater than 0".into())),
+        Some(n) => n as usize,
+        None => usize::MAX,
+    };
+    let end = (start - 1).saturating_add(take).min(total);
+    let shown = &lines[start - 1..end];
+    let last_n = start + shown.len() - 1;
+    let width = last_n.to_string().len().max(6);
+    let mut out = String::new();
+    for (i, line) in shown.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let n = start + i;
+        out.push_str(&format!("{n:>width$}|{line}"));
+    }
+    Ok(out)
 }
 
 pub fn write_file(workspace: &Path, rel: &str, contents: &str) -> Result<()> {
@@ -340,6 +403,27 @@ mod tests {
         assert_eq!(read_file(root.path(), "src/note.txt").unwrap(), "hi");
         assert_eq!(read_file(root.path(), "src/./note.txt").unwrap(), "hi");
         assert!(resolve(root.path(), "../secret").is_err());
+    }
+
+    #[test]
+    fn numbered_lines_keeps_a_whole_file_unchanged() {
+        assert_eq!(numbered_lines("one\ntwo", None, None).unwrap(), "one\ntwo");
+        assert_eq!(parse_line_int(&serde_json::json!("10")), Some(10));
+        assert_eq!(parse_line_int(&serde_json::json!(51)), Some(51));
+    }
+
+    #[test]
+    fn numbered_lines_slices_and_numbers_a_range() {
+        let text = (1..=60).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let shown = numbered_lines(&text, Some(10), Some(51)).unwrap();
+        let rows: Vec<&str> = shown.lines().collect();
+        assert_eq!(rows.len(), 51);
+        assert_eq!(rows[0], "    10|line 10");
+        assert_eq!(rows[50], "    60|line 60");
+        let from_offset = numbered_lines(&text, Some(58), None).unwrap();
+        assert_eq!(from_offset.lines().collect::<Vec<_>>(), ["    58|line 58", "    59|line 59", "    60|line 60"]);
+        let err = numbered_lines(&text, Some(61), Some(10)).unwrap_err();
+        assert!(err.to_string().contains("offset is past the end of the file (60 lines)"));
     }
 }
 

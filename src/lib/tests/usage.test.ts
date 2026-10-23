@@ -8,6 +8,8 @@ import {
   dayKey,
   trendBucketSpan,
   estimateUsageCost,
+  usageMix,
+  usageShareLabel,
   formatBytes,
   formatModelName,
   formatUsd,
@@ -290,6 +292,80 @@ describe("estimated cost", () => {
     assert.equal(cost.unpricedTokens, 1_100);
     assert.equal(formatModelName("MiniMax-M3"), "MiniMax M3");
     assert.equal(modelColorIndex("MiniMax-M3"), modelColorIndex("minimax-m3"));
+  });
+
+  it("splits cached, fresh, and output, and counts only the cache discount as savings", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.7",
+        prompt_tokens: 100_000,
+        completion_tokens: 1_000,
+        total_tokens: 101_000,
+        cache_read_tokens: 80_000,
+      }),
+    ];
+    const mix = usageMix(events, { range: 7, nowMs: now });
+    assert.equal(mix.cached, 80_000);
+    assert.equal(mix.fresh, 20_000);
+    assert.equal(mix.completion, 1_000);
+    assert.equal(mix.total, 101_000);
+    assert.equal(mix.savedUsd, (80_000 * (2 - 0.5)) / 1_000_000);
+    assert.equal(usageShareLabel(1, 1_000_000), "<0.1%");
+    assert.equal(usageShareLabel(100_000, 100_000), "100%");
+  });
+
+  it("prices a cache hit at the cached rate and only the new cache in a later round", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now - 60_000).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.7",
+        prompt_tokens: 100_000,
+        completion_tokens: 1_000,
+        total_tokens: 101_000,
+        cache_read_tokens: 80_000,
+      }),
+      ev({
+        id: 2,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "grok-4.7",
+        prompt_tokens: 120_000,
+        completion_tokens: 500,
+        total_tokens: 120_500,
+        cache_read_tokens: 90_000,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    const firstFresh = 20_000;
+    const firstCached = 80_000;
+    const secondPrompt = 120_000 - 100_000 - 1_000;
+    const secondCached = 90_000 - 80_000;
+    const fresh = firstFresh + (secondPrompt - secondCached);
+    const cached = firstCached + secondCached;
+    const completion = 1_000 + 500;
+    const expected = (fresh * 2 + cached * 0.5 + completion * 6) / 1_000_000;
+    assert.ok(Math.abs(cost.usd - expected) < 1e-9);
+    assert.equal(cost.xai, cost.usd);
+  });
+
+  it("prices a long-context cache hit at the long cached rate", () => {
+    const cached = usageCostUsd(
+      { prompt: 1_000_000, completion: 0, total: 1_000_000, cached: 1_000_000 },
+      "grok-4.6",
+      1_000_000,
+    );
+    assert.equal(cached, 1);
+    const mixed = usageCostUsd(
+      { prompt: 1_000, completion: 0, total: 1_000, cached: 400 },
+      "grok-4.5",
+      200_000,
+    );
+    assert.equal(mixed, (600 * 4 + 400 * 0.6) / 1_000_000);
   });
 
   it("prices only the new tokens in a tool loop and skips unknown models", () => {

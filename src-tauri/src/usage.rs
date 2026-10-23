@@ -19,6 +19,9 @@ pub struct UsageEvent {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// Prompt tokens served from cache. Already inside `prompt_tokens`.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     #[serde(default)]
     pub duration_ms: Option<i64>,
 }
@@ -36,6 +39,9 @@ pub struct UsageRecord {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    /// Prompt tokens served from cache. Already inside `prompt_tokens`.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     #[serde(default)]
     pub duration_ms: Option<i64>,
 }
@@ -120,7 +126,16 @@ fn open(data_dir: &Path) -> Result<Connection> {
         ",
     )?;
     let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER", []);
+    ensure_cache_column(&conn)?;
     Ok(conn)
+}
+
+fn ensure_cache_column(conn: &Connection) -> Result<()> {
+    let _ = conn.execute(
+        "ALTER TABLE usage_events ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    Ok(())
 }
 
 fn normalize_workspace(path: &str) -> String {
@@ -150,8 +165,8 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
     conn.execute(
         "INSERT INTO usage_events (
             recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-            model, prompt_tokens, completion_tokens, total_tokens, duration_ms
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             recorded_at,
             path,
@@ -163,6 +178,7 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
             rec.completion_tokens as i64,
             total as i64,
             rec.duration_ms.filter(|ms| *ms >= 0),
+            rec.cache_read_tokens.min(rec.prompt_tokens) as i64,
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -177,6 +193,7 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
         prompt_tokens: rec.prompt_tokens,
         completion_tokens: rec.completion_tokens,
         total_tokens: total,
+        cache_read_tokens: rec.cache_read_tokens.min(rec.prompt_tokens),
         duration_ms: rec.duration_ms.filter(|ms| *ms >= 0),
     }))
 }
@@ -220,9 +237,10 @@ pub fn replace_workspace_paths(data_dir: &Path, moves: &[(String, String)]) -> R
 
 pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent>> {
     let conn = open(data_dir)?;
+    ensure_cache_column(&conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-                model, prompt_tokens, completion_tokens, total_tokens, duration_ms
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens
          FROM usage_events
          WHERE (?1 IS NULL OR recorded_at >= ?1)
          ORDER BY recorded_at ASC, id ASC",
@@ -239,6 +257,7 @@ pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent
             prompt_tokens: row.get::<_, i64>(7)? as u64,
             completion_tokens: row.get::<_, i64>(8)? as u64,
             total_tokens: row.get::<_, i64>(9)? as u64,
+            cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
             duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
         })
     })?;
@@ -262,9 +281,10 @@ pub fn list_for_conversation(
     }
     let workspace = normalize_workspace(workspace_path);
     let conn = open(data_dir)?;
+    ensure_cache_column(&conn)?;
     let mut stmt = conn.prepare(
         "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-                model, prompt_tokens, completion_tokens, total_tokens, duration_ms
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens
          FROM usage_events
          WHERE conversation_id = ?1
            AND (?2 = '' OR lower(rtrim(replace(workspace_path, '\\', '/'), '/')) = lower(?2))
@@ -282,6 +302,7 @@ pub fn list_for_conversation(
             prompt_tokens: row.get::<_, i64>(7)? as u64,
             completion_tokens: row.get::<_, i64>(8)? as u64,
             total_tokens: row.get::<_, i64>(9)? as u64,
+            cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
             duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
         })
     })?;
@@ -351,6 +372,7 @@ mod tests {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
+            cache_read_tokens: 0,
             duration_ms: None,
         }
     }
@@ -363,9 +385,63 @@ mod tests {
             .unwrap();
         assert_eq!(saved.workspace_path, "/proj/alpha");
         assert_eq!(saved.prompt_tokens, 100);
+        assert_eq!(saved.cache_read_tokens, 0);
         let rows = list_since(dir.path(), None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].completion_tokens, 20);
+    }
+
+    #[test]
+    fn keeps_cached_prompt_tokens_inside_the_prompt() {
+        let dir = tempdir().unwrap();
+        let mut row = rec("/proj/alpha", 1000, 20);
+        row.cache_read_tokens = 800;
+        let saved = record(dir.path(), row).unwrap().unwrap();
+        assert_eq!(saved.prompt_tokens, 1000);
+        assert_eq!(saved.cache_read_tokens, 800);
+        let listed = list_since(dir.path(), None).unwrap();
+        assert_eq!(listed[0].cache_read_tokens, 800);
+        let one = list_for_conversation(dir.path(), "c1", "/proj/alpha").unwrap();
+        assert_eq!(one[0].cache_read_tokens, 800);
+        let mut over = rec("/proj/alpha", 100, 5);
+        over.conversation_id = "c2".into();
+        over.cache_read_tokens = 9_000;
+        assert_eq!(record(dir.path(), over).unwrap().unwrap().cache_read_tokens, 100);
+    }
+
+    #[test]
+    fn lists_rows_written_before_cache_was_stored() {
+        let dir = tempdir().unwrap();
+        let conn = Connection::open(db_path(dir.path())).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recorded_at TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                workspace_name TEXT NOT NULL,
+                conversation_id TEXT NOT NULL DEFAULT '',
+                conversation_title TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                prompt_tokens INTEGER NOT NULL,
+                completion_tokens INTEGER NOT NULL,
+                total_tokens INTEGER NOT NULL,
+                duration_ms INTEGER
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO usage_events (
+                recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms
+            ) VALUES ('2026-10-01T00:00:00.000Z', '/proj/alpha', 'alpha', 'c1', 'Chat', 'grok-4.7', 10, 2, 12, NULL)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let rows = list_since(dir.path(), None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].prompt_tokens, 10);
+        assert_eq!(rows[0].cache_read_tokens, 0);
     }
 
     #[test]

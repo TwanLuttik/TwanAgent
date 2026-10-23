@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use super::{json_path, *};
-use crate::dev::{Conversation, SidebarItem};
+use crate::dev::{Conversation, DevChatUsage, SidebarItem};
 
 fn conv(id: &str, title: &str, messages: Vec<Value>) -> Conversation {
     Conversation {
@@ -153,7 +153,7 @@ fn suffix_write_leaves_the_prefix_rows() {
     let before = message_row_ids(&conn, "c1");
     let mut next = original;
     next.push(json!({"role":"tool","tool_call_id":"t1","content":"ok"}));
-    save_conversation_suffix(&conn, "c1", "2026-02-01T00:00:00Z", &next, 2).unwrap();
+    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:00Z", &next, 2, None).unwrap();
     let after = message_row_ids(&conn, "c1");
     assert_eq!(after.len(), 3);
     assert_eq!(after[0], before[0]);
@@ -171,6 +171,31 @@ fn suffix_write_leaves_the_prefix_rows() {
     let loaded = get_conversation(&conn, "c1").unwrap();
     assert_eq!(loaded.messages[0]["content"], "hi");
     assert_eq!(loaded.messages[2]["tool_call_id"], "t1");
+}
+
+#[test]
+fn suffix_write_can_store_context_usage() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(&conn, &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})])).unwrap();
+    let next = vec![
+        json!({"role":"user","content":"hi"}),
+        json!({"role":"assistant","content":"ok"}),
+    ];
+    let usage = DevChatUsage {
+        prompt_tokens: 1380,
+        completion_tokens: 20,
+        total_tokens: 1400,
+        cache_read_tokens: 100,
+        cache_creation_tokens: 0,
+    };
+    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:00Z", &next, 1, Some(&usage)).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.context_usage.as_ref().unwrap().prompt_tokens, 1380);
+    assert_eq!(loaded.context_usage.as_ref().unwrap().cache_read_tokens, 100);
+    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:01Z", &next, 2, None).unwrap();
+    let kept = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(kept.context_usage.as_ref().unwrap().prompt_tokens, 1380);
 }
 
 #[test]

@@ -481,6 +481,7 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 1,
                 total_tokens: 4,
+                cache_read_tokens: 0,
                 duration_ms: None,
             },
         )
@@ -599,6 +600,7 @@ mod tests {
                 prompt_tokens: 2,
                 completion_tokens: 1,
                 total_tokens: 3,
+                cache_read_tokens: 0,
                 duration_ms: None,
             },
         )
@@ -656,6 +658,7 @@ mod tests {
                 prompt_tokens: 2,
                 completion_tokens: 1,
                 total_tokens: 3,
+                cache_read_tokens: 0,
                 duration_ms: None,
             },
         )

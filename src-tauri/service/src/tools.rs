@@ -10,7 +10,14 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     let path = args.get("path").and_then(Value::as_str).unwrap_or("").trim();
     match name {
-        "read_file" => format!("Reading {}", label(path)),
+        "read_file" => {
+            let range = read_range_label(&args);
+            if range.is_empty() {
+                format!("Reading {}", label(path))
+            } else {
+                format!("Reading {} {range}", label(path))
+            }
+        }
         "write_file" => format!("Writing {}", label(path)),
         "edit_file" => format!("Editing {}", label(path)),
         "list_dir" => format!("Listing {}", if path.is_empty() { "." } else { path }),
@@ -36,6 +43,22 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
 
 fn label(path: &str) -> &str {
     if path.is_empty() { "a file" } else { path }
+}
+
+fn read_int(args: &Value, key: &str) -> Option<u32> {
+    args.get(key).and_then(files::parse_line_int)
+}
+
+fn read_range_label(args: &Value) -> String {
+    let offset = read_int(args, "offset");
+    let limit = read_int(args, "limit");
+    match (offset, limit) {
+        (None, None) => String::new(),
+        (Some(start), Some(count)) if count > 0 => format!("({start} - {})", start + count - 1),
+        (None, Some(count)) if count > 0 => format!("(1 - {count})"),
+        (Some(start), _) => format!("({start}+)"),
+        _ => String::new(),
+    }
 }
 
 pub trait Workspace {
@@ -110,7 +133,10 @@ pub fn dispatch(
         return Ok(format!("Error: {name} is blocked in read-only mode."));
     }
     match name {
-        "read_file" => workspace.read(&text("path")),
+        "read_file" => {
+            let text = workspace.read(&text("path"))?;
+            files::numbered_lines(&text, read_int(&args, "offset"), read_int(&args, "limit"))
+        }
         "list_dir" => workspace.list(&text("path")),
         "grep" => workspace.grep(&text("pattern"), &text("path"), &text("glob")),
         "glob" => workspace.glob(&text("pattern"), &text("path")),
@@ -181,5 +207,37 @@ mod tests {
         assert!(found.contains("src/app.rs:1:"));
         let paths = dispatch(&workspace, &Allow, "read-only", "glob", r#"{"pattern":"**/*.rs"}"#).unwrap();
         assert!(paths.contains("src/app.rs"));
+    }
+
+    #[test]
+    fn read_file_can_return_a_numbered_line_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = (1..=60).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("src.rs"), body).unwrap();
+        struct Allow;
+        impl ToolHost for Allow {
+            fn allow_shell(&self, _command: &str) -> bool {
+                true
+            }
+        }
+        let workspace = LocalWorkspace { root: dir.path().to_path_buf() };
+        let whole = dispatch(&workspace, &Allow, "read-only", "read_file", r#"{"path":"src.rs"}"#).unwrap();
+        assert_eq!(whole.lines().next(), Some("line 1"));
+        let ranged = dispatch(
+            &workspace,
+            &Allow,
+            "read-only",
+            "read_file",
+            r#"{"path":"src.rs","offset":10,"limit":51}"#,
+        )
+        .unwrap();
+        let rows: Vec<&str> = ranged.lines().collect();
+        assert_eq!(rows[0], "    10|line 10");
+        assert_eq!(rows[50], "    60|line 60");
+        assert_eq!(
+            tool_status("read_file", r#"{"path":"src.rs","offset":10,"limit":51}"#),
+            "Reading src.rs (10 - 60)",
+        );
+        assert_eq!(tool_status("read_file", r#"{"path":"src.rs"}"#), "Reading src.rs");
     }
 }

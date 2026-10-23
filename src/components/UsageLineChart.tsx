@@ -1,14 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatTokenCount } from "../lib/context";
+import { providerFor, type ProviderId } from "../lib/provider";
 import {
-  formatModelName,
-  modelColorIndex,
   sumTrendRange,
   trendBucketSpan,
   type UsageTrend,
   type UsageTrendPoint,
   type UsageTrendRange,
 } from "../lib/usage";
+
+/** One stacked area. Same hues as the provider marks in the rest of the app. */
+const SERIES: { id: ProviderId | "other"; label: string; color: string }[] = [
+  { id: "xai", label: "Grok", color: "var(--usage-xai)" },
+  { id: "anthropic", label: "Claude", color: "#d97757" },
+  { id: "minimax", label: "MiniMax", color: "#e21680" },
+  { id: "other", label: "Other", color: "#8d8d92" },
+];
+
+function seriesId(model: string): ProviderId | "other" {
+  const id = model.trim();
+  if (!id) return "other";
+  if (providerFor(id) === "xai" && !id.toLowerCase().startsWith("grok")) return "other";
+  return providerFor(id);
+}
 
 const H = 168;
 const PAD_X = 2;
@@ -19,10 +33,14 @@ export function UsageLineChart({
   trend,
   range,
   focusModel = null,
+  focusProvider = null,
 }: {
   trend: UsageTrend;
   range: UsageTrendRange;
+  /** One model. Wins over `focusProvider`. */
   focusModel?: string | null;
+  /** A provider id, such as `xai`. Other series fade. */
+  focusProvider?: string | null;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; index: number } | null>(null);
@@ -43,7 +61,7 @@ export function UsageLineChart({
 
   useEffect(() => {
     setSelection(null);
-  }, [range, focusModel]);
+  }, [range, focusModel, focusProvider]);
 
   useEffect(() => {
     function endDrag() {
@@ -52,23 +70,57 @@ export function UsageLineChart({
     window.addEventListener("mouseup", endDrag);
     return () => window.removeEventListener("mouseup", endDrag);
   }, []);
-  const valueOf = (point: UsageTrendPoint) =>
-    focusModel ? (point.models.find((row) => row.model === focusModel)?.total ?? 0) : point.total;
+  const valueOf = (point: UsageTrendPoint) => pointFocusTotal(point, focusModel, focusProvider);
+  const layers = useMemo(() => providerLayers(points), [points]);
   const max = Math.max(0, ...points.map(valueOf));
   const innerW = Math.max(0, width - PAD_X * 2);
   const innerH = H - PAD_TOP - PAD_BOTTOM;
   const floor = PAD_TOP + innerH;
+  const xAt = (i: number) => (points.length < 2 ? PAD_X : PAD_X + (i / (points.length - 1)) * innerW);
+  // A day past the labelled peak stays at the top instead of leaving the chart.
+  const yAt = (value: number) => {
+    if (max <= 0) return floor - innerH * 0.08;
+    return floor - (Math.min(value, max) / max) * innerH;
+  };
   const coords = useMemo(
-    () =>
-      points.map((point, i) => {
-        const x = points.length < 2 ? PAD_X : PAD_X + (i / (points.length - 1)) * innerW;
-        const y = max <= 0 ? floor - innerH * 0.08 : floor - (valueOf(point) / max) * innerH;
-        return { x, y };
-      }),
-    [floor, focusModel, innerH, innerW, max, points],
+    () => points.map((point, i) => ({ x: xAt(i), y: yAt(valueOf(point)) })),
+    // xAt and yAt close over the measured box. Recomputing when those change is the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [floor, focusModel, focusProvider, innerH, innerW, max, points],
   );
-  const line = smooth(coords, floor);
-  const area = coords.length > 1 ? `${line} L ${coords[coords.length - 1].x.toFixed(1)} ${floor} L ${coords[0].x.toFixed(1)} ${floor} Z` : "";
+  const focusSeries = focusModel
+    ? seriesId(focusModel)
+    : focusProvider && SERIES.some((row) => row.id === focusProvider)
+      ? (focusProvider as ProviderId | "other")
+      : null;
+  const focusColor = SERIES.find((row) => row.id === focusSeries)?.color ?? "var(--usage-xai)";
+  const focused = focusSeries != null;
+  const areas = layers.map((layer) => {
+    const isolated = focused && layer.id === focusSeries;
+    return {
+      ...layer,
+      d: bandPath(
+        points.map((_, i) => {
+          const top = isolated ? (layer.values[i] ?? 0) : focused ? 0 : (layer.top[i] ?? 0);
+          const bottom = isolated ? 0 : focused ? 0 : (layer.bottom[i] ?? 0);
+          return { x: xAt(i), top: yAt(top), bottom: yAt(bottom) };
+        }),
+        floor,
+      ),
+      edge: isolated
+        ? smooth(
+            points.map((_, i) => ({ x: xAt(i), y: yAt(layer.values[i] ?? 0) })),
+            floor,
+          )
+        : focused
+          ? ""
+          : smooth(
+              points.map((_, i) => ({ x: xAt(i), y: yAt(layer.top[i] ?? 0) })),
+              floor,
+            ),
+    };
+  });
+  const fillId = useId();
   const slot = points.length > 1 ? innerW / (points.length - 1) : innerW;
   const selected = selection
     ? {
@@ -85,16 +137,8 @@ export function UsageLineChart({
     : null;
   const active = hover == null ? null : points[hover];
   const activeBox = hover == null ? null : coords[hover];
-  const band =
-    hover == null || !activeBox
-      ? null
-      : {
-          x: Math.max(0, activeBox.x - slot / 2),
-          w: Math.min(width, activeBox.x + slot / 2) - Math.max(0, activeBox.x - slot / 2),
-        };
   const ticks = tickIndexes(points, range);
-  const peak = max > 0 ? nicePeak(max) : 0;
-  const focusClass = focusModel ? `usage-swatch-${modelColorIndex(focusModel)}` : "";
+  const peak = max > 0 ? Math.min(max, nicePeak(max)) : 0;
 
   return (
     <div ref={frame} className="relative w-full">
@@ -110,21 +154,13 @@ export function UsageLineChart({
         onDoubleClick={() => setSelection(null)}
       >
         <defs>
-          <linearGradient id="usage-line-fill" x1="0" y1="0" x2="0" y2="1">
-            {focusModel ? (
-              <>
-                <stop offset="0%" className={focusClass} stopOpacity="0.32" />
-                <stop offset="72%" className={focusClass} stopOpacity="0.06" />
-                <stop offset="100%" className={focusClass} stopOpacity="0" />
-              </>
-            ) : (
-              <>
-                <stop offset="0%" stopColor="var(--color-ok)" stopOpacity="0.28" />
-                <stop offset="70%" stopColor="var(--color-ok)" stopOpacity="0.06" />
-                <stop offset="100%" stopColor="var(--color-ok)" stopOpacity="0" />
-              </>
-            )}
-          </linearGradient>
+          {SERIES.map((series) => (
+            <linearGradient key={series.id} id={`${fillId}-${series.id}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={series.color} stopOpacity="0.38" />
+              <stop offset="72%" stopColor={series.color} stopOpacity="0.08" />
+              <stop offset="100%" stopColor={series.color} stopOpacity="0" />
+            </linearGradient>
+          ))}
         </defs>
         {span ? (
           <rect
@@ -132,12 +168,20 @@ export function UsageLineChart({
             y={PAD_TOP}
             width={Math.max(1, span.end - span.x)}
             height={innerH}
-            className="fill-ok"
-            opacity="0.14"
+            className="fill-ink"
+            opacity="0.08"
           />
         ) : null}
-        {band && !selected ? (
-          <rect x={band.x} y={PAD_TOP} width={Math.max(1, band.w)} height={innerH} className="fill-ink" opacity="0.06" />
+        {activeBox && !selected ? (
+          <line
+            x1={activeBox.x}
+            x2={activeBox.x}
+            y1={activeBox.y}
+            y2={floor}
+            className="stroke-ink"
+            strokeWidth="1"
+            opacity="0.28"
+          />
         ) : null}
         {peak > 0 ? (
           <g>
@@ -149,25 +193,38 @@ export function UsageLineChart({
               className="stroke-line"
               strokeWidth="1"
               strokeDasharray="1.5 5"
-              opacity="0.8"
+              opacity="0.55"
+            />
+            <line
+              x1={PAD_X}
+              x2={Math.max(PAD_X, width - PAD_X)}
+              y1={floor}
+              y2={floor}
+              className="stroke-line"
+              strokeWidth="1"
+              opacity="0.35"
             />
             <text x={PAD_X} y={PAD_TOP - 5} className="fill-muted text-[10px]">
               {formatTokenCount(peak)}
             </text>
           </g>
         ) : null}
-        {area ? <path d={area} fill="url(#usage-line-fill)" /> : null}
-        {line ? (
-          <path
-            d={line}
-            fill="none"
-            className={focusClass || undefined}
-            stroke={focusModel ? undefined : "var(--color-ok)"}
-            strokeWidth="2"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-          />
-        ) : null}
+        {areas.map((layer) =>
+          layer.d ? <path key={`${layer.id}-fill`} d={layer.d} fill={`url(#${fillId}-${layer.id})`} /> : null,
+        )}
+        {areas.map((layer) =>
+          layer.edge ? (
+            <path
+              key={`${layer.id}-line`}
+              d={layer.edge}
+              fill="none"
+              stroke={layer.color}
+              strokeWidth="1.85"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          ) : null,
+        )}
         {ticks.map((index) => (
           <text
             key={points[index].atMs}
@@ -208,13 +265,10 @@ export function UsageLineChart({
           }}
         />
         {active && activeBox ? (
-          <circle
-            cx={activeBox.x}
-            cy={activeBox.y}
-            r="3.5"
-            className={focusClass || undefined}
-            fill={focusModel ? undefined : "var(--color-ok)"}
-          />
+          <>
+            <circle cx={activeBox.x} cy={activeBox.y} r="5.5" fill="var(--color-canvas)" />
+            <circle cx={activeBox.x} cy={activeBox.y} r="3.5" fill={focusColor} />
+          </>
         ) : null}
       </svg>
       {selected && span ? (
@@ -222,7 +276,9 @@ export function UsageLineChart({
           className="pointer-events-none absolute z-10 -translate-x-1/2 rounded-[10px] border border-line bg-canvas/95 px-2.5 py-1.5 text-[11px] text-ink shadow-card backdrop-blur-sm"
           style={{ left: `${clampTip(width > 0 ? ((span.x + span.end) / 2 / width) * 100 : 50)}%`, top: 4 }}
         >
-          <div className="font-medium tabular-nums">{formatTokenCount(focusModel ? selectedFocusTotal(points, selected.from, selected.to, focusModel) : selected.totals.total)}</div>
+          <div className="font-medium tabular-nums">
+            {formatTokenCount(selectedFocusTotal(points, selected.from, selected.to, focusModel, focusProvider))}
+          </div>
           <div className="text-muted">
             {trendBucketSpan(range, points[selected.from].atMs).split(" – ")[0]} – {rangeLabelEnd(range, points[selected.to].atMs)}
           </div>
@@ -231,23 +287,27 @@ export function UsageLineChart({
       {active && activeBox && !selected ? (
         <div
           role="tooltip"
-          className="pointer-events-none absolute z-10 min-w-[9.5rem] -translate-x-1/2 rounded-[10px] border border-line bg-canvas/95 px-2.5 py-1.5 text-[11px] text-ink shadow-card backdrop-blur-sm"
-          style={{ left: `${clampTip(width > 0 ? (activeBox.x / width) * 100 : 50)}%`, top: 0 }}
+          className="pointer-events-none absolute z-10 min-w-[9.5rem] rounded-[10px] border border-line bg-canvas/95 px-2.5 py-1.5 text-[11px] text-ink shadow-card backdrop-blur-sm"
+          style={{
+            left: `${clampTip(width > 0 ? (activeBox.x / width) * 100 : 50)}%`,
+            top: Math.max(0, activeBox.y - 8),
+            transform: "translate(-50%, -100%)",
+          }}
         >
-          <div className="font-medium tabular-nums">{formatTokenCount(focusModel ? valueOf(active) : active.total)}</div>
+          <div className="font-medium tabular-nums">{formatTokenCount(valueOf(active))}</div>
           <div className="text-muted">{trendBucketSpan(range, active.atMs)}</div>
           {active.models.length > 0 ? (
             <div className="mt-1 grid gap-0.5 border-t border-line/70 pt-1">
-              {active.models.map((row) => (
+              {providerRows(active).map((row) => (
                 <div
-                  key={row.model || "unknown"}
+                  key={row.id}
                   className={`flex items-center justify-between gap-3 ${
-                    focusModel && focusModel !== row.model ? "opacity-35" : ""
+                    focusSeries && focusSeries !== row.id ? "opacity-35" : ""
                   }`}
                 >
                   <span className="flex min-w-0 items-center gap-1.5">
-                    <span className={`usage-dot usage-swatch-${modelColorIndex(row.model)}`} />
-                    <span className="min-w-0 truncate text-muted">{formatModelName(row.model)}</span>
+                    <span className="usage-dot" style={{ background: row.color }} />
+                    <span className="min-w-0 truncate text-muted">{row.label}</span>
                   </span>
                   <span className="shrink-0 tabular-nums">{formatTokenCount(row.total)}</span>
                 </div>
@@ -260,6 +320,72 @@ export function UsageLineChart({
       ) : null}
     </div>
   );
+}
+
+type Layer = {
+  id: ProviderId | "other";
+  label: string;
+  color: string;
+  /** Tokens in this series at each point. */
+  values: number[];
+  /** Running total at the top of this band. */
+  top: number[];
+  bottom: number[];
+};
+
+/** Stack providers that actually recorded tokens. The largest sits on the bottom. */
+function providerLayers(points: UsageTrendPoint[]): Layer[] {
+  const totals = new Map<ProviderId | "other", number>();
+  for (const point of points) {
+    for (const row of point.models) {
+      const id = seriesId(row.model);
+      totals.set(id, (totals.get(id) ?? 0) + row.total);
+    }
+  }
+  const order = SERIES.filter((series) => (totals.get(series.id) ?? 0) > 0).sort(
+    (a, b) => (totals.get(b.id) ?? 0) - (totals.get(a.id) ?? 0),
+  );
+  let running = points.map(() => 0);
+  return order.map((series) => {
+    const bottom = running;
+    const values = points.map((point) =>
+      point.models.reduce((sum, row) => {
+        if (seriesId(row.model) !== series.id) return sum;
+        return sum + row.total;
+      }, 0),
+    );
+    const top = values.map((mine, i) => bottom[i] + mine);
+    running = top;
+    return { ...series, values, top, bottom };
+  });
+}
+
+function pointFocusTotal(point: UsageTrendPoint, focusModel: string | null, focusProvider: string | null): number {
+  if (focusModel) return point.models.find((row) => row.model === focusModel)?.total ?? 0;
+  if (focusProvider) {
+    return point.models.reduce((sum, row) => (seriesId(row.model) === focusProvider ? sum + row.total : sum), 0);
+  }
+  return point.total;
+}
+
+function providerRows(point: UsageTrendPoint): { id: string; label: string; color: string; total: number }[] {
+  const totals = new Map<ProviderId | "other", number>();
+  for (const row of point.models) {
+    const id = seriesId(row.model);
+    totals.set(id, (totals.get(id) ?? 0) + row.total);
+  }
+  return SERIES.filter((series) => (totals.get(series.id) ?? 0) > 0)
+    .map((series) => ({ ...series, total: totals.get(series.id) ?? 0 }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/** A filled band between two smoothed edges. A flat band is skipped. */
+function bandPath(rows: { x: number; top: number; bottom: number }[], floor: number): string {
+  if (rows.length < 2) return "";
+  if (rows.every((row) => row.top - row.bottom < 0.5)) return "";
+  const upper = smooth(rows.map((row) => ({ x: row.x, y: row.top })), floor);
+  const lower = smooth([...rows].reverse().map((row) => ({ x: row.x, y: row.bottom })), floor);
+  return `${upper} L ${lower.replace(/^M /, "")} Z`;
 }
 
 /**
@@ -317,11 +443,12 @@ function selectedFocusTotal(
   points: UsageTrendPoint[],
   from: number,
   to: number,
-  model: string,
+  model: string | null,
+  provider: string | null,
 ): number {
   let total = 0;
   for (let i = from; i <= to; i++) {
-    total += points[i].models.find((row) => row.model === model)?.total ?? 0;
+    total += pointFocusTotal(points[i], model, provider);
   }
   return total;
 }
@@ -332,11 +459,16 @@ function rangeLabelEnd(range: UsageTrendRange, atMs: number): string {
   return parts[parts.length - 1] ?? span;
 }
 
+/**
+ * The gridline sits on a round number at or below the peak.
+ * Rounding up put the label above every real point, so the line left the chart.
+ */
 function nicePeak(max: number): number {
   const pow = 10 ** Math.floor(Math.log10(Math.max(1, max)));
   const n = max / pow;
-  const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
-  return nice * pow;
+  const steps = [1, 2, 2.5, 5, 10];
+  const step = [...steps].reverse().find((value) => value <= n + 1e-9) ?? 1;
+  return step * pow;
 }
 
 function tickIndexes(points: UsageTrendPoint[], range: UsageTrendRange): number[] {

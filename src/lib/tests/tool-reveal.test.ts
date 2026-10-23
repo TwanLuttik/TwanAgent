@@ -42,7 +42,7 @@ describe("tool rows already shown", () => {
 
   it("keeps rows that were already showing when a later batch continues them", () => {
     assert.equal(toolRowsAlreadyShown("Write a.ts\nWrite b.ts\nEdit a.ts", "Write a.ts\nWrite b.ts"), 2);
-    assert.equal(toolRowsAlreadyShown("Read 2 files", "Read 1 file"), 1);
+    assert.equal(toolRowsAlreadyShown("Read app.ts ×2", "Read app.ts"), 1);
     assert.equal(toolRowsAlreadyShown("Write a.ts", "Write a.ts"), 1);
   });
 

@@ -464,6 +464,19 @@ html[data-theme-mode="dark"] .usage-swatch-7 {
   transition: color 150ms ease;
 }
 
+/* Grok's mark is near-black on a light page and white on a dark one. */
+:root {
+  --usage-xai: #fff;
+}
+
+html[data-theme-mode="light"] {
+  --usage-xai: #1c1c1e;
+}
+
+.usage-mark-xai {
+  color: var(--usage-xai);
+}
+
 /* Provider color shows when the conversation row is hovered, not only the icon. */
 .group\/chat:hover .model-mark-xai,
 .model-mark-xai:hover {

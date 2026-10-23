@@ -14,6 +14,8 @@ export type UsageEvent = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Prompt tokens served from cache. Already inside `prompt_tokens`. Older rows omit it. */
+  cache_read_tokens?: number;
   duration_ms?: number | null;
 };
 
@@ -110,34 +112,46 @@ function usageSeriesKey(ev: UsageEvent): string {
   return `${conversationKey(ev)}\0${ev.model.trim()}`;
 }
 
+/** Cached reads reported for one request, never more than the prompt itself. */
+export function cacheReadTokens(ev: UsageEvent): number {
+  const cached = ev.cache_read_tokens ?? 0;
+  if (!Number.isFinite(cached) || cached <= 0) return 0;
+  return Math.min(Math.floor(cached), Math.max(0, ev.prompt_tokens));
+}
+
 /**
  * Tokens introduced by one model request.
  * A later tool round resends the whole prompt, so only the growth counts.
  * The same prompt with a different completion is another send of that prompt, not new context.
  * An identical row is a double write and counts as nothing.
+ * `cached` is the part of `prompt` served from cache. It stays inside `prompt`.
  */
-export function usageDelta(current: UsageEvent, previous?: UsageEvent): UsageTotals {
+export function usageDelta(current: UsageEvent, previous?: UsageEvent): UsageTotals & { cached: number } {
+  const cached = cacheReadTokens(current);
   if (
     previous &&
     current.prompt_tokens === previous.prompt_tokens &&
     current.completion_tokens === previous.completion_tokens &&
     current.total_tokens === previous.total_tokens
   ) {
-    return emptyTotals();
+    return { ...emptyTotals(), cached: 0 };
   }
   if (previous && current.prompt_tokens > previous.prompt_tokens) {
     const prompt = Math.max(0, current.prompt_tokens - previous.prompt_tokens - previous.completion_tokens);
     const completion = Math.max(0, current.completion_tokens);
-    return { prompt, completion, total: prompt + completion };
+    // Cache that was already in the previous prompt is not a new cached read.
+    const freshCache = Math.max(0, cached - cacheReadTokens(previous));
+    return { prompt, completion, total: prompt + completion, cached: Math.min(prompt, freshCache) };
   }
   if (previous && current.prompt_tokens === previous.prompt_tokens) {
     const completion = Math.max(0, current.completion_tokens);
-    return { prompt: 0, completion, total: completion };
+    return { prompt: 0, completion, total: completion, cached: 0 };
   }
   return {
     prompt: Math.max(0, current.prompt_tokens),
     completion: Math.max(0, current.completion_tokens),
     total: Math.max(0, current.total_tokens),
+    cached: Math.min(Math.max(0, current.prompt_tokens), cached),
   };
 }
 
@@ -237,20 +251,30 @@ export function modelRate(model: string): ModelRate | null {
   return dated ? MODEL_RATES[dated] : null;
 }
 
-function rateForPrompt(rate: ModelRate, promptTokens: number): { input: number; output: number } {
+function rateForPrompt(rate: ModelRate, promptTokens: number): { input: number; cached: number; output: number } {
   const long = rate.longContextFrom != null && promptTokens >= rate.longContextFrom;
   return {
     input: long ? (rate.longInput ?? rate.input) : rate.input,
+    cached: long ? (rate.longCachedInput ?? rate.cachedInput ?? rate.longInput ?? rate.input) : (rate.cachedInput ?? rate.input),
     output: long ? (rate.longOutput ?? rate.output) : rate.output,
   };
 }
 
-/** USD for one billable delta. Uses the prompt size of the request that introduced the tokens. */
-export function usageCostUsd(delta: UsageTotals, model: string, promptTokens: number): number | null {
+/**
+ * USD for one billable delta. Uses the prompt size of the request that introduced the tokens.
+ * `cached` tokens are priced at the cached input rate. The rest of the prompt is fresh input.
+ */
+export function usageCostUsd(
+  delta: UsageTotals & { cached?: number },
+  model: string,
+  promptTokens: number,
+): number | null {
   const rate = modelRate(model);
   if (!rate) return null;
   const priced = rateForPrompt(rate, Math.max(0, promptTokens));
-  return (delta.prompt * priced.input + delta.completion * priced.output) / PER_MILLION;
+  const cached = Math.min(Math.max(0, delta.cached ?? 0), Math.max(0, delta.prompt));
+  const fresh = Math.max(0, delta.prompt - cached);
+  return (fresh * priced.input + cached * priced.cached + delta.completion * priced.output) / PER_MILLION;
 }
 
 export function formatUsd(amount: number): string {
@@ -270,11 +294,14 @@ export type UsageCost = {
   minimax: number;
   /** Tokens whose model has no list price, so they are left out of the estimate. */
   unpricedTokens: number;
+  /** List-price estimate for one model id. Missing when that model has no rate. */
+  byModel: Record<string, number>;
 };
 
 /**
  * Estimated API cost for the same window and project filter as a usage snapshot.
- * Cached prompt tokens are not stored, so resent context is priced as fresh input.
+ * Cached reads stored on a row use the cached input rate. Rows written before that
+ * column existed have no cache count, so their prompt is priced as fresh input.
  */
 export function estimateUsageCost(
   events: UsageEvent[],
@@ -288,6 +315,7 @@ export function estimateUsageCost(
   let anthropic = 0;
   let minimax = 0;
   let unpricedTokens = 0;
+  const byModel: Record<string, number> = {};
   for (const { ev, atMs, delta } of eachUsageDelta(events, (row, t) => {
     if (t < startMs || t > nowMs) return false;
     if (want && projectKey(row.workspace_path) !== want) return false;
@@ -300,24 +328,26 @@ export function estimateUsageCost(
       continue;
     }
     usd += cost;
+    const id = ev.model.trim();
+    byModel[id] = (byModel[id] ?? 0) + cost;
     const provider = providerFor(ev.model);
     if (provider === "anthropic") anthropic += cost;
     else if (provider === "minimax") minimax += cost;
     else xai += cost;
   }
-  return { usd, xai, anthropic, minimax, unpricedTokens };
+  return { usd, xai, anthropic, minimax, unpricedTokens, byModel };
 }
 
 function eachUsageDelta(
   events: UsageEvent[],
   inside: (ev: UsageEvent, atMs: number) => boolean,
-): { ev: UsageEvent; atMs: number; delta: UsageTotals }[] {
+): { ev: UsageEvent; atMs: number; delta: UsageDelta }[] {
   const ordered = events
     .map((ev) => ({ ev, atMs: Date.parse(ev.recorded_at) }))
     .filter((row) => Number.isFinite(row.atMs))
     .sort((a, b) => a.atMs - b.atMs || a.ev.id - b.ev.id);
   const previous = new Map<string, UsageEvent>();
-  const out: { ev: UsageEvent; atMs: number; delta: UsageTotals }[] = [];
+  const out: { ev: UsageEvent; atMs: number; delta: UsageDelta }[] = [];
   for (const row of ordered) {
     const key = usageSeriesKey(row.ev);
     const delta = usageDelta(row.ev, previous.get(key));
@@ -325,6 +355,64 @@ function eachUsageDelta(
     if (inside(row.ev, row.atMs)) out.push({ ev: row.ev, atMs: row.atMs, delta });
   }
   return out;
+}
+
+export type UsageDelta = UsageTotals & { cached: number };
+
+/** New tokens in the same window as a snapshot, split the way a bill is split. */
+export type UsageMix = {
+  total: number;
+  /** Prompt tokens served from cache. Already inside `total`. */
+  cached: number;
+  /** Prompt tokens that were not cached. */
+  fresh: number;
+  completion: number;
+  /** What the fresh prompt would have cost at the full input rate. */
+  freshUsd: number;
+  /** What the cached reads actually cost. */
+  cachedUsd: number;
+  /** freshUsd minus cachedUsd. Zero when no row recorded a cache hit. */
+  savedUsd: number;
+};
+
+export function usageMix(
+  events: UsageEvent[],
+  opts: { range: UsageRange; nowMs?: number; workspacePath?: string | null },
+): UsageMix {
+  const nowMs = opts.nowMs ?? Date.now();
+  const startMs = rangeStartMs(opts.range, nowMs);
+  const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
+  const mix: UsageMix = { total: 0, cached: 0, fresh: 0, completion: 0, freshUsd: 0, cachedUsd: 0, savedUsd: 0 };
+  for (const { ev, delta } of eachUsageDelta(events, (row, t) => {
+    if (t < startMs || t > nowMs) return false;
+    if (want && projectKey(row.workspace_path) !== want) return false;
+    return true;
+  })) {
+    const cached = Math.min(Math.max(0, delta.cached), Math.max(0, delta.prompt));
+    const fresh = Math.max(0, delta.prompt - cached);
+    mix.total += delta.total;
+    mix.cached += cached;
+    mix.fresh += fresh;
+    mix.completion += delta.completion;
+    const rate = modelRate(ev.model);
+    if (!rate || cached <= 0) continue;
+    const priced = rateForPrompt(rate, Math.max(0, ev.prompt_tokens));
+    const full = (cached * priced.input) / PER_MILLION;
+    const paid = (cached * priced.cached) / PER_MILLION;
+    mix.freshUsd += full;
+    mix.cachedUsd += paid;
+    mix.savedUsd += Math.max(0, full - paid);
+  }
+  return mix;
+}
+
+/** Share of the window total, under 0.1% when the slice is real but tiny. */
+export function usageShareLabel(part: number, total: number): string {
+  if (part <= 0 || total <= 0) return "0%";
+  const pct = (part / total) * 100;
+  if (pct < 0.1) return "<0.1%";
+  if (pct >= 99.95) return "100%";
+  return `${pct >= 10 ? pct.toFixed(0) : pct.toFixed(1)}%`;
 }
 
 export function buildUsageSnapshot(

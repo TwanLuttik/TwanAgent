@@ -22,6 +22,7 @@ pub use providers::{anthropic, minimax, registry, xai};
 
 pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_VERSION};
 pub use error::{Error, Result};
+pub use files::{numbered_lines, parse_line_int};
 pub use live::LiveFrame;
 pub use realtime::{ensure_started, subscribe_text, subscribe_text_with, LIVE_PORT};
 pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
