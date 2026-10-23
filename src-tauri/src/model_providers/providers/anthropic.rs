@@ -889,15 +889,28 @@ pub async fn dev_account_usage(state: tauri::State<'_, crate::state::AppState>) 
     Ok(usage)
 }
 
+fn claude_version_cache() -> &'static std::sync::Mutex<Option<String>> {
+    static VERSION: OnceLock<std::sync::Mutex<Option<String>>> = OnceLock::new();
+    VERSION.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// `claude --version` is a process spawn. A detected version is reused; a miss is tried again.
 fn cached_claude_version(bin: Option<&Path>) -> Option<String> {
-    static VERSION: OnceLock<String> = OnceLock::new();
-    if let Some(found) = VERSION.get() {
-        return Some(found.clone());
+    if let Some(found) = claude_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+        return Some(found);
     }
     let version = bin.and_then(claude_version)?;
-    let _ = VERSION.set(version.clone());
+    if let Ok(mut guard) = claude_version_cache().lock() {
+        *guard = Some(version.clone());
+    }
     Some(version)
+}
+
+/// Forget the version read at launch. The next settings read spawns `claude --version` again.
+pub fn forget_claude_version() {
+    if let Ok(mut guard) = claude_version_cache().lock() {
+        *guard = None;
+    }
 }
 
 pub fn claude_cli_info() -> ClaudeCliInfo {

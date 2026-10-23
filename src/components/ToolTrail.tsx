@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   foldToolTrailRows,
   toolTrailKind,
+  toolTrailParts,
   toolTrailTypeIcon,
   type ToolFileChange,
   type ToolTrailRow,
@@ -186,6 +187,20 @@ function ToolMark({ label }: { label: string }) {
   );
 }
 
+/** The action stays darker than the path, so a list of reads does not look like one sentence. */
+function ToolLabel({ label }: { label: string }) {
+  const parts = toolTrailParts(label);
+  if (!parts.detail) {
+    return <span className="tool-verb min-w-0 truncate text-ink/75">{parts.verb}</span>;
+  }
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5">
+      <span className="tool-verb shrink-0 text-ink/75">{parts.verb}</span>
+      <span className="min-w-0 truncate text-muted/80">{parts.detail}</span>
+    </span>
+  );
+}
+
 function LiveSpinner() {
   return (
     <span
@@ -239,12 +254,12 @@ function ToolCallBlock({
         onClick={() => {
           if (canOpen) setOpen((value) => !value);
         }}
-        className={`group flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 text-muted transition-colors duration-200 ${
-          canOpen ? "w-full rounded-md hover:text-ink" : "cursor-default"
+        className={`group flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 transition-colors duration-200 hover:[&_.tool-verb]:text-ink ${
+          canOpen ? "w-full rounded-md" : "cursor-default"
         }`}
       >
         <ToolMark label={label} />
-        <span className="min-w-0 truncate">{label}</span>
+        <ToolLabel label={label} />
         {counts && change && (change.additions > 0 || change.deletions > 0) ? <LineChangeCounts change={change} /> : null}
         <span className="min-w-0 flex-1" />
         {spinning ? <LiveSpinner /> : null}

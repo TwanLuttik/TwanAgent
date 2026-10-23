@@ -438,6 +438,14 @@ html[data-theme-mode="dark"] .usage-swatch-7 {
   border-radius: 999px;
 }
 
+.usage-chart .recharts-tooltip-wrapper {
+  transition: transform 180ms ease-out, opacity 160ms ease-out;
+}
+
+.usage-chart .recharts-active-dot circle {
+  transition: cx 180ms ease-out, cy 180ms ease-out;
+}
+
 /* Account forecast. Filled cells are how full that slice of the window is. */
 .forecast-cell-empty {
   background: transparent;

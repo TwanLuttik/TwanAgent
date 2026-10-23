@@ -4,6 +4,7 @@ import {
   buildUsageGrid,
   buildUsageSnapshot,
   buildUsageTrend,
+  chartCeiling,
   sumTrendRange,
   dayKey,
   trendBucketSpan,
@@ -758,6 +759,21 @@ describe("buildUsageTrend", () => {
       at.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }),
     );
     assert.equal(trendBucketSpan(90, at.getTime()), trendBucketSpan(30, at.getTime()));
+  });
+
+  it("puts the top gridline on a round ceiling at or above the busiest point", () => {
+    assert.equal(chartCeiling(0), 0);
+    assert.equal(chartCeiling(-4), 0);
+    assert.equal(chartCeiling(Number.NaN), 0);
+    // A 119k day used to be labelled 100k, with the spike drawn above the line.
+    assert.equal(chartCeiling(119_000), 200_000);
+    assert.equal(chartCeiling(100_000), 100_000);
+    assert.equal(chartCeiling(100_001), 200_000);
+    assert.equal(chartCeiling(250_000), 250_000);
+    assert.equal(chartCeiling(250_001), 500_000);
+    assert.equal(chartCeiling(644_000), 1_000_000);
+    assert.equal(chartCeiling(1), 1);
+    assert.equal(chartCeiling(2.4), 2.5);
   });
 
   it("sums an inclusive dragged span and ignores the order of the ends", () => {

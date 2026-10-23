@@ -1,4 +1,5 @@
 mod model_providers;
+mod access;
 mod appdb;
 mod remote;
 mod dev;
@@ -174,6 +175,8 @@ pub fn run() {
             let data_dir = isolate_data_dir(app.path().app_data_dir()?);
             std::fs::create_dir_all(&data_dir)?;
             let state = AppState::load(data_dir);
+            // Resolve saved folder grants before any file command can trip a new prompt.
+            access::restore_all(&state.data_dir);
             state.allow_persisted_assets(app);
             let attachments = state.data_dir.join("attachments");
             std::fs::create_dir_all(&attachments)?;
@@ -228,6 +231,7 @@ pub fn run() {
             dev::keys::dev_cli_info,
             dev::keys::dev_claude_cli_info,
             dev::keys::dev_minimax_cli_info,
+            dev::keys::dev_cli_update,
             dev::keys::dev_set_key,
             dev::keys::dev_clear_key,
             dev::keys::dev_anthropic_key_status,

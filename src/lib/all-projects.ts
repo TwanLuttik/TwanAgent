@@ -192,6 +192,68 @@ export function isEmptyChatDraft(row: { title?: string; kind?: string }): boolea
   return (row.title || "New chat").trim() === "New chat" && (row.kind ?? "chat") !== "terminal";
 }
 
+export type SidebarActivityStatus = "running" | "finished";
+
+/** One chat in the overview above the project list. */
+export type SidebarActivityItem = {
+  id: string;
+  title: string;
+  path: string;
+  project: string;
+  status: SidebarActivityStatus;
+  updatedAt: string;
+};
+
+const ACTIVITY_LIMIT = 8;
+
+/**
+ * Chats worth a glance above the projects.
+ * A turn that is still running comes first. A reply the user has not opened yet follows it.
+ * Archived chats stay in the archive. The same id is listed once, under the project that owns it.
+ */
+export function sidebarActivity(
+  groups: { name: string; path: string; conversations: ConversationSummary[] }[],
+  runningIds: Readonly<Record<string, unknown>>,
+  unseenIds: ReadonlySet<string>,
+  extra: { path: string; conversations: ConversationSummary[] }[] = [],
+): SidebarActivityItem[] {
+  const seen = new Set<string>();
+  const items: SidebarActivityItem[] = [];
+  const sources = [
+    ...groups.map((group) => ({ name: group.name, path: group.path, conversations: group.conversations })),
+    ...extra.map((row) => ({ name: folderName(row.path), path: row.path, conversations: row.conversations })),
+  ];
+  for (const source of sources) {
+    for (const row of source.conversations) {
+      if (seen.has(row.id) || isArchivedConversation(row)) continue;
+      const status: SidebarActivityStatus | null =
+        row.id in runningIds ? "running" : unseenIds.has(row.id) ? "finished" : null;
+      if (!status) continue;
+      seen.add(row.id);
+      items.push({
+        id: row.id,
+        title: (row.title || "New chat").trim() || "New chat",
+        path: source.path,
+        project: source.name || folderName(source.path),
+        status,
+        updatedAt: row.updated_at,
+      });
+    }
+  }
+  items.sort((a, b) => {
+    if (a.status !== b.status) return a.status === "running" ? -1 : 1;
+    return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+  });
+  return items.slice(0, ACTIVITY_LIMIT);
+}
+
+/** Match a chat or its project against the sidebar search. An empty query matches everything. */
+export function matchesSidebarQuery(query: string, ...fields: (string | null | undefined)[]): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return fields.some((field) => (field ?? "").toLowerCase().includes(needle));
+}
+
 function cloudChatsWithoutLocalDrafts(rows: ConversationSummary[]): ConversationSummary[] {
   return rows.filter((row) => !isLocalCloudDraft(row));
 }

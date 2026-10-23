@@ -774,6 +774,20 @@ export function buildUsageTrend(
   return { points, totals };
 }
 
+/**
+ * Round ceiling for the usage chart's top gridline.
+ * The line is the scale, so it sits on or above the busiest point.
+ * A value already on a step stays there. 119k therefore reads 200k, not 100k.
+ */
+export function chartCeiling(max: number): number {
+  if (!Number.isFinite(max) || max <= 0) return 0;
+  const pow = 10 ** Math.floor(Math.log10(max));
+  const n = max / pow;
+  const steps = [1, 2, 2.5, 5, 10];
+  const step = steps.find((value) => value + 1e-9 >= n) ?? 10;
+  return step * pow;
+}
+
 export function linePath(values: number[], width: number, height: number, pad = 0): string {
   if (values.length < 2) return "";
   const max = Math.max(0, ...values);

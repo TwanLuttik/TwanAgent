@@ -34,6 +34,7 @@
     "react-colorful": "^5.8.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {

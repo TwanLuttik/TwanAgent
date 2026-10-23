@@ -60,10 +60,17 @@ impl AppState {
     }
 
     pub fn require_workspace(&self, workspace: &str) -> Result<PathBuf> {
-        self.opened
+        let root = self
+            .opened
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .require(workspace)
+            .require(workspace)?;
+        // Folders saved before bookmarks existed only have a path. Saving the
+        // bookmark on first use keeps the next launch from asking again.
+        if let Err(err) = crate::access::remember(&self.data_dir, &root) {
+            eprintln!("folder access was not saved: {err}");
+        }
+        Ok(root)
     }
 
     pub fn register_workspace<R: Runtime, M: Manager<R>>(
@@ -74,6 +81,10 @@ impl AppState {
         let mut opened = self.opened.lock().unwrap_or_else(|e| e.into_inner());
         let canon = opened.register(root)?;
         let _ = opened.persist(&self.data_dir);
+        // The picker grant dies with this process unless a bookmark is saved now.
+        if let Err(err) = crate::access::remember(&self.data_dir, &canon) {
+            eprintln!("folder access was not saved: {err}");
+        }
         let _ = app.asset_protocol_scope().allow_directory(&canon, true);
         Ok(canon)
     }
@@ -90,6 +101,7 @@ impl AppState {
         let removed = opened.forget(root);
         if removed {
             let _ = opened.persist(&self.data_dir);
+            let _ = crate::access::forget(&self.data_dir, root);
         }
         Ok(removed)
     }

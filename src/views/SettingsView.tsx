@@ -4,11 +4,12 @@ import { Symbol } from "../components/Symbol";
 import { ThemePicker } from "../components/ThemePicker";
 import { maskEmail } from "../lib/mask";
 import { formatBytes } from "../lib/usage";
-import { folderName } from "../lib/core";
+import { folderName, projectKey } from "../lib/core";
 import {
+  PERMISSION_ACTIONS,
   PERMISSION_MODES,
   parsePermissionMode,
-  permissionDetail,
+  permissionEffect,
   type PermissionMode,
 } from "../lib/permission";
 import {
@@ -37,6 +38,7 @@ import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/sce
 import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
 import {
+  setProviderCli,
   setProviderDb,
   setProviderFolders,
   setProviderKeyStatus,
@@ -63,7 +65,7 @@ export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "pe
 export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
   { id: "providers", label: "Model Providers", hint: "Grok, Claude, and MiniMax", icon: "sparkles" },
   { id: "voice", label: "Voice", hint: "Dictation model", icon: "mic" },
-  { id: "permissions", label: "Permissions", hint: "Folders and tools", icon: "lock" },
+  { id: "permissions", label: "Permissions", hint: "Folders and chats", icon: "lock" },
   { id: "storage", label: "Storage", hint: "Usage database", icon: "externaldrive" },
   { id: "appearance", label: "Appearance", hint: "Theme and display", icon: "paintbrush" },
 ];
@@ -120,20 +122,15 @@ export function SettingsView({
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
   const [wrapLines, setWrapLinesOn] = useState(() => loadWrapLines());
   const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
-  const [xaiKey, setXaiKey] = useState("");
-  const keyStatus = providerStatus.xai;
-  const [savingKey, setSavingKey] = useState(false);
-  const [anthropicKey, setAnthropicKey] = useState("");
-  const anthropicStatus = providerStatus.anthropic;
-  const [savingAnthropic, setSavingAnthropic] = useState(false);
-  const cli = providerStatus.grokCli;
-  const claudeCli = providerStatus.claudeCli;
-  const [minimaxKey, setMinimaxKey] = useState("");
-  const minimaxStatus = providerStatus.minimax;
-  const [savingMinimax, setSavingMinimax] = useState(false);
-  const minimaxCli = providerStatus.minimaxCli;
-  const [showEmail, setShowEmail] = useState(false);
-  const [showClaudeEmail, setShowClaudeEmail] = useState(false);
+  const [providerKeys, setProviderKeys] = useState<Record<ProviderCardId, string>>({
+    xai: "",
+    anthropic: "",
+    minimax: "",
+  });
+  const [savingProvider, setSavingProvider] = useState<ProviderCardId | null>(null);
+  const [updatingCli, setUpdatingCli] = useState<ProviderCardId | "all" | null>(null);
+  const [revealedEmail, setRevealedEmail] = useState<ProviderCardId | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderCardId>("xai");
   const db = providerStatus.db;
   const [resettingDb, setResettingDb] = useState(false);
   const [openingDb, setOpeningDb] = useState(false);
@@ -157,6 +154,19 @@ export function SettingsView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [active, onClose, voicePicker]);
+
+  function updateProvider(card: ProviderCard) {
+    const cli = providerStatus[card.cli];
+    if (!cli?.installed || !cli.update || cli.update === cli.version) return Promise.resolve();
+    return api.cliUpdate(card.id).then((info) => {
+      setProviderCli(card.id, info);
+      const version = info.version || cli.version || "";
+      setFlash({
+        kind: "ok",
+        text: version ? `Updated the ${card.title} CLI to ${version}.` : `Updated the ${card.title} CLI.`,
+      });
+    });
+  }
 
   const body = (
     <div className="flex min-h-0 flex-1">
@@ -344,151 +354,68 @@ export function SettingsView({
           )}
 
           {tab === "providers" && (
-            <Section
-              title="Model Providers"
-              text="Chat uses a saved key when one is set, then the environment. A signed-in CLI is shown here and is not required to send."
-            >
-              <ProviderBlock
-                logo="logo.grok"
-                markClass="bg-[#1a1a1a] text-white"
-                title="Grok"
-                text="xAI models. The CLI login is used when no API key is saved."
-                ready={Boolean(cli?.logged_in || keyStatus?.saved || keyStatus?.env)}
-              >
-                <CliStatus
-                  cli={cli}
-                  reveal={showEmail}
-                  onToggleReveal={() => setShowEmail((on) => !on)}
-                />
-                <KeyField
-                  label="xAI API key"
-                  value={xaiKey}
-                  onChange={setXaiKey}
-                  placeholder={keyStatus?.saved ? "Key saved — paste to replace" : "xai-…"}
-                  status={keyStatus}
-                  envName="XAI_API_KEY"
-                  saving={savingKey}
-                  onClear={() => {
-                    setSavingKey(true);
-                    void api
-                      .clearKey()
-                      .then((s) => {
-                        setProviderKeyStatus("xai", s);
-                        setXaiKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Removed the saved xAI key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingKey(false));
-                  }}
-                  onSave={() => {
-                    setSavingKey(true);
-                    void api
-                      .setKey(xaiKey.trim())
-                      .then((s) => {
-                        setProviderKeyStatus("xai", s);
-                        setXaiKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Saved the xAI API key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingKey(false));
-                  }}
-                />
-              </ProviderBlock>
-              <ProviderBlock
-                logo="logo.claude"
-                markClass="bg-[#d97757] text-[#faf9f5]"
-                title="Claude"
-                text="Anthropic models. The CLI login is used when no API key is saved."
-                ready={Boolean(claudeCli?.logged_in || anthropicStatus?.saved || anthropicStatus?.env)}
-              >
-                <CliStatus
-                  cli={claudeCli}
-                  reveal={showClaudeEmail}
-                  onToggleReveal={() => setShowClaudeEmail((on) => !on)}
-                />
-                <KeyField
-                  label="Anthropic API key"
-                  value={anthropicKey}
-                  onChange={setAnthropicKey}
-                  placeholder={anthropicStatus?.saved ? "Key saved — paste to replace" : "sk-ant-…"}
-                  status={anthropicStatus}
-                  envName="ANTHROPIC_API_KEY"
-                  saving={savingAnthropic}
-                  onClear={() => {
-                    setSavingAnthropic(true);
-                    void api
-                      .clearAnthropicKey()
-                      .then((s) => {
-                        setProviderKeyStatus("anthropic", s);
-                        setAnthropicKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Removed the saved Anthropic key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingAnthropic(false));
-                  }}
-                  onSave={() => {
-                    setSavingAnthropic(true);
-                    void api
-                      .setAnthropicKey(anthropicKey.trim())
-                      .then((s) => {
-                        setProviderKeyStatus("anthropic", s);
-                        setAnthropicKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Saved the Anthropic API key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingAnthropic(false));
-                  }}
-                />
-              </ProviderBlock>
-              <ProviderBlock
-                logo="logo.minimax"
-                markClass="bg-wash"
-                title="MiniMax"
-                text="MiniMax models. The mmx login is used when no API key is saved."
-                ready={Boolean(minimaxCli?.logged_in || minimaxStatus?.saved || minimaxStatus?.env)}
-              >
-                <CliStatus cli={minimaxCli} reveal={false} onToggleReveal={() => undefined} />
-                <KeyField
-                  label="MiniMax API key"
-                  value={minimaxKey}
-                  onChange={setMinimaxKey}
-                  placeholder={minimaxStatus?.saved ? "Key saved — paste to replace" : "sk-…"}
-                  status={minimaxStatus}
-                  envName="MINIMAX_API_KEY"
-                  saving={savingMinimax}
-                  onClear={() => {
-                    setSavingMinimax(true);
-                    void api
-                      .clearMinimaxKey()
-                      .then((s) => {
-                        setProviderKeyStatus("minimax", s);
-                        setMinimaxKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Removed the saved MiniMax key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingMinimax(false));
-                  }}
-                  onSave={() => {
-                    setSavingMinimax(true);
-                    void api
-                      .setMinimaxKey(minimaxKey.trim())
-                      .then((s) => {
-                        setProviderKeyStatus("minimax", s);
-                        setMinimaxKey("");
-                        onKeyChange?.();
-                        setFlash({ kind: "ok", text: "Saved the MiniMax API key." });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setSavingMinimax(false));
-                  }}
-                />
-              </ProviderBlock>
-            </Section>
+            <ProvidersPane
+              cards={PROVIDER_CARDS}
+              selectedId={selectedProvider}
+              onSelect={setSelectedProvider}
+              statusFor={(card) => providerStatus[card.id]}
+              cliFor={(card) => providerStatus[card.cli]}
+              draftFor={(card) => providerKeys[card.id]}
+              onDraft={(card, value) => setProviderKeys((prev) => ({ ...prev, [card.id]: value }))}
+              savingId={savingProvider}
+              updatingId={updatingCli}
+              revealed={revealedEmail === selectedProvider}
+              onToggleReveal={() =>
+                setRevealedEmail((current) => (current === selectedProvider ? null : selectedProvider))
+              }
+              onUpdate={(card) => {
+                setUpdatingCli(card.id);
+                void updateProvider(card)
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                  .finally(() => setUpdatingCli(null));
+              }}
+              onUpdateAll={() => {
+                const due = PROVIDER_CARDS.filter((card) => {
+                  const cli = providerStatus[card.cli];
+                  return Boolean(cli?.installed && cli.update && cli.update !== cli.version);
+                });
+                if (due.length === 0 || updatingCli) return;
+                setUpdatingCli("all");
+                void due
+                  .reduce(
+                    (chain, card) => chain.then(() => updateProvider(card)),
+                    Promise.resolve(),
+                  )
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                  .finally(() => setUpdatingCli(null));
+              }}
+              onClear={(card) => {
+                setSavingProvider(card.id);
+                void card
+                  .clear()
+                  .then((next) => {
+                    setProviderKeyStatus(card.id, next);
+                    setProviderKeys((prev) => ({ ...prev, [card.id]: "" }));
+                    onKeyChange?.();
+                    setFlash({ kind: "ok", text: `Removed the saved ${card.keyName} key.` });
+                  })
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                  .finally(() => setSavingProvider(null));
+              }}
+              onSave={(card) => {
+                setSavingProvider(card.id);
+                void card
+                  .save(providerKeys[card.id].trim())
+                  .then((next) => {
+                    setProviderKeyStatus(card.id, next);
+                    setProviderKeys((prev) => ({ ...prev, [card.id]: "" }));
+                    onKeyChange?.();
+                    setFlash({ kind: "ok", text: `Saved the ${card.keyName} API key.` });
+                  })
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                  .finally(() => setSavingProvider(null));
+              }}
+            />
           )}
 
           {tab === "voice" && (
@@ -528,7 +455,7 @@ export function SettingsView({
           {tab === "storage" && (
             <Section
               title="Storage"
-              text="Usage history is kept in a local SQLite file. Resetting it clears the usage chart and does not delete chats."
+              text="Usage history is a local database. Projects and chats on this Mac are listed below, with their open worktrees. Cloud projects stay on the paired machine."
             >
               <Card>
                 <Row label="File" value={db?.path || "Checking…"} title={db?.path} mono />
@@ -581,92 +508,42 @@ export function SettingsView({
                   </Button>
                 </div>
               )}
+              <StorageInventory />
             </Section>
           )}
 
           {tab === "permissions" && (
-            <Section
-              title="Permissions"
-              text="Grok can only read and edit folders you have opened. Tool permissions decide whether edits and shell commands need approval."
-            >
-              <div className="grid gap-1.5">
-                {PERMISSION_MODES.map((mode) => {
-                  const on = permission === mode.id;
-                  return (
-                    <button
-                      key={mode.id}
-                      type="button"
-                      aria-pressed={on}
-                      onClick={() => {
-                        if (onPermission) onPermission(mode.id);
-                        else setPermissionLocal(mode.id);
-                      }}
-                      className={`rounded-md border px-3 py-2 text-left ${
-                        on ? "border-accent bg-wash" : "border-line hover:bg-wash"
-                      }`}
-                    >
-                      <span className="block text-[13px] font-medium text-ink">{mode.label}</span>
-                      <span className="mt-0.5 block text-[12px] leading-relaxed text-muted">
-                        {permissionDetail(mode.id)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-[13px] font-medium text-ink">Allowed folders</div>
-                  <div className="text-[12px] text-muted">Disk access for chats, files, and commands.</div>
-                </div>
-                <Button
-                  disabled={addingFolder}
-                  onClick={() => {
-                    setAddingFolder(true);
-                    void api
-                      .pickDir()
-                      .then(async (path) => {
-                        if (!path) return;
-                        const opened = await api.openFolder(path);
-                        setProviderFolders(folders.includes(opened) ? folders : [...folders, opened].sort());
-                        setFlash({ kind: "ok", text: `Allowed ${folderName(opened)}.` });
-                      })
-                      .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                      .finally(() => setAddingFolder(false));
-                  }}
-                >
-                  {addingFolder ? "Opening…" : "Add folder"}
-                </Button>
-              </div>
-              {folders.length === 0 ? (
-                <p className="m-0 text-[12px] text-muted">No folders yet. Open a project to allow it.</p>
-              ) : (
-                <div className="grid gap-1">
-                  {folders.map((path) => (
-                    <div key={path} className="flex items-center gap-2 rounded-md border border-line px-2.5 py-1.5">
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[13px] text-ink">{folderName(path)}</div>
-                        <div className="truncate font-mono text-[11px] text-muted">{path}</div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => {
-                          void api
-                            .forgetWorkspace(path)
-                            .then(() => {
-                              setProviderFolders(folders.filter((row) => row !== path));
-                              setFlash({ kind: "ok", text: `Removed access to ${folderName(path)}.` });
-                            })
-                            .catch((e) => setFlash({ kind: "err", text: String(e) }));
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Section>
+            <PermissionsPane
+              mode={permission}
+              folders={folders}
+              adding={addingFolder}
+              onMode={(id) => {
+                if (onPermission) onPermission(id);
+                else setPermissionLocal(id);
+              }}
+              onAdd={() => {
+                setAddingFolder(true);
+                void api
+                  .pickDir()
+                  .then(async (path) => {
+                    if (!path) return;
+                    const opened = await api.openFolder(path);
+                    setProviderFolders(folders.includes(opened) ? folders : [...folders, opened].sort());
+                    setFlash({ kind: "ok", text: `Allowed ${folderName(opened)}. macOS will not ask for this folder again.` });
+                  })
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                  .finally(() => setAddingFolder(false));
+              }}
+              onRemove={(path) => {
+                void api
+                  .forgetWorkspace(path)
+                  .then(() => {
+                    setProviderFolders(folders.filter((row) => row !== path));
+                    setFlash({ kind: "ok", text: `Removed access to ${folderName(path)}.` });
+                  })
+                  .catch((e) => setFlash({ kind: "err", text: String(e) }));
+              }}
+            />
           )}
         </div>
       </div>
@@ -677,6 +554,226 @@ export function SettingsView({
     return <div className="flex min-h-0 flex-1 flex-col">{body}</div>;
   }
   return body;
+}
+
+type StorageProject = {
+  name: string;
+  path: string;
+  bytes: number | null;
+  chats: number | null;
+  worktrees: { path: string; branch: string; bytes: number | null }[];
+};
+
+type StorageCloud = {
+  id: string;
+  name: string;
+  path: string;
+  host: string;
+  chats: number | null;
+};
+
+/** Local projects, their chats and open worktrees, plus the cloud projects on paired machines. */
+function StorageInventory() {
+  const [local, setLocal] = useState<StorageProject[] | null>(null);
+  const [cloud, setCloud] = useState<StorageCloud[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .listProjects()
+      .then(async (projects) => {
+        const rows = await Promise.all(
+          projects.map(async (project) => {
+            const [chats, size, listed] = await Promise.all([
+              api.listConversations(project.path).then((rows) => rows.length).catch(() => null),
+              api.projectRemoval(project.path).catch(() => null),
+              api.gitWorktrees(project.path).catch(() => [] as api.GitWorktree[]),
+            ]);
+            const branchFor = new Map(
+              listed.map((row) => [
+                projectKey(row.path),
+                row.detached ? "detached" : row.branch?.trim() || folderName(row.path),
+              ]),
+            );
+            const trees = (size?.worktree_sizes ?? []).map((row) => ({
+              path: row.path,
+              branch: branchFor.get(projectKey(row.path)) || folderName(row.path),
+              bytes: row.bytes,
+            }));
+            return {
+              name: project.name || folderName(project.path),
+              path: project.path,
+              bytes: size ? size.project : null,
+              chats,
+              worktrees: trees,
+            };
+          }),
+        );
+        if (!alive) return;
+        // A linked worktree can also be saved as its own project. It belongs under the main checkout.
+        const linked = new Set(rows.flatMap((row) => row.worktrees.map((tree) => projectKey(tree.path))));
+        setLocal(rows.filter((row) => !linked.has(projectKey(row.path))).sort((a, b) => a.name.localeCompare(b.name)));
+      })
+      .catch(() => {
+        if (alive) setLocal([]);
+      });
+    void api
+      .listRemoteProjects()
+      .then(async (projects) => {
+        const machines = await api.listMachines().catch(() => []);
+        const hostFor = new Map(machines.map((machine) => [machine.id, machine.host]));
+        const rows = await Promise.all(
+          projects.map(async (project) => {
+            const chats = await api
+              .hostedSidebarCached(project.mount_path)
+              .then((cached) => cached.conversations.length)
+              .catch(() => null);
+            return {
+              id: project.id,
+              name: project.name || folderName(project.remote_path),
+              path: project.remote_path,
+              host: hostFor.get(project.machine_id) || "",
+              chats,
+            };
+          }),
+        );
+        if (alive) setCloud(rows.sort((a, b) => a.name.localeCompare(b.name)));
+      })
+      .catch(() => {
+        if (alive) setCloud([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const worktrees = (local ?? []).reduce((sum, row) => sum + row.worktrees.length, 0);
+  const chats = (local ?? []).reduce((sum, row) => sum + (row.chats ?? 0), 0);
+  const cloudChats = (cloud ?? []).reduce((sum, row) => sum + (row.chats ?? 0), 0);
+  return (
+    <div className="grid gap-5">
+      <div className="grid grid-cols-3 gap-2">
+        <CountTile label="Projects" value={local == null ? "—" : String(local.length)} />
+        <CountTile label="Chats" value={local == null ? "—" : String(chats)} />
+        <CountTile label="Worktrees" value={local == null ? "—" : String(worktrees)} />
+      </div>
+      <StorageGroup
+        title="On this Mac"
+        empty={local == null ? "Checking…" : "No saved projects yet."}
+        rows={local}
+        render={(project) => (
+          <ProjectLine
+            key={project.path}
+            icon="folder"
+            name={project.name}
+            hint={project.path}
+            size={project.bytes}
+            count={project.chats}
+            chips={project.worktrees.map((tree) => ({
+              label: tree.branch,
+              detail: tree.bytes == null ? "" : formatBytes(tree.bytes),
+            }))}
+          />
+        )}
+      />
+      <StorageGroup
+        title="Cloud"
+        note={cloud && cloud.length > 0 ? `${cloudChats} ${cloudChats === 1 ? "chat" : "chats"}` : undefined}
+        empty={cloud == null ? "Checking…" : "No cloud projects yet."}
+        rows={cloud}
+        render={(project) => (
+          <ProjectLine
+            key={project.id}
+            icon="cloud"
+            name={project.name}
+            hint={project.host || project.path}
+            title={project.host ? `${project.host} · ${project.path}` : project.path}
+            count={project.chats}
+          />
+        )}
+      />
+    </div>
+  );
+}
+
+function CountTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-inset/70 px-2.5 py-2">
+      <div className="text-[16px] font-semibold leading-none tabular-nums text-ink">{value}</div>
+      <div className="mt-1 text-[11px] text-muted">{label}</div>
+    </div>
+  );
+}
+
+function StorageGroup<T>({
+  title,
+  note,
+  empty,
+  rows,
+  render,
+}: {
+  title: string;
+  note?: string;
+  empty: string;
+  rows: T[] | null;
+  render: (row: T) => ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <div className="text-[13px] font-medium text-ink">{title}</div>
+        {note ? <div className="text-[11px] text-muted">{note}</div> : null}
+      </div>
+      {!rows || rows.length === 0 ? (
+        <p className="m-0 text-[12px] text-muted">{empty}</p>
+      ) : (
+        <div className="grid gap-0.5">{rows.map(render)}</div>
+      )}
+    </div>
+  );
+}
+
+function ProjectLine({
+  icon,
+  name,
+  hint,
+  title,
+  size,
+  count,
+  chips = [],
+}: {
+  icon: string;
+  name: string;
+  hint: string;
+  title?: string;
+  size?: number | null;
+  count: number | null;
+  chips?: { label: string; detail: string }[];
+}) {
+  return (
+    <div className="grid gap-1 rounded-md px-1.5 py-1.5 hover:bg-wash" title={title ?? hint}>
+      <div className="flex min-w-0 items-center gap-2">
+        <Symbol name={icon} className="size-3.5 shrink-0 text-muted" />
+        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{name}</span>
+        {size != null ? <span className="shrink-0 text-[11px] tabular-nums text-muted">{formatBytes(size)}</span> : null}
+        <span className="w-6 shrink-0 text-right text-[11px] tabular-nums text-muted">{count == null ? "—" : count}</span>
+      </div>
+      {chips.length > 0 ? (
+        <div className="flex flex-wrap gap-1 pl-5">
+          {chips.map((chip) => (
+            <span
+              key={chip.label}
+              className="inline-flex max-w-full items-center gap-1 rounded-full bg-inset px-1.5 py-0.5 text-[11px] text-muted"
+            >
+              <Symbol name="arrow.triangle.branch" className="size-2.5 shrink-0" />
+              <span className="truncate">{chip.label}</span>
+              {chip.detail ? <span className="shrink-0 tabular-nums text-muted/80">{chip.detail}</span> : null}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function speechRowStatus(models: SpeechModelInfo[], id: string): SpeechModelStatus {
@@ -973,134 +1070,335 @@ function voiceStatusText(
   return "Not downloaded";
 }
 
-function ProviderBlock({
-  logo,
-  markClass,
-  title,
-  text,
-  ready,
-  children,
-}: {
-  logo: string;
-  markClass: string;
+type ProviderCardId = "xai" | "anthropic" | "minimax";
+
+type ProviderCard = {
+  id: ProviderCardId;
+  cli: "grokCli" | "claudeCli" | "minimaxCli";
   title: string;
   text: string;
-  ready: boolean;
-  children: ReactNode;
+  logo: string;
+  markClass: string;
+  keyLabel: string;
+  keyName: string;
+  envName: string;
+  placeholder: string;
+  save: (key: string) => Promise<{ saved: boolean; env: boolean }>;
+  clear: () => Promise<{ saved: boolean; env: boolean }>;
+};
+
+/** One card per provider. A new provider is another row here, not another copy of the form. */
+const PROVIDER_CARDS: ProviderCard[] = [
+  {
+    id: "xai",
+    cli: "grokCli",
+    title: "Grok",
+    text: "xAI models. The CLI login is used when no API key is saved.",
+    logo: "logo.grok",
+    markClass: "bg-[#1a1a1a] text-white",
+    keyLabel: "xAI API key",
+    keyName: "xAI",
+    envName: "XAI_API_KEY",
+    placeholder: "xai-…",
+    save: api.setKey,
+    clear: api.clearKey,
+  },
+  {
+    id: "anthropic",
+    cli: "claudeCli",
+    title: "Claude",
+    text: "Anthropic models. The CLI login is used when no API key is saved.",
+    logo: "logo.claude",
+    markClass: "bg-[#d97757] text-[#faf9f5]",
+    keyLabel: "Anthropic API key",
+    keyName: "Anthropic",
+    envName: "ANTHROPIC_API_KEY",
+    placeholder: "sk-ant-…",
+    save: api.setAnthropicKey,
+    clear: api.clearAnthropicKey,
+  },
+  {
+    id: "minimax",
+    cli: "minimaxCli",
+    title: "MiniMax",
+    text: "MiniMax models. The mmx login is used when no API key is saved.",
+    logo: "logo.minimax",
+    markClass: "bg-wash",
+    keyLabel: "MiniMax API key",
+    keyName: "MiniMax",
+    envName: "MINIMAX_API_KEY",
+    placeholder: "sk-…",
+    save: api.setMinimaxKey,
+    clear: api.clearMinimaxKey,
+  },
+];
+
+type CliRow = {
+  installed: boolean;
+  path: string;
+  version: string | null;
+  logged_in: boolean;
+  email: string | null;
+  update?: string;
+};
+
+function cliCanUpdate(cli: CliRow | null): boolean {
+  return Boolean(cli?.installed && cli.update && cli.update !== cli.version);
+}
+
+function providerStatusLine(cli: CliRow | null, key: { saved: boolean; env: boolean } | null): string {
+  if (!cli && !key) return "Checking…";
+  if (cli?.logged_in) {
+    return cli.email ? "Authenticated" : "Authenticated · CLI";
+  }
+  if (key?.saved) return "Authenticated · saved key";
+  if (key?.env) return "Authenticated · environment";
+  if (cli && !cli.installed) return "CLI not found";
+  return "Not signed in";
+}
+
+function ProvidersPane({
+  cards,
+  selectedId,
+  onSelect,
+  statusFor,
+  cliFor,
+  draftFor,
+  onDraft,
+  savingId,
+  updatingId,
+  revealed,
+  onToggleReveal,
+  onUpdate,
+  onUpdateAll,
+  onClear,
+  onSave,
+}: {
+  cards: ProviderCard[];
+  selectedId: ProviderCardId;
+  onSelect: (id: ProviderCardId) => void;
+  statusFor: (card: ProviderCard) => { saved: boolean; env: boolean } | null;
+  cliFor: (card: ProviderCard) => CliRow | null;
+  draftFor: (card: ProviderCard) => string;
+  onDraft: (card: ProviderCard, value: string) => void;
+  savingId: ProviderCardId | null;
+  updatingId: ProviderCardId | "all" | null;
+  revealed: boolean;
+  onToggleReveal: () => void;
+  onUpdate: (card: ProviderCard) => void;
+  onUpdateAll: () => void;
+  onClear: (card: ProviderCard) => void;
+  onSave: (card: ProviderCard) => void;
 }) {
+  const selected = cards.find((card) => card.id === selectedId) ?? cards[0];
+  const due = cards.filter((card) => cliCanUpdate(cliFor(card))).length;
+  const updatingAll = updatingId === "all";
   return (
-    <div className="grid gap-3 rounded-xl bg-panel px-3 py-3">
-      <div className="flex items-start gap-2.5">
-        <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${markClass}`}>
-          <Symbol name={logo} colored className="size-[18px]" />
+    <div>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h2 className="m-0 text-[15px] font-semibold">Providers</h2>
+          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+            A saved key is used first, then the signed-in CLI.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={due === 0 || updatingId != null}
+          title={due === 0 ? "Every CLI is current" : `Update ${due} ${due === 1 ? "CLI" : "CLIs"}`}
+          onClick={onUpdateAll}
+          className="shrink-0 text-[12px] text-muted hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted"
+        >
+          {updatingAll ? "Updating…" : "Update all"}
+        </button>
+      </div>
+      <div className="grid gap-x-4 gap-y-4 md:grid-cols-[minmax(168px,190px)_minmax(0,1fr)]">
+        <div className="grid content-start gap-1 px-1">
+          {cards.map((card) => {
+            const cli = cliFor(card);
+            const status = statusFor(card);
+            const on = card.id === selected.id;
+            const version = cli?.installed ? cli.version : null;
+            return (
+              <button
+                key={card.id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => onSelect(card.id)}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${
+                  on ? "bg-wash-strong" : "hover:bg-wash"
+                }`}
+              >
+                <span className={`flex size-6 shrink-0 items-center justify-center rounded-md ${card.markClass}`}>
+                  <Symbol name={card.logo} colored className="size-3.5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="truncate text-[13px] font-medium text-ink">{card.title}</span>
+                    {version ? <span className="shrink-0 font-mono text-[10px] text-muted">{version}</span> : null}
+                    {cliCanUpdate(cli) ? (
+                      <Symbol name="arrow.up" className="size-2.5 shrink-0 self-center text-ok" />
+                    ) : null}
+                  </span>
+                  <span className="block truncate text-[11px] text-muted">
+                    {providerStatusLine(cli, status)}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {selected ? (
+          <ProviderDetail
+            card={selected}
+            cli={cliFor(selected)}
+            status={statusFor(selected)}
+            draft={draftFor(selected)}
+            onDraft={(value) => onDraft(selected, value)}
+            saving={savingId === selected.id}
+            updating={updatingId === selected.id || updatingAll}
+            revealed={revealed}
+            onToggleReveal={onToggleReveal}
+            onUpdate={() => onUpdate(selected)}
+            onClear={() => onClear(selected)}
+            onSave={() => onSave(selected)}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ProviderDetail({
+  card,
+  cli,
+  status,
+  draft,
+  onDraft,
+  saving,
+  updating,
+  revealed,
+  onToggleReveal,
+  onUpdate,
+  onClear,
+  onSave,
+}: {
+  card: ProviderCard;
+  cli: CliRow | null;
+  status: { saved: boolean; env: boolean } | null;
+  draft: string;
+  onDraft: (value: string) => void;
+  saving: boolean;
+  updating: boolean;
+  revealed: boolean;
+  onToggleReveal: () => void;
+  onUpdate: () => void;
+  onClear: () => void;
+  onSave: () => void;
+}) {
+  const canUpdate = cliCanUpdate(cli);
+  return (
+    <div className="grid gap-4">
+      <div className="flex items-center gap-2">
+        <span className={`flex size-6 shrink-0 items-center justify-center rounded-md ${card.markClass}`}>
+          <Symbol name={card.logo} colored className="size-3.5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="m-0 text-[13px] font-semibold text-ink">{title}</h3>
-            <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${ready ? "bg-ok/15 text-ok" : "bg-wash text-muted"}`}>
-              <Symbol name={ready ? "checkmark.circle.fill" : "xmark"} className="size-2.5" />
-              {ready ? "Ready" : "Not ready"}
-            </span>
-          </div>
-          <p className="mt-0.5 mb-0 text-[12px] leading-relaxed text-muted">{text}</p>
+          <h3 className="m-0 text-[13px] font-semibold text-ink">{card.title}</h3>
+          <p className="m-0 truncate text-[11px] text-muted">{providerStatusLine(cli, status)}</p>
         </div>
+        {canUpdate ? (
+          <button
+            type="button"
+            disabled={updating}
+            title={`Install ${cli?.update}`}
+            onClick={onUpdate}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok/15 px-2 py-0.5 text-[11px] font-medium text-ok hover:bg-ok/25 disabled:opacity-60"
+          >
+            <Symbol name="arrow.up" className={`size-2.5 ${updating ? "animate-pulse" : ""}`} />
+            {updating ? "Updating…" : cli?.update}
+          </button>
+        ) : null}
       </div>
-      {children}
-    </div>
-  );
-}
-
-function CliStatus({
-  cli,
-  reveal,
-  onToggleReveal,
-}: {
-  cli: { installed: boolean; path: string; version: string | null; logged_in: boolean; email: string | null; update?: string } | null;
-  reveal: boolean;
-  onToggleReveal: () => void;
-}) {
-  const installed = Boolean(cli?.installed);
-  const signedIn = Boolean(cli?.logged_in);
-  return (
-    <div className="grid gap-1.5 rounded-lg bg-inset/70 px-2.5 py-2">
-      <StatusLine
-        icon="terminal"
-        label="CLI"
-        value={cli ? (installed ? cli.version || "Installed" : "Not found") : "Checking…"}
-        tone={installed ? "ok" : cli ? "err" : "muted"}
-        action={
-          installed && cli?.update && cli.update !== cli.version ? (
-            <span
-              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok/15 px-1.5 py-0.5 text-[10px] font-medium text-ok"
-              title={`${cli.update} is available`}
-            >
-              <span className="size-1.5 rounded-full bg-ok" />
-              Update {cli.update}
-            </span>
-          ) : null
-        }
-      />
-      {installed && cli?.path ? (
-        <StatusLine icon="folder" label="Path" value={cli.path} mono title={cli.path} />
-      ) : null}
-      <StatusLine
-        icon="person"
-        label="Login"
-        value={
-          !cli
-            ? "—"
-            : signedIn
-              ? cli.email
-                ? maskEmail(cli.email, reveal)
-                : "Signed in"
-              : "Not signed in"
-        }
-        tone={signedIn ? "ok" : cli ? "err" : "muted"}
-        action={
-          cli?.email ? (
-            <button
-              type="button"
-              aria-label={reveal ? "Hide email" : "Show email"}
-              aria-pressed={reveal}
-              title={reveal ? "Hide email" : "Show email"}
-              onClick={onToggleReveal}
-              className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
-            >
-              <Symbol name={reveal ? "eye.slash" : "eye"} className="size-3.5" />
-            </button>
-          ) : null
-        }
+      <div className="grid gap-2.5">
+        <Fact
+          label="CLI"
+          value={cli ? (cli.installed ? cli.version || "Installed" : "Not found") : "Checking…"}
+          tone={cli?.installed ? "ok" : cli ? "err" : "muted"}
+        />
+        <Fact
+          label="Path"
+          value={cli?.installed && cli.path ? cli.path : "Not found"}
+          mono
+          title={cli?.path}
+        />
+        <Fact
+          label="Login"
+          value={
+            !cli
+              ? "Checking…"
+              : cli.logged_in
+                ? cli.email
+                  ? maskEmail(cli.email, revealed)
+                  : "Signed in"
+                : "Not signed in"
+          }
+          tone={cli?.logged_in ? "ok" : cli ? "err" : "muted"}
+          action={
+            cli?.email ? (
+              <button
+                type="button"
+                aria-label={revealed ? "Hide email" : "Show email"}
+                onClick={onToggleReveal}
+                className="flex size-5 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
+              >
+                <Symbol name={revealed ? "eye.slash" : "eye"} className="size-3.5" />
+              </button>
+            ) : null
+          }
+        />
+      </div>
+      <KeyField
+        label={card.keyLabel}
+        value={draft}
+        onChange={onDraft}
+        placeholder={status?.saved ? "Key saved — paste to replace" : card.placeholder}
+        status={status}
+        envName={card.envName}
+        saving={saving}
+        onClear={onClear}
+        onSave={onSave}
       />
     </div>
   );
 }
 
-function StatusLine({
-  icon,
+/** A value the app reads. Not an input, so it has no field chrome. */
+function Fact({
   label,
   value,
-  tone = "ink",
   mono,
   title,
+  tone = "ink",
   action,
 }: {
-  icon: string;
   label: string;
   value: string;
-  tone?: "ok" | "err" | "muted" | "ink";
   mono?: boolean;
   title?: string;
+  tone?: "ok" | "err" | "muted" | "ink";
   action?: ReactNode;
 }) {
   const color = tone === "ok" ? "text-ok" : tone === "err" ? "text-err" : tone === "muted" ? "text-muted" : "text-ink";
   return (
-    <div className="flex items-center gap-2">
-      <Symbol name={icon} className={`size-3.5 shrink-0 ${tone === "ok" ? "text-ok" : "text-muted"}`} />
-      <span className="w-12 shrink-0 text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
-      <span title={title} className={`min-w-0 flex-1 truncate text-[12px] ${mono ? "font-mono" : ""} ${color}`}>
-        {value}
+    <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-3">
+      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
+      <span className="flex min-w-0 items-center gap-1">
+        <span title={title ?? value} className={`min-w-0 truncate text-[12px] ${mono ? "font-mono" : ""} ${color}`}>
+          {value}
+        </span>
+        {action}
       </span>
-      {action}
     </div>
   );
 }
@@ -1164,6 +1462,118 @@ function KeyField({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const EFFECT_LABEL: Record<ReturnType<typeof permissionEffect>, string> = {
+  allow: "Allowed",
+  ask: "Asks first",
+  block: "Blocked",
+};
+
+function PermissionsPane({
+  mode,
+  folders,
+  adding,
+  onMode,
+  onAdd,
+  onRemove,
+}: {
+  mode: PermissionMode;
+  folders: string[];
+  adding: boolean;
+  onMode: (id: PermissionMode) => void;
+  onAdd: () => void;
+  onRemove: (path: string) => void;
+}) {
+  return (
+    <div className="grid gap-6">
+      <section className="grid gap-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="m-0 text-[15px] font-semibold">Folders</h2>
+            <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+              Approve a folder once. Access stays until you remove it, including after you quit.
+            </p>
+          </div>
+          <Button disabled={adding} onClick={onAdd}>
+            {adding ? "Opening…" : "Add folder"}
+          </Button>
+        </div>
+        {folders.length === 0 ? (
+          <p className="m-0 rounded-lg bg-inset/70 px-3 py-2.5 text-[12px] leading-relaxed text-muted">
+            No folders yet. Add one, or open a project. macOS may ask the first time. It should not ask again.
+          </p>
+        ) : (
+          <div className="grid gap-1">
+            {folders.map((path) => (
+              <div key={path} className="flex items-center gap-2 rounded-lg bg-inset/70 px-2.5 py-2">
+                <Symbol name="folder" className="size-3.5 shrink-0 text-muted" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] text-ink">{folderName(path)}</div>
+                  <div className="truncate font-mono text-[11px] text-muted" title={path}>
+                    {path}
+                  </div>
+                </div>
+                <span className="hidden shrink-0 text-[11px] text-ok sm:inline">Kept</span>
+                <Button size="sm" variant="danger" onClick={() => onRemove(path)}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="grid gap-3">
+        <div>
+          <h2 className="m-0 text-[15px] font-semibold">In a chat</h2>
+          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
+            This applies to the open chat. Reading is always allowed inside an approved folder.
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Chat permissions">
+          {PERMISSION_MODES.map((item) => {
+            const on = mode === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => onMode(item.id)}
+                className={`rounded-md border px-2.5 py-2 text-left ${
+                  on ? "border-accent bg-wash" : "border-line hover:bg-wash"
+                }`}
+              >
+                <span className="block text-[13px] font-medium text-ink">{item.label}</span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-muted">{item.detail}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="overflow-hidden rounded-lg bg-inset/70">
+          {PERMISSION_ACTIONS.map((action, index) => {
+            const effect = permissionEffect(mode, action.id);
+            return (
+              <div
+                key={action.id}
+                className={`flex items-center justify-between gap-3 px-3 py-2 ${index > 0 ? "border-t border-line/70" : ""}`}
+              >
+                <span className="text-[13px] text-ink">{action.label}</span>
+                <span
+                  className={`text-[12px] font-medium ${
+                    effect === "block" ? "text-err" : effect === "ask" ? "text-ink" : "text-ok"
+                  }`}
+                >
+                  {EFFECT_LABEL[effect]}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }

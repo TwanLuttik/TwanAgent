@@ -23,6 +23,8 @@ import {
   sidebarTodoKey,
   stampProjectServer,
   upsertProjectGroup,
+  matchesSidebarQuery,
+  sidebarActivity,
   visibleConversations,
   visibleJourneys,
 } from "../all-projects.ts";
@@ -48,6 +50,63 @@ function journey(id: string, title = id): JourneySummary {
     collapsed: false,
   };
 }
+
+describe("sidebarActivity", () => {
+  const groups = [
+    {
+      name: "Orca",
+      path: "/work/orca",
+      conversations: [
+        chat("run", "Rewrite sidebar"),
+        { ...chat("done", "Fix tests"), updated_at: "2026-04-02T10:00:00Z" },
+        { ...chat("old", "Older finish"), updated_at: "2026-04-01T10:00:00Z" },
+        { ...chat("box", "Archived"), archived: true },
+        chat("quiet", "Nothing happening"),
+      ],
+    },
+    {
+      name: "Notes",
+      path: "/work/notes",
+      conversations: [{ ...chat("later", "Second finish"), updated_at: "2026-04-03T10:00:00Z" }],
+    },
+  ];
+
+  it("lists running chats first, then unseen finishes, and skips the rest", () => {
+    const rows = sidebarActivity(groups, { run: {} }, new Set(["done", "old", "later", "box"]));
+    assert.deepEqual(
+      rows.map((row) => [row.id, row.status, row.project]),
+      [
+        ["run", "running", "Orca"],
+        ["later", "finished", "Notes"],
+        ["done", "finished", "Orca"],
+        ["old", "finished", "Orca"],
+      ],
+    );
+  });
+
+  it("keeps a chat that is both running and unseen under running, once", () => {
+    const rows = sidebarActivity(groups, { done: {} }, new Set(["done"]));
+    assert.deepEqual(rows.map((row) => row.id), ["done"]);
+    assert.equal(rows[0]?.status, "running");
+  });
+
+  it("adds chats from a linked checkout that is not its own project", () => {
+    const rows = sidebarActivity(groups, { wt: {} }, new Set(), [
+      { path: "/work/orca-wt", conversations: [chat("wt", "Worktree chat")] },
+    ]);
+    assert.equal(rows[0]?.project, "orca-wt");
+    assert.equal(rows[0]?.path, "/work/orca-wt");
+  });
+});
+
+describe("matchesSidebarQuery", () => {
+  it("matches any field and treats a blank query as everything", () => {
+    assert.equal(matchesSidebarQuery("  ", "Orca"), true);
+    assert.equal(matchesSidebarQuery("side", "Rewrite sidebar", "Orca"), true);
+    assert.equal(matchesSidebarQuery("orca", "Rewrite sidebar", "Orca"), true);
+    assert.equal(matchesSidebarQuery("notes", "Rewrite sidebar", "Orca"), false);
+  });
+});
 
 describe("isSameProject", () => {
   it("treats trailing slashes and case as the same project", () => {

@@ -41,6 +41,7 @@ import {
   toolTrailTypeCountText,
   toolTrailTypeCounts,
   toolTrailKind,
+  toolTrailParts,
   toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
@@ -1130,6 +1131,14 @@ describe("tool trail collapse", () => {
     assert.equal(toolTrailTypeCountText("Read", 15), "Read ×15");
     assert.equal(toolTrailTypeIcon("Read"), "doc.text.magnifyingglass");
     assert.equal(toolTrailKind("Run cargo test"), "$");
+    assert.deepEqual(toolTrailParts("Read src/views/main/AppSidebar.tsx (700 - 1099)"), {
+      verb: "Read",
+      detail: "src/views/main/AppSidebar.tsx (700 - 1099)",
+    });
+    assert.deepEqual(toolTrailParts("Search 2 times"), { verb: "Search", detail: "2 times" });
+    assert.deepEqual(toolTrailParts("Find 1 pattern"), { verb: "Find", detail: "1 pattern" });
+    assert.deepEqual(toolTrailParts("Run cargo test"), { verb: "Run", detail: "cargo test" });
+    assert.deepEqual(toolTrailParts("Git status"), { verb: "Git status", detail: "" });
     assert.equal(toolTrailTypeIcon("$"), "terminal");
     assert.equal(toolTrailTypeIcon("Search"), "magnifyingglass");
     assert.equal(toolTrailTypeIcon("Find"), "magnifyingglass");

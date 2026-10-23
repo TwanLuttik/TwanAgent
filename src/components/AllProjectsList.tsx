@@ -15,6 +15,7 @@ import {
   isAppProject,
   isProjectCollapsed,
   isSameProject,
+  matchesSidebarQuery,
   projectHasArchived,
   type ProjectChatGroup,
 } from "../lib/all-projects";
@@ -46,6 +47,7 @@ export function AllProjectsList({
   archiveOpen,
   onToggleArchive,
   gitByProject,
+  chatQuery = "",
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -65,6 +67,8 @@ export function AllProjectsList({
   archiveOpen: Record<string, boolean>;
   onToggleArchive: (path: string) => void;
   gitByProject?: Record<string, ProjectGit>;
+  /** When set, a project only lists the chats whose title matches. */
+  chatQuery?: string;
 }) {
   const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
@@ -128,9 +132,20 @@ export function AllProjectsList({
         const hasArchived = projectHasArchived(group.conversations);
         const git = gitByProject?.[projectGitKey(group.path)] ?? null;
         const worktrees = worktreesFor?.(group.path) ?? [];
-        const visibleEmpty = showArchived
-          ? !hasArchived
-          : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
+        const listed = chatQuery.trim()
+          ? {
+              ...group,
+              conversations: group.conversations.filter(
+                (row) => !row.archived && matchesSidebarQuery(chatQuery, row.title),
+              ),
+              journeys: [],
+            }
+          : group;
+        const visibleEmpty = chatQuery.trim()
+          ? listed.conversations.length === 0
+          : showArchived
+            ? !hasArchived
+            : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
         return (
           <ProjectSection
             key={projectKey(group.path)}
@@ -243,7 +258,7 @@ export function AllProjectsList({
               </p>
             ) : (
               <div className={worktrees.length ? "pl-2" : undefined}>
-                {renderList(group, { showArchived })}
+                {renderList(listed, { showArchived: chatQuery.trim() ? false : showArchived })}
               </div>
             )}
           </ProjectSection>

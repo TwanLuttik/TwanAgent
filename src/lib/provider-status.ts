@@ -111,6 +111,13 @@ export function setProviderFolders(folders: string[]) {
   patch({ folders });
 }
 
+/** Replace one CLI row after its updater finishes. The other rows stay as they are. */
+export function setProviderCli(provider: "xai" | "anthropic" | "minimax", info: GrokCliInfo) {
+  if (provider === "xai") patch({ grokCli: info });
+  else if (provider === "anthropic") patch({ claudeCli: info });
+  else patch({ minimaxCli: info });
+}
+
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);

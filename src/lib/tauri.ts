@@ -159,6 +159,11 @@ export function minimaxCliInfo(): Promise<MinimaxCliInfo> {
   return invoke("dev_minimax_cli_info");
 }
 
+/** Install the newer CLI with that CLI's own updater, then return the version now on disk. */
+export function cliUpdate(provider: "xai" | "anthropic" | "minimax"): Promise<GrokCliInfo> {
+  return invoke("dev_cli_update", { provider });
+}
+
 export type ApiAccountUsageWindow = {
   id: string;
   label: string;
@@ -443,12 +448,16 @@ export function deleteProject(path: string): Promise<void> {
   return invoke("dev_delete_project", { path });
 }
 
+export type WorktreeSize = { path: string; bytes: number };
+
 export type ProjectRemoval = {
   project: number;
   worktrees: number;
   app: number;
   worktree_count: number;
   app_managed: boolean;
+  /** One size per linked checkout. Missing on a result saved before sizes were split. */
+  worktree_sizes?: WorktreeSize[];
 };
 
 /** Bytes the project folder, its worktrees, and their app data would free. */

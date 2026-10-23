@@ -16,6 +16,23 @@ export const PERMISSION_MODES = [
   },
 ] as const;
 
+/** What each mode does to a tool. The settings screen shows this instead of one sentence. */
+export const PERMISSION_ACTIONS = [
+  { id: "read", label: "Read files" },
+  { id: "edit", label: "Edit files" },
+  { id: "shell", label: "Run commands" },
+] as const;
+
+export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]["id"];
+export type PermissionEffect = "allow" | "ask" | "block";
+
+export function permissionEffect(mode: PermissionMode, action: PermissionAction): PermissionEffect {
+  if (action === "read") return "allow";
+  if (mode === "read-only") return "block";
+  if (action === "shell" && mode === "ask") return "ask";
+  return "allow";
+}
+
 export type PermissionMode = (typeof PERMISSION_MODES)[number]["id"];
 
 const WRITE_TOOLS = new Set(["write_file", "edit_file", "run_command", "git_commit"]);

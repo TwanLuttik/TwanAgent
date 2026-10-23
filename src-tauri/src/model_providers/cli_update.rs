@@ -9,6 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::grok_cli::{grok_home, parse_toml_quoted};
+use crate::process::WindowlessCommand;
 
 /// A check older than this is fetched again. Newer than this is returned as-is.
 pub const CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
@@ -234,6 +235,83 @@ pub async fn minimax_update(data_dir: &std::path::Path, installed: Option<&str>)
     cached_update(data_dir, "minimax", installed, minimax_latest()).await
 }
 
+/// Drop the saved check so the next settings read fetches again. An update just changed the install.
+pub fn forget_cache(data_dir: &std::path::Path, id: &str) {
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let _ = crate::appdb::set_setting(&conn, &cache_key(id), "");
+}
+
+/// The last useful line of a CLI update. Installers print progress; the end is what failed or finished.
+pub fn update_output_tail(stdout: &str, stderr: &str) -> String {
+    let text = format!("{stdout}\n{stderr}");
+    let line = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("The CLI update failed.");
+    const CAP: usize = 240;
+    if line.chars().count() <= CAP {
+        line.to_string()
+    } else {
+        let end = line.chars().skip(line.chars().count() - CAP).collect::<String>();
+        format!("…{end}")
+    }
+}
+
+/// Run one CLI's own updater. `program` is the installed binary, so a Dock-launched app does not need it on PATH.
+/// A non-zero exit is the updater's own message, not a missing binary.
+pub fn run_cli_update(program: &std::path::Path, args: &[&str]) -> Result<(), String> {
+    let mut command = std::process::Command::new(program);
+    command.hide_console_window();
+    command.args(args);
+    // npm and the MiniMax installer look up `node`. A GUI app does not inherit a shell PATH.
+    let mut prefixes = Vec::new();
+    if let Some(node) = node_bin_dir() {
+        prefixes.push(node);
+    }
+    command.env(
+        "PATH",
+        crate::env_path::merge_command_path(&crate::env_path::command_path(), &prefixes),
+    );
+    let output = command.output().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            format!("{} is not installed.", program.display())
+        } else {
+            err.to_string()
+        }
+    })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(update_output_tail(&stdout, &stderr))
+}
+
+/// A directory that holds `node`, for an npm CLI. Homebrew's versioned formulas come first.
+fn node_bin_dir() -> Option<String> {
+    for extra in ["/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
+        if std::path::Path::new(extra).join("node").is_file() {
+            return Some(extra.to_string());
+        }
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    for rel in [".nvm/versions/node", ".local/share/fnm/node-versions"] {
+        let root = home.join(rel);
+        let found = std::fs::read_dir(&root).ok()?.filter_map(Result::ok).find_map(|entry| {
+            let bin = entry.path().join("bin");
+            bin.join("node").is_file().then(|| bin.display().to_string())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +373,18 @@ mod tests {
         );
         assert!(parse_npm_latest(r#"{"name":"mmx-cli"}"#).is_none());
         assert!(parse_npm_latest("nope").is_none());
+    }
+
+    #[test]
+    fn an_update_failure_keeps_the_last_line_and_drops_the_progress() {
+        assert_eq!(
+            update_output_tail("downloading\ninstalled 2.1.309\n", ""),
+            "installed 2.1.309"
+        );
+        assert_eq!(update_output_tail("", "\nEACCES: permission denied\n"), "EACCES: permission denied");
+        assert_eq!(update_output_tail("   \n", "  "), "The CLI update failed.");
+        let long = "x".repeat(300);
+        assert!(update_output_tail(&long, "").starts_with('…'));
+        assert!(update_output_tail(&long, "").chars().count() <= 241);
     }
 }

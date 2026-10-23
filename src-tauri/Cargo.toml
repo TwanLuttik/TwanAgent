@@ -52,6 +52,7 @@ whisper-rs = "0.16"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+apple-scoped-bookmarks = "0.1"
 security-framework = "3"
 
 [target.'cfg(windows)'.dependencies]

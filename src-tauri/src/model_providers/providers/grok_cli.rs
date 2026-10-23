@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -453,17 +453,30 @@ pub fn grok_version(bin: &Path) -> Option<String> {
 
 /// `grok --version` is a process spawn. A detected version is reused; a miss is tried again
 /// so installing the CLI after launch still shows up.
+fn cli_version_cache() -> &'static Mutex<Option<String>> {
+    static VERSION: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    VERSION.get_or_init(|| Mutex::new(None))
+}
+
 pub fn cached_cli_version() -> String {
-    static VERSION: OnceLock<String> = OnceLock::new();
-    if let Some(found) = VERSION.get() {
-        return found.clone();
+    if let Some(found) = cli_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+        return found;
     }
     let detected = grok_bin().as_ref().and_then(|path| grok_version(path));
     let version = cli_proxy_version(detected.as_deref());
     if detected.is_some() {
-        let _ = VERSION.set(version.clone());
+        if let Ok(mut guard) = cli_version_cache().lock() {
+            *guard = Some(version.clone());
+        }
     }
     version
+}
+
+/// Forget the version read at launch. The next settings read spawns `grok --version` again.
+pub fn forget_cli_version() {
+    if let Ok(mut guard) = cli_version_cache().lock() {
+        *guard = None;
+    }
 }
 
 pub fn parse_cli_version(text: &str) -> Option<String> {

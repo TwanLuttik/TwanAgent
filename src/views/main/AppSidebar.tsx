@@ -6,7 +6,7 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { isSameProject, sidebarTodoKey, visibleConversations, visibleJourneys } from "../../lib/all-projects";
+import { isSameProject, matchesSidebarQuery, sidebarActivity, sidebarTodoKey, visibleConversations, visibleJourneys, type SidebarActivityItem } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
@@ -321,12 +321,14 @@ function ProjectsNav({
     messages,
     openingId,
     openProjectFromSidebar,
+    openSidebarChat,
     switchToProject,
     openProjectSettings,
     projectSettings,
     projectsRoot,
     showSettings,
     runningTurns,
+    unseenFinished,
     showUsage,
     showDocs,
     reorderProjects,
@@ -335,11 +337,37 @@ function ProjectsNav({
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
+  const [query, setQuery] = useState("");
+  const searching = query.trim().length > 0;
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
   const sidebarGroups = allProjectGroups.filter((group: { path: string }) => {
     void worktreeTick;
     return !linkedWorktrees().some((row) => projectKey(row.path) === projectKey(group.path));
   });
+  const activity = useMemo(() => {
+    void worktreeTick;
+    const extra = Object.entries(worktreeChats).map(([key, conversations]) => {
+      const row = linkedWorktrees().find((item) => projectKey(item.path) === key);
+      return { path: row?.path || key, conversations };
+    });
+    return sidebarActivity(allProjectGroups, runningTurns, unseenFinished, extra);
+  }, [allProjectGroups, runningTurns, unseenFinished, worktreeChats, worktreeTick]);
+  const visibleActivity = useMemo(
+    () => activity.filter((item) => matchesSidebarQuery(query, item.title, item.project)),
+    [activity, query],
+  );
+  const shownGroups = useMemo(() => {
+    if (!searching) return sidebarGroups;
+    const open = new Set(
+      activity.filter((item) => matchesSidebarQuery(query, item.title)).map((item) => projectKey(item.path)),
+    );
+    return sidebarGroups.filter(
+      (group) =>
+        matchesSidebarQuery(query, group.name, group.path) ||
+        open.has(projectKey(group.path)) ||
+        group.conversations.some((row) => !row.archived && matchesSidebarQuery(query, row.title)),
+    );
+  }, [searching, sidebarGroups, activity, query]);
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -644,15 +672,22 @@ function ProjectsNav({
 
   return (
     <>
+      <SidebarSearch query={query} onQuery={setQuery} />
+      <SidebarActivity
+        items={visibleActivity}
+        activeId={activeId}
+        runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
+        onOpen={(path, id) => void openSidebarChat(path, id)}
+      />
       <div className="relative z-20 flex items-center justify-between gap-2 px-4 pt-1.5 pb-1">
         <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">
-          All
+          Projects
         </span>
         <NewChatMenu disabled={!workspace} onPick={(kind) => void startNewChat(kind)} />
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
         <AllProjectsList
-          groups={sidebarGroups}
+          groups={shownGroups}
           activeWorkspace={workspace}
           projectsRoot={projectsRoot}
           legacyProjectsRoot={legacyProjectsRoot}
@@ -683,6 +718,7 @@ function ProjectsNav({
           archiveOpen={archiveOpen}
           onToggleArchive={toggleArchive}
           gitByProject={gitByProject}
+          chatQuery={searching ? query : ""}
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
           renderWorktree={(child) => (
@@ -796,6 +832,137 @@ function UpdateRow() {
           {phase === "ready" ? `${update.version} is installed. Restart to open it.` : note || `${update.version} is available.`}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function SidebarSearch({ query, onQuery }: { query: string; onQuery: (next: string) => void }) {
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key !== "f" || !(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.shiftKey) return;
+      const target = ev.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || target.closest("textarea, select"))) return;
+      if (target instanceof HTMLInputElement && target !== field.current) return;
+      ev.preventDefault();
+      field.current?.focus();
+      field.current?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <div className="relative z-20 px-2.5 pt-1.5 pb-1">
+      <label className="flex items-center gap-1.5 rounded-[7px] bg-wash px-2 py-1 text-muted focus-within:bg-wash-strong focus-within:text-ink">
+        <Symbol name="magnifyingglass" className="size-3.5 shrink-0" />
+        <input
+          ref={field}
+          type="text"
+          value={query}
+          onChange={(ev) => onQuery(ev.target.value)}
+          onKeyDown={(ev) => {
+            if (ev.key === "Escape" && query) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              onQuery("");
+            }
+          }}
+          placeholder="Search chats"
+          aria-label="Search chats"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-muted/70"
+        />
+        {query ? (
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={() => {
+              onQuery("");
+              field.current?.focus();
+            }}
+            className="flex size-4 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
+          >
+            <Symbol name="xmark" className="size-2.5" />
+          </button>
+        ) : null}
+      </label>
+    </div>
+  );
+}
+
+function SidebarActivity({
+  items,
+  activeId,
+  runningPreview,
+  onOpen,
+}: {
+  items: SidebarActivityItem[];
+  activeId: string;
+  runningPreview: (id: string) => string;
+  onOpen: (path: string, id: string) => void;
+}) {
+  if (!items.length) return null;
+  const running = items.filter((item) => item.status === "running");
+  const finished = items.filter((item) => item.status === "finished");
+  return (
+    <div className="relative z-20 flex max-h-[38%] shrink-0 flex-col px-2 pb-1">
+      <div className="no-scrollbar min-h-0 overflow-auto">
+        {running.length ? (
+          <ActivityGroup label="Running" items={running} activeId={activeId} runningPreview={runningPreview} onOpen={onOpen} />
+        ) : null}
+        {finished.length ? (
+          <ActivityGroup label="Finished" items={finished} activeId={activeId} runningPreview={runningPreview} onOpen={onOpen} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ActivityGroup({
+  label,
+  items,
+  activeId,
+  runningPreview,
+  onOpen,
+}: {
+  label: string;
+  items: SidebarActivityItem[];
+  activeId: string;
+  runningPreview: (id: string) => string;
+  onOpen: (path: string, id: string) => void;
+}) {
+  return (
+    <div className="pb-1">
+      <p className="px-2 pt-1 pb-0.5 text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">{label}</p>
+      {items.map((item) => {
+        const selected = item.id === activeId;
+        const preview = item.status === "running" ? runningPreview(item.id) : "";
+        return (
+          <button
+            key={`${item.path}\t${item.id}`}
+            type="button"
+            onClick={() => onOpen(item.path, item.id)}
+            className={`flex w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left ${
+              selected ? "bg-wash-strong" : "hover:bg-wash"
+            }`}
+          >
+            {item.status === "running" ? (
+              <span
+                className="size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+                aria-label={preview || "Running"}
+              />
+            ) : (
+              <span className="size-1.5 shrink-0 rounded-full bg-ok" aria-hidden />
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13px] text-ink">{item.title}</span>
+              <span className="block truncate text-[11px] text-muted">
+                {preview ? `${item.project} · ${preview}` : item.project}
+              </span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

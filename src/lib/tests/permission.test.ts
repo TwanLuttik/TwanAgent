@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   parsePermissionMode,
   permissionDetail,
+  permissionEffect,
   permissionLabel,
   permissionSystemLine,
   remoteWorkspaceLine,
@@ -38,6 +39,16 @@ describe("permission policy", () => {
     assert.equal(toolDeniedByPermission("read-only", "todo_write"), null);
     assert.equal(toolDeniedByPermission("ask", "write_file"), null);
     assert.equal(toolDeniedByPermission("approve-all", "run_command"), null);
+  });
+
+  it("shows what each mode allows", () => {
+    assert.equal(permissionEffect("ask", "read"), "allow");
+    assert.equal(permissionEffect("ask", "edit"), "allow");
+    assert.equal(permissionEffect("ask", "shell"), "ask");
+    assert.equal(permissionEffect("approve-all", "shell"), "allow");
+    assert.equal(permissionEffect("read-only", "read"), "allow");
+    assert.equal(permissionEffect("read-only", "edit"), "block");
+    assert.equal(permissionEffect("read-only", "shell"), "block");
   });
 
   it("labels modes for the composer chip", () => {

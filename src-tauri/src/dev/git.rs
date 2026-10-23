@@ -1155,10 +1155,105 @@ pub struct ProjectRemoval {
     pub app: u64,
     pub worktree_count: u32,
     pub app_managed: bool,
+    /// One size per linked checkout, in the same order `git worktree list` returns them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktree_sizes: Vec<WorktreeSize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeSize {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// One folder's size, remembered so the storage page does not walk it again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SizeCacheEntry {
+    bytes: u64,
+    /// Directory mtimes, deepest last. A change in any of them means the bytes are stale.
+    stamps: Vec<(String, u64)>,
+}
+
+fn size_cache_key(path: &str) -> String {
+    format!("dir-size.{}", crate::dev::paths::workspace_id(path))
+}
+
+fn read_size_cache(data_dir: &Path, path: &str) -> Option<SizeCacheEntry> {
+    let conn = crate::appdb::open(data_dir).ok()?;
+    let raw = crate::appdb::get_setting(&conn, &size_cache_key(path)).ok()??;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_size_cache(data_dir: &Path, path: &str, entry: &SizeCacheEntry) {
+    let Ok(raw) = serde_json::to_string(entry) else {
+        return;
+    };
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return;
+    };
+    let _ = crate::appdb::set_setting(&conn, &size_cache_key(path), &raw);
+}
+
+fn mtime_secs(path: &Path) -> Option<u64> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+}
+
+/// Directory mtimes under `path`. A nested path in `skip` is left out, matching the size walk.
+fn dir_stamps(path: &Path, skip: &[&str]) -> Vec<(String, u64)> {
+    fn walk(path: &Path, skip: &[&str], out: &mut Vec<(String, u64)>) {
+        if path.file_name().is_some_and(|name| name == ".git") {
+            return;
+        }
+        let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let text = crate::paths::native_source(&canon.to_string_lossy());
+        if skip.iter().any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text)) {
+            return;
+        }
+        let Some(stamp) = mtime_secs(path) else {
+            return;
+        };
+        out.push((text, stamp));
+        let Ok(entries) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.symlink_metadata().ok().is_some_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) {
+                walk(&child, skip, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if path.is_dir() {
+        walk(path, skip, &mut out);
+    }
+    out
+}
+
+fn stamps_match(saved: &[(String, u64)], fresh: &[(String, u64)]) -> bool {
+    saved.len() == fresh.len()
+        && saved.iter().zip(fresh).all(|(left, right)| left.0.eq_ignore_ascii_case(&right.0) && left.1 == right.1)
+}
+
+/// The cached size when every directory mtime still matches. Otherwise walk once and remember it.
+fn cached_dir_size(data_dir: &Path, path: &Path, skip: &[&str]) -> u64 {
+    let key = path.to_string_lossy().into_owned();
+    let fresh = dir_stamps(path, skip);
+    if let Some(saved) = read_size_cache(data_dir, &key) {
+        if stamps_match(&saved.stamps, &fresh) {
+            return saved.bytes;
+        }
+    }
+    let bytes = dir_size_except(path, skip);
+    write_size_cache(data_dir, &key, &SizeCacheEntry { bytes, stamps: fresh });
+    bytes
 }
 
 /// Bytes the main checkout, its linked worktrees, and their app data take.
 /// A folder that is not a git repo reports no worktrees.
+/// Sizes are remembered until a directory inside the folder changes.
 pub fn project_removal(target: &GitTarget, data_dir: &Path, app_roots: &[&Path]) -> ProjectRemoval {
     let here = fs::canonicalize(&target.root).unwrap_or_else(|_| target.root.clone());
     let app_managed = app_roots.iter().any(|root| {
@@ -1179,12 +1274,18 @@ pub fn project_removal(target: &GitTarget, data_dir: &Path, app_roots: &[&Path])
         .collect::<Vec<_>>();
     let skip_refs = skip.iter().map(String::as_str).collect::<Vec<_>>();
     let project = main
-        .map(|row| dir_size_except(Path::new(&row.path), &skip_refs))
-        .unwrap_or_else(|| dir_size_except(&target.root, &skip_refs));
+        .map(|row| cached_dir_size(data_dir, Path::new(&row.path), &skip_refs))
+        .unwrap_or_else(|| cached_dir_size(data_dir, &target.root, &skip_refs));
     let mut worktrees = 0u64;
+    let mut worktree_sizes = Vec::with_capacity(linked.len());
     let mut app = app_data_size(data_dir, &target.root);
     for row in &linked {
-        worktrees += dir_size(Path::new(&row.path));
+        let bytes = cached_dir_size(data_dir, Path::new(&row.path), &[]);
+        worktrees += bytes;
+        worktree_sizes.push(WorktreeSize {
+            path: row.path.clone(),
+            bytes,
+        });
         app += app_data_size(data_dir, Path::new(&row.path));
     }
     // External checkouts live together under one app-data folder. Count that once
@@ -1201,6 +1302,7 @@ pub fn project_removal(target: &GitTarget, data_dir: &Path, app_roots: &[&Path])
         app,
         worktree_count: linked.len() as u32,
         app_managed,
+        worktree_sizes,
     }
 }
 
@@ -2366,6 +2468,11 @@ fn project_removal_splits_the_main_checkout_from_its_worktrees() {
     let report = project_removal(&target, &data, &[&projects]);
     assert!(report.app_managed);
     assert_eq!(report.worktree_count, 1);
+    assert_eq!(report.worktree_sizes.len(), 1);
+    assert!(report.worktree_sizes[0].bytes >= 64 * 1024);
+    let again = project_removal(&target, &data, &[&projects]);
+    assert_eq!(again.project, report.project);
+    assert_eq!(again.worktree_sizes, report.worktree_sizes);
     assert!(report.worktrees >= 64 * 1024, "worktrees {}", report.worktrees);
     assert!(report.project > 0);
     assert!(report.project < report.worktrees, "project {} includes the worktree", report.project);

@@ -431,16 +431,29 @@ pub async fn resolve_minimax_auth_fresh_in(data_dir: &Path) -> Option<MinimaxAut
     None
 }
 
+fn mmx_version_cache() -> &'static std::sync::Mutex<Option<String>> {
+    static VERSION: OnceLock<std::sync::Mutex<Option<String>>> = OnceLock::new();
+    VERSION.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// Login state for settings. Does not refresh and does not return the token.
 /// `mmx --version` is a process spawn. A detected version is reused; a miss is tried again.
 fn cached_mmx_version(bin: Option<&Path>) -> Option<String> {
-    static VERSION: OnceLock<String> = OnceLock::new();
-    if let Some(found) = VERSION.get() {
-        return Some(found.clone());
+    if let Some(found) = mmx_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+        return Some(found);
     }
     let version = bin.and_then(mmx_version)?;
-    let _ = VERSION.set(version.clone());
+    if let Ok(mut guard) = mmx_version_cache().lock() {
+        *guard = Some(version.clone());
+    }
     Some(version)
+}
+
+/// Forget the version read at launch. The next settings read spawns `mmx --version` again.
+pub fn forget_mmx_version() {
+    if let Ok(mut guard) = mmx_version_cache().lock() {
+        *guard = None;
+    }
 }
 
 pub fn minimax_cli_info() -> MinimaxCliInfo {

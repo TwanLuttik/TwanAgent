@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>TwanAgent reads and edits project folders you open, including folders on the Desktop.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>TwanAgent reads and edits project folders you open, including folders in Documents.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>TwanAgent reads and edits project folders you open, including folders in Downloads.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>TwanAgent reads and edits project folders you open on external drives.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>TwanAgent uses the microphone to dictate into the message box.</string>
   <key>NSLocalNetworkUsageDescription</key>

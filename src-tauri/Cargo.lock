@@ -95,6 +95,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apple-scoped-bookmarks"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c2292ed2eca1af90a2c39dc660b8e061c12effb3d3f092f6f9edde225c8033c"
+dependencies = [
+ "objc2",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5651,6 +5661,7 @@ dependencies = [
 name = "twanagent"
 version = "1.0.0-beta.3"
 dependencies = [
+ "apple-scoped-bookmarks",
  "async-trait",
  "base64 0.22.1",
  "chrono",

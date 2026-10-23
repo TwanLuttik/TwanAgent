@@ -872,6 +872,22 @@ export function toolTrailKind(label: string): string {
   return space === -1 ? trimmed : trimmed.slice(0, space);
 }
 
+/** The verb, and everything after it. A range like "(700 - 1099)" stays on the detail. */
+export function toolTrailParts(label: string): { verb: string; detail: string } {
+  const trimmed = label.trim();
+  const verb = toolTrailKind(trimmed);
+  if (!verb || verb === trimmed) return { verb: trimmed, detail: "" };
+  if (verb === "$") {
+    const detail = trimmed.startsWith("$ ")
+      ? trimmed.slice(2)
+      : trimmed.startsWith("Run ")
+        ? trimmed.slice(4)
+        : "";
+    return { verb: "Run", detail: detail.trim() };
+  }
+  return { verb, detail: trimmed.slice(verb.length).trim() };
+}
+
 export function toolTrailTypeCounts(labels: string[]): { type: string; count: number }[] {
   const order: string[] = [];
   const counts = new Map<string, number>();
