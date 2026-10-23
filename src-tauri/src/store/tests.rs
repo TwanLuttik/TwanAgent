@@ -123,6 +123,186 @@ fn save_keeps_compaction_until_a_new_one_is_written() {
     assert_eq!(updated.compaction.as_ref().unwrap().through, 8);
 }
 
+fn message_row_ids(conn: &Connection, id: &str) -> Vec<(i64, i64, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, sort_order, content FROM messages WHERE conversation_id = ?1 ORDER BY sort_order ASC, id ASC",
+        )
+        .unwrap();
+    stmt.query_map([id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        ))
+    })
+    .unwrap()
+    .map(|row| row.unwrap())
+    .collect()
+}
+
+#[test]
+fn suffix_write_leaves_the_prefix_rows() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let original = vec![
+        json!({"role":"user","content":"hi"}),
+        json!({"role":"assistant","content":"one"}),
+    ];
+    save_conversation(&conn, &conv("c1", "Hello", original.clone())).unwrap();
+    let before = message_row_ids(&conn, "c1");
+    let mut next = original;
+    next.push(json!({"role":"tool","tool_call_id":"t1","content":"ok"}));
+    save_conversation_suffix(&conn, "c1", "2026-02-01T00:00:00Z", &next, 2).unwrap();
+    let after = message_row_ids(&conn, "c1");
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    assert_eq!(after[2].1, 2);
+    assert_eq!(after[2].2, "ok");
+    let updated_at: String = conn
+        .query_row("SELECT updated_at FROM conversations WHERE id = 'c1'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(updated_at, "2026-02-01T00:00:00Z");
+    let title: String = conn
+        .query_row("SELECT title FROM conversations WHERE id = 'c1'", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(title, "Hello");
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[0]["content"], "hi");
+    assert_eq!(loaded.messages[2]["tool_call_id"], "t1");
+}
+
+#[test]
+fn longer_transcript_inserts_only_the_new_rows() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let original = vec![
+        json!({"role":"user","content":"hi"}),
+        json!({"role":"assistant","content":"one"}),
+    ];
+    save_conversation(&conn, &conv("c1", "Hello", original.clone())).unwrap();
+    let before = message_row_ids(&conn, "c1");
+    let mut next = original;
+    next.push(json!({"role":"user","content":"more"}));
+    next.push(json!({"role":"assistant","content":"two"}));
+    save_conversation(&conn, &conv("c1", "Hello", next)).unwrap();
+    let after = message_row_ids(&conn, "c1");
+    assert_eq!(after.len(), 4);
+    assert_eq!(&after[..2], &before[..]);
+    assert_eq!(after[2].2, "more");
+    assert_eq!(after[3].2, "two");
+    assert!(after[2].0 > before[1].0);
+}
+
+#[test]
+fn replacing_the_last_message_rewrites_only_that_row() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"one"}),
+                json!({"role":"assistant","content":"draft"}),
+            ],
+        ),
+    )
+    .unwrap();
+    let before = message_row_ids(&conn, "c1");
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"one"}),
+                json!({"role":"assistant","content":"final"}),
+            ],
+        ),
+    )
+    .unwrap();
+    let after = message_row_ids(&conn, "c1");
+    assert_eq!(after.len(), 3);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    assert_ne!(after[2].0, before[2].0);
+    assert_eq!(after[2].1, 2);
+    assert_eq!(after[2].2, "final");
+}
+
+#[test]
+fn a_mismatch_before_the_boundary_updates_the_earlier_row() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"one"}),
+                json!({"role":"assistant","content":"two"}),
+            ],
+        ),
+    )
+    .unwrap();
+    let before = message_row_ids(&conn, "c1");
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({"role":"user","content":"hi"}),
+                json!({"role":"assistant","content":"changed"}),
+                json!({"role":"assistant","content":"also"}),
+            ],
+        ),
+    )
+    .unwrap();
+    let after = message_row_ids(&conn, "c1");
+    assert_eq!(after[0], before[0]);
+    assert_ne!(after[1].0, before[1].0);
+    assert_eq!(after[1].2, "changed");
+    assert_eq!(after[2].2, "also");
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[1]["content"], "changed");
+    assert_eq!(loaded.messages[2]["content"], "also");
+}
+
+#[test]
+fn key_order_does_not_rewrite_a_matching_message() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![json!({
+                "role":"assistant",
+                "content":"Done.",
+                "tool_calls":[{"id":"c","name":"read_file","arguments":"{}"}]
+            })],
+        ),
+    )
+    .unwrap();
+    let before = message_row_ids(&conn, "c1");
+    let reordered = serde_json::json!({
+        "tool_calls":[{"arguments":"{}","name":"read_file","id":"c"}],
+        "content":"Done.",
+        "role":"assistant"
+    });
+    save_conversation(&conn, &conv("c1", "Hello", vec![reordered])).unwrap();
+    assert_eq!(message_row_ids(&conn, "c1"), before);
+}
+
 #[test]
 fn appending_a_message_keeps_the_earlier_rows() {
     let dir = tempdir().unwrap();

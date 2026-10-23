@@ -19,12 +19,16 @@ pub fn http_error_message(status: u16, body: &str) -> String {
 }
 
 /// OpenAI-shaped messages stay OpenAI-shaped. Effort is omitted when empty.
+///
+/// Stored transcripts keep tool calls flat (`id`, `name`, `arguments`). xAI
+/// rejects that on the next round with `messages[n]: missing field function`.
+/// Nest each call under `function` here, including calls that are already nested.
 pub fn chat_body(model: &str, effort: Option<&str>, messages: &Value, tools: &Value) -> Value {
     let mut body = serde_json::json!({
         "model": model,
         "stream": true,
         "stream_options": { "include_usage": true },
-        "messages": messages,
+        "messages": api_messages(messages),
         "tools": tools,
         "tool_choice": "auto",
     });
@@ -184,6 +188,54 @@ pub fn tool_fragments(delta: &Value) -> Vec<ToolFragment> {
         .collect()
 }
 
+fn api_messages(messages: &Value) -> Value {
+    let Some(rows) = messages.as_array() else {
+        return messages.clone();
+    };
+    Value::Array(rows.iter().map(api_message).collect())
+}
+
+fn api_message(message: &Value) -> Value {
+    let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+        return message.clone();
+    };
+    let mut message = message.clone();
+    message["tool_calls"] = Value::Array(calls.iter().map(api_tool_call).collect());
+    message
+}
+
+fn api_tool_call(call: &Value) -> Value {
+    let id = call.get("id").and_then(Value::as_str).unwrap_or("");
+    let name = call
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
+        .or_else(|| call.get("name").and_then(Value::as_str))
+        .unwrap_or("");
+    let arguments = argument_text(
+        call.get("function")
+            .and_then(|function| function.get("arguments"))
+            .or_else(|| call.get("arguments")),
+    );
+    serde_json::json!({
+        "id": id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        }
+    })
+}
+
+fn argument_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) if !text.is_empty() => text.clone(),
+        Some(other) if !other.is_null() && other.as_str().is_none() => other.to_string(),
+        _ => "{}".to_string(),
+    }
+}
+
 fn is_reasoning_part(kind: &str) -> bool {
     matches!(kind, "reasoning" | "thinking" | "reasoning_text" | "reasoning_summary")
 }
@@ -226,6 +278,50 @@ mod tests {
         assert_eq!(endpoint(false), API_URL);
         assert_eq!(endpoint(true), CLI_URL);
         assert_ne!(endpoint(false), endpoint(true));
+    }
+
+    #[test]
+    fn flat_tool_calls_gain_a_function_before_they_are_sent() {
+        let messages = serde_json::json!([
+            { "role": "system", "content": "Be concise." },
+            { "role": "user", "content": "search" },
+            {
+                "role": "assistant",
+                "content": "I'll search.",
+                "tool_calls": [
+                    { "id": "call-1", "name": "web_search", "arguments": "{\"query\":\"x\"}" },
+                    { "id": "call-2", "name": "read_file", "arguments": "" }
+                ]
+            },
+            { "role": "tool", "tool_call_id": "call-1", "content": "found" }
+        ]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        let calls = body["messages"][2]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls[0]["id"], "call-1");
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "web_search");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"query\":\"x\"}");
+        assert!(calls[0].get("name").is_none());
+        assert_eq!(calls[1]["function"]["name"], "read_file");
+        assert_eq!(calls[1]["function"]["arguments"], "{}");
+        assert_eq!(body["messages"][3]["tool_call_id"], "call-1");
+        assert_eq!(body["messages"][1]["content"], "search");
+    }
+
+    #[test]
+    fn nested_tool_calls_stay_nested() {
+        let messages = serde_json::json!([{
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            }]
+        }]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read_file");
+        assert_eq!(body["messages"][0]["tool_calls"][0]["type"], "function");
     }
 
     #[test]

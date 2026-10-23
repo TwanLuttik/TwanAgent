@@ -59,6 +59,7 @@ export function MainShell() {
             x={projectMenu.x}
             y={projectMenu.y}
             name={projectMenu.name}
+            path={projectMenu.path}
             appManaged={isAppProject(projectMenu.path, projectsRoot) || isAppProject(projectMenu.path, legacyProjectsRoot)}
             onNewChat={() => {
               void startNewChat("chat", undefined, projectMenu.path);
@@ -72,6 +73,7 @@ export function MainShell() {
               setPendingDeleteProject({ path: projectMenu.path, name: projectMenu.name });
               setProjectMenu(null);
             }}
+            onCopied={() => setProjectMenu(null)}
           />
         ) : null}
         {pendingDeleteProject ? (

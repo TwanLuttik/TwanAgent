@@ -87,6 +87,17 @@ pub fn http_error_message(status: u16, body: &str) -> String {
 
 /// OpenAI-shaped chat messages become a Messages API body. No I/O.
 pub fn to_messages_body(messages: &Value, model: &str, effort: Option<&str>, tools: &Value) -> Value {
+    to_messages_body_with_images(messages, model, effort, tools, true)
+}
+
+/// `images` is false for a MiniMax model that only accepts text. Claude and MiniMax M3 pass true.
+pub fn to_messages_body_with_images(
+    messages: &Value,
+    model: &str,
+    effort: Option<&str>,
+    tools: &Value,
+    include_images: bool,
+) -> Value {
     let rows = messages.as_array().cloned().unwrap_or_default();
     let mut system = String::new();
     let mut out: Vec<Value> = Vec::new();
@@ -147,7 +158,8 @@ pub fn to_messages_body(messages: &Value, model: &str, effort: Option<&str>, too
             out.push(serde_json::json!({ "role": "assistant", "content": blocks }));
             continue;
         }
-        let blocks = user_blocks(msg.get("content"));
+        let images = if include_images { msg.get("images") } else { None };
+        let blocks = user_blocks(msg.get("content"), images);
         if blocks.is_empty() {
             continue;
         }
@@ -279,39 +291,126 @@ fn content_string(value: Option<&Value>) -> String {
     out
 }
 
-fn user_blocks(value: Option<&Value>) -> Vec<Value> {
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    if let Some(text) = value.as_str() {
-        if text.is_empty() {
-            return Vec::new();
-        }
-        return vec![serde_json::json!({ "type": "text", "text": text })];
-    }
-    let Some(parts) = value.as_array() else {
-        return Vec::new();
-    };
+fn user_blocks(value: Option<&Value>, images: Option<&Value>) -> Vec<Value> {
     let mut out = Vec::new();
-    for part in parts {
-        let kind = part.get("type").and_then(|item| item.as_str()).unwrap_or("");
-        if kind == "text" {
-            if let Some(text) = part.get("text").and_then(|item| item.as_str()) {
-                if !text.is_empty() {
-                    out.push(serde_json::json!({ "type": "text", "text": text }));
+    if let Some(text) = value.and_then(|item| item.as_str()) {
+        let text = strip_image_tokens(text, images);
+        if !text.is_empty() {
+            out.push(serde_json::json!({ "type": "text", "text": text }));
+        }
+    } else if let Some(parts) = value.and_then(|item| item.as_array()) {
+        for part in parts {
+            let kind = part.get("type").and_then(|item| item.as_str()).unwrap_or("");
+            if kind == "text" {
+                if let Some(text) = part.get("text").and_then(|item| item.as_str()) {
+                    let text = strip_image_tokens(text, images);
+                    if !text.is_empty() {
+                        out.push(serde_json::json!({ "type": "text", "text": text }));
+                    }
                 }
+                continue;
+            }
+            if kind == "image_url" {
+                let url = part
+                    .get("image_url")
+                    .and_then(|item| item.get("url"))
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("");
+                if let Some(image) = image_block(url) {
+                    out.push(image);
+                }
+            }
+        }
+    }
+    // The local turn stores pictures on `images`, not as content parts.
+    // A data URL already present above is not attached a second time.
+    out.extend(image_field_blocks(images, &out));
+    out
+}
+
+/// `[filename]` markers the composer inserts for an attached picture. The bytes travel separately.
+fn strip_image_tokens(text: &str, images: Option<&Value>) -> String {
+    let Some(rows) = images.and_then(|item| item.as_array()) else {
+        return text.to_string();
+    };
+    if rows.is_empty() || !text.contains('[') {
+        return text.to_string();
+    }
+    let mut labels = Vec::new();
+    for row in rows {
+        let name = row.get("name").and_then(|item| item.as_str()).unwrap_or("").trim();
+        let label = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(name)
+            .trim()
+            .replace(['[', ']', '\r', '\n'], "");
+        let label = label.trim();
+        if !label.is_empty() {
+            labels.push(label.to_string());
+        }
+    }
+    if labels.is_empty() {
+        return text.to_string();
+    }
+    let mut out = text.to_string();
+    for label in labels {
+        let token = format!("[{label}]");
+        if out.contains(&token) {
+            out = out.replace(&token, " ");
+        }
+    }
+    let mut collapsed = String::new();
+    let mut spaced = false;
+    let mut line_start = true;
+    for ch in out.chars() {
+        if ch == '\n' {
+            while collapsed.ends_with(' ') {
+                collapsed.pop();
+            }
+            collapsed.push('\n');
+            spaced = false;
+            line_start = true;
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !line_start {
+                spaced = true;
             }
             continue;
         }
-        if kind == "image_url" {
-            let url = part
-                .get("image_url")
-                .and_then(|item| item.get("url"))
-                .and_then(|item| item.as_str())
-                .unwrap_or("");
-            if let Some(image) = image_block(url) {
-                out.push(image);
-            }
+        if spaced {
+            collapsed.push(' ');
+        }
+        collapsed.push(ch);
+        spaced = false;
+        line_start = false;
+    }
+    while collapsed.ends_with(' ') || collapsed.ends_with('\n') {
+        collapsed.pop();
+    }
+    collapsed
+}
+
+fn image_field_blocks(images: Option<&Value>, already: &[Value]) -> Vec<Value> {
+    let Some(rows) = images.and_then(|item| item.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        let url = row.get("dataUrl").and_then(|item| item.as_str()).unwrap_or("");
+        let Some(image) = image_block(url) else {
+            continue;
+        };
+        let data = image
+            .pointer("/source/data")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        let seen = already.iter().chain(out.iter()).any(|block| {
+            block.pointer("/source/data").and_then(|item| item.as_str()) == Some(data)
+        });
+        if !seen {
+            out.push(image);
         }
     }
     out
@@ -499,6 +598,51 @@ mod tests {
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
         assert_eq!(body["tools"][0]["name"], "read_file");
         assert!(body["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn sidecar_images_become_base64_blocks_for_claude_and_minimax() {
+        let messages = serde_json::json!([{
+            "role": "user",
+            "content": "[shot.png] what is this",
+            "images": [{
+                "name": "shot.png",
+                "dataUrl": "data:image/png;base64,iVBORw0KGgo"
+            }]
+        }]);
+        let claude = to_messages_body(&messages, "claude-sonnet-4-6", None, &serde_json::json!([]));
+        let content = &claude["messages"][0]["content"];
+        assert_eq!(content[0]["text"], "what is this");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "iVBORw0KGgo");
+        let minimax = super::super::minimax::to_minimax_body(
+            &messages,
+            "MiniMax-M3",
+            &serde_json::json!([]),
+            128_000,
+        );
+        assert_eq!(minimax["messages"][0]["content"][1]["source"]["media_type"], "image/png");
+        assert_eq!(minimax["messages"][0]["content"][1]["source"]["data"], "iVBORw0KGgo");
+    }
+
+    #[test]
+    fn an_image_url_part_is_not_attached_twice() {
+        let body = to_messages_body(
+            &serde_json::json!([{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "look" },
+                    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,abc" } }
+                ],
+                "images": [{ "name": "a.jpg", "dataUrl": "data:image/jpeg;base64,abc" }]
+            }]),
+            "claude-opus-4-8",
+            None,
+            &serde_json::json!([]),
+        );
+        assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
     }
 
     #[test]

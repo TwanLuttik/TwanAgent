@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, type HostedEvent, type HostedServer } from "../hosted.ts";
+import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, runPool, type HostedEvent, type HostedServer } from "../hosted.ts";
 import type { ChatMessage } from "../core.ts";
 
 describe("hosted turns", () => {
@@ -89,3 +89,65 @@ describe("hosted turns", () => {
     );
   });
 });
+
+describe("runPool", () => {
+  it("does nothing for an empty list", async () => {
+    let calls = 0;
+    await runPool([], 2, async () => {
+      calls += 1;
+    });
+    assert.equal(calls, 0);
+  });
+
+  it("never runs more than the limit and still finishes after a failure", async () => {
+    const gates = [0, 1, 2, 3, 4].map(() => {
+      let resolve: () => void = () => {};
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const started: number[] = [];
+    const finished: number[] = [];
+
+    const pending = runPool([0, 1, 2, 3, 4], 2, async (item) => {
+      started.push(item);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await gates[item]!.promise;
+      inFlight -= 1;
+      finished.push(item);
+      if (item === 2) throw new Error("cache miss");
+    });
+
+    await drain();
+    assert.deepEqual(started, [0, 1]);
+    assert.equal(maxInFlight, 2);
+
+    gates[0]!.resolve();
+    await drain();
+    assert.deepEqual(started, [0, 1, 2]);
+    assert.equal(inFlight, 2);
+
+    gates[1]!.resolve();
+    await drain();
+    assert.deepEqual(started, [0, 1, 2, 3]);
+
+    gates[2]!.resolve();
+    gates[3]!.resolve();
+    await drain();
+    assert.deepEqual(started, [0, 1, 2, 3, 4]);
+    assert.equal(maxInFlight, 2);
+
+    gates[4]!.resolve();
+    await pending;
+    assert.deepEqual(finished, [0, 1, 2, 3, 4]);
+    assert.equal(inFlight, 0);
+  });
+});
+
+async function drain(): Promise<void> {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+}

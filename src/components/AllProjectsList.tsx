@@ -254,6 +254,7 @@ export function AllProjectsList({
           x={menu.x}
           y={menu.y}
           name={menu.group.name}
+          path={menu.group.path}
           appManaged={isAppProject(menu.group.path, projectsRoot) || isAppProject(menu.group.path, legacyProjectsRoot)}
           onNewChat={() => {
             onNewChat(menu.group.path);
@@ -267,6 +268,7 @@ export function AllProjectsList({
             setPendingDelete(menu.group);
             setMenu(null);
           }}
+          onCopied={() => setMenu(null)}
         />
       ) : null}
       {gitMenu ? (
@@ -640,18 +642,22 @@ export function ProjectContextMenu({
   x,
   y,
   name,
+  path,
   appManaged,
   onNewChat,
   onSettings,
   onDelete,
+  onCopied,
 }: {
   x: number;
   y: number;
   name: string;
+  path?: string;
   appManaged: boolean;
   onNewChat?: () => void;
   onSettings?: () => void;
   onDelete: () => void;
+  onCopied?: () => void;
 }) {
   return (
     <AnchoredMenu x={x} y={y} label={name}>
@@ -673,6 +679,19 @@ export function ProjectContextMenu({
           className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
         >
           Settings
+        </button>
+      ) : null}
+      {path ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            void navigator.clipboard.writeText(path).catch(() => undefined);
+            onCopied?.();
+          }}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          Copy ID
         </button>
       ) : null}
       <button

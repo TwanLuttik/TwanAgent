@@ -47,6 +47,24 @@ pub fn note_coalesced(pending: &mut String, piece: &str, last_emit: &mut Option<
     due || pending.len() >= COALESCE_MAX_BYTES
 }
 
+fn split_progress(text: &str) -> Vec<String> {
+    const PIECE: usize = 24;
+    let mut out = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut end = rest.len().min(PIECE);
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 {
+            end = rest.len();
+        }
+        out.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    out
+}
+
 pub fn take_coalesced(pending: &mut String) -> Option<String> {
     if pending.is_empty() {
         None
@@ -187,6 +205,11 @@ impl<'a> StreamSession<'a> {
             return;
         };
         self.emitted_text = true;
+        // The coalesced buffer is one paint. The local turn wants each piece so a
+        // reloaded window can append it instead of replacing the reply.
+        for piece in split_progress(&text) {
+            crate::dev::chat::note_round_piece(self.stream_id, "delta", &piece);
+        }
         self.emit(DevChatEvent {
             stream_id: self.stream_id.into(),
             kind: "delta".into(),
@@ -203,6 +226,9 @@ impl<'a> StreamSession<'a> {
             return;
         };
         self.emitted_reasoning = true;
+        for piece in split_progress(&text) {
+            crate::dev::chat::note_round_piece(self.stream_id, "reasoning", &piece);
+        }
         self.emit(DevChatEvent {
             stream_id: self.stream_id.into(),
             kind: "reasoning".into(),
@@ -215,6 +241,9 @@ impl<'a> StreamSession<'a> {
     }
 
     fn emit(&self, event: DevChatEvent) {
+        if event.kind != "delta" && event.kind != "reasoning" {
+            crate::dev::chat::publish_round_event(&event);
+        }
         let _ = self.app.emit("dev-chat", event);
     }
 }

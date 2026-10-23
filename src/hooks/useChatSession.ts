@@ -1,4 +1,5 @@
 import { useCallback, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { resumeLocalTurn } from "../lib/agent";
 import { insertCompactionEvent } from "../lib/compact";
 import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
 import type { ChatMessage, ConversationActivity, LiveToolRow } from "../lib/core";
@@ -15,7 +16,7 @@ import {
   loadPermission,
   saveConversation,
 } from "../lib/prefs";
-import { clearUnseenFinished, composerSettingsForChat, liveTurnMessages } from "../lib/turn";
+import { clearUnseenFinished, composerSettingsForChat, liveTurnMessages, localTurnsToRejoin, patchRunningTurn, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 
@@ -46,6 +47,8 @@ export function useChatSession({
   setUsageByChat,
   setCompactionByChat,
   setOpeningId,
+  setRunningTurns,
+  setBusy,
   setModel,
   setEffort,
   setContextWindow,
@@ -60,6 +63,7 @@ export function useChatSession({
   permissionRef,
   runningWsRef,
   runningIdRef,
+  turnsRef,
   sidebarLoadedForRef,
   turnMessagesRef,
   turnLiveRef,
@@ -82,6 +86,8 @@ export function useChatSession({
   setUsageByChat: Update<Record<string, ChatUsage>>;
   setCompactionByChat: Update<Record<string, { summary: string; through: number }>>;
   setOpeningId?: Update<string>;
+  setRunningTurns?: Update<Record<string, RunningTurn>>;
+  setBusy?: Update<boolean>;
   setModel: Update<string>;
   setEffort: Update<string>;
   setContextWindow: Update<number>;
@@ -96,6 +102,7 @@ export function useChatSession({
   journeysRef: RefObject<JourneySummary[]>;
   runningWsRef: RefObject<string>;
   runningIdRef: RefObject<string>;
+  turnsRef?: RefObject<Map<string, AbortController>>;
   sidebarLoadedForRef: RefObject<string>;
   turnMessagesRef: RefObject<ChatMessage[] | null>;
   turnLiveRef: RefObject<{
@@ -121,6 +128,8 @@ export function useChatSession({
   } | null>;
 }) {
   const cachePaintedForRef = useRef("");
+  const rejoinedRef = useRef(new Map<string, AbortController>());
+  const markedRef = useRef(new Set<string>());
 
   const reloadConversations = useCallback(
     async (ws: string, preferId?: string) => {
@@ -214,6 +223,18 @@ export function useChatSession({
       const savedRow = rows.find((row) => row.id === saved);
       const preferred = preferredOpenConversation(visible, savedRow && !isArchivedConversation(savedRow) ? saved : "");
       const want = preferId || preferred?.id || "";
+      if (!hostedChats) {
+        void markLiveLocalTurns(
+          rows.map((row) => row.id).filter((id) => id !== want),
+          {
+            known: markedRef.current,
+            turns: rejoinedRef.current,
+            liveTurns: turnsRef?.current,
+            setRunningTurns,
+            setBusy,
+          },
+        );
+      }
       if (!want) {
         setActiveId("");
         setMessages([]);
@@ -278,6 +299,31 @@ export function useChatSession({
       }
       saveConversation(ws, found.id);
       if (hostedChats) libraryRef.current?.watchHosted?.(ws, found.id);
+      else {
+        void rejoinLocalTurn({
+          workspace: ws,
+          chatId: found.id,
+          turns: rejoinedRef.current,
+          liveTurns: turnsRef?.current,
+          onRunning: (running) => {
+            setRunningTurns?.((prev) =>
+              running ? patchRunningTurn(prev, found.id, { startedAt: Date.now() }) : clearRejoinedTurn(prev, found.id),
+            );
+            if (running) setBusy?.(true);
+          },
+          onMessages: (next) => {
+            if (activeIdRef.current === found.id) setMessages(next);
+          },
+          onStream: (text) => {
+            if (activeIdRef.current !== found.id) return;
+            setLiveStream((prev) => ({ streamText: `${prev.streamText}${text}` }));
+          },
+          onReasoning: (text) => {
+            if (activeIdRef.current !== found.id) return;
+            setLiveStream((prev) => ({ streamReasoning: `${prev.streamReasoning}${text}` }));
+          },
+        }).catch(() => undefined);
+      }
       // Only retarget the composer when this reload actually opened a different chat.
       // Depending on `model` re-runs this after a chip change, and the row still has
       // the model copied at creation until the settings save lands.
@@ -324,6 +370,8 @@ export function useChatSession({
       setUsageByChat,
       setCompactionByChat,
       setOpeningId,
+      setRunningTurns,
+      setBusy,
       setModel,
       setEffort,
       setContextWindow,
@@ -338,6 +386,7 @@ export function useChatSession({
       journeysRef,
       runningWsRef,
       runningIdRef,
+      turnsRef,
       sidebarLoadedForRef,
       turnMessagesRef,
       turnLiveRef,
@@ -351,6 +400,96 @@ export function useChatSession({
   );
 
   return reloadConversations;
+}
+
+/**
+ * The process keeps every local turn after a reload. The page's running map starts empty,
+ * so a chat can still receive tokens while the sidebar says it is idle.
+ * Each one is joined, so Stop and the idle event clear the same mark.
+ */
+export async function markLiveLocalTurns(
+  chatIds: readonly string[],
+  input: {
+    known: Set<string>;
+    turns: Map<string, AbortController>;
+    liveTurns?: Map<string, AbortController>;
+    setRunningTurns?: Update<Record<string, RunningTurn>>;
+    setBusy?: Update<boolean>;
+  },
+): Promise<void> {
+  if (!input.setRunningTurns || chatIds.length === 0) return;
+  const live = await api.localTurns();
+  const found = localTurnsToRejoin(chatIds, live, input.known, input.turns);
+  if (found.length === 0) return;
+  for (const id of found) input.known.add(id);
+  await Promise.all(
+    found.map((id) => {
+      const row = live.find((item) => item.conversation_id === id);
+      return rejoinLocalTurn({
+        workspace: row?.workspace ?? "",
+        chatId: id,
+        turns: input.turns,
+        liveTurns: input.liveTurns,
+        onRunning: (running) => {
+          input.setRunningTurns?.((prev) =>
+            running ? patchRunningTurn(prev, id, { startedAt: Date.now() }) : clearRejoinedTurn(prev, id),
+          );
+          if (running) input.setBusy?.(true);
+          if (!running) input.known.delete(id);
+        },
+        onMessages: () => undefined,
+        onStream: () => undefined,
+        onReasoning: () => undefined,
+      });
+    }),
+  );
+}
+
+/** Paint a turn the app process is still running after this window was reloaded. */
+export async function rejoinLocalTurn(input: {
+  workspace: string;
+  chatId: string;
+  turns: Map<string, AbortController>;
+  /** The map Stop reads. A reload has no controller from the turn that started. */
+  liveTurns?: Map<string, AbortController>;
+  onRunning?: (running: boolean) => void;
+  onMessages: (messages: ChatMessage[]) => void;
+  onStream: (text: string) => void;
+  onReasoning: (text: string) => void;
+}): Promise<void> {
+  if (!input.workspace || !input.chatId || input.turns.has(input.chatId)) return;
+  const running = await api.localTurns();
+  if (!running.some((row) => row.conversation_id === input.chatId)) return;
+  const ac = new AbortController();
+  input.turns.set(input.chatId, ac);
+  input.liveTurns?.set(input.chatId, ac);
+  input.onRunning?.(true);
+  try {
+    const done = await resumeLocalTurn({
+      workspace: input.workspace,
+      conversationId: input.chatId,
+      messages: [],
+      signal: ac.signal,
+      resume: true,
+      onEvent: (event) => {
+        if (event.kind === "saved" && event.messages?.length) input.onMessages(event.messages);
+        else if (event.kind === "delta" && event.text) input.onStream(event.text);
+        else if (event.kind === "reasoning" && event.text) input.onReasoning(event.text);
+      },
+    });
+    if (done.length) input.onMessages(done);
+  } finally {
+    input.onRunning?.(false);
+    if (input.turns.get(input.chatId) === ac) input.turns.delete(input.chatId);
+    if (input.liveTurns?.get(input.chatId) === ac) input.liveTurns.delete(input.chatId);
+  }
+}
+
+function clearRejoinedTurn(running: Record<string, RunningTurn>, id: string): Record<string, RunningTurn> {
+  if (!(id in running)) return running;
+  const next = { ...running };
+  delete next[id];
+  return next;
 }
 
 export function rememberCloudTranscripts(

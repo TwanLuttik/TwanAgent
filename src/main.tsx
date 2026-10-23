@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { AppBoundary } from "./components/AppBoundary";
 import "./index.css";
 import "./window-drag";
 import { startAccountUsage } from "./lib/account-usage-store";
@@ -38,7 +39,9 @@ if (!root) throw new Error("#app missing");
 createRoot(root).render(
   <StrictMode>
     <AppProvider>
-      <App />
+      <AppBoundary>
+        <App />
+      </AppBoundary>
     </AppProvider>
   </StrictMode>,
 );

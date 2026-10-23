@@ -24,6 +24,7 @@ import {
   composerSettingsForChat,
   effortForModel,
   modelForTurn,
+  localTurnsToRejoin,
   foregroundRunningId,
   runningTurnStartedAt,
   shouldQueueForChat,
@@ -33,6 +34,23 @@ import {
   turnAppliesToChat,
   turnFailureMessage,
 } from "../turn.ts";
+
+describe("localTurnsToRejoin", () => {
+  const live = [{ conversation_id: "chat-a" }, { conversation_id: "chat-b" }];
+
+  it("rejoins a process turn the reloaded page has not marked yet", () => {
+    assert.deepEqual(localTurnsToRejoin(["chat-a", "chat-c"], live, new Set(), new Map()), ["chat-a"]);
+  });
+
+  it("leaves a chat alone once this page is already listening to it", () => {
+    assert.deepEqual(localTurnsToRejoin(["chat-a"], live, new Set(["chat-a"]), new Map()), []);
+    assert.deepEqual(localTurnsToRejoin(["chat-b"], live, new Set(), new Map([["chat-b", {}]])), []);
+  });
+
+  it("does not mark a chat the process has already finished", () => {
+    assert.deepEqual(localTurnsToRejoin(["chat-c"], live, new Set(), new Map()), []);
+  });
+});
 
 describe("turnAppliesToChat", () => {
   it("only applies updates to the conversation that owns the turn", () => {

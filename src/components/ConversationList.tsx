@@ -806,6 +806,7 @@ function ChatContextMenu({
     target.type === "journey"
       ? [
           { label: "Rename", onClick: onRename },
+          { label: "Copy ID", onClick: () => copyDebugId(target.id, onClose) },
           { label: "Delete", onClick: onDeleteJourney },
         ]
       : [
@@ -813,6 +814,7 @@ function ChatContextMenu({
             ? [{ label: "Create Journey", onClick: onCreateJourney }]
             : []),
           ...(!archivedView && target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),
+          { label: "Copy ID", onClick: () => copyDebugId(target.id, onClose) },
           { label: archivedView ? "Unarchive" : "Archive", onClick: onArchiveChat },
           { label: "Delete", onClick: onDeleteChat },
         ];
@@ -858,6 +860,11 @@ function ChatContextMenu({
       ) : null}
     </AnchoredMenu>
   );
+}
+
+function copyDebugId(id: string, onDone: () => void) {
+  void navigator.clipboard.writeText(id).catch(() => undefined);
+  onDone();
 }
 
 function DeleteJourneyDialog({

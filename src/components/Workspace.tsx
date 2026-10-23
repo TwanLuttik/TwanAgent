@@ -39,6 +39,7 @@ import {
   validNewFileName,
 } from "../lib/file-actions";
 import { bumpFileRefresh, dirsToList, fileRefreshRevision, fileStructureDirs, subscribeFileRefresh, subscribeFileStructure } from "../lib/file-structure";
+import { planGitStatusRefresh, switchedOntoGitTab } from "../lib/git-status-refresh";
 import {
   closedTerminalTabs,
   filePaneNeedsReload,
@@ -114,6 +115,14 @@ export const Workspace = memo(function Workspace({
   const [treeReady, setTreeReady] = useState(false);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
+  const lastStatsAt = useRef<number | null>(null);
+  const statsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeKindRef = useRef<string | null>(null);
+  const switchedToGitRef = useRef(false);
+  const activeKind = pane.tabs.find((tab) => tab.id === pane.activeId)?.kind ?? null;
+  // Set during render so the refresh this tab change recreates still requests stats.
+  if (switchedOntoGitTab(activeKindRef.current, activeKind)) switchedToGitRef.current = true;
+  activeKindRef.current = activeKind;
   const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
 
   const loadDir = useCallback(
@@ -128,7 +137,26 @@ export const Workspace = memo(function Workspace({
     if (!workspace) return;
     const gen = ++refreshGen.current;
     setError(null);
-    const wantStats = pane.tabs.some((tab) => tab.kind === "git");
+    const switchedToGit = switchedToGitRef.current;
+    switchedToGitRef.current = false;
+    const plan = planGitStatusRefresh({
+      activeKind,
+      lastStatsAt: lastStatsAt.current,
+      now: Date.now(),
+      switchedToGit,
+    });
+    // A burst while git is open still fetches paths. Numstat waits for one trailing pass.
+    if (!plan.run && statsTimer.current == null) {
+      statsTimer.current = setTimeout(() => {
+        statsTimer.current = null;
+        void refreshTree();
+      }, plan.delayMs);
+    } else if (plan.run && plan.stats && statsTimer.current != null) {
+      clearTimeout(statsTimer.current);
+      statsTimer.current = null;
+    }
+    const wantStats = plan.run && plan.stats;
+    if (wantStats) lastStatsAt.current = Date.now();
     // Git and the file tree are independent. A missing remembered folder must
     // not throw away a status that already came back.
     const gitResult = api.gitStatus(workspace, wantStats).then(
@@ -200,7 +228,7 @@ export const Workspace = memo(function Workspace({
     });
     if (gen === refreshGen.current) setTreeReady(true);
     if (!gitFailed && gen === refreshGen.current) setError(null);
-  }, [workspace, expanded, pane.tabs]);
+  }, [workspace, expanded, activeKind]);
 
   const refreshBranches = useCallback(async () => {
     if (!workspace) return;
@@ -231,6 +259,9 @@ export const Workspace = memo(function Workspace({
       return;
     }
     treeProjectRef.current = workspace;
+    activeKindRef.current = null;
+    switchedToGitRef.current = false;
+    lastStatsAt.current = null;
     setExpanded(openTreeState(loadOpenFileTree(workspace)));
     setPaneState(paneForWorkspace(workspace));
     setSelected([]);
@@ -255,6 +286,13 @@ export const Workspace = memo(function Workspace({
   );
 
   useEffect(() => subscribeFileStructure(() => setStructureTick((n) => n + 1)), []);
+
+  useEffect(() => {
+    return () => {
+      if (statsTimer.current != null) clearTimeout(statsTimer.current);
+      statsTimer.current = null;
+    };
+  }, [workspace]);
 
   useEffect(() => {
     void refreshTree();

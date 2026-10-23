@@ -61,6 +61,32 @@ export function frameRunsToolsOnClient(frame: { type: string }): boolean {
   return frame.type !== "submit_prompt";
 }
 
+/**
+ * Run `worker` for each item, at most `limit` at a time.
+ * A worker that throws is skipped. The rest still run.
+ */
+export async function runPool<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<unknown>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const size = Math.max(1, Math.min(items.length, Math.floor(limit) || 1));
+  let next = 0;
+  async function lane(): Promise<void> {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      try {
+        await worker(items[index] as T);
+      } catch {
+        // one chat failing to cache must not stop the others
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: size }, () => lane()));
+}
+
 export async function runHostedTurn(
   server: HostedServer,
   input: HostedPrompt,

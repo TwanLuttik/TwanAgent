@@ -1,7 +1,7 @@
 import type { ToolCall } from "./tauri";
 import * as api from "./tauri";
 import { parseChatUsage, type ChatUsage } from "./context.ts";
-import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, worktreeCheckoutFor, type ChatMessage, type ThinkingBlock, type WorktreeListRow } from "./core.ts";
+import { parseToolArgs, toApiMessages, toolActivityLabel, withSystem, worktreeCheckoutFor, type ChatMessage, type ChatToolCall, type ThinkingBlock, type WorktreeListRow } from "./core.ts";
 import type { DetectedMcpServer } from "./mcp.ts";
 import type { DetectedSkill } from "./skill.ts";
 import { withImageDataUrls } from "./image.ts";
@@ -46,6 +46,7 @@ import {
   settleCommandRun,
   startCommandRun,
 } from "./command-run.ts";
+
 import {
   childCanUseTool,
   emptySubagent,
@@ -386,6 +387,89 @@ function signedThinking(blocks: api.ApiThinkingBlock[] | null | undefined): Thin
 
 const CONTEXT_LIMIT_MESSAGE =
   "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
+
+export type LocalTurnEvent = {
+  kind: string;
+  text?: string | null;
+  tool?: ChatToolCall | null;
+  messages?: ChatMessage[] | null;
+};
+
+/**
+ * Hand a local turn to the app process and wait until it goes idle.
+ * The page can reload while this runs. A later page calls the same function
+ * with `resume: true` and only listens.
+ */
+export async function resumeLocalTurn(input: {
+  workspace: string;
+  conversationId: string;
+  messages: ChatMessage[];
+  model?: string;
+  effort?: string;
+  contextWindow?: number;
+  permission?: string;
+  system?: string;
+  journeyId?: string;
+  allowSpawn?: boolean;
+  signal: AbortSignal;
+  resume?: boolean;
+  onEvent: (event: LocalTurnEvent) => void;
+}): Promise<ChatMessage[]> {
+  let latest = input.messages;
+  let unlisten: (() => void) | undefined;
+  const onAbort = () => {
+    void api.localTurnStop(input.conversationId);
+  };
+  input.signal.addEventListener("abort", onAbort);
+  try {
+    const finished = new Promise<ChatMessage[]>((resolve, reject) => {
+      void api.onLocalTurn((event) => {
+        if (event.stream_id !== input.conversationId) return;
+        if (event.kind === "saved" && event.conversation?.messages) {
+          latest = event.conversation.messages as ChatMessage[];
+          input.onEvent({ kind: "saved", messages: latest });
+          return;
+        }
+        if (event.kind === "idle") {
+          resolve(latest);
+          return;
+        }
+        input.onEvent({
+          kind: event.kind,
+          text: event.text,
+          tool: event.tool_calls?.[0] ?? null,
+        });
+        if (event.kind === "error" && event.text && event.text !== "Stopped.") {
+          // The saved transcript already carries the failure. Idle ends the wait.
+          return;
+        }
+        if (event.kind === "stopped") return;
+      }).then((stop) => {
+        unlisten = stop;
+      }).catch(reject);
+    });
+    if (!input.resume) {
+      const prompt = await withImageDataUrls(input.messages, (path) => api.imageDataUrl(path));
+      await api.localTurnStart({
+        workspace: input.workspace,
+        conversationId: input.conversationId,
+        messages: prompt,
+        model: input.model,
+        effort: input.effort,
+        contextWindow: input.contextWindow,
+        permission: input.permission,
+        system: input.system,
+        journeyId: input.journeyId,
+        allowSpawn: input.allowSpawn,
+      });
+    }
+    if (input.signal.aborted) onAbort();
+    return await finished;
+  } finally {
+    input.signal.removeEventListener("abort", onAbort);
+    unlisten?.();
+  }
+}
 
 export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
   let transcript = opts.messages;

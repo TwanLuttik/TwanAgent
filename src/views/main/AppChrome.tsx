@@ -296,6 +296,10 @@ export function CenterTabs({
             else onCloseChat(splitPaneChatId(items, menu.groupId, menu.pane));
             onCloseMenu();
           }}
+          onCloseMenu={onCloseMenu}
+          copyId={
+            menu.kind === "chat" ? menu.id : splitPaneChatId(items, menu.groupId, menu.pane)
+          }
         />
       ) : null}
     </ChromeTabStrip>
@@ -434,15 +438,19 @@ function ChatChromeTab({
 function ChatTabMenu({
   menu,
   canSplit,
+  copyId,
   onSplit,
   onUnsplit,
   onCloseTab,
+  onCloseMenu,
 }: {
   menu: TabMenu;
   canSplit: boolean;
+  copyId: string;
   onSplit: () => void;
   onUnsplit: () => void;
   onCloseTab: () => void;
+  onCloseMenu: () => void;
 }) {
   return (
     <AnchoredMenu x={menu.x} y={menu.y} label="Conversation tab">
@@ -468,6 +476,19 @@ function ChatTabMenu({
           Unsplit
         </button>
       )}
+      {copyId ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            void navigator.clipboard.writeText(copyId).catch(() => undefined);
+            onCloseMenu();
+          }}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          Copy ID
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"

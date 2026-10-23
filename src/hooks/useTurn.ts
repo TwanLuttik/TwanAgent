@@ -1,9 +1,11 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
-import { completeTurn } from "../lib/agent";
+import { completeTurn, resumeLocalTurn } from "../lib/agent";
 import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
 import {
   activityFromToolCall,
   conversationTitleFrom,
+  systemPrompt,
+  worktreeCheckoutFor,
   folderName,
   newConversationId,
   nowIso,
@@ -39,6 +41,7 @@ import {
   emptyGrokPlan,
   grokPlanFromPayload,
   planModeEngaged,
+  planModeSystemLine,
   type GrokPlan,
   type PlanDecision,
   type PlanModeState,
@@ -221,6 +224,110 @@ export function bindTurn(deps: TurnDeps) {
     setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
     deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
+
+function systemForDetached(
+  ws: string,
+  id: string,
+  settings: { model: string; permission: string },
+  kind: string,
+  knowledge: string,
+): string {
+  const checkout = worktreeCheckoutFor(ws, worktreeListsFor(ws));
+  const planLine = providerProfile(settings.model).planMode
+    ? planModeSystemLine(planForChat(id).state, `~/.grok/sessions/<workspace>/${id}/plan.md`)
+    : "";
+  return String(
+    systemPrompt(
+      ws,
+      parsePermissionMode(settings.permission),
+      kind === "chat" ? knowledge : "",
+      mcpServersRef.current,
+      skillsRef.current,
+      remoteRef.current,
+      settings.model,
+      planLine,
+      checkout,
+    ).content ?? "",
+  );
+}
+
+function applyDetachedEvent(
+  id: string,
+  ws: string,
+  visible: () => boolean,
+  event: { kind: string; text?: string | null; tool?: { id: string; name: string; arguments: string } | null; messages?: ChatMessage[] | null },
+) {
+  if (event.kind === "saved" && event.messages) {
+    const messages = event.messages;
+    rememberLive(id, { messages, streamText: "", streamReasoning: "" });
+    if (visible()) {
+      setMessages(messages);
+      setStreamText("");
+      setStreamReasoning("");
+    }
+    return;
+  }
+  if (event.kind === "delta" && event.text) {
+    const live = liveByChatRef.current.get(id);
+    const streamText = hideWorktreeName(`${live?.streamText ?? ""}${event.text}`, id, ws);
+    rememberLive(id, { streamText });
+    if (visible()) setStreamText(streamText);
+    return;
+  }
+  if (event.kind === "reasoning" && event.text) {
+    const live = liveByChatRef.current.get(id);
+    const streamReasoning = `${live?.streamReasoning ?? ""}${event.text}`;
+    rememberLive(id, { streamReasoning });
+    if (visible()) setStreamReasoning(streamReasoning);
+    return;
+  }
+  if (event.kind === "tool" && event.tool) {
+    const call = event.tool;
+    if (call.name === "spawn_subagent" || isTodoTool(call.name)) return;
+    const activity = activityFromToolCall(call);
+    const rows = [
+      ...(liveByChatRef.current.get(id)?.liveTools ?? []),
+      {
+        label: toolActivityLabel(call),
+        change: toolFileChange(call),
+        detail: toolDetail(call),
+        callId: call.id,
+      },
+    ];
+    rememberLive(id, { activity, liveTools: rows });
+    markRunning(id, { activity });
+    if (visible()) {
+      setRunningActivity(activity);
+      setLiveTools(rows);
+    }
+    return;
+  }
+  if (event.kind === "shell" && event.text) {
+    const command = event.text;
+    void confirmShell(command, id).then((ok) => {
+      void api.localTurnShell(id, command, ok);
+    });
+    return;
+  }
+  if (event.kind === "plan" && event.text) {
+    let prompt: PlanPrompt = { kind: "enter" };
+    try {
+      const parsed = JSON.parse(event.text) as { kind?: string; content?: string };
+      if (parsed.kind === "exit") prompt = { kind: "exit", content: parsed.content ?? "" };
+    } catch {
+      prompt = { kind: "enter" };
+    }
+    void confirmPlan(prompt, id).then((answer) => {
+      void api.localTurnPlan(id, answer.decision, answer.note);
+    });
+    return;
+  }
+  if (event.kind === "command" && event.text) {
+    return;
+  }
+  if (event.kind === "refresh") bumpFiles();
+  if (event.kind === "error" && event.text && visible()) setFlash({ kind: "err", text: event.text });
+}
 
 function permissionForChat(chatId: string): PermissionMode {
   const stored = conversations.find((row) => row.id === chatId)?.permission;
@@ -1068,7 +1175,22 @@ async function runTurn(
     }
   }
   try {
-    const done = await completeTurn({
+    const done = !hostedTurnStaysOnServer(remoteRef.current)
+      ? await resumeLocalTurn({
+          workspace: ws,
+          conversationId: id,
+          messages: next,
+          model: turnSettings.model,
+          effort: turnSettings.effort,
+          contextWindow: turnSettings.contextWindow || undefined,
+          permission: turnSettings.permission,
+          system: systemForDetached(ws, id, turnSettings, kind, knowledge),
+          journeyId: kind === "chat" ? journeyId : undefined,
+          allowSpawn: true,
+          signal: ac.signal,
+          onEvent: (event) => applyDetachedEvent(id, ws, visible, event),
+        })
+      : await completeTurn({
       workspace: ws,
       messages: next,
       model: turnSettings.model,

@@ -1,7 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    insert_conversation, load_messages, next_sort, row_to_conversation, sync_messages,
+    insert_conversation, load_messages, next_sort, replace_messages_from, row_to_conversation,
+    sync_messages,
 };
 use crate::dev::{Conversation, ConversationSummary};
 use crate::error::{Error, Result};
@@ -139,6 +140,35 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
 pub fn save_conversation(conn: &Connection, conv: &Conversation) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = save_conversation_in_tx(conn, conv);
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(_) => {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+    }
+    result
+}
+
+/// Write `messages[from_index..]` and bump `updated_at`. Does not read the row or any message body.
+/// `from_index` is the first sort_order to replace. Earlier rows stay as they are.
+pub fn save_conversation_suffix(
+    conn: &Connection,
+    id: &str,
+    updated_at: &str,
+    messages: &[serde_json::Value],
+    from_index: usize,
+) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        let n = conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![updated_at, id],
+        )?;
+        if n == 0 {
+            return Err(Error::NotFound("conversation not found".into()));
+        }
+        replace_messages_from(conn, id, messages, from_index)
+    })();
     match result {
         Ok(()) => conn.execute_batch("COMMIT")?,
         Err(_) => {

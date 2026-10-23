@@ -1,9 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dev::types::{DevChatUsage, DevToolCall};
 
 /// Signed thinking that must be replayed unchanged. Only Anthropic emits it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThinkingBlock {
     #[serde(rename = "type")]
     pub kind: String,

@@ -416,45 +416,224 @@ fn insert_message(
 }
 
 fn replace_messages(conn: &Connection, conversation_id: &str, messages: &[Value]) -> Result<()> {
+    replace_messages_from(conn, conversation_id, messages, 0)
+}
+
+/// Delete rows at `from_index` and after, then insert `messages[from_index..]`.
+pub(super) fn replace_messages_from(
+    conn: &Connection,
+    conversation_id: &str,
+    messages: &[Value],
+    from_index: usize,
+) -> Result<()> {
     conn.execute(
-        "DELETE FROM messages WHERE conversation_id = ?1",
-        [conversation_id],
+        "DELETE FROM messages WHERE conversation_id = ?1 AND sort_order >= ?2",
+        params![conversation_id, from_index as i64],
     )?;
+    if from_index >= messages.len() {
+        return Ok(());
+    }
     let mut stmt = conn.prepare(
         "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
-    for (i, msg) in messages.iter().enumerate() {
+    for (i, msg) in messages.iter().enumerate().skip(from_index) {
         insert_message(&mut stmt, conversation_id, i as i64, msg)?;
     }
     Ok(())
 }
 
-/// Keep messages that already match the stored prefix. Rewrite from the first difference.
+/// Keep messages that already match. An append or a last-row edit only reads the boundary row.
+/// A difference before that boundary still walks the stored bodies.
 fn sync_messages(conn: &Connection, conversation_id: &str, messages: &[Value]) -> Result<()> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    let stored_len = usize::try_from(count).unwrap_or(0);
+    if stored_len > 0 && messages.len() >= stored_len {
+        let boundary = stored_len - 1;
+        if let Some(stored) = load_message_at(conn, conversation_id, boundary as i64)? {
+            if message_same(&stored, &messages[boundary]) {
+                if messages.len() == stored_len {
+                    return Ok(());
+                }
+                return replace_messages_from(conn, conversation_id, messages, stored_len);
+            }
+            // The last stored row differs. Confirm the row before it still matches
+            // before rewriting only the tail. One stored row has no earlier row.
+            if messages.len() == stored_len {
+                let prefix_holds = if boundary == 0 {
+                    true
+                } else {
+                    load_message_at(conn, conversation_id, (boundary - 1) as i64)?
+                        .is_some_and(|before| message_same(&before, &messages[boundary - 1]))
+                };
+                if prefix_holds {
+                    return replace_messages_from(conn, conversation_id, messages, boundary);
+                }
+            }
+        }
+    }
     let stored = load_messages(conn, conversation_id)?;
     let mut prefix = 0;
-    while prefix < stored.len() && prefix < messages.len() && stored[prefix] == messages[prefix] {
+    while prefix < stored.len() && prefix < messages.len() && message_same(&stored[prefix], &messages[prefix]) {
         prefix += 1;
     }
     if prefix == stored.len() && prefix == messages.len() {
         return Ok(());
     }
-    conn.execute(
-        "DELETE FROM messages WHERE conversation_id = ?1 AND sort_order >= ?2",
-        params![conversation_id, prefix as i64],
-    )?;
-    if prefix >= messages.len() {
-        return Ok(());
+    replace_messages_from(conn, conversation_id, messages, prefix)
+}
+
+/// The same fields `load_messages` keeps, so a JSON key-order change is not a rewrite.
+fn message_same(stored: &Value, incoming: &Value) -> bool {
+    fn text_field(msg: &Value, key: &str) -> Option<String> {
+        match msg.get(key) {
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(other) if key == "content" => Some(other.to_string()),
+            _ => None,
+        }
     }
-    let mut stmt = conn.prepare(
-        "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-    )?;
-    for (i, msg) in messages.iter().enumerate().skip(prefix) {
-        insert_message(&mut stmt, conversation_id, i as i64, msg)?;
+    if stored.get("role").and_then(Value::as_str) != incoming.get("role").and_then(Value::as_str) {
+        return false;
     }
-    Ok(())
+    if text_field(stored, "content") != text_field(incoming, "content") {
+        return false;
+    }
+    if stored.get("tool_call_id").and_then(Value::as_str) != incoming.get("tool_call_id").and_then(Value::as_str) {
+        return false;
+    }
+    if canonical_json(stored.get("tool_calls")) != canonical_json(incoming.get("tool_calls")) {
+        return false;
+    }
+    if canonical_json(stored.get("images")) != canonical_json(incoming.get("images")) {
+        return false;
+    }
+    let reasoning = |msg: &Value| {
+        msg.get("reasoning")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    if reasoning(stored) != reasoning(incoming) {
+        return false;
+    }
+    let duration = |msg: &Value| msg.get("durationMs").and_then(Value::as_i64).filter(|ms| *ms >= 0);
+    if duration(stored) != duration(incoming) {
+        return false;
+    }
+    let finished = |msg: &Value| {
+        msg.get("finishedAt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    finished(stored) == finished(incoming)
+}
+
+/// Stable JSON. `Value` equality and `Display` both keep object key order.
+fn canonical_json(value: Option<&Value>) -> Option<String> {
+    fn write(out: &mut String, value: &Value) {
+        match value {
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                out.push('{');
+                for (i, key) in keys.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                    out.push(':');
+                    write(out, &map[*key]);
+                }
+                out.push('}');
+            }
+            Value::Array(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write(out, item);
+                }
+                out.push(']');
+            }
+            other => out.push_str(&other.to_string()),
+        }
+    }
+    let value = value.filter(|value| !value.is_null())?;
+    let mut out = String::new();
+    write(&mut out, value);
+    Some(out)
+}
+
+type MessageRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+fn message_from_row(row: MessageRow) -> Result<Value> {
+    let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at) = row;
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".into(), Value::String(role));
+    if let Some(text) = content {
+        obj.insert("content".into(), Value::String(text));
+    }
+    if let Some(raw) = tool_calls {
+        obj.insert("tool_calls".into(), serde_json::from_str(&raw)?);
+    }
+    if let Some(id) = tool_call_id {
+        obj.insert("tool_call_id".into(), Value::String(id));
+    }
+    if let Some(raw) = images {
+        if !raw.trim().is_empty() {
+            obj.insert("images".into(), serde_json::from_str(&raw)?);
+        }
+    }
+    if let Some(text) = reasoning.filter(|value| !value.trim().is_empty()) {
+        obj.insert("reasoning".into(), Value::String(text));
+    }
+    if let Some(ms) = duration_ms.filter(|value| *value >= 0) {
+        obj.insert("durationMs".into(), Value::from(ms));
+    }
+    if let Some(text) = finished_at.filter(|value| !value.trim().is_empty()) {
+        obj.insert("finishedAt".into(), Value::String(text));
+    }
+    Ok(Value::Object(obj))
+}
+
+fn load_message_at(conn: &Connection, conversation_id: &str, sort_order: i64) -> Result<Option<Value>> {
+    let row = conn
+        .query_row(
+            "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
+             WHERE conversation_id = ?1 AND sort_order = ?2 ORDER BY id ASC LIMIT 1",
+            params![conversation_id, sort_order],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(message_from_row).transpose()
 }
 
 fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>> {
@@ -476,33 +655,7 @@ fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>>
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at) = row?;
-        let mut obj = serde_json::Map::new();
-        obj.insert("role".into(), Value::String(role));
-        if let Some(text) = content {
-            obj.insert("content".into(), Value::String(text));
-        }
-        if let Some(raw) = tool_calls {
-            obj.insert("tool_calls".into(), serde_json::from_str(&raw)?);
-        }
-        if let Some(id) = tool_call_id {
-            obj.insert("tool_call_id".into(), Value::String(id));
-        }
-        if let Some(raw) = images {
-            if !raw.trim().is_empty() {
-                obj.insert("images".into(), serde_json::from_str(&raw)?);
-            }
-        }
-        if let Some(text) = reasoning.filter(|value| !value.trim().is_empty()) {
-            obj.insert("reasoning".into(), Value::String(text));
-        }
-        if let Some(ms) = duration_ms.filter(|value| *value >= 0) {
-            obj.insert("durationMs".into(), Value::from(ms));
-        }
-        if let Some(text) = finished_at.filter(|value| !value.trim().is_empty()) {
-            obj.insert("finishedAt".into(), Value::String(text));
-        }
-        out.push(Value::Object(obj));
+        out.push(message_from_row(row?)?);
     }
     Ok(out)
 }
@@ -612,7 +765,7 @@ mod journeys;
 
 pub use conversations::{
     delete_conversation, get_conversation, list_conversation_summaries, reorder_conversations,
-    save_conversation, set_conversation_archived,
+    save_conversation, save_conversation_suffix, set_conversation_archived,
 };
 #[cfg(test)]
 pub use conversations::list_conversations;

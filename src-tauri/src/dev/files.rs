@@ -1,8 +1,10 @@
 use std::fs;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::paths::{path_string, resolve_in_workspace};
@@ -28,13 +30,51 @@ const TREE_SKIP: &[&str] = &[
     ".turbo",
 ];
 
+/// Bumped by every mutating helper so a same-second create still misses the cache.
+static TREE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+struct CachedTree {
+    generation: u64,
+    /// Directories visited by the last walk, including the workspace root.
+    dir_mtimes: Vec<(PathBuf, SystemTime)>,
+    snapshot: TreeSnapshot,
+}
+
+fn tree_cache() -> &'static Mutex<std::collections::HashMap<PathBuf, CachedTree>> {
+    static CACHE: OnceLock<Mutex<std::collections::HashMap<PathBuf, CachedTree>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn bump_tree_generation() {
+    TREE_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn dir_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
+/// True when every recorded directory still exists with the same mtime.
+fn dirs_unchanged(dirs: &[(PathBuf, SystemTime)]) -> bool {
+    dirs.iter()
+        .all(|(path, cached)| dir_mtime(path) == Some(*cached))
+}
+
 /// Stable fingerprint of file and folder paths. Content edits do not change it.
 pub fn tree_snapshot(workspace: &Path) -> Result<TreeSnapshot> {
     let root = resolve_in_workspace(workspace, "")?;
+    let generation = TREE_GENERATION.load(Ordering::Relaxed);
+    if let Ok(cache) = tree_cache().lock() {
+        if let Some(cached) = cache.get(&root) {
+            if cached.generation == generation && dirs_unchanged(&cached.dir_mtimes) {
+                return Ok(cached.snapshot.clone());
+            }
+        }
+    }
     let mut rows = Vec::new();
-    walk_tree(&root, &root, &mut rows)?;
+    let mut dir_mtimes = Vec::new();
+    walk_tree(&root, &root, &mut rows, &mut dir_mtimes)?;
     rows.sort();
-    Ok(TreeSnapshot {
+    let snapshot = TreeSnapshot {
         signature: hash_rows(&rows),
         dirs: rows
             .iter()
@@ -44,7 +84,18 @@ pub fn tree_snapshot(workspace: &Path) -> Result<TreeSnapshot> {
             .iter()
             .filter_map(|row| row.strip_prefix("f\t").map(str::to_string))
             .collect(),
-    })
+    };
+    if let Ok(mut cache) = tree_cache().lock() {
+        cache.insert(
+            root,
+            CachedTree {
+                generation,
+                dir_mtimes,
+                snapshot: snapshot.clone(),
+            },
+        );
+    }
+    Ok(snapshot)
 }
 
 fn hash_rows(rows: &[String]) -> String {
@@ -57,7 +108,17 @@ fn hash_rows(rows: &[String]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn walk_tree(root: &Path, dir: &Path, rows: &mut Vec<String>) -> Result<()> {
+fn walk_tree(
+    root: &Path,
+    dir: &Path,
+    rows: &mut Vec<String>,
+    dir_mtimes: &mut Vec<(PathBuf, SystemTime)>,
+) -> Result<()> {
+    // Record the directory before reading it. A failed read still counts: the next call
+    // stats it again, and a later successful read replaces the cache.
+    if let Some(mtime) = dir_mtime(dir) {
+        dir_mtimes.push((dir.to_path_buf(), mtime));
+    }
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return Ok(()),
@@ -80,7 +141,7 @@ fn walk_tree(root: &Path, dir: &Path, rows: &mut Vec<String>) -> Result<()> {
         let rel = rel.replace('\\', "/");
         if meta.is_dir() {
             rows.push(format!("d\t{rel}"));
-            walk_tree(root, &full, rows)?;
+            walk_tree(root, &full, rows, dir_mtimes)?;
         } else if meta.is_file() {
             rows.push(format!("f\t{rel}"));
         }
@@ -343,6 +404,7 @@ pub fn move_path(workspace: &Path, from: &str, to: &str) -> Result<String> {
         fs::create_dir_all(parent)?;
     }
     fs::rename(&src, &dest)?;
+    bump_tree_generation();
     Ok(to_rel.replace('\\', "/"))
 }
 
@@ -386,6 +448,7 @@ pub fn delete_paths(workspace: &Path, rels: &[String]) -> Result<()> {
             return Err(Error::Other(format!("not found: {rel}")));
         }
     }
+    bump_tree_generation();
     Ok(())
 }
 
@@ -397,6 +460,7 @@ pub fn create_dir(workspace: &Path, parent: &str, name: &str) -> Result<String> 
         return Err(Error::Other("something with that name already exists".into()));
     }
     fs::create_dir_all(&path)?;
+    bump_tree_generation();
     Ok(rel)
 }
 
@@ -411,7 +475,12 @@ pub fn write_file(workspace: &Path, rel: &str, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, contents)?;
+    let creating = !path.is_file();
+    fs::write(&path, contents)?;
+    // A new file changes the tree. Rewriting one that already exists does not.
+    if creating {
+        bump_tree_generation();
+    }
     Ok(())
 }
 
@@ -761,6 +830,22 @@ mod tests {
         assert_ne!(renamed.signature, created.signature);
         delete_paths(dir.path(), &["src/b.txt".into()]).unwrap();
         assert_ne!(tree_snapshot(dir.path()).unwrap().signature, renamed.signature);
+    }
+
+    #[test]
+    fn tree_snapshot_reuses_the_cached_tree_until_a_path_changes() {
+        let dir = temp_ws();
+        write_file(dir.path(), "src/a.txt", "a").unwrap();
+        let first = tree_snapshot(dir.path()).unwrap();
+        let second = tree_snapshot(dir.path()).unwrap();
+        assert_eq!(second.signature, first.signature);
+        assert_eq!(second.dirs, first.dirs);
+        assert_eq!(second.files, first.files);
+        write_file(dir.path(), "src/a.txt", "only the contents changed").unwrap();
+        let edited = tree_snapshot(dir.path()).unwrap();
+        assert_eq!(edited.signature, first.signature);
+        write_file(dir.path(), "src/b.txt", "b").unwrap();
+        assert_ne!(tree_snapshot(dir.path()).unwrap().signature, first.signature);
     }
 
     #[test]

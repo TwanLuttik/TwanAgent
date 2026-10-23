@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, State};
 
@@ -16,6 +17,211 @@ fn http_client() -> &'static reqwest::Client {
 fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static STREAMS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One model round collected inside this process. The local turn loop reads this
+/// instead of the webview, so a reload does not drop the round.
+pub struct CollectedRound {
+    pub text: String,
+    pub reasoning: String,
+    pub tool_calls: Vec<super::types::DevToolCall>,
+    pub thinking: Vec<crate::model_providers::ThinkingBlock>,
+    pub usage: Option<DevChatUsage>,
+    pub error: Option<String>,
+}
+
+pub struct RoundProgress {
+    pub kind: &'static str,
+    pub text: String,
+}
+
+struct RoundSlot {
+    tx: std::sync::mpsc::Sender<DevChatEvent>,
+}
+
+fn round_slots() -> &'static Mutex<HashMap<String, RoundSlot>> {
+    static SLOTS: OnceLock<Mutex<HashMap<String, RoundSlot>>> = OnceLock::new();
+    SLOTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn publish_round_event(event: &DevChatEvent) {
+    publish_round(event);
+}
+
+/// One small piece of a coalesced delta. The page appends these while the round is open.
+pub(crate) fn note_round_piece(stream_id: &str, kind: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    publish_round(&DevChatEvent {
+        stream_id: stream_id.to_string(),
+        kind: kind.to_string(),
+        text: Some(text.to_string()),
+        tool_calls: None,
+        usage: None,
+        thinking: None,
+        conversation: None,
+    });
+}
+
+fn publish_round(event: &DevChatEvent) {
+    let Ok(map) = round_slots().lock() else {
+        return;
+    };
+    if let Some(slot) = map.get(&event.stream_id) {
+        let _ = slot.tx.send(event.clone());
+    }
+}
+
+/// Run one model round and return when it finishes. Events are still emitted for a page
+/// that is listening, and also queued for the turn that started this stream.
+pub async fn collect_chat_round(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    messages: serde_json::Value,
+    model: Option<String>,
+    effort: Option<String>,
+    context_window: Option<u64>,
+    journey_id: Option<String>,
+    cancel: Arc<AtomicBool>,
+    on_progress: impl Fn(RoundProgress) + Send + 'static,
+) -> Result<CollectedRound> {
+    let stream_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if let Ok(mut map) = round_slots().lock() {
+        map.insert(stream_id.clone(), RoundSlot { tx });
+    }
+    if let Ok(mut map) = streams().lock() {
+        map.insert(stream_id.clone(), cancel);
+    }
+    let started = dev_chat_start(
+        app,
+        state,
+        stream_id.clone(),
+        messages,
+        model,
+        effort,
+        context_window,
+        journey_id,
+    )
+    .await;
+    if let Err(err) = started {
+        if let Ok(mut map) = round_slots().lock() {
+            map.remove(&stream_id);
+        }
+        return Err(err);
+    }
+    let stream_id_for_wait = stream_id.clone();
+    let round = tokio::task::spawn_blocking(move || wait_round(&stream_id_for_wait, rx, on_progress))
+        .await
+        .map_err(|err| Error::Other(format!("model round failed: {err}")))?;
+    if let Ok(mut map) = round_slots().lock() {
+        map.remove(&stream_id);
+    }
+    Ok(round)
+}
+
+fn wait_round(
+    stream_id: &str,
+    rx: std::sync::mpsc::Receiver<DevChatEvent>,
+    on_progress: impl Fn(RoundProgress),
+) -> CollectedRound {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut tool_calls = Vec::new();
+    let mut thinking = Vec::new();
+    let mut usage = None;
+    let started = std::time::Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(15 * 60) {
+            dev_chat_cancel(stream_id.to_string());
+            return CollectedRound {
+                text,
+                reasoning,
+                tool_calls,
+                thinking,
+                usage,
+                error: Some("the model stream timed out".into()),
+            };
+        }
+        let event = match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(event) => event,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let gone = streams().lock().ok().is_some_and(|map| !map.contains_key(stream_id));
+                if gone && started.elapsed() > Duration::from_millis(500) {
+                    return CollectedRound {
+                        text,
+                        reasoning,
+                        tool_calls,
+                        thinking,
+                        usage,
+                        error: Some("the model stream closed".into()),
+                    };
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return CollectedRound {
+                    text,
+                    reasoning,
+                    tool_calls,
+                    thinking,
+                    usage,
+                    error: Some("the model stream closed".into()),
+                };
+            }
+        };
+        match event.kind.as_str() {
+            "delta" => {
+                if let Some(chunk) = event.text.clone() {
+                    text.push_str(&chunk);
+                    on_progress(RoundProgress { kind: "delta", text: chunk });
+                }
+            }
+            "reasoning" => {
+                if let Some(chunk) = event.text.clone() {
+                    reasoning.push_str(&chunk);
+                    on_progress(RoundProgress { kind: "reasoning", text: chunk });
+                }
+            }
+            "usage" => usage = event.usage.or(usage),
+            "done" => {
+                if let Some(calls) = event.tool_calls {
+                    tool_calls = calls;
+                }
+                if let Some(blocks) = event.thinking {
+                    thinking = blocks;
+                }
+                if let Some(next) = event.usage {
+                    usage = Some(next);
+                }
+                if text.is_empty() {
+                    if let Some(full) = event.text {
+                        text = full;
+                    }
+                }
+                return CollectedRound {
+                    text,
+                    reasoning,
+                    tool_calls,
+                    thinking,
+                    usage,
+                    error: None,
+                };
+            }
+            "error" => {
+                return CollectedRound {
+                    text,
+                    reasoning,
+                    tool_calls,
+                    thinking,
+                    usage,
+                    error: Some(event.text.unwrap_or_else(|| "xAI request failed.".into())),
+                };
+            }
+            _ => {}
+        }
+    }
 }
 
 fn journey_tool_json() -> serde_json::Value {
@@ -435,18 +641,17 @@ pub async fn dev_chat_start(
             .await
         };
         if let Err(e) = result {
-            let _ = app2.emit(
-                "dev-chat",
-                DevChatEvent {
-                    stream_id: sid,
-                    kind: "error".into(),
-                    text: Some(e.to_string()),
-                    tool_calls: None,
-                    usage: None,
-                    thinking: None,
-                    conversation: None,
-                },
-            );
+            let event = DevChatEvent {
+                stream_id: sid.clone(),
+                kind: "error".into(),
+                text: Some(e.to_string()),
+                tool_calls: None,
+                usage: None,
+                thinking: None,
+                conversation: None,
+            };
+            publish_round(&event);
+            let _ = app2.emit("dev-chat", event);
         }
         if let Ok(mut map) = streams().lock() {
             map.remove(&stream_id);

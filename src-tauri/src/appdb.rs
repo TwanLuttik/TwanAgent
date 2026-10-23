@@ -405,6 +405,51 @@ pub fn replace_sidebar(
     replace_sidebar_source(conn, project, conversations, journeys, false)
 }
 
+/// Insert or update one conversation in a sidebar that is already cached.
+/// Does not touch other chats, journeys, or the `sidebar_projects` marker.
+/// A project that was never fully replaced stays uncached, so one row cannot hide the rest.
+pub fn upsert_sidebar_conversation(
+    conn: &Connection,
+    project: &str,
+    row: &crate::dev::ConversationSummary,
+) -> Result<()> {
+    let key = project_key(project);
+    conn.execute(
+        "INSERT INTO sidebar_conversations (
+            project_path, id, title, created_at, updated_at, kind, journey_id, sort_order,
+            effort, model, context_window, permission, archived
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         ON CONFLICT(project_path, id) DO UPDATE SET
+            title = excluded.title,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            kind = excluded.kind,
+            journey_id = excluded.journey_id,
+            sort_order = excluded.sort_order,
+            effort = excluded.effort,
+            model = excluded.model,
+            context_window = excluded.context_window,
+            permission = excluded.permission,
+            archived = excluded.archived",
+        params![
+            key,
+            row.id,
+            row.title,
+            row.created_at,
+            row.updated_at,
+            if row.kind.is_empty() { "chat".to_string() } else { row.kind.clone() },
+            row.journey_id,
+            row.sort_order,
+            row.effort,
+            row.model,
+            row.context_window.map(|value| value as i64),
+            row.permission,
+            if row.archived { 1 } else { 0 },
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn replace_sidebar_source(
     conn: &Connection,
     project: &str,
@@ -1108,6 +1153,75 @@ mod tests {
         assert!(!sidebar_is_cloud(&conn, "/app/alpha").unwrap());
         assert!(sidebar_transcript(&conn, "/app/alpha", "c1").unwrap().is_some());
         assert!(sidebar_cached(&conn, "/app/beta").unwrap());
+    }
+
+    fn chat(id: &str, title: &str, updated_at: &str) -> crate::dev::ConversationSummary {
+        crate::dev::ConversationSummary {
+            id: id.into(),
+            title: title.into(),
+            created_at: "t0".into(),
+            updated_at: updated_at.into(),
+            kind: "chat".into(),
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn upsert_sidebar_conversation_updates_one_row_and_does_not_mark_uncached() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        let journey = crate::dev::Journey {
+            id: "j1".into(),
+            title: "Work".into(),
+            created_at: "t0".into(),
+            updated_at: "t1".into(),
+            sort_order: 1,
+            collapsed: true,
+            color: "blue".into(),
+        };
+        replace_sidebar(
+            &conn,
+            "/app/alpha",
+            &[chat("c1", "Hello", "t1"), chat("c2", "Other", "t2")],
+            &[journey.clone()],
+        )
+        .unwrap();
+        let mut updated = chat("c1", "Renamed", "t9");
+        updated.sort_order = 4;
+        updated.effort = Some("high".into());
+        upsert_sidebar_conversation(&conn, "/app/Alpha/", &updated).unwrap();
+
+        let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
+        assert_eq!(chats.len(), 2);
+        let c1 = chats.iter().find(|row| row.id == "c1").unwrap();
+        let c2 = chats.iter().find(|row| row.id == "c2").unwrap();
+        assert_eq!(c1.title, "Renamed");
+        assert_eq!(c1.updated_at, "t9");
+        assert_eq!(c1.sort_order, 4);
+        assert_eq!(c1.effort.as_deref(), Some("high"));
+        assert_eq!(c2.title, "Other");
+        assert_eq!(c2.updated_at, "t2");
+        assert_eq!(c2.sort_order, 0);
+        assert_eq!(journeys.len(), 1);
+        assert_eq!(journeys[0].id, journey.id);
+        assert_eq!(journeys[0].title, journey.title);
+        assert_eq!(journeys[0].collapsed, journey.collapsed);
+        assert!(sidebar_cached(&conn, "/app/alpha").unwrap());
+
+        upsert_sidebar_conversation(&conn, "/app/new", &chat("c9", "Fresh", "t3")).unwrap();
+        assert!(!sidebar_cached(&conn, "/app/new").unwrap());
+        let (fresh, fresh_journeys) = sidebar_for(&conn, "/app/new").unwrap();
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].title, "Fresh");
+        assert!(fresh_journeys.is_empty());
+        let (chats, _) = sidebar_for(&conn, "/app/alpha").unwrap();
+        assert_eq!(chats.len(), 2);
     }
 
     #[test]

@@ -271,6 +271,17 @@ export function chatTurnIsRunning(runningId: string, chatId: string): boolean {
 }
 
 /** A chat stays running while its own turn is in the map, even if another chat is foreground. */
+/** Chats the process is still running that this page has not joined yet. */
+export function localTurnsToRejoin(
+  chatIds: readonly string[],
+  live: readonly { conversation_id: string }[],
+  known: ReadonlySet<string>,
+  joined: ReadonlyMap<string, unknown>,
+): string[] {
+  const ids = new Set(live.map((row) => row.conversation_id));
+  return chatIds.filter((id) => ids.has(id) && !known.has(id) && !joined.has(id));
+}
+
 export function chatHasRunningTurn(
   running: Readonly<Record<string, RunningTurn>> | null | undefined,
   chatId: string,

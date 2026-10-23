@@ -104,6 +104,41 @@ fn remember_sidebar(state: &AppState, workspace: &str) {
     let _ = crate::appdb::replace_sidebar(&conn, workspace, &conversations, &journeys);
 }
 
+/// After one chat is saved, touch only that sidebar row when the project is already indexed.
+/// An uncached project still gets one full replace, so a single upsert cannot hide the other chats.
+fn remember_saved_conversation(state: &AppState, workspace: &str, conversation: &Conversation) {
+    let Ok(conn) = crate::appdb::open(&state.data_dir) else {
+        return;
+    };
+    let cached = crate::appdb::sidebar_cached(&conn, workspace).unwrap_or(false);
+    if !cached {
+        remember_sidebar(state, workspace);
+        return;
+    }
+    let summary = ConversationSummary {
+        id: conversation.id.clone(),
+        title: conversation.title.clone(),
+        created_at: conversation.created_at.clone(),
+        updated_at: conversation.updated_at.clone(),
+        kind: if conversation.kind.is_empty() {
+            "chat".into()
+        } else {
+            conversation.kind.clone()
+        },
+        journey_id: conversation.journey_id.clone(),
+        sort_order: conversation.sort_order,
+        effort: conversation.effort.clone().filter(|value| !value.trim().is_empty()),
+        model: conversation.model.clone().filter(|value| !value.trim().is_empty()),
+        context_window: conversation.context_window.filter(|value| *value > 0),
+        permission: conversation
+            .permission
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        archived: conversation.archived,
+    };
+    let _ = crate::appdb::upsert_sidebar_conversation(&conn, workspace, &summary);
+}
+
 fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
     let dir = conv_store_dir(data_dir, workspace);
     let _ = import_conversations_json(data_dir, workspace);
@@ -238,7 +273,7 @@ pub fn dev_save_conversation(
 ) -> Result<Conversation> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
     store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation))?;
-    remember_sidebar(&state, &workspace);
+    remember_saved_conversation(&state, &workspace, &conversation);
     Ok(conversation)
 }
 

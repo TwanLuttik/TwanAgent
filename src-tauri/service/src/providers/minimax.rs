@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use super::anthropic::to_messages_body;
+use super::anthropic::to_messages_body_with_images;
 
 pub const KEY_REJECTED: &str = "MiniMax rejected the API key.";
 const GLOBAL_HOST: &str = "https://api.minimax.io";
@@ -33,8 +33,14 @@ pub fn http_error_message(status: u16, body: &str) -> String {
 
 /// OpenAI-shaped messages become the Messages body MiniMax accepts.
 /// `max_output` is the model's output cap. Effort is not an Anthropic output_config field here.
+/// M3 and M3.1 understand images. M2 rejects an image block, so those bytes stay off the request.
+pub fn accepts_images(model: &str) -> bool {
+    let id = model.trim();
+    is_minimax_model(id) && (id.starts_with("MiniMax-M3") || id.starts_with("MiniMax-M3."))
+}
+
 pub fn to_minimax_body(messages: &Value, model: &str, tools: &Value, max_output: u32) -> Value {
-    let mut body = to_messages_body(messages, model, None, tools);
+    let mut body = to_messages_body_with_images(messages, model, None, tools, accepts_images(model));
     body["model"] = Value::String(model.trim().to_string());
     body["max_tokens"] = Value::from(max_output);
     if let Some(obj) = body.as_object_mut() {
@@ -78,6 +84,30 @@ mod tests {
         assert_eq!(body["system"], "You are MiniMax.");
         assert!(body.get("output_config").is_none());
         assert_eq!(body["thinking"]["type"], "adaptive");
+        let with_image = to_minimax_body(
+            &serde_json::json!([{
+                "role": "user",
+                "content": "see [board.png]",
+                "images": [{ "name": "board.png", "dataUrl": "data:image/png;base64,aaaa" }]
+            }]),
+            "MiniMax-M3.1-Flash-Preview",
+            &serde_json::json!([]),
+            128_000,
+        );
+        assert_eq!(with_image["messages"][0]["content"][0]["text"], "see");
+        assert_eq!(with_image["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(with_image["messages"][0]["content"][1]["source"]["data"], "aaaa");
+        let older = to_minimax_body(
+            &serde_json::json!([{
+                "role": "user",
+                "content": "see",
+                "images": [{ "name": "board.png", "dataUrl": "data:image/png;base64,aaaa" }]
+            }]),
+            "MiniMax-M2.7",
+            &serde_json::json!([]),
+            128_000,
+        );
+        assert!(older["messages"][0]["content"].as_array().unwrap().iter().all(|block| block["type"] != "image"));
         assert_eq!(messages_url(""), "https://api.minimax.io/anthropic/v1/messages");
         assert_eq!(messages_url("https://api.minimax.cn/"), "https://api.minimax.cn/anthropic/v1/messages");
     }

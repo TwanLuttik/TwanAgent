@@ -171,7 +171,7 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevChatEvent {
     pub stream_id: String,
     pub kind: String,

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { runPool } from "./hosted.ts";
 
 export function appVersion(): Promise<string> {
   return invoke("app_version");
@@ -1112,13 +1113,10 @@ export async function listHostedConversations(workspace: string): Promise<Conver
   const frame = await hostedFrame(workspace, { type: "list_conversations" });
   const rows = Array.isArray(frame.rows) ? frame.rows : [];
   const summaries = rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
-  // The list has no messages. Load each chat with the frame the server already
-  // knows, so opening one later paints from the local copy.
-  await Promise.all(
-    summaries.map((row) =>
-      row.id ? getHostedConversation(workspace, row.id).then(() => undefined).catch(() => undefined) : undefined,
-    ),
-  );
+  // The list has no messages. Warm each transcript in the background, two SSH
+  // calls at a time, so the sidebar can paint before every chat has downloaded.
+  const ids = summaries.map((row) => row.id).filter((id) => id.length > 0);
+  void runPool(ids, 2, (id) => getHostedConversation(workspace, id).catch(() => undefined));
   return summaries;
 }
 
@@ -1434,6 +1432,71 @@ export function chatStart(
 
 export function chatCancel(streamId: string): Promise<void> {
   return invoke("dev_chat_cancel", { streamId, stream_id: streamId });
+}
+
+export type LocalTurnInfo = {
+  conversation_id: string;
+  workspace: string;
+};
+
+/** Turns still running in the app process. A reloaded window uses this to rejoin them. */
+export function localTurns(): Promise<LocalTurnInfo[]> {
+  return invoke("dev_local_turns");
+}
+
+export function localTurnStart(input: {
+  workspace: string;
+  conversationId: string;
+  messages: unknown[];
+  model?: string;
+  effort?: string;
+  contextWindow?: number;
+  permission?: string;
+  system?: string;
+  journeyId?: string;
+  allowSpawn?: boolean;
+}): Promise<void> {
+  const tokens = input.contextWindow && input.contextWindow > 0 ? Math.floor(input.contextWindow) : null;
+  return invoke("dev_local_turn_start", {
+    request: {
+      workspace: input.workspace,
+      conversation_id: input.conversationId,
+      messages: input.messages,
+      model: input.model ?? "",
+      effort: input.effort ?? "",
+      context_window: tokens,
+      permission: input.permission ?? "ask",
+      system: input.system ?? "",
+      journey_id: input.journeyId ?? null,
+      allow_spawn: input.allowSpawn !== false,
+    },
+  });
+}
+
+export function localTurnStop(conversationId: string): Promise<void> {
+  return invoke("dev_local_turn_stop", { conversationId, conversation_id: conversationId });
+}
+
+export function localTurnShell(conversationId: string, command: string, allow: boolean): Promise<void> {
+  return invoke("dev_local_turn_shell", {
+    conversationId,
+    conversation_id: conversationId,
+    command,
+    allow,
+  });
+}
+
+export function localTurnPlan(conversationId: string, decision: string, note = ""): Promise<void> {
+  return invoke("dev_local_turn_plan", {
+    conversationId,
+    conversation_id: conversationId,
+    decision,
+    note,
+  });
+}
+
+export function onLocalTurn(fn: (ev: ChatEvent) => void): Promise<UnlistenFn> {
+  return listen<ChatEvent>("dev-local-turn", (ev) => fn(ev.payload));
 }
 
 export function webSearch(streamId: string, argumentsJson: string): Promise<string> {
