@@ -259,7 +259,8 @@ pub fn serve_projects<R: Read, W: Write>(
             }
         };
         let (project, token, inner) = split_resident(&value);
-        if !crate::keys::token_matches(&keys.auth_token(), &token) {
+        // A frame that is not wrapped has no token. Treat it as a mismatch, not as a call.
+        if value.get("frame").is_none() || !crate::keys::token_matches_any(&keys.auth_tokens(), &token) {
             write_server(
                 output,
                 &ServerFrame::Error {
@@ -333,15 +334,11 @@ pub fn serve_projects<R: Read, W: Write>(
 
 /// A resident frame is `{ "project": "...", "token": "...", "frame": <ClientFrame> }`.
 /// The project is not part of `ClientFrame`, so a store call and a prompt share one shape.
+/// A body with no `frame` is not a call. The caller refuses it before the token is compared.
 fn split_resident(value: &serde_json::Value) -> (String, String, serde_json::Value) {
-    let wrapped = value.get("frame").is_some();
     let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
     let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
-    let inner = if wrapped {
-        value.get("frame").cloned().unwrap_or(serde_json::Value::Null)
-    } else {
-        value.clone()
-    };
+    let inner = value.get("frame").cloned().unwrap_or(serde_json::Value::Null);
     (project, token, inner)
 }
 

@@ -212,12 +212,20 @@ fn frame_conversation(frame: &ClientFrame) -> String {
 }
 
 fn server_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> {
+    if let Some(token) = crate::secrets::get_agent_token(server_id) {
+        if token.trim().len() >= 32 {
+            return Ok(token);
+        }
+    }
+    // A server paired before the token moved to the keychain still has it in the row.
     let token: Option<String> = conn
         .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
         .map_err(|err| Error::Other(err.to_string()))?;
-    token
+    let token = token
         .filter(|value| value.trim().len() >= 32)
-        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))
+        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))?;
+    let _ = crate::secrets::set_agent_token(server_id, &token);
+    Ok(token)
 }
 
 fn serve_feed_command() -> String {

@@ -72,6 +72,7 @@ import {
   closeDanglingToolCalls,
   clearUnseenFinished,
   composerSettingsForChat,
+  claimDraftForChat,
   draftForChat,
   isTurnFailureMessage,
   modelForTurn,
@@ -867,6 +868,20 @@ function clearPrompt(id: string) {
   setDraftImages((prev) => setImagesForChat(prev, id, []));
 }
 
+/**
+ * The first prompt of a new chat is stored under "". Sending creates the real
+ * id and clears that. A keystroke can still land on "" before the composer
+ * rebinds, which is what the next new chat shows. Clear it once that settles.
+ */
+function releaseUnsavedDraft(id: string) {
+  const drop = () => {
+    if (activeIdRef.current !== id) return;
+    clearPrompt("");
+  };
+  queueMicrotask(drop);
+  requestAnimationFrame(drop);
+}
+
 function userMessage(text: string, images: ChatImage[]): ChatMessage {
   return images.length ? { role: "user", content: text, images } : { role: "user", content: text };
 }
@@ -983,6 +998,13 @@ async function send(targetId = activeIdRef.current) {
     setActiveId(id);
     activeIdRef.current = id;
     saveConversation(ws, id);
+    // The prompt was typed against the unsaved new chat (id ""). Sending gives it a
+    // real id. Leave the text on that id so clearPrompt removes it, instead of
+    // leaving it under "" for the next new chat.
+    setDrafts((prev) => claimDraftForChat(prev, id, (value) => !value));
+    setPastesByChat((prev) => claimDraftForChat(prev, id, (value) => value.length === 0));
+    setDraftImages((prev) => claimDraftForChat(prev, id, (value) => value.length === 0));
+    releaseUnsavedDraft(id);
   }
   if (turnAppliesToChat(id, activeIdRef.current)) stickToBottomRef.current = true;
   clearPrompt(id);

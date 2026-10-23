@@ -73,7 +73,7 @@ function ServerRow({
   const address = `${row.user}@${row.host}${row.port === 22 ? "" : `:${row.port}`}`;
   const updateReady = Boolean(known?.online && known.installed && newerVersion(known));
   const program = !known
-    ? "Checking the server program"
+    ? ""
     : !known.online
       ? "SSH did not answer"
       : known.installed
@@ -91,8 +91,14 @@ function ServerRow({
       <span className="min-w-0">
         <span className="flex items-center gap-2">
           <span className="truncate text-[13px] font-medium text-ink">{row.name}</span>
-          <StatusDot online={online} title={label} />
-          <span className={`text-[11px] ${online ? "text-ok" : online == null ? "text-muted" : "text-err"}`}>{label}</span>
+          {online == null ? (
+            <span className="size-2 shrink-0 animate-pulse rounded-full bg-muted" title="Checking" />
+          ) : (
+            <StatusDot online={online} title={label} />
+          )}
+          <span className={`text-[11px] ${online ? "text-ok" : online == null ? "text-muted" : "text-err"}`}>
+            {online == null ? "Checking" : label}
+          </span>
         </span>
         <span className="mt-0.5 block truncate text-[12px] text-muted">{address}</span>
       </span>
@@ -104,9 +110,9 @@ function ServerRow({
               {newerVersion(known)}
             </span>
           </span>
-        ) : (
+        ) : program ? (
           <span className="hidden sm:block">{program}</span>
-        )}
+        ) : null}
         <span>{projects === 1 ? "1 project" : `${projects} projects`}</span>
         <Symbol name="chevron.right" className="size-3.5" />
       </span>
@@ -180,6 +186,8 @@ function ServerDetail({
   onInstall,
   onPair,
   onRemove,
+  onWipe,
+  onRotate,
   onRecheck,
   onOpenProject,
   onToggleProvider,
@@ -206,6 +214,8 @@ function ServerDetail({
   onInstall: () => void;
   onPair: () => void;
   onRemove: () => void;
+  onWipe: () => void;
+  onRotate: () => void;
   onRecheck: () => void;
   onOpenProject: (project: ServerProject) => void;
   onToggleProvider: (id: ProviderId) => void;
@@ -225,6 +235,9 @@ function ServerDetail({
   const version = !known ? "Checking…" : !known.online ? "Unreachable" : installed ? versionLabel(known as ServerInstallStatus) : "Not installed";
   const nextVersion = known && installed ? newerVersion(known) : "";
   const update = Boolean(known?.online && nextVersion);
+  const protocolBehind = Boolean(
+    known?.online && installed && known.protocol && known.desktop_protocol && known.protocol < known.desktop_protocol,
+  );
   return (
     <div className="grid gap-4">
       <div className="flex items-center justify-between gap-3">
@@ -232,9 +245,17 @@ function ServerDetail({
           <Symbol name="chevron.left" className="size-3.5" />
           Servers
         </button>
-        <button type="button" className="text-[12px] text-muted hover:text-err" disabled={busy} onClick={onRemove}>
-          Remove
-        </button>
+        <span className="flex items-center gap-3">
+          <button type="button" className="text-[12px] text-muted hover:text-ink" disabled={busy} onClick={onRotate}>
+            Rotate token
+          </button>
+          <button type="button" className="text-[12px] text-muted hover:text-err" disabled={busy} onClick={onWipe}>
+            Sign everyone out
+          </button>
+          <button type="button" className="text-[12px] text-muted hover:text-err" disabled={busy} onClick={onRemove}>
+            Remove
+          </button>
+        </span>
       </div>
       <div className="flex items-start gap-3">
         <span className="flex size-10 items-center justify-center rounded-full bg-inset text-accent">
@@ -255,6 +276,9 @@ function ServerDetail({
           <Fact label="Version" value={version} />
         )}
         <Fact label="Pairing" value={row.paired ? "Paired" : needsToken ? "Needs a token" : "Not paired"} />
+        {protocolBehind ? (
+          <Fact label="Protocol" value="This server speaks an older protocol. Update it before opening a chat." />
+        ) : null}
         <Fact label="Program" value={known?.path || "~/.twanagent/bin/twanagent-server"} mono />
         <Fact label="Added" value={row.installed_at ? row.installed_at.slice(0, 10) : "—"} />
         <Fact
@@ -400,27 +424,31 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [installs, setInstalls] = useState<Record<string, InstallView>>({});
   const [copyById, setCopyById] = useState<Record<string, CopyProgress>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [listReady, setListReady] = useState(false);
   const [probe, setProbe] = useState<ServerInstallStatus | "checking" | null>(null);
   const [syncMcp, setSyncMcp] = useState(false);
   const [mcpName, setMcpName] = useState("");
   const [localMcp, setLocalMcp] = useState<DetectedMcpServer[]>([]);
 
   function reload() {
-    setLoading(true);
+    // The saved list is local. Show it before any host is asked whether it is up.
     void api
       .listAgentServers()
-      .then(async (rows) => {
+      .then((rows) => {
+        setListReady(true);
         setSaved(rows);
         setSelectedId((current) => (current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? null));
-        // Reachability first. Projects and the pairing read both need SSH, so a down host skips them.
+        // Each host answers on its own. Waiting in a line held the whole screen.
         for (const row of rows) {
-          const status = await checkInstall(row.id);
-          if (status?.online) loadProjects(row.id);
+          void checkInstall(row.id).then((status) => {
+            if (status?.online) loadProjects(row.id);
+          });
         }
       })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        setListReady(true);
+        setError(String(err));
+      });
     void api.listRemoteProjects().then(setProjects).catch(() => setProjects([]));
   }
 
@@ -726,11 +754,11 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function forget(row: AgentServer) {
+  async function forget(row: AgentServer, mode: "keep" | "wipe" | "rotate") {
     setBusy(true);
     setError(null);
     try {
-      await api.removeAgentServer(row.id);
+      await api.removeAgentServer(row.id, mode);
       setSaved((rows) => rows.filter((item) => item.id !== row.id));
       setSelectedId(null);
       setStep("list");
@@ -775,14 +803,9 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">{intro}</p>
             </div>
           )}
-          {step === "list" && loading ? (
-            <div className="flex items-center justify-center py-16" role="status" aria-label="Loading servers">
-              <span className="size-5 animate-spin rounded-full border-2 border-ink/25 border-t-ink" />
-            </div>
-          ) : null}
-          {step === "list" && !loading ? (
+          {step === "list" ? (
             <div className="grid gap-2">
-              {saved.length === 0 ? (
+              {!listReady ? null : saved.length === 0 ? (
                 <p className="m-0 rounded-xl border border-dashed border-line px-3 py-8 text-center text-[13px] text-muted">
                   No TwanAgent servers yet.
                 </p>
@@ -848,7 +871,9 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               onBack={() => setStep("list")}
               onInstall={() => void installBinary(selected)}
               onPair={() => void pairServer(selected)}
-              onRemove={() => void forget(selected)}
+              onRemove={() => void forget(selected, "keep")}
+              onWipe={() => void forget(selected, "wipe")}
+              onRotate={() => void forget(selected, "rotate")}
               onRecheck={() => {
                 void checkInstall(selected.id).then((status) => {
                   if (status?.online) loadStorage(selected.id);

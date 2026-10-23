@@ -7,7 +7,9 @@ import {
   clearPendingForChat,
   clearUnseenFinished,
   dequeuePending,
+  claimDraftForChat,
   draftForChat,
+  forgetUnsavedDraft,
   enqueuePending,
   isEmptyCompletion,
   isRetryableChatError,
@@ -166,6 +168,29 @@ describe("per-conversation drafts", () => {
     assert.equal(draftForChat(drafts, "a"), "keep");
     assert.equal(draftForChat(drafts, "b"), "");
     assert.equal(Object.hasOwn(drafts, "b"), false);
+  });
+
+  it("moves the unsaved new-chat draft onto the conversation that sends it", () => {
+    const drafts = setDraftForChat({ a: "keep" }, "", "just sent");
+    const claimed = claimDraftForChat(drafts, "new-id", (text) => !text);
+    assert.equal(draftForChat(claimed, "new-id"), "just sent");
+    assert.equal(draftForChat(claimed, ""), "");
+    assert.equal(draftForChat(claimed, "a"), "keep");
+    assert.equal("" in claimed, false);
+  });
+
+  it("drops an empty new-chat draft instead of planting it on the new conversation", () => {
+    const claimed = claimDraftForChat({ "": "" }, "new-id", (text) => !text);
+    assert.equal("" in claimed, false);
+    assert.equal("new-id" in claimed, false);
+  });
+
+  it("forgets only the unsaved new-chat draft", () => {
+    const next = forgetUnsavedDraft({ "": "sent prompt", a: "keep" });
+    assert.equal("" in next, false);
+    assert.equal(next.a, "keep");
+    const kept = { a: "keep" };
+    assert.equal(forgetUnsavedDraft(kept), kept);
   });
 });
 

@@ -20,7 +20,7 @@ mod turn;
 
 pub use providers::{anthropic, minimax, registry, xai};
 
-pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_VERSION};
+pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_MARK, PROTOCOL_VERSION};
 pub use error::{Error, Result};
 pub use files::{numbered_lines, parse_line_int};
 pub use live::LiveFrame;
@@ -70,6 +70,8 @@ impl ProjectService {
         std::fs::create_dir_all(&project)?;
         std::fs::create_dir_all(&store_dir)?;
         std::fs::create_dir_all(&data_dir)?;
+        private_dir(&data_dir);
+        private_dir(&store_dir);
         let _ = store::open(&store_dir)?;
         Ok(Self {
             project,
@@ -124,27 +126,41 @@ fn decode_call_frame(
 ) -> Result<(ClientFrame, ProjectService)> {
     let len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
     let body = bytes.get(4..4 + len).ok_or_else(|| Error::Other("frame body is short".into()))?;
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
-        if value.get("frame").is_some() {
-            let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim();
-            let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("");
-            if !keys::token_matches(&keys.auth_token(), token) {
-                return Err(Error::Other("the pairing token does not match".into()));
-            }
-            if project.is_empty() || project == "/" {
-                return Err(Error::Other("project is empty".into()));
-            }
-            let opened = open_server(Path::new(project), &service.data_dir)?;
-            let frame = serde_json::from_value(value.get("frame").cloned().unwrap_or(serde_json::Value::Null))?;
-            return Ok((frame, opened));
-        }
+    let value = serde_json::from_slice::<serde_json::Value>(body)?;
+    // A bare client frame has no token. Anyone who can run the binary could send one,
+    // so a call is accepted only in the resident shape that carries the pairing token.
+    if value.get("frame").is_none() {
+        return Err(Error::Other("the pairing token does not match".into()));
     }
-    let (frame, _) = decode_frame(bytes)?;
-    Ok((frame, ProjectService {
-        project: service.project.clone(),
-        store_dir: service.store_dir.clone(),
-        data_dir: service.data_dir.clone(),
-    }))
+    let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim();
+    let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("");
+    if !keys::token_matches_any(&keys.auth_tokens(), token) {
+        return Err(Error::Other("the pairing token does not match".into()));
+    }
+    if project.is_empty() || project == "/" {
+        return Err(Error::Other("project is empty".into()));
+    }
+    let opened = open_server(Path::new(project), &service.data_dir)?;
+    let frame = serde_json::from_value(value.get("frame").cloned().unwrap_or(serde_json::Value::Null))?;
+    Ok((frame, opened))
+}
+
+/// The data dir holds the pairing token and the provider keys. Another user on the box must not list it.
+fn private_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
+/// The fifo is how frames reach the resident process. Only the owner should be able to write it.
+fn private_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
 }
 
 fn project_store_key(project: &Path) -> String {
@@ -197,8 +213,10 @@ pub fn serve_once(service: &ProjectService, keys: &KeyFile) -> Result<()> {
     }
     let mut body = vec![0u8; len];
     input.read_exact(&mut body)?;
-    let frame: ClientFrame = serde_json::from_slice(&body)?;
-    let response = session::handle_frame(service, keys, frame, None);
+    let mut bytes = header.to_vec();
+    bytes.extend_from_slice(&body);
+    let (frame, service) = decode_call_frame(service, keys, &bytes)?;
+    let response = session::handle_frame(&service, keys, frame, None);
     let mut output = std::io::stdout().lock();
     output.write_all(&encode_frame(&response)?)?;
     output.flush()?;
@@ -216,12 +234,14 @@ pub fn serve_resident(data_dir: &Path, keys: &KeyFile) -> Result<()> {
 
 /// Read frames from a fifo. A writer closing it is not the end. The next prompt opens it again.
 pub fn serve_resident_fifo(data_dir: &Path, keys: &KeyFile, fifo: &Path) -> Result<()> {
+    private_dir(data_dir);
     if !fifo.exists() {
         let made = std::process::Command::new("mkfifo").arg(fifo).status();
         if !made.map(|status| status.success()).unwrap_or(false) {
             return Err(Error::Other("could not create the live server fifo".into()));
         }
     }
+    private_file(fifo);
     loop {
         let file = match std::fs::File::open(fifo) {
             Ok(file) => file,

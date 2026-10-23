@@ -7,6 +7,9 @@ use crate::turn::TurnRequest;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The same number, written into the binary so a status check can read it without starting the program.
+pub const PROTOCOL_MARK: &str = "protocol-version 1\0";
+
 /// Frames the GUI sends. A turn is a prompt. Tool calls are not a frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

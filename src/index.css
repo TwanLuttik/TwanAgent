@@ -289,6 +289,14 @@ textarea.text-transparent::selection {
   }
 }
 
+/* The right pane slides on width. Reduced motion drops that transition so the
+   open and close land on the same frame instead of easing. */
+@media (prefers-reduced-motion: reduce) {
+  [data-pane-sliding] {
+    transition: none !important;
+  }
+}
+
 .sidebar-space {
   pointer-events: none;
   position: absolute;

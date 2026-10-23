@@ -130,6 +130,33 @@ export function setDraftForChat(
   return { ...drafts, [chatId]: text };
 }
 
+/**
+ * A new chat has no id yet, so its composer lives under `""`.
+ * Sending creates a real id. The empty key has to move with it, or the next
+ * new chat still shows the prompt that was just sent.
+ */
+export function claimDraftForChat<T>(
+  drafts: Record<string, T>,
+  chatId: string,
+  empty: (value: T) => boolean,
+): Record<string, T> {
+  if (!chatId || !("" in drafts)) return drafts;
+  const held = drafts[""];
+  const next = { ...drafts };
+  delete next[""];
+  if (empty(held) || chatId in next) return next;
+  next[chatId] = held;
+  return next;
+}
+
+/** Drop the composer state every unsaved new chat shares. */
+export function forgetUnsavedDraft<T>(drafts: Record<string, T>): Record<string, T> {
+  if (!("" in drafts)) return drafts;
+  const next = { ...drafts };
+  delete next[""];
+  return next;
+}
+
 export type PendingMessage = {
   text: string;
   images?: ChatImage[];

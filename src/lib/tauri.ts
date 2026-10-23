@@ -942,8 +942,12 @@ export type ServerInstallStatus = {
   update?: boolean;
   /** The version this Mac would install. Set only when `update` is true. */
   available?: string;
-  /** `~/.twanagent/auth-token` on that machine is a real pairing token. */
+  /** `~/.twanagent/auth-token` on that machine matches the token saved here. */
   paired?: boolean;
+  /** The protocol baked into the binary. 0 when that build does not say. */
+  protocol?: number;
+  /** The protocol this app speaks. */
+  desktop_protocol?: number;
 };
 
 export type ServerProviderKeys = {
@@ -1016,8 +1020,13 @@ export function pairAgentServer(id: string): Promise<AgentServer> {
   return invoke("dev_pair_agent_server", { id });
 }
 
-export function removeAgentServer(id: string): Promise<void> {
-  return invoke("dev_remove_agent_server", { id });
+/** `keep` forgets the server here. `wipe` deletes the token on the machine. `rotate` replaces it. */
+export function removeAgentServer(id: string, mode: "keep" | "wipe" | "rotate" = "keep"): Promise<void> {
+  return invoke("dev_remove_agent_server", {
+    id,
+    wipe: mode === "wipe",
+    rotate: mode === "rotate",
+  });
 }
 
 export function serverStorage(id: string): Promise<ServerStorage> {

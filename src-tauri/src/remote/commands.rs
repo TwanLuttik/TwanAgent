@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::config::{self, AuthMethod, Machine, NewMachine, RemoteProject};
@@ -484,6 +485,33 @@ fn exec_on(work: &ServerWork, machine: &Machine, command: &str, timeout_secs: u6
     )
 }
 
+/// Run a command and give it bytes on stdin. The bytes are not part of the command line.
+fn require_stdin(work: &ServerWork, machine: &Machine, command: &str, stdin: &[u8], timeout_secs: u64) -> Result<String> {
+    let secret = machine_secret(machine);
+    let session = work.ssh_pool.session(machine, secret.as_deref())?;
+    let made = session.exec_with_stdin(
+        &super::ssh::ExecRequest {
+            cwd: "/".into(),
+            command: command.to_string(),
+            timeout_secs,
+        },
+        stdin,
+        &mut |_| {},
+    )?;
+    if made.timed_out {
+        return Err(Error::Other(format!("timed out talking to {}", machine.host)));
+    }
+    if made.exit_code.is_some_and(|code| code != 0) {
+        let detail = made.stderr.trim();
+        return Err(Error::Other(if detail.is_empty() {
+            format!("command failed on {}", machine.host)
+        } else {
+            detail.chars().take(240).collect()
+        }));
+    }
+    Ok(made.stdout)
+}
+
 fn require_exec(work: &ServerWork, machine: &Machine, command: &str, timeout_secs: u64) -> Result<String> {
     let made = exec_on(work, machine, command, timeout_secs)?;
     if made.timed_out {
@@ -532,6 +560,9 @@ fn offline_status() -> super::agent_server::ServerInstallStatus {
         online: false,
         update: false,
         paired: false,
+        token_hashes: Vec::new(),
+        protocol: 0,
+        desktop_protocol: twanagent_service::PROTOCOL_VERSION,
     }
 }
 
@@ -542,7 +573,50 @@ fn status_for(work: &ServerWork, server: &super::agent_server::AgentServer) -> R
     }
     let machine = machine_for_server(work, server)?;
     let stdout = require_exec(work, &machine, &super::agent_server::version_check_script(), 20)?;
-    Ok(super::agent_server::parse_version_check(&stdout))
+    let mut status = super::agent_server::parse_version_check(&stdout);
+    // The offer is the file this Mac would copy, probed from `uname`. A crate that is newer
+    // than its last build must not tell the row an update is ready.
+    if status.installed {
+        let probed = require_exec(work, &machine, &super::agent_server::target_probe_script(), 15).unwrap_or_default();
+        let mut lines = probed.lines();
+        let arch = lines.next().unwrap_or("").trim();
+        let os = lines.next().unwrap_or("").trim();
+        let offer = super::agent_server::copyable_version(arch, os);
+        if !offer.is_empty() {
+            status.update = super::agent_server::update_against(&status.version, &offer);
+            status.available = if status.update { offer } else { String::new() };
+        }
+    }
+    // The saved token is what this desktop will send. A file on the server only counts as paired
+    // when one of its hashes is that token. The row can show this before any chat is opened.
+    let conn = work_db(work)?;
+    let ours = stored_token(&conn, &server.id).ok();
+    status.paired = match ours {
+        Some(token) => token_hash_matches(&status.token_hashes, &token),
+        None => false,
+    };
+    Ok(status)
+}
+
+fn stored_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> {
+    if let Some(token) = crate::secrets::get_agent_token(server_id) {
+        if super::agent_server::valid_token(&token) {
+            return Ok(token);
+        }
+    }
+    let token: Option<String> = conn
+        .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    token
+        .filter(|value| super::agent_server::valid_token(value))
+        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))
+}
+
+fn token_hash_matches(hashes: &[String], token: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(token.trim().as_bytes()));
+    hashes.iter().any(|hash| hash.eq_ignore_ascii_case(&digest))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -653,6 +727,7 @@ fn copy_binary(
         )));
     }
     let mut status = super::agent_server::parse_version_check(&format!("status installed twanagent-server {built}\n"));
+    status.protocol = twanagent_service::PROTOCOL_VERSION;
     let wanted = super::agent_server::server_version();
     // The file copied is the newest build on this Mac. When that build is older than this app,
     // the server is updated as far as the file allows, and the row still offers a newer build.
@@ -667,10 +742,21 @@ fn copy_binary(
 }
 
 fn write_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<()> {
+    write_token_mode(work, machine, server_id, "replace")
+}
+
+/// `replace` is a first pairing or a rotation. `add` keeps the tokens already on the machine.
+fn write_token_mode(work: &ServerWork, machine: &Machine, server_id: &str, mode: &str) -> Result<()> {
     let conn = work_db(work)?;
     let token = super::agent_server::new_token();
-    let script = super::agent_server::install_script(&token)?;
-    let _ = require_exec(work, machine, &script, 20)?;
+    let script = super::agent_server::install_script(mode)?;
+    let _ = require_stdin(work, machine, &script, token.as_bytes(), 20)?;
+    // The keychain is the copy this desktop uses. The column stays so a build that has not
+    // moved yet, and a keychain that refused the write, can still find it.
+    if crate::secrets::set_agent_token(server_id, &token).is_err() {
+        super::agent_server::set_server_token(&conn, server_id, &token)?;
+        return Ok(());
+    }
     super::agent_server::set_server_token(&conn, server_id, &token)?;
     Ok(())
 }
@@ -1251,7 +1337,9 @@ fn install_agent_server(
     )?);
     if present.paired {
         if !server.paired {
-            if let Err(err) = adopt_remote_token(work, &machine, &server.id) {
+            // The machine already has clients. Add this desktop instead of replacing them,
+            // and keep a copy of one existing token so a later call still matches.
+            if let Err(err) = write_token_mode(work, &machine, &server.id, "add") {
                 if created {
                     let _ = super::agent_server::delete_server(&conn, &server.id);
                 }
@@ -1269,18 +1357,6 @@ fn install_agent_server(
     agent_server_by_id(&conn, &server.id)
 }
 
-/// Read the token that is already on the machine into this app. The file is not rewritten.
-fn adopt_remote_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<()> {
-    let stdout = require_exec(
-        work,
-        machine,
-        "tr -d '[:space:]' < \"$HOME/.twanagent/auth-token\"",
-        15,
-    )?;
-    let conn = work_db(work)?;
-    super::agent_server::set_server_token(&conn, server_id, stdout.trim())
-}
-
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_pair_agent_server(state: State<'_, AppState>, id: String) -> Result<super::agent_server::AgentServer> {
     let work = server_work(&state);
@@ -1294,11 +1370,37 @@ pub async fn dev_pair_agent_server(state: State<'_, AppState>, id: String) -> Re
     .await
 }
 
+/// Drop the server from this desktop. `wipe` deletes the token file on the machine, which logs
+/// every paired desktop out. `rotate` writes a fresh token that only this desktop keeps, so the
+/// other clients stop working and this one stays paired. Neither touches the program or the keys.
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_remove_agent_server(state: State<'_, AppState>, id: String) -> Result<()> {
-    let conn = open_db(&state)?;
-    let _ = super::agent_server::delete_server(&conn, &id)?;
-    Ok(())
+pub async fn dev_remove_agent_server(
+    state: State<'_, AppState>,
+    id: String,
+    wipe: Option<bool>,
+    rotate: Option<bool>,
+) -> Result<()> {
+    let work = server_work(&state);
+    let wipe = wipe.unwrap_or(false);
+    let rotate = rotate.unwrap_or(false);
+    crate::state::run_blocking(move || {
+        let conn = work_db(&work)?;
+        if wipe || rotate {
+            if let Ok(server) = agent_server_by_id(&conn, &id) {
+                if let Ok(machine) = machine_for_server(&work, &server) {
+                    if rotate {
+                        let _ = write_token_mode(&work, &machine, &id, "replace");
+                    } else {
+                        let _ = require_exec(&work, &machine, &super::agent_server::forget_token_script(false), 20);
+                    }
+                }
+            }
+        }
+        let _ = super::agent_server::delete_server(&conn, &id)?;
+        let _ = crate::secrets::delete_agent_token(&id);
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1358,8 +1460,8 @@ fn copy_provider_keys(
     providers: &[String],
 ) -> Result<ServerProviderKeys> {
     let keys = provider_keys_for(work, providers);
-    let script = super::agent_server::provider_keys_script(&keys)?;
-    let stdout = require_exec(work, machine, &script, 20)?;
+    let payload = super::agent_server::provider_keys_payload(&keys)?;
+    let stdout = require_stdin(work, machine, super::agent_server::provider_keys_script(), &payload, 20)?;
     if !stdout.lines().any(|line| line.trim() == "copied") {
         let detail = stdout.trim();
         return Err(Error::Other(if detail.is_empty() {

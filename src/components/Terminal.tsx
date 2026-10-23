@@ -84,7 +84,9 @@ export function Terminal({
         frame = 0;
         // Fitting rebuilds the grid and tells the shell. While the pane edge is
         // moving, stretch the canvas instead and fit once when the drag ends.
-        if (!paneIsShown(el) || el.closest("[data-pane-resizing]")) return;
+        // Opening and closing only changes the slot width. Fitting then would
+        // rebuild the grid on every frame of the slide.
+        if (!paneIsShown(el) || el.closest("[data-pane-resizing], [data-pane-sliding]")) return;
         fit.fit();
       });
     });

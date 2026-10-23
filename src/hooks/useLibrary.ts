@@ -43,7 +43,7 @@ import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForCha
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
 import { publishWorktreeList, tabProjectKey, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
@@ -55,6 +55,8 @@ import {
   loadEffort,
   loadModel,
   loadPermission,
+  saveComposerDraft,
+  saveComposerPastes,
   saveModel,
   pushRecentWorkspace,
   removeRecentWorkspace,
@@ -553,6 +555,15 @@ async function ensureChatPlan(path: string, id: string, modelId: string | null |
   }
 }
 
+/** New chats share the empty composer id. Drop it so the next one starts blank. */
+function forgetEmptyComposer() {
+  saveComposerDraft("", "");
+  saveComposerPastes("", []);
+  setDrafts(forgetUnsavedDraft);
+  setPastesByChat(forgetUnsavedDraft);
+  setDraftImages(forgetUnsavedDraft);
+}
+
 async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
@@ -575,6 +586,9 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     hideSubagents();
     retargetForegroundTurn("");
     setEditor((prev) => selectChatTab(prev));
+    // Every unsaved chat shares the empty id. A prompt that was just sent, or one
+    // still sitting there, must not appear in the next new chat.
+    forgetEmptyComposer();
     return;
   }
   if (!path) {
@@ -614,6 +628,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     retargetForegroundTurn("");
     setEditor((prev) => selectChatTab(prev));
     saveConversation(path, "");
+    forgetEmptyComposer();
     return;
   }
   const rows = projectConversations(path);

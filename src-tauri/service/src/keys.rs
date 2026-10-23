@@ -40,16 +40,24 @@ impl KeyFile {
         Self { path: dir.join("provider-keys.json") }
     }
 
-    /// The pairing token written at install time. Empty when this machine was never paired.
-    pub fn auth_token(&self) -> String {
+    /// Every pairing token on this machine, one per line. A second desktop adds a line
+    /// instead of replacing the first, so pairing does not log the other client out.
+    pub fn auth_tokens(&self) -> Vec<String> {
         let Some(dir) = self.path.parent() else {
-            return String::new();
+            return Vec::new();
         };
-        let path = dir.join("auth-token");
-        std::fs::read_to_string(path)
+        std::fs::read_to_string(dir.join("auth-token"))
             .unwrap_or_default()
-            .trim()
-            .to_string()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The first pairing token. Empty when this machine was never paired.
+    pub fn auth_token(&self) -> String {
+        self.auth_tokens().into_iter().next().unwrap_or_default()
     }
 
     pub fn save(&self, keys: &ProviderKeys) -> Result<()> {
@@ -89,7 +97,7 @@ impl KeyFile {
     }
 }
 
-/// Constant-time compare. An empty stored token matches nothing.
+/// Constant-time compare against one stored token. An empty stored token matches nothing.
 pub fn token_matches(stored: &str, presented: &str) -> bool {
     let stored = stored.trim();
     let presented = presented.trim();
@@ -97,6 +105,15 @@ pub fn token_matches(stored: &str, presented: &str) -> bool {
         return false;
     }
     stored.bytes().zip(presented.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+/// True when the presented token equals any line in the file. Each compare runs in full,
+/// so a miss does not reveal which line differed or how many clients are paired.
+pub fn token_matches_any(stored: &[String], presented: &str) -> bool {
+    if stored.is_empty() {
+        return false;
+    }
+    stored.iter().fold(false, |found, line| found || token_matches(line, presented))
 }
 
 pub fn provider_keys_from_env(file: &ProviderKeys) -> ProviderKeys {

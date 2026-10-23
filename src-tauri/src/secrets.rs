@@ -53,6 +53,43 @@ pub fn delete_ssh_secret(account: &str) -> Result<()> {
     delete_ssh_secret_in(account, &SystemKeychain)
 }
 
+/// The pairing token for one server. The account is the server id, not the token.
+pub fn set_agent_token(server_id: &str, token: &str) -> Result<()> {
+    let account = agent_token_account(server_id)?;
+    let token = token.trim();
+    if token.is_empty() {
+        return delete_agent_token(server_id);
+    }
+    SystemKeychain
+        .set(&account, token)
+        .map_err(|err| Error::Keychain(format!("could not save the pairing token: {err}")))
+}
+
+pub fn get_agent_token(server_id: &str) -> Option<String> {
+    let account = agent_token_account(server_id).ok()?;
+    SystemKeychain
+        .get(&account)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn delete_agent_token(server_id: &str) -> Result<()> {
+    let account = agent_token_account(server_id)?;
+    SystemKeychain
+        .delete(&account)
+        .map_err(|err| Error::Keychain(format!("could not delete the pairing token: {err}")))
+}
+
+fn agent_token_account(server_id: &str) -> Result<String> {
+    let server_id = server_id.trim();
+    if server_id.is_empty() || server_id.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return Err(Error::Other("server id is empty".into()));
+    }
+    Ok(format!("agent-token:{server_id}"))
+}
+
 pub fn delete_ssh_secret_in(account: &str, store: &dyn SshSecretStore) -> Result<()> {
     let account = account.trim();
     if !account.starts_with("ssh-secret:") {

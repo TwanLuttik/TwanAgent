@@ -27,6 +27,19 @@ pub struct ServerInstallStatus {
     /// `~/.twanagent/auth-token` is a pairing token. The token itself stays on the machine.
     #[serde(default)]
     pub paired: bool,
+    /// SHA-256 of each token on the machine. Empty when the file is missing. Never the token.
+    #[serde(default)]
+    pub token_hashes: Vec<String>,
+    /// The protocol baked into the binary. 0 when this build does not carry the mark.
+    #[serde(default)]
+    pub protocol: u32,
+    /// The protocol this desktop speaks. The row is behind when `protocol` is lower and not 0.
+    #[serde(default = "desktop_protocol")]
+    pub desktop_protocol: u32,
+}
+
+fn desktop_protocol() -> u32 {
+    twanagent_service::PROTOCOL_VERSION
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,12 +190,27 @@ pub fn server_version() -> &'static str {
 }
 
 /// `installed` is the text from `--version`, such as `twanagent-server 1.0.0-beta.1`.
+/// `offer` is the version this Mac can actually copy, not the crate version compiled into the app.
+/// A crate that moved ahead of its last build must not promise an update it cannot deliver.
 pub fn server_update_available(installed: &str) -> bool {
+    update_against(installed, server_version())
+}
+
+pub fn update_against(installed: &str, offer: &str) -> bool {
     let installed = installed.trim().strip_prefix("twanagent-server").unwrap_or(installed).trim();
-    if installed.is_empty() || installed == "unknown" {
+    let offer = offer.trim().strip_prefix("twanagent-server").unwrap_or(offer).trim();
+    if installed.is_empty() || installed == "unknown" || offer.is_empty() {
         return false;
     }
-    version_is_older(installed, server_version())
+    version_is_older(installed, offer)
+}
+
+/// The version baked into the newest binary this Mac can copy for that machine. Empty when none is built.
+pub fn copyable_version(arch: &str, os: &str) -> String {
+    let Ok(path) = binary_for_target(arch, os) else {
+        return String::new();
+    };
+    std::fs::read(&path).map(|bytes| binary_version(&bytes)).unwrap_or_default()
 }
 
 /// Numeric pieces, then the prerelease tag. `1.0.0-beta.1` is older than `1.0.0-beta.2`.
@@ -234,37 +262,34 @@ done; \
 if [ -f \"$HOME/.zshrc\" ] && ! grep -Fqs '.local/bin' \"$HOME/.zshrc\"; then printf '\\n%s\\n' \"$path_line\" >> \"$HOME/.zshrc\"; fi"
 }
 
+/// Read the install. This does not chmod, symlink, or edit shell rc files. Those belong to the copy.
+/// The version comes out of the binary itself. The `.version` sidecar is a hint, and only used when
+/// the marker cannot be read, because a file next to the program can be changed without replacing it.
+/// Pairing is reported as a hash of each token. `paired yes` only means a token-shaped file exists.
 pub fn version_check_script() -> String {
     format!(
-        "{{ {setup}; }} >/dev/null 2>&1 || true; \
-bin={BINARY_PATH}; \
+        "bin={BINARY_PATH}; \
 if [ -f \"$bin\" ] || [ -x \"$bin\" ]; then \
-  if [ ! -x \"$bin\" ]; then chmod 755 \"$bin\" 2>/dev/null || true; fi; \
   bytes=$(wc -c < \"$bin\" 2>/dev/null | tr -d '[:space:]'); \
   case \"$bytes\" in ''|*[!0-9]*) bytes=0 ;; esac; \
   if [ \"$bytes\" -lt 5000000 ]; then \
     printf 'status broken\\n'; \
   else \
-    ver=$(tr -cd '0-9A-Za-z.-\\n' < \"$bin.version\" 2>/dev/null | head -n 1 | tr -d '[:space:]'); \
-    if [ -z \"$ver\" ]; then ver=$(\"$bin\" --version 2>/dev/null | tr -d '\\n' || true); fi; \
+    ver=$(tr -d '\\000' < \"$bin\" | grep -a -o -m 1 'twanagent-server [0-9][0-9A-Za-z.-]*' | head -n 1); \
+    if [ -z \"$ver\" ]; then ver=$(tr -cd '0-9A-Za-z.-\\n' < \"$bin.version\" 2>/dev/null | head -n 1 | tr -d '[:space:]'); fi; \
+    if [ -z \"$ver\" ] && [ -x \"$bin\" ]; then ver=$(\"$bin\" --version 2>/dev/null | tr -d '\\n' || true); fi; \
     case \"$ver\" in \
       twanagent-server*) printf 'status installed %s\\n' \"$ver\" ;; \
       '') printf 'status installed unknown\\n' ;; \
       *) printf 'status installed twanagent-server %s\\n' \"$ver\" ;; \
     esac; \
+    proto=$(tr -d '\\000' < \"$bin\" | grep -a -o -m 1 'protocol-version [0-9][0-9]*' | awk '{{print $2}}' | head -n 1); \
+    [ -n \"$proto\" ] && printf 'protocol %s\\n' \"$proto\"; \
   fi; \
 else printf 'status missing\\n'; fi; \
-token=\"$HOME/.twanagent/auth-token\"; \
-if [ -f \"$token\" ]; then \
-  tok=$(tr -d '[:space:]' < \"$token\"); \
-  case \"$tok\" in \
-    *[!0-9A-Fa-f]*|'') printf 'paired no\\n' ;; \
-    ????????????????????????????????*) printf 'paired yes\\n' ;; \
-    *) printf 'paired no\\n' ;; \
-  esac; \
-else printf 'paired no\\n'; fi; \
+{hash}; \
 exit 0",
-        setup = path_setup_script(),
+        hash = token_hash_script(),
     )
 }
 
@@ -276,12 +301,24 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         .find_map(|line| line.strip_prefix("status "))
         .unwrap_or("")
         .trim();
+    let token_hashes = token_hashes_from(stdout);
+    // A file that merely looks like a token is not paired with this desktop. The hashes say
+    // whether our own token is one of them. `paired` stays the old shape check for a caller
+    // that has not compared yet, so a row still shows something before that compare runs.
     let paired = stdout.lines().any(|line| {
         let line = line.trim();
         line == "paired yes" || line == "token yes"
-    });
+    }) || !token_hashes.is_empty();
+    let protocol = stdout
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("protocol "))
+        .and_then(|rest| rest.trim().parse().ok())
+        .unwrap_or(0);
     if let Some(rest) = status.strip_prefix("installed") {
         let version = rest.trim().to_string();
+        // Filled in once the caller knows which binary it can copy. The crate version is a
+        // fallback so a check that has not probed the target still has something to compare.
         let update = server_update_available(&version);
         return ServerInstallStatus {
             installed: true,
@@ -291,6 +328,9 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
             path,
             online: true,
             paired,
+            token_hashes,
+            protocol,
+            desktop_protocol: desktop_protocol(),
         };
     }
     ServerInstallStatus {
@@ -301,7 +341,21 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         online: true,
         update: false,
         paired,
+        token_hashes,
+        protocol,
+        desktop_protocol: desktop_protocol(),
     }
+}
+
+/// Digests the hash script printed. `none` and `unreadable` are not digests.
+fn token_hashes_from(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("hash "))
+        .map(str::trim)
+        .filter(|line| line.len() == 64 && line.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Read the version out of the file without starting it. A running copy keeps the old bytes in memory,
@@ -331,25 +385,47 @@ pub fn binary_install_command(bytes: u64, version: &str) -> String {
         .collect::<String>();
     format!(
         "pkill -x twanagent-server >/dev/null 2>&1 || true; \
-mkdir -p \"$HOME/.twanagent/bin\" && \
+mkdir -p \"$HOME/.twanagent\" \"$HOME/.twanagent/bin\" && chmod 700 \"$HOME/.twanagent\" && \
 base64 -d > {BINARY_PATH}.tmp && \
 got=$(wc -c < {BINARY_PATH}.tmp | tr -d '[:space:]') && \
 if [ \"$got\" != '{bytes}' ]; then echo \"copied $got of {bytes} bytes\" >&2; rm -f {BINARY_PATH}.tmp; exit 1; fi && \
 mv {BINARY_PATH}.tmp {BINARY_PATH} && chmod 755 {BINARY_PATH} && \
 printf 'twanagent-server {version}\\n' > {BINARY_PATH}.version && \
-echo installed"
+{setup}; \
+nohup {BINARY_PATH} --serve --data \"$HOME/.twanagent\" >/dev/null 2>&1 & \
+echo installed",
+        bytes = bytes,
+        version = version,
+        setup = path_setup_script(),
     )
 }
 
 /// Write `~/.twanagent/provider-keys.json` from the chosen providers. Unchecked providers are cleared.
-/// The values travel inside the SSH command. The reply is `copied`, then one line per provider that
-/// already had a different key: `replaced <id>`. The key text never comes back.
-pub fn provider_keys_script(keys: &twanagent_service::ProviderKeys) -> Result<String> {
+/// The program and the keys arrive on stdin, split by a blank line. Neither is part of the command.
+/// The reply is `copied`, then one line per provider that already had a different key: `replaced <id>`.
+/// The key text never comes back.
+pub fn provider_keys_script() -> &'static str {
+    "f=$(mktemp) && awk 'NR==1{print > (f \".b64\"); next} {print > (f \".json\")}' f=\"$f\" && \
+base64 -d < \"$f.b64\" > \"$f.py\" && python3 \"$f.py\" < \"$f.json\"; s=$?; rm -f \"$f\" \"$f.b64\" \"$f.py\" \"$f.json\"; exit $s"
+}
+
+/// The stdin for `provider_keys_script`: the program on the first line, a blank line, then the keys.
+pub fn provider_keys_payload(keys: &twanagent_service::ProviderKeys) -> Result<Vec<u8>> {
     let trimmed = keys.trimmed();
+    let program = provider_keys_program(&trimmed);
+    let program_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
     let body = serde_json::to_vec_pretty(&trimmed).map_err(|err| Error::Other(err.to_string()))?;
-    let fingerprints = provider_key_fingerprints(&trimmed);
-    let program = format!(
-        r#"import base64, hashlib, json, os, sys
+    let mut out = program_b64.into_bytes();
+    out.extend_from_slice(b"\n\n");
+    out.extend_from_slice(&body);
+    out.push(b'\n');
+    Ok(out)
+}
+
+fn provider_keys_program(keys: &twanagent_service::ProviderKeys) -> String {
+    let fingerprints = provider_key_fingerprints(keys);
+    format!(
+        r#"import hashlib, json, os, sys
 path = os.path.expanduser("~/.twanagent/provider-keys.json")
 fresh = json.loads(sys.stdin.read())
 previous = {{}}
@@ -368,6 +444,7 @@ for name, digest in want.items():
     if old and hashlib.sha256(old.encode()).hexdigest() != digest:
         replaced.append(name)
 os.makedirs(os.path.dirname(path), exist_ok=True)
+os.chmod(os.path.dirname(path), 0o700)
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(fresh, handle, indent=2)
@@ -378,15 +455,7 @@ print("copied")
 for name in replaced:
     print("replaced " + name)
 "#
-    );
-    // The program is base64 because it is shell text. The JSON is not: `base64 -d` already
-    // decoded the program, and decoding the JSON again made Python reject it as binary.
-    let program_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
-    Ok(format!(
-        "f=$(mktemp) && printf %s {} | base64 -d > \"$f\" && python3 \"$f\" <<'TWAN_KEYS'\n{}\nTWAN_KEYS\ns=$?; rm -f \"$f\"; exit $s",
-        super::ssh::shell_single_quote(&program_b64),
-        String::from_utf8(body).map_err(|err| Error::Other(err.to_string()))?,
-    ))
+    )
 }
 
 /// SHA-256 of each non-empty key. The remote script compares these and never prints a key.
@@ -415,15 +484,61 @@ pub fn parse_replaced_providers(stdout: &str) -> Vec<String> {
     ORDER.iter().copied().filter(|name| found.contains(name)).map(str::to_string).collect()
 }
 
-pub fn install_script(token: &str) -> Result<String> {
+pub fn valid_token(token: &str) -> bool {
     let token = token.trim();
-    if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(Error::Other("agent token is invalid".into()));
-    }
-    let quoted = super::ssh::shell_single_quote(token);
+    token.len() >= 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Write the pairing token that arrives on stdin. It is not part of the command, so it does not
+/// land in the process list or the shell history.
+/// `replace` is the first client, or a rotation. `add` keeps every token already there, so a
+/// second desktop pairs without logging the first one out.
+pub fn install_script(mode: &str) -> Result<String> {
+    let add = match mode {
+        "replace" => false,
+        "add" => true,
+        _ => return Err(Error::Other("agent token mode is invalid".into())),
+    };
+    let keep = if add { "1" } else { "0" };
     Ok(format!(
-        "mkdir -p \"$HOME/.twanagent\" && umask 077 && printf '%s\\n' {quoted} > \"$HOME/.twanagent/auth-token\" && chmod 600 \"$HOME/.twanagent/auth-token\" && echo installed"
+        "mkdir -p \"$HOME/.twanagent\" && chmod 700 \"$HOME/.twanagent\" && umask 077 && \
+tok=$(tr -d '[:space:]') && \
+case \"$tok\" in ''|*[!0-9A-Fa-f]*) echo 'agent token is invalid' >&2; exit 1 ;; esac && \
+if [ ${{#tok}} -lt 32 ]; then echo 'agent token is invalid' >&2; exit 1; fi && \
+file=\"$HOME/.twanagent/auth-token\" && \
+if [ {keep} = 1 ] && [ -s \"$file\" ]; then \
+  if ! grep -Fqx \"$tok\" \"$file\"; then printf '%s\\n' \"$tok\" >> \"$file\"; fi; \
+else printf '%s\\n' \"$tok\" > \"$file\"; fi && \
+chmod 600 \"$file\" && echo installed"
     ))
+}
+
+/// Drop the pairing file, or write a fresh token that replaces every client.
+pub fn forget_token_script(rotate: bool) -> String {
+    if rotate {
+        return install_script("replace").unwrap_or_default();
+    }
+    "rm -f \"$HOME/.twanagent/auth-token\" && echo removed".into()
+}
+
+/// SHA-256 of each token on the machine, one digest per line. The token itself is not printed.
+/// A missing file prints `none`, so a check can tell "not paired" from "the hash tool is missing".
+pub fn token_hash_script() -> &'static str {
+    "file=\"$HOME/.twanagent/auth-token\"; \
+if [ ! -f \"$file\" ]; then echo none; exit 0; fi; \
+if command -v sha256sum >/dev/null 2>&1; then tool=sha256sum; \
+elif command -v shasum >/dev/null 2>&1; then tool='shasum -a 256'; \
+elif command -v openssl >/dev/null 2>&1; then tool='openssl dgst -sha256'; \
+else echo unreadable; exit 0; fi; \
+blank=1; \
+while IFS= read -r line || [ -n \"$line\" ]; do \
+  tok=$(printf '%s' \"$line\" | tr -d '[:space:]'); \
+  [ -z \"$tok\" ] && continue; \
+  blank=0; \
+  printf 'hash %s\\n' \"$(printf '%s' \"$tok\" | $tool | awk '{print $NF}')\"; \
+done < \"$file\"; \
+[ \"$blank\" = 1 ] && echo hash none; \
+exit 0"
 }
 
 pub fn insert_server(conn: &Connection, draft: NewAgentServer) -> Result<AgentServer> {
@@ -597,8 +712,11 @@ mod tests {
     #[test]
     fn version_check_tells_missing_from_installed() {
         let script = version_check_script();
-        assert!(script.contains("$HOME/.local/bin/twanagent-server"));
+        // A status read does not change the machine. The symlink and the rc edit belong to install.
+        assert!(!script.contains("$HOME/.local/bin/twanagent-server"));
+        assert!(!script.contains("chmod"));
         assert!(script.contains("$HOME/.twanagent/bin/twanagent-server"));
+        assert!(script.contains("hash "));
         assert!(!parse_version_check("status missing\n").installed);
         // A cut-off copy is a few megabytes and segfaults. It must not count as installed.
         let broken = parse_version_check("status broken\npaired yes\n");
@@ -662,6 +780,8 @@ mod tests {
         assert!(script.contains(".version"));
         assert!(script.contains("6171176"));
         assert!(script.contains("twanagent-server 1.0.0-beta.3"));
+        assert!(script.contains("--serve"));
+        assert!(script.contains("chmod 700"));
         assert!(!script.contains("beta.5"));
         assert!(script.contains("rm -f"));
         let read = file_version_script();
@@ -672,12 +792,20 @@ mod tests {
     #[test]
     fn install_writes_a_private_token_file() {
         let token = new_token();
-        let script = install_script(&token).unwrap();
+        let script = install_script("replace").unwrap();
+        // The token arrives on stdin. The command must not contain it.
         assert!(script.contains("mkdir -p \"$HOME/.twanagent\""));
         assert!(script.contains("chmod 600"));
-        assert!(script.contains(&token));
+        assert!(script.contains("chmod 700"));
+        assert!(!script.contains(&token));
         assert!(install_script("short").is_err());
-        assert!(install_script(&"z".repeat(32)).is_err());
+        let add = install_script("add").unwrap();
+        assert!(add.contains(">> \"$file\""));
+        let hashed = parse_version_check(
+            "status missing\nhash 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nhash none\n",
+        );
+        assert_eq!(hashed.token_hashes.len(), 1);
+        assert!(hashed.paired);
     }
 
     #[test]
@@ -727,11 +855,14 @@ mod tests {
             anthropic: String::new(),
             minimax: "mini-secret".into(),
         };
-        let script = provider_keys_script(&keys).unwrap();
-        assert!(script.contains("python3 \"$f\""));
+        let script = provider_keys_script();
+        let payload = String::from_utf8(provider_keys_payload(&keys).unwrap()).unwrap();
+        assert!(script.contains("python3 \"$f.py\""));
         assert!(script.contains("mktemp"));
-        assert!(script.contains("TWAN_KEYS"));
-        assert!(script.contains("xai-secret"));
+        assert!(!script.contains("TWAN_KEYS"));
+        // The command is fixed. The secret rides in the stdin payload, not the command.
+        assert!(!script.contains("xai-secret"));
+        assert!(payload.contains("xai-secret"));
         assert!(!script.contains("print(\"replaced \" + name)"));
         assert_eq!(
             parse_replaced_providers("copied\nreplaced minimax\nreplaced nope\nreplaced xai\n"),

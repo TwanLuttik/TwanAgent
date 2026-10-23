@@ -99,6 +99,9 @@ export function canSendPrompt(text: string, images: ChatImage[]): boolean {
 
 const IMAGE_TOKEN = /\[([^\[\]\r\n]+)]/g;
 
+/** Characters of the filename shown inside `[...]`. Longer names end in `...`. */
+export const IMAGE_TOKEN_VISIBLE = 16;
+
 /** Bracket token the composer inserts where an image was dropped. */
 export function imageToken(name: string): string {
   return `[${imageTokenLabel(name)}]`;
@@ -108,7 +111,14 @@ export function imageToken(name: string): string {
 export function imageTokenLabel(name: string): string {
   const base = name.replace(/\\/g, "/").split("/").pop()?.trim() ?? "";
   const cleaned = base.replace(/[\[\]\r\n]/g, "").trim();
-  return (cleaned || "image").slice(0, 160);
+  return truncateImageLabel(cleaned || "image");
+}
+
+/** Keep at most 16 characters. Anything longer keeps 13 and ends with `...`. */
+export function truncateImageLabel(label: string): string {
+  const text = label.trim();
+  if ([...text].length <= IMAGE_TOKEN_VISIBLE) return text;
+  return `${[...text].slice(0, IMAGE_TOKEN_VISIBLE - 3).join("")}...`;
 }
 
 /**
@@ -123,8 +133,12 @@ export function uniqueImageTokenLabel(name: string, taken: Iterable<string>): st
   const stem = dot > 0 ? label.slice(0, dot) : label;
   const ext = dot > 0 ? label.slice(dot) : "";
   let n = 2;
-  while (used.has(`${stem}-${n}${ext}`.toLowerCase())) n += 1;
-  return `${stem}-${n}${ext}`;
+  let next = truncateImageLabel(`${stem}-${n}${ext}`);
+  while (used.has(next.toLowerCase())) {
+    n += 1;
+    next = truncateImageLabel(`${stem}-${n}${ext}`);
+  }
+  return next;
 }
 
 export type ImageSpan = { start: number; end: number; id: string; label: string };

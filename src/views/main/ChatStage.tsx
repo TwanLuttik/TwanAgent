@@ -113,8 +113,24 @@ export function ChatStage() {
   const paneProjectRef = useRef(workspace);
   const [paneWidth, setPaneWidth] = useState(loadPaneWidth);
   const paneSlotRef = useRef<HTMLDivElement>(null);
+  const paneBodyRef = useRef<HTMLDivElement>(null);
   const paneWidthRef = useRef(paneWidth);
   paneWidthRef.current = paneWidth;
+  // The slot stays mounted while closed so opening only changes its width.
+  // Mounting it at full width on the click left the open with no start frame.
+  const [paneSliding, setPaneSliding] = useState(false);
+  const [paneResizing, setPaneResizing] = useState(false);
+  // Off until the user opens or closes, so a pane that loads open does not slide in.
+  const [paneMotion, setPaneMotion] = useState(false);
+  function slidePane(collapsed: boolean) {
+    const reduce =
+      typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduce) {
+      setPaneMotion(true);
+      setPaneSliding(true);
+    }
+    setPaneCollapsed(collapsed);
+  }
   useEffect(() => {
     if (!workspace || !opened) return;
     // The same folder can come back under a canonical path. Swapping the key
@@ -267,7 +283,7 @@ export function ChatStage() {
             <SplitRow ids={splitChatIds} />
           ) : (
             <div className="flex min-h-0 min-w-0 flex-1" data-drop-chat={activeId || undefined}>
-              <ChatColumn />
+              <ChatColumn paneClosed={paneCollapsed && !paneSliding} />
             </div>
           )}
           </div>
@@ -277,17 +293,28 @@ export function ChatStage() {
             type="button"
             aria-label="Show files"
             title="Show files"
-            onClick={() => setPaneCollapsed(false)}
-            className="m-2 flex size-9 shrink-0 items-center justify-center self-start rounded-[12px] border border-line/35 bg-canvas text-muted hover:text-ink"
+            onClick={() => slidePane(false)}
+            className="absolute top-2 right-2 z-30 flex size-7 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
           >
             <Symbol name="sidebar.right" className="size-3.5" />
           </button>
         ) : null}
-        {paneWorkspace && (activeId || paneChat) && !fullPage && !paneCollapsed ? (
+        {paneWorkspace && (activeId || paneChat) && !fullPage ? (
           <div
             ref={paneSlotRef}
-            className="relative my-2 flex min-h-0 shrink-0 self-stretch overflow-hidden"
-            style={{ width: paneWidth }}
+            data-pane-sliding={paneSliding ? "" : undefined}
+            onTransitionEnd={(event) => {
+              if (event.target !== event.currentTarget || event.propertyName !== "width") return;
+              setPaneSliding(false);
+            }}
+            className={`relative flex min-h-0 shrink-0 self-stretch overflow-hidden bg-canvas ${
+              paneCollapsed && !paneSliding ? "" : "border-l border-line/35"
+            } ${
+              paneMotion && !paneResizing
+                ? "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+                : ""
+            } ${paneSliding ? "will-change-[width]" : ""}`}
+            style={{ width: paneCollapsed ? 0 : paneWidth }}
           >
             <div
               role="separator"
@@ -298,19 +325,25 @@ export function ChatStage() {
                 event.preventDefault();
                 const handle = event.currentTarget;
                 const slot = paneSlotRef.current;
-                if (!slot) return;
+                const body = paneBodyRef.current;
+                if (!slot || !body) return;
                 handle.setPointerCapture(event.pointerId);
+                setPaneResizing(true);
+                slot.setAttribute("data-pane-resizing", "");
                 const right = slot.getBoundingClientRect().right;
                 let latest = paneWidthRef.current;
                 const move = (ev: PointerEvent) => {
                   latest = Math.min(PANE_MAX, Math.max(PANE_MIN, Math.round(right - ev.clientX)));
                   slot.style.width = `${latest}px`;
+                  body.style.width = `${latest}px`;
                 };
                 const up = (ev: PointerEvent) => {
                   handle.releasePointerCapture(ev.pointerId);
                   handle.removeEventListener("pointermove", move);
                   handle.removeEventListener("pointerup", up);
                   handle.removeEventListener("pointercancel", up);
+                  slot.removeAttribute("data-pane-resizing");
+                  setPaneResizing(false);
                   paneWidthRef.current = latest;
                   setPaneWidth(latest);
                   savePaneWidth(latest);
@@ -330,7 +363,7 @@ export function ChatStage() {
                 className="pointer-events-none absolute inset-y-0 left-0 w-0.5 group-hover:bg-accent/30"
               />
             </div>
-            <div className="relative h-full min-w-0 flex-1">
+            <div ref={paneBodyRef} className="relative h-full min-h-0 shrink-0" style={{ width: paneWidth }}>
               <Workspace
                 workspace={paneWorkspace}
                 selectedPath={editor.activePath}
@@ -340,7 +373,7 @@ export function ChatStage() {
                   rememberOpenedProject(path);
                   openProjectFromSidebar(path);
                 }}
-                onCollapse={() => setPaneCollapsed(true)}
+                onCollapse={() => slidePane(true)}
                 pending={paneWorkspace !== workspace}
               />
             </div>
@@ -627,7 +660,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   );
 }
 
-function ChatColumn() {
+function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
   const {
     activeId,
     answerPlan,
@@ -684,7 +717,7 @@ function ChatColumn() {
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1">
-        <ConversationDocks align="end">
+        <ConversationDocks align="end" insetEnd={paneClosed}>
           <McpDock
             servers={mcpServers}
             busyName={mcpBusy}

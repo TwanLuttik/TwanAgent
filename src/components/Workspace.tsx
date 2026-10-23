@@ -512,7 +512,7 @@ export const Workspace = memo(function Workspace({
   return (
     <aside
       ref={asideRef}
-      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-[12px] border border-line/35 bg-canvas"
+      className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas"
     >
       <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} onCollapse={onCollapse} />
       <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`} data-pane-pending={pending || !treeReady ? "" : undefined}>
@@ -669,7 +669,7 @@ function PaneTabs({
   const dragging = pane.tabs.find((tab) => tab.id === draggingId) ?? null;
 
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-line/35 px-1.5">
+    <div className="flex h-9 shrink-0 items-center gap-1 px-1.5">
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}

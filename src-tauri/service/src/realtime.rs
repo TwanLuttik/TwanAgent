@@ -157,8 +157,8 @@ async fn handle(stream: tokio::net::TcpStream) {
         if root.as_os_str().is_empty() {
             continue;
         }
-        let stored = crate::keys::KeyFile::in_dir(&root).auth_token();
-        if !crate::keys::token_matches(&stored, &token) {
+        let stored = crate::keys::KeyFile::in_dir(&root).auth_tokens();
+        if !crate::keys::token_matches_any(&stored, &token) {
             continue;
         }
         let chat = chat.trim().to_string();

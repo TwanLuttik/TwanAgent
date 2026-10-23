@@ -9,6 +9,7 @@ import {
   imageBeforeCursor,
   imageSpans,
   imageToken,
+  imageTokenLabel,
   insertImageToken,
   removeImageSpan,
   removeImageTokens,
@@ -190,6 +191,14 @@ describe("image tokens", () => {
     assert.equal(uniqueImageTokenLabel("shot.png", ["shot.png"]), "shot-2.png");
     assert.equal(uniqueImageTokenLabel("shot.png", ["Shot.png", "shot-2.png"]), "shot-3.png");
     assert.equal(imageToken("image.png"), "[image.png]");
+  });
+
+  it("keeps the bracket placeholder to 16 characters", () => {
+    assert.equal(imageTokenLabel("short.png"), "short.png");
+    assert.equal(imageTokenLabel("CleanShot 2026-10-23 at 3.38.14 PM.png"), "CleanShot 202...");
+    assert.equal(imageToken("CleanShot 2026-10-23 at 3.38.14 PM.png"), "[CleanShot 202...]");
+    assert.equal([...imageTokenLabel("a".repeat(16))].length, 16);
+    assert.equal([...imageTokenLabel("a".repeat(17))].length, 16);
   });
 
   it("finds only tokens that belong to an attached image", () => {

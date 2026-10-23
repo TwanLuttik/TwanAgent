@@ -11,15 +11,19 @@ const DURATION = 0.32;
 export function ConversationDocks({
   children,
   align = "center",
+  insetEnd = false,
 }: {
   children: ReactNode;
   align?: "center" | "end";
+  /** Pull the trailing pills off the window edge, where a closed pane leaves them. */
+  insetEnd?: boolean;
 }) {
   return (
     <div
-      className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex px-4 pt-3 ${
+      className={`pointer-events-none absolute inset-x-0 top-0 z-20 flex px-4 pt-3 transition-[padding] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
         align === "end" ? "justify-end" : "justify-center"
       }`}
+      style={align === "end" ? { paddingRight: insetEnd ? "2.75rem" : "1rem" } : undefined}
     >
       <div
         className={`flex flex-col gap-1.5 ${
