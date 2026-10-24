@@ -143,6 +143,17 @@ pub struct SidebarItem {
     pub id: String,
 }
 
+/// One project as the sidebar paints it on launch. `remote` is the cloud flag on the index row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarProject {
+    pub path: String,
+    pub name: String,
+    #[serde(default)]
+    pub remote: bool,
+    pub conversations: Vec<ConversationSummary>,
+    pub journeys: Vec<Journey>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyStatus {
     pub saved: bool,

@@ -69,6 +69,50 @@ export function canDropOnDir(paths: string[], dest: string, nodes: Map<string, F
   });
 }
 
+const FILE_ROW_DRAG = "file-row:";
+const FILE_DIR_DROP = "file-dir:";
+
+/** Stable id for a draggable file or folder row. Paths can contain `:`. */
+export function fileRowDragId(path: string): string {
+  return `${FILE_ROW_DRAG}${path}`;
+}
+
+/** Droppable id for a folder. An empty path is the project root. */
+export function fileDirDropId(path: string): string {
+  return `${FILE_DIR_DROP}${path}`;
+}
+
+export function fileRowPathFromDragId(id: string): string | null {
+  return id.startsWith(FILE_ROW_DRAG) ? id.slice(FILE_ROW_DRAG.length) : null;
+}
+
+export function fileDirPathFromDropId(id: string): string | null {
+  return id.startsWith(FILE_DIR_DROP) ? id.slice(FILE_DIR_DROP.length) : null;
+}
+
+/**
+ * The folder a pointer is aiming at. A folder row means that folder.
+ * A file row means its parent. Empty space in the list means the project root.
+ * Null means the pointer is not over the file list.
+ */
+export function fileDropDest(hitPath: string | null, kind: string | null, insideList: boolean): string | null {
+  if (!insideList) return null;
+  if (!hitPath) return "";
+  return kind === "dir" ? hitPath : fileParent(hitPath);
+}
+
+/** The folder to highlight, or null when this drop would not move anything. */
+export function fileDropTarget(
+  paths: string[],
+  dest: string | null,
+  nodes: Map<string, FileNode>,
+): string | null {
+  if (dest == null) return null;
+  if (paths.some((item) => item === dest || isInsidePath(dest, item))) return null;
+  if (!canDropOnDir(paths, dest, nodes)) return null;
+  return dest;
+}
+
 /** A new file needs an extension or a dotfile name, such as `notes.md` or `.env`. */
 export function validNewFileName(name: string): boolean {
   const trimmed = name.trim();

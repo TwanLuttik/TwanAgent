@@ -1,16 +1,21 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
   closestCenter,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { restrictToHorizontalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
+import { restrictToHorizontalAxis, restrictToParentElement, snapCenterToCursor } from "@dnd-kit/modifiers";
 import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
 import { CSS, type Transform } from "@dnd-kit/utilities";
 import {
@@ -29,8 +34,13 @@ import {
   canDropOnDir,
   canMoveSelection,
   canRenameSelection,
+  fileDirDropId,
+  fileDirPathFromDropId,
+  fileDropDest,
+  fileDropTarget,
   fileName,
   fileParent,
+  fileRowDragId,
   isInsidePath,
   joinFilePath,
   nextFolderName,
@@ -927,7 +937,6 @@ function FilesPane({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [dragPaths, setDragPaths] = useState<string[] | null>(null);
   const dragPathsRef = useRef<string[] | null>(null);
-  const dropTargetRef = useRef<string | null>(null);
   const nodeMapRef = useRef(fileNodeMap(childrenOf));
   const listRef = useRef<HTMLDivElement>(null);
   const nodeMap = fileNodeMap(childrenOf);
@@ -936,6 +945,7 @@ function FilesPane({
   const menuNodes = fileNodeMap(childrenOf);
   const allowRename = canRenameSelection(menuPaths, menuNodes);
   const allowMove = canMoveSelection(menuPaths, menuNodes);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
     if (!menu && !blankMenu) return;
@@ -960,92 +970,56 @@ function FilesPane({
     return selected.includes(path) ? selected : [path];
   }
 
-  function setDraggingPaths(paths: string[] | null) {
+  function clearDrag() {
+    dragPathsRef.current = null;
+    setDragPaths(null);
+    setDropTarget(null);
+  }
+
+  function onDragStart(ev: DragStartEvent) {
+    const paths = dragPathsOf(ev.active.data.current);
+    if (!paths?.length || !canMoveSelection(paths, nodeMapRef.current)) return;
     dragPathsRef.current = paths;
     setDragPaths(paths);
-    if (!paths) {
-      dropTargetRef.current = null;
-      markFileDrop(null);
-    }
   }
 
-  function aimDrop(dest: string | null, row: HTMLElement | null = null) {
-    markFileDrop(dest && dest !== "" ? row : null);
-    if (dropTargetRef.current === dest) return;
-    dropTargetRef.current = dest;
-    setDropTarget(dest);
-  }
-
-  function placeFromPoint(x: number, y: number) {
+  function onDragMove(ev: DragMoveEvent) {
+    const point = pointerFromDrag(ev.activatorEvent, ev.delta);
     const paths = dragPathsRef.current;
-    if (!paths || (!x && !y)) return;
-    const list = listRef.current;
-    const hit = rowAtPoint(x, y);
-    const raw = hit?.dataset.path ?? "";
-    const kind = hit?.dataset.kind;
-    const dest = !hit || !list?.contains(hit) ? "" : kind === "dir" ? raw : fileParent(raw);
-    const nodes = nodeMapRef.current;
-    const blocked = paths.some((item) => item === dest || isInsidePath(dest, item));
-    if (blocked || !canDropOnDir(paths, dest, nodes)) {
-      aimDrop(null);
-      return;
-    }
-    const folder = dest
-      ? document.querySelector<HTMLElement>(`.file-row[data-path="${cssEscape(dest)}"]`)
-      : null;
-    aimDrop(dest, folder);
+    if (!paths) return;
+    const fromPointer = point ? destAtPoint(point.x, point.y, listRef.current) : null;
+    const fromOver = ev.over ? fileDirPathFromDropId(String(ev.over.id)) : null;
+    const next = fileDropTarget(paths, fromPointer ?? fromOver, nodeMapRef.current);
+    setDropTarget((prev) => (prev === next ? prev : next));
   }
 
-  useEffect(() => {
-    if (!dragPaths) return;
-    let frame = 0;
-    const point = { x: 0, y: 0 };
-    function tick() {
-      frame = 0;
-      placeFromPoint(point.x, point.y);
-    }
-    function onPointer(ev: PointerEvent | MouseEvent) {
-      if (!ev.clientX && !ev.clientY) return;
-      point.x = ev.clientX;
-      point.y = ev.clientY;
-      if (!frame) frame = requestAnimationFrame(tick);
-    }
-    document.addEventListener("dragover", onPointer, true);
-    document.addEventListener("pointermove", onPointer, true);
-    document.addEventListener("mousemove", onPointer, true);
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      document.removeEventListener("dragover", onPointer, true);
-      document.removeEventListener("pointermove", onPointer, true);
-      document.removeEventListener("mousemove", onPointer, true);
-    };
-  }, [dragPaths]);
+  function onDragEnd(ev: DragEndEvent) {
+    const paths = dragPathsRef.current ?? dragPathsOf(ev.active.data.current) ?? [];
+    const point = pointerFromDrag(ev.activatorEvent, ev.delta);
+    const fromPointer = point ? destAtPoint(point.x, point.y, listRef.current) : null;
+    const fromOver = ev.over ? fileDirPathFromDropId(String(ev.over.id)) : null;
+    const dest = fileDropTarget(paths, fromPointer ?? fromOver, nodeMapRef.current);
+    clearDrag();
+    if (paths.length && dest != null) onMove(paths, dest);
+  }
+
+  const preview = dragPaths ? dragPreviewLabel(dragPaths, nodeMap) : null;
 
   return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={filePointerCollision}
+      autoScroll={{ enabled: true, threshold: { x: 0, y: 0.15 } }}
+      onDragStart={onDragStart}
+      onDragMove={onDragMove}
+      onDragOver={onDragMove}
+      onDragCancel={clearDrag}
+      onDragEnd={onDragEnd}
+    >
+    <FileListDrop>
     <div
       ref={listRef}
       className="min-h-0 flex-1 overflow-auto px-1.5 py-1.5"
-      onDragOver={(ev) => {
-        const paths = dragPathsRef.current;
-        if (!paths && !ev.dataTransfer.types.includes(FILE_DRAG_TYPE)) return;
-        ev.preventDefault();
-        ev.dataTransfer.dropEffect = "move";
-        if (ev.clientX || ev.clientY) placeFromPoint(ev.clientX, ev.clientY);
-      }}
-      onDragLeave={(ev) => {
-        const next = ev.relatedTarget;
-        if (!(next instanceof Node) || ev.currentTarget.contains(next)) return;
-        aimDrop(null);
-      }}
-      onDrop={(ev) => {
-        const paths = dragPathsRef.current ?? ev.dataTransfer.getData(FILE_DRAG_TYPE).split("\n").filter(Boolean);
-        const dest = dropTargetRef.current;
-        aimDrop(null);
-        setDraggingPaths(null);
-        if (!paths.length || dest == null || ev.defaultPrevented) return;
-        ev.preventDefault();
-        if (canDropOnDir(paths, dest, nodeMap)) onMove(paths, dest);
-      }}
       onContextMenu={(ev) => {
         if ((ev.target as HTMLElement).closest(".file-row")) return;
         ev.preventDefault();
@@ -1099,10 +1073,6 @@ function FilesPane({
           setMenu({ path, x, y, paths });
         }}
         onDragPaths={pathsFor}
-        onDragChange={setDraggingPaths}
-        dragPathsRef={dragPathsRef}
-        onDropTarget={aimDrop}
-        onMove={onMove}
       />
       {menu ? (
         <AnchoredMenu x={menu.x} y={menu.y}>
@@ -1162,6 +1132,29 @@ function FilesPane({
         </AnchoredMenu>
       ) : null}
     </div>
+    </FileListDrop>
+    <DragOverlay dropAnimation={null} zIndex={80} className="file-drag-overlay" modifiers={[snapCenterToCursor]}>
+      {preview ? (
+        <div className="file-drag-image">
+          {preview.kind === "dir" ? (
+            <Symbol name="folder.fill" className="size-3.5 text-accent" />
+          ) : (
+            <FileIcon name={preview.name} className="size-3.5 text-muted" />
+          )}
+          <span className="file-drag-image-name">{preview.count > 1 ? `${preview.count} items` : preview.name}</span>
+        </div>
+      ) : null}
+    </DragOverlay>
+    </DndContext>
+  );
+}
+
+function FileListDrop({ children }: { children: ReactNode }) {
+  const { setNodeRef } = useDroppable({ id: ROOT_DROP_ID });
+  return (
+    <div ref={setNodeRef} className="flex min-h-0 flex-1 flex-col">
+      {children}
+    </div>
   );
 }
 
@@ -1191,29 +1184,76 @@ function MenuItem({
   );
 }
 
-const FILE_DRAG_TYPE = "application/x-twanagent-paths";
 const FILE_DROP_CLASS = "file-drop-target";
+const ROOT_DROP_ID = fileDirDropId("");
 
-function markFileDrop(row: HTMLElement | null) {
-  const prev = document.querySelector(`.${FILE_DROP_CLASS}`);
-  if (prev === row) return;
-  prev?.classList.remove(FILE_DROP_CLASS);
-  row?.classList.add(FILE_DROP_CLASS);
-}
+type FileDragData = { paths: string[] };
 
-function cssEscape(value: string): string {
-  return window.CSS?.escape ? window.CSS.escape(value) : value.replace(/["\\]/g, "\\$&");
+function dragPathsOf(data: { paths?: unknown } | undefined): string[] | null {
+  const paths = data?.paths;
+  if (!Array.isArray(paths) || paths.some((path) => typeof path !== "string")) return null;
+  return paths;
 }
 
 function rowAtPoint(x: number, y: number): HTMLElement | null {
   const stack = document.elementsFromPoint(x, y);
   for (const node of stack) {
     if (!(node instanceof HTMLElement)) continue;
+    if (node.closest(".file-drag-overlay, .file-drag-image")) continue;
     const row = node.closest<HTMLElement>(".file-row");
     if (row) return row;
   }
+  const hovered = document.querySelectorAll<HTMLElement>(".file-row");
+  for (const row of hovered) {
+    if (pointInRect(x, y, row.getBoundingClientRect())) return row;
+  }
   return null;
 }
+
+function destAtPoint(x: number, y: number, list: HTMLElement | null): string | null {
+  if (!x && !y) return null;
+  const hit = rowAtPoint(x, y);
+  const inside = Boolean(list && pointInRect(x, y, list.getBoundingClientRect()));
+  const overList = Boolean(hit && list?.contains(hit)) || (inside && !hit);
+  return fileDropDest(overList ? (hit?.dataset.path ?? null) : null, hit?.dataset.kind ?? null, overList);
+}
+
+function pointInRect(x: number, y: number, rect: DOMRect): boolean {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function pointerFromDrag(activator: Event | null, delta: { x: number; y: number }): { x: number; y: number } | null {
+  if (!(activator instanceof PointerEvent) && !(activator instanceof MouseEvent)) return null;
+  return { x: activator.clientX + delta.x, y: activator.clientY + delta.y };
+}
+
+/**
+ * The folder under the pointer. A file row is not a droppable, so the pointer
+ * also hits that file's parent folder. The deepest folder wins. Empty space
+ * in the list is the project root.
+ */
+const filePointerCollision: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  const point = args.pointerCoordinates;
+  let best: (typeof hits)[number] | null = null;
+  let bestDepth = -1;
+  if (point) {
+    for (const hit of hits) {
+      const path = fileDirPathFromDropId(String(hit.id));
+      if (!path) continue;
+      const node = hit.data?.droppableContainer?.node.current;
+      if (!node || !pointInRect(point.x, point.y, node.getBoundingClientRect())) continue;
+      const depth = path.split("/").length;
+      if (depth > bestDepth) {
+        best = hit;
+        bestDepth = depth;
+      }
+    }
+  }
+  if (best) return [best];
+  const root = hits.find((hit) => String(hit.id) === ROOT_DROP_ID);
+  return root ? [root] : [];
+};
 
 function dragPreviewLabel(paths: string[], nodes: Map<string, Entry>): { name: string; kind: string; count: number } {
   const tops = topLevelPaths(paths);
@@ -1223,37 +1263,6 @@ function dragPreviewLabel(paths: string[], nodes: Map<string, Entry>): { name: s
     kind: nodes.get(first)?.kind ?? "file",
     count: tops.length,
   };
-}
-
-function setFileDragImage(data: DataTransfer, source: HTMLElement, label: string) {
-  const node = document.createElement("div");
-  node.className = "file-drag-image";
-  const icons = source.querySelectorAll("svg");
-  const glyph = icons[icons.length - 1];
-  if (glyph) {
-    const clone = glyph.cloneNode(true) as SVGElement;
-    clone.style.width = "14px";
-    clone.style.height = "14px";
-    node.append(clone);
-  }
-  const text = document.createElement("span");
-  text.className = "file-drag-image-name";
-  text.textContent = label;
-  node.append(text);
-  // WKWebView does not deliver pointer or drag coordinates while a native drag
-  // is running, so a DOM chip cannot follow the cursor. The system drag image can.
-  // Keep the source in the viewport until the snapshot is taken.
-  const host = document.createElement("div");
-  host.style.cssText = "position:fixed;left:0;top:0;z-index:80;pointer-events:none;";
-  host.append(node);
-  document.body.append(host);
-  const height = node.offsetHeight || 28;
-  try {
-    data.setDragImage(node, 14, Math.max(14, Math.round(height / 2)));
-  } catch {
-    // A missing drag image should not cancel the move.
-  }
-  setTimeout(() => host.remove(), 0);
 }
 
 function fileNodeMap(childrenOf: Record<string, Entry[]>): Map<string, Entry> {
@@ -2190,10 +2199,6 @@ function Tree({
   onNewFileCancel,
   onContext,
   onDragPaths,
-  onDragChange,
-  dragPathsRef,
-  onDropTarget,
-  onMove,
 }: {
   path: string;
   depth: number;
@@ -2218,10 +2223,6 @@ function Tree({
   onNewFileCancel: () => void;
   onContext: (path: string, x: number, y: number) => void;
   onDragPaths: (path: string) => string[];
-  onDragChange: (paths: string[] | null) => void;
-  dragPathsRef: RefObject<string[] | null>;
-  onDropTarget: (path: string | null) => void;
-  onMove: (paths: string[], dest: string) => void;
 }) {
   const rows = (childrenOf[path] ?? []).filter((row) => !HEAVY_DIRS.has(row.name));
 
@@ -2240,82 +2241,31 @@ function Tree({
         const prev = rows[index - 1];
         const separated = on && Boolean(prev && (selected.includes(prev.path) || activePath === prev.path));
         const editing = renaming === row.path || creating === row.path;
-        const dragging = Boolean(dragPaths?.includes(row.path));
-        const dropHere = Boolean(isDir && dropTarget === row.path);
         return (
-          <div key={row.path} className={`file-branch ${separated ? "mt-1" : ""}`}>
-            <div
-              data-path={row.path}
-              data-kind={row.kind}
-              draggable={!editing}
-              onDragStart={(ev) => {
-                const paths = onDragPaths(row.path);
-                if (!canMoveSelection(paths, nodeMap)) {
-                  ev.preventDefault();
-                  return;
-                }
-                ev.dataTransfer.setData(FILE_DRAG_TYPE, paths.join("\n"));
-                ev.dataTransfer.setData("text/plain", paths.join("\n"));
-                ev.dataTransfer.effectAllowed = "move";
-                const preview = dragPreviewLabel(paths, nodeMap);
-                setFileDragImage(
-                  ev.dataTransfer,
-                  ev.currentTarget,
-                  preview.count > 1 ? `${preview.count} items` : preview.name,
-                );
-                onDragChange(paths);
-              }}
-              onDragEnd={() => {
-                markFileDrop(null);
-                onDragChange(null);
-                onDropTarget(null);
-              }}
-              onContextMenu={(ev) => {
-                ev.preventDefault();
-                onContext(row.path, ev.clientX, ev.clientY);
-              }}
-              onClick={(ev) => {
-                if (ev.metaKey || ev.ctrlKey || ev.shiftKey) {
-                  onSelect(row.path, row.kind, ev);
-                  return;
-                }
-                if (isDir) onToggle(row.path);
-                else onSelect(row.path, row.kind, ev);
-              }}
-              onDoubleClick={() => {
-                if (!isDir) onOpen(row.path, "pin");
-              }}
-              className={`file-row flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] select-none hover:bg-wash ${
-                editing ? "cursor-text" : "cursor-grab"
-              } ${on ? "bg-wash-strong" : ""} ${dragging ? "opacity-40" : ""} ${
-                dropHere ? FILE_DROP_CLASS : ""
-              } ${dirty && !dropHere ? "text-ok" : "text-ink/90"}`}
-              style={{ paddingLeft: 8 + depth * 12 }}
-            >
-              <span className="flex min-w-0 flex-1 items-center gap-1">
-                {isDir ? (
-                  <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-3 text-muted" />
-                ) : (
-                  <span className="inline-block w-3" />
-                )}
-                {isDir ? (
-                  <Symbol name="folder.fill" className={`size-3.5 ${dirty ? "text-ok" : "text-accent"}`} />
-                ) : (
-                  <FileIcon name={row.name} className="size-3.5 text-muted" />
-                )}
-                {editing ? (
-                  <NameField
-                    value={row.name}
-                    onCommit={(name) => (creating === row.path ? onCreateCommit(row.path, name) : onRenameCommit(row.path, name))}
-                  />
-                ) : (
-                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                )}
-              </span>
-              {isDir ? <span className="file-drop-label">Move here</span> : null}
-              {!isDir && !editing ? <GitLineStats additions={stats.additions} deletions={stats.deletions} /> : null}
-            </div>
-            {isDir && open && (
+          <FileRow
+            key={row.path}
+            row={row}
+            depth={depth}
+            separated={separated}
+            isDir={isDir}
+            open={open}
+            dirty={dirty}
+            stats={stats}
+            on={on}
+            editing={editing}
+            dragging={Boolean(dragPaths?.includes(row.path))}
+            dropHere={Boolean(isDir && dropTarget === row.path)}
+            dragPaths={onDragPaths(row.path)}
+            canDrag={!editing && canMoveSelection(onDragPaths(row.path), nodeMap)}
+            onToggle={onToggle}
+            onSelect={onSelect}
+            onOpen={onOpen}
+            onContext={onContext}
+            onRenameCommit={onRenameCommit}
+            onCreateCommit={onCreateCommit}
+            creating={creating === row.path}
+          >
+            {isDir && open ? (
               <Tree
                 path={row.path}
                 depth={depth + 1}
@@ -2340,15 +2290,142 @@ function Tree({
                 onNewFileCancel={onNewFileCancel}
                 onContext={onContext}
                 onDragPaths={onDragPaths}
-                onDragChange={onDragChange}
-                dragPathsRef={dragPathsRef}
-                onDropTarget={onDropTarget}
-                onMove={onMove}
               />
-            )}
-          </div>
+            ) : null}
+          </FileRow>
         );
       })}
+    </div>
+  );
+}
+
+function FileRow({
+  row,
+  depth,
+  separated,
+  isDir,
+  open,
+  dirty,
+  stats,
+  on,
+  editing,
+  dragging,
+  dropHere,
+  dragPaths,
+  canDrag,
+  onToggle,
+  onSelect,
+  onOpen,
+  onContext,
+  onRenameCommit,
+  onCreateCommit,
+  creating,
+  children,
+}: {
+  row: Entry;
+  depth: number;
+  separated: boolean;
+  isDir: boolean;
+  open: boolean;
+  dirty: boolean;
+  stats: { additions: number; deletions: number };
+  on: boolean;
+  editing: boolean;
+  dragging: boolean;
+  dropHere: boolean;
+  dragPaths: string[];
+  canDrag: boolean;
+  onToggle: (path: string) => void;
+  onSelect: (path: string, kind: string, ev: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
+  onOpen: (path: string, mode?: "preview" | "pin") => void;
+  onContext: (path: string, x: number, y: number) => void;
+  onRenameCommit: (path: string, name: string) => void;
+  onCreateCommit: (path: string, name: string) => void;
+  creating: boolean;
+  children?: ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
+    id: fileRowDragId(row.path),
+    disabled: !canDrag,
+    data: { paths: dragPaths } satisfies FileDragData,
+  });
+  const faceRef = useRef<HTMLDivElement | null>(null);
+  const folderDrop = useDroppable({
+    id: fileDirDropId(row.path),
+    disabled: !isDir,
+    data: { path: row.path, kind: "dir", rowRef: faceRef },
+  });
+  const press = useRef<{ x: number; y: number } | null>(null);
+  const dragListeners = canDrag && !editing ? listeners : undefined;
+  return (
+    <div ref={setDragRef} className={`file-branch ${separated ? "mt-1" : ""}`}>
+      <div
+        ref={(node) => {
+          faceRef.current = node;
+          if (isDir) folderDrop.setNodeRef(node);
+        }}
+        data-path={row.path}
+        data-kind={row.kind}
+        {...(canDrag && !editing ? attributes : {})}
+        {...dragListeners}
+        {...(dragListeners
+          ? {
+              onPointerDown: (ev: ReactPointerEvent<HTMLDivElement>) => {
+                press.current = { x: ev.clientX, y: ev.clientY };
+                const start = dragListeners.onPointerDown as (event: ReactPointerEvent<HTMLDivElement>) => void;
+                start(ev);
+              },
+            }
+          : {})}
+        onContextMenu={(ev) => {
+          ev.preventDefault();
+          onContext(row.path, ev.clientX, ev.clientY);
+        }}
+        onClick={(ev) => {
+          const start = press.current;
+          press.current = null;
+          if (start && Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > 4) return;
+          if (ev.metaKey || ev.ctrlKey || ev.shiftKey) {
+            onSelect(row.path, row.kind, ev);
+            return;
+          }
+          if (isDir) onToggle(row.path);
+          else onSelect(row.path, row.kind, ev);
+        }}
+        onDoubleClick={() => {
+          if (!isDir) onOpen(row.path, "pin");
+        }}
+        className={`file-row flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] select-none hover:bg-wash ${
+          editing ? "cursor-text" : "cursor-grab touch-none active:cursor-grabbing"
+        } ${on ? "bg-wash-strong" : ""} ${dragging || isDragging ? "opacity-40" : ""} ${
+          dropHere ? FILE_DROP_CLASS : ""
+        } ${dirty && !dropHere ? "text-ok" : "text-ink/90"}`}
+        style={{ paddingLeft: 8 + depth * 12 }}
+      >
+              <span className="flex min-w-0 flex-1 items-center gap-1">
+                {isDir ? (
+                  <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-3 text-muted" />
+                ) : (
+                  <span className="inline-block w-3" />
+                )}
+                {isDir ? (
+                  <Symbol name="folder.fill" className={`size-3.5 ${dirty ? "text-ok" : "text-accent"}`} />
+                ) : (
+                  <FileIcon name={row.name} className="size-3.5 text-muted" />
+                )}
+                {editing ? (
+                  <NameField
+                    value={row.name}
+                    onCommit={(name) => (creating ? onCreateCommit(row.path, name) : onRenameCommit(row.path, name))}
+                  />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                )}
+              </span>
+              {isDir ? <span className="file-drop-label">Move here</span> : null}
+              {!isDir && !editing ? <GitLineStats additions={stats.additions} deletions={stats.deletions} /> : null}
+            </div>
+      {children}
     </div>
   );
 }
@@ -2438,6 +2515,7 @@ function NameField({ value, onCommit }: { value: string; onCommit: (name: string
       ref={ref}
       value={draft}
       onChange={(ev) => setDraft(ev.target.value)}
+      onPointerDown={(ev) => ev.stopPropagation()}
       onClick={(ev) => ev.stopPropagation()}
       onDoubleClick={(ev) => ev.stopPropagation()}
       onBlur={() => onCommit(draft)}

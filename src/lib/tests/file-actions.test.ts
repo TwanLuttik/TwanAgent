@@ -4,6 +4,12 @@ import {
   canDropOnDir,
   canMoveSelection,
   canRenameSelection,
+  fileDirDropId,
+  fileDirPathFromDropId,
+  fileDropDest,
+  fileDropTarget,
+  fileRowDragId,
+  fileRowPathFromDragId,
   nextFolderName,
   topLevelPaths,
   validEntryName,
@@ -69,6 +75,31 @@ describe("file selection rules", () => {
     for (const name of [".env", ".gitignore", ".env.local", " .env "]) {
       assert.equal(validNewFileName(name), true, name);
     }
+  });
+
+  it("aims a pointer at the folder under it, or the project root", () => {
+    assert.equal(fileDropDest("src", "dir", true), "src");
+    assert.equal(fileDropDest("src/a.ts", "file", true), "src");
+    assert.equal(fileDropDest("readme.md", "file", true), "");
+    assert.equal(fileDropDest(null, null, true), "");
+    assert.equal(fileDropDest("src", "dir", false), null);
+  });
+
+  it("keeps a drop only when the folder can take the selection", () => {
+    assert.equal(fileDropTarget(["src/a.ts"], "src/lib", tree), "src/lib");
+    assert.equal(fileDropTarget(["src/a.ts"], "", tree), "");
+    assert.equal(fileDropTarget(["src/a.ts"], "src", tree), null);
+    assert.equal(fileDropTarget(["src"], "src/lib", tree), null);
+    assert.equal(fileDropTarget(["src", "readme.md"], "src/lib", tree), null);
+    assert.equal(fileDropTarget(["readme.md"], null, tree), null);
+  });
+
+  it("round-trips row and folder ids that contain colons", () => {
+    assert.equal(fileRowPathFromDragId(fileRowDragId("src/a:b.ts")), "src/a:b.ts");
+    assert.equal(fileDirPathFromDropId(fileDirDropId("")), "");
+    assert.equal(fileDirPathFromDropId(fileDirDropId("src/lib")), "src/lib");
+    assert.equal(fileRowPathFromDragId("other"), null);
+    assert.equal(fileDirPathFromDropId(fileRowDragId("src")), null);
   });
 
   it("rejects empty, path, and trailing-dot file names", () => {

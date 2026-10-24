@@ -643,6 +643,29 @@ pub fn server_by_host(conn: &Connection, host: &str, port: u16) -> Result<Option
     .map_err(Error::from)
 }
 
+/// Ask the server which providers have a key. Prints one id per line. The key text stays there.
+pub fn provider_keys_present_script() -> &'static str {
+    r#"python3 - <<'PY'
+import json, os
+path = os.path.expanduser("~/.twanagent/provider-keys.json")
+keys = {}
+if os.path.isfile(path):
+    try:
+        loaded = json.load(open(path, encoding="utf-8"))
+        if isinstance(loaded, dict):
+            keys = loaded
+    except (OSError, ValueError):
+        keys = {}
+for name, env in (("xai", "XAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"), ("minimax", "MINIMAX_API_KEY")):
+    value = keys.get(name)
+    value = value.strip() if isinstance(value, str) else ""
+    if not value:
+        value = os.environ.get(env, "").strip()
+    if value:
+        print(name)
+PY"#
+}
+
 /// Which provider keys were copied to this server. The key text is not stored here.
 pub fn server_provider_keys(conn: &Connection, id: &str) -> Result<Vec<String>> {
     let raw: Option<String> = conn
@@ -667,7 +690,12 @@ pub fn set_server_provider_keys(conn: &Connection, id: &str, providers: &[String
 
 pub fn parse_provider_keys(raw: Option<&str>) -> Vec<String> {
     let Some(raw) = raw else { return Vec::new() };
-    normalize_provider_keys(&raw.split(',').map(str::to_string).collect::<Vec<_>>())
+    // The database stores `xai,anthropic`. The server prints one id per line.
+    let names: Vec<String> = raw
+        .split(|ch: char| ch == ',' || ch == '\n' || ch.is_whitespace())
+        .map(str::to_string)
+        .collect();
+    normalize_provider_keys(&names)
 }
 
 fn normalize_provider_keys(providers: &[String]) -> Vec<String> {
@@ -896,6 +924,7 @@ mod tests {
         assert_eq!(stored, vec!["xai", "minimax"]);
         assert_eq!(server_provider_keys(&conn, &saved.id).unwrap(), vec!["xai", "minimax"]);
         assert_eq!(parse_provider_keys(Some("anthropic,ssh")), vec!["anthropic"]);
+        assert_eq!(parse_provider_keys(Some("minimax\nxai\n")), vec!["xai", "minimax"]);
     }
 
     #[test]

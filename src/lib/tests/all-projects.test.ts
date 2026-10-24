@@ -17,6 +17,7 @@ import {
   toggleCollapsedProject,
   applyLiveProjectChats,
   isLocalCloudDraft,
+  groupsFromSidebarSnapshot,
   mergeLoadedProjectGroups,
   preferredOpenConversation,
   placeProjectChats,
@@ -27,6 +28,10 @@ import {
   sidebarActivity,
   visibleConversations,
   visibleJourneys,
+  archiveTargets,
+  chatSelectionKey,
+  nextChatSelection,
+  type ChatSelection,
 } from "../all-projects.ts";
 import type { JourneySummary } from "../journey.ts";
 import type { ConversationSummary } from "../tauri.ts";
@@ -222,6 +227,30 @@ describe("applyLiveProjectChats", () => {
   });
 });
 
+describe("groupsFromSidebarSnapshot", () => {
+  it("paints cached chats with the project instead of an empty header", () => {
+    const groups = groupsFromSidebarSnapshot(
+      [
+        { name: "alpha", path: "/app/alpha" },
+        { name: "beta", path: "/app/beta" },
+        { name: "new", path: "/app/new" },
+      ],
+      [
+        { path: "/app/alpha/", conversations: [chat("a1", "Alpha")], journeys: [journey("j1")] },
+        { path: "/app/beta", conversations: [chat("b1")], journeys: [] },
+      ],
+    );
+    assert.deepEqual(
+      groups.map((group) => [group.name, group.conversations.map((row) => row.id), group.journeys.map((row) => row.id)]),
+      [
+        ["alpha", ["a1"], ["j1"]],
+        ["beta", ["b1"], []],
+        ["new", [], []],
+      ],
+    );
+  });
+});
+
 describe("mergeLoadedProjectGroups", () => {
   it("keeps projects the latest pass has not loaded yet", () => {
     const previous = buildProjectGroups(
@@ -312,7 +341,28 @@ describe("mergeLoadedProjectGroups", () => {
     );
     const next = mergeLoadedProjectGroups(previous, incoming);
     assert.equal(next[0]?.server?.online, false);
-    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["c1", "c2"]);
+  });
+
+  it("keeps a project created while the sidebar was still loading", () => {
+    const previous = buildProjectGroups(
+      [
+        { name: "hello-world", path: "/Users/me/projects/hello-world" },
+        { name: "cloud", path: "/mounts/cloud" },
+      ],
+      [],
+      {},
+    );
+    const incoming = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud" }],
+      [],
+      { "/mounts/cloud": { conversations: [chat("c1")], journeys: [] } },
+    );
+    const next = mergeLoadedProjectGroups(previous, incoming);
+    assert.deepEqual(
+      next.map((group) => group.path),
+      ["/mounts/cloud", "/Users/me/projects/hello-world"],
+    );
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["c1"]);
   });
 });
 
@@ -598,6 +648,48 @@ describe("archived conversations", () => {
     assert.deepEqual(visibleJourneys(journeys, rows, true).map((row) => row.id), ["j1"]);
     assert.equal(projectHasArchived(rows), true);
     assert.equal(projectHasArchived([chat("live")]), false);
+  });
+});
+
+describe("chat selection", () => {
+  const order: ChatSelection[] = [
+    { path: "/work/orca", id: "a" },
+    { path: "/work/orca", id: "b" },
+    { path: "/work/notes", id: "a" },
+    { path: "/work/notes", id: "c" },
+  ];
+
+  it("keeps the same chat id in two projects apart", () => {
+    assert.notEqual(chatSelectionKey("/work/Orca/", "a"), chatSelectionKey("/work/notes", "a"));
+    const next = nextChatSelection([], null, order[2], order, { toggle: true, range: false });
+    assert.deepEqual(next.selected, [{ path: "/work/notes", id: "a" }]);
+    const both = nextChatSelection(next.selected, next.anchor, order[0], order, { toggle: true, range: false });
+    assert.deepEqual(
+      both.selected.map((row) => chatSelectionKey(row.path, row.id)),
+      [chatSelectionKey("/work/notes", "a"), chatSelectionKey("/work/orca", "a")],
+    );
+  });
+
+  it("extends a shift range across projects and toggles a row back out", () => {
+    const ranged = nextChatSelection([order[0]], order[0], order[3], order, { toggle: false, range: true });
+    assert.deepEqual(ranged.selected, order);
+    assert.deepEqual(ranged.anchor, order[0]);
+    const dropped = nextChatSelection(ranged.selected, ranged.anchor, order[2], order, {
+      toggle: true,
+      range: false,
+    });
+    assert.deepEqual(
+      dropped.selected.map((row) => row.id + "@" + row.path),
+      ["a@/work/orca", "b@/work/orca", "c@/work/notes"],
+    );
+  });
+
+  it("archives the selection only when the clicked chat is already in it", () => {
+    assert.deepEqual(
+      archiveTargets([order[0], order[2]], order[2]).map((row) => row.path),
+      ["/work/orca", "/work/notes"],
+    );
+    assert.deepEqual(archiveTargets([order[0], order[2]], order[1]), [order[1]]);
   });
 });
 

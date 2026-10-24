@@ -14,7 +14,7 @@ fn http_client() -> &'static reqwest::Client {
     crate::model_providers::runner::http_client()
 }
 
-fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+pub(crate) fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static STREAMS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -593,7 +593,13 @@ pub async fn dev_chat_start(
     };
     let effort = effort.filter(|s| !s.trim().is_empty());
     let context_window = context_window.filter(|n| *n > 0);
-    let cancel = Arc::new(AtomicBool::new(false));
+    // A local turn already registered this stream's cancel flag. Keep that one so Stop
+    // reaches the request. A page-started chat has no flag yet.
+    let cancel = streams()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&stream_id).cloned())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
     if let Ok(mut map) = streams().lock() {
         map.insert(stream_id.clone(), cancel.clone());
     }

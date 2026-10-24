@@ -192,6 +192,36 @@ describe("buildUsageSnapshot", () => {
     assert.equal(snap.projects.length, 1);
     assert.equal(snap.projects[0].name, "beta");
   });
+
+  it("splits one model's tokens between this machine and a paired server", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/proj/alpha",
+        model: "minimax-m3",
+        prompt_tokens: 30,
+        completion_tokens: 10,
+        total_tokens: 40,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "c2",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/proj/hello",
+        model: "minimax-m3",
+        source: "server:hello:4",
+        prompt_tokens: 80,
+        completion_tokens: 20,
+        total_tokens: 100,
+      }),
+    ];
+    const snap = buildUsageSnapshot(events, { range: 7, nowMs: now });
+    assert.equal(snap.models.length, 1);
+    assert.equal(snap.models[0].total, 140);
+    assert.equal(snap.models[0].client, 40);
+    assert.equal(snap.models[0].server, 100);
+  });
 });
 
 describe("estimated cost", () => {

@@ -23,6 +23,8 @@ Deleting the index loses nothing. The next list rebuilds it from the project dat
 
 ## When it updates
 
+`dev_sidebar_snapshot` reads every indexed project in one query. Launch paints that list once. A project with no index row is filled afterwards from its own store.
+
 `dev_list_conversations` and `dev_list_journeys` read the index when `sidebar_projects` has a row for that project. The first list for a project reads its `store.db` once, writes the index, and returns those rows.
 
 These commands write the project database first, then refresh that project's index:

@@ -332,11 +332,8 @@ pub async fn dev_workspace_remote(
             .ok_or_else(|| Error::NotFound("machine not found".into()))?;
         let online = machine_reachable(&machine.host, machine.port);
         let paired_server = super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
-        let providers = paired_server
-            .as_ref()
-            .map(|server| super::agent_server::server_provider_keys(&conn, &server.id))
-            .transpose()?
-            .unwrap_or_default();
+        // The file on the server is the truth. The local note is only a fallback when SSH cannot answer.
+        let providers = provider_keys_on_server(&work, &machine, paired_server.as_ref(), &conn)?;
         let paired = paired_server.as_ref().is_some_and(|server| server.paired);
         Ok(Some(WorkspaceRemote {
             machine_id: machine.id,
@@ -759,6 +756,30 @@ fn write_token_mode(work: &ServerWork, machine: &Machine, server_id: &str, mode:
     }
     super::agent_server::set_server_token(&conn, server_id, &token)?;
     Ok(())
+}
+
+/// Providers with a key on that machine. Falls back to the last copy this Mac recorded.
+fn provider_keys_on_server(
+    work: &ServerWork,
+    machine: &Machine,
+    server: Option<&super::agent_server::AgentServer>,
+    conn: &rusqlite::Connection,
+) -> Result<Vec<String>> {
+    let saved = server
+        .map(|server| super::agent_server::server_provider_keys(conn, &server.id))
+        .transpose()?
+        .unwrap_or_default();
+    if !machine_reachable(&machine.host, machine.port) {
+        return Ok(saved);
+    }
+    let stdout = require_exec(work, machine, super::agent_server::provider_keys_present_script(), 15)?;
+    let names = super::agent_server::parse_provider_keys(Some(stdout.trim()));
+    if let Some(server) = server {
+        if names != saved {
+            let _ = super::agent_server::set_server_provider_keys(conn, &server.id, &names);
+        }
+    }
+    Ok(names)
 }
 
 fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_service::ProviderKeys {

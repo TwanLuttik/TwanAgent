@@ -60,6 +60,7 @@ import type { DetectedSkill } from "../lib/skill";
 import {
   applySubagentToChat,
   emptySubagentDock,
+  subagentFromLocalEvent,
   type SubagentDockState,
   type SubagentRecord,
 } from "../lib/subagent";
@@ -75,6 +76,7 @@ import {
   claimDraftForChat,
   draftForChat,
   isTurnFailureMessage,
+  mergeHostedTranscript,
   modelForTurn,
   markUnseenFinished,
   patchRunningTurn,
@@ -290,6 +292,16 @@ function applyDetachedEvent(
     const streamReasoning = `${live?.streamReasoning ?? ""}${event.text}`;
     rememberLive(id, { streamReasoning });
     if (visible()) setStreamReasoning(streamReasoning);
+    return;
+  }
+  if (event.kind === "subagent" && event.text) {
+    const subagent = subagentFromLocalEvent(event.text);
+    if (!subagent) return;
+    const dock = applySubagentToChat(subagentsByChatRef.current, id, subagent);
+    if (visible()) {
+      setSubagents(dock.agents);
+      setExpandedAgents(dock.expanded);
+    }
     return;
   }
   if (event.kind === "tool" && event.tool) {
@@ -1147,7 +1159,10 @@ async function runTurn(
           finishWait?.();
         } else if (ev.kind === "done") {
           const saved = ev.conversation;
-          const messages = (saved?.messages as ChatMessage[] | undefined) ?? [];
+          const incoming = (saved?.messages as ChatMessage[] | undefined) ?? [];
+          // A stopped turn can publish the transcript from before this prompt.
+          // The optimistic copy is already on screen, so a shorter one does not replace it.
+          const messages = mergeHostedTranscript(liveByChatRef.current.get(id)?.messages ?? [], incoming);
           if (messages.length) {
             latestMessages = messages;
             rememberLive(id, { messages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
@@ -1180,6 +1195,10 @@ async function runTurn(
       if (turnsRef.current.get(id) === ac) turnsRef.current.delete(id);
       clearRunning(id);
       syncRunningFromTurns();
+      // Stop ends the wait, not the transcript. The prompt stays in the live map
+      // so the next send and a sidebar reload cannot paint the previous chat.
+      const kept = liveByChatRef.current.get(id);
+      if (kept && visible()) setMessages(kept.messages);
       if (visible()) {
         setRunningActivity(null);
         setStreamText("");

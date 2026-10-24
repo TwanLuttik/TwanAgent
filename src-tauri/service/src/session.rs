@@ -58,6 +58,12 @@ pub(crate) fn handle_frame(
             Ok(()) => ServerFrame::Keys { present: false },
             Err(err) => ServerFrame::Error { message: err.to_string() },
         },
+        ClientFrame::UsageSince { since_id } => match crate::store::with_conn(&service.store_dir, |conn| {
+            crate::usage_log::list_since(conn, since_id.max(0))
+        }) {
+            Ok(rows) => ServerFrame::Usage { rows },
+            Err(err) => ServerFrame::Error { message: err.to_string() },
+        },
     }
 }
 

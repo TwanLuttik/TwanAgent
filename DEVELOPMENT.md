@@ -124,6 +124,25 @@ addition to CI packaging.
 
 A signed build checks GitHub releases when the sidebar opens. If a newer prerelease has a `TwanAgent_*.app.tar.gz` asset, the version row shows Update. That downloads the archive, replaces this `.app`, and restarts. `tauri dev` can see the update but cannot install it, because it is not running from `TwanAgent.app`.
 
+## Release
+
+The desktop version and the server version are two numbers.
+
+- Desktop: `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. This is the GitHub tag, such as `v1.0.0-beta.4`.
+- Server: `src-tauri/service/Cargo.toml`. `twanagent-server --version` prints this. Bump it whenever the server binary changes, even when the desktop version stays put.
+
+One tag publishes both. Pushing `v*` runs `.github/workflows/release.yml`. The macOS job creates the GitHub release and attaches the universal app. The Windows job attaches the unsigned installer and `twanagent-server` for Windows. The server job attaches the macOS and Linux server binaries. The asset names carry the service crate version:
+
+```
+twanagent-server-<server>-aarch64-apple-darwin
+twanagent-server-<server>-x86_64-apple-darwin
+twanagent-server-<server>-aarch64-unknown-linux-gnu
+twanagent-server-<server>-x86_64-unknown-linux-gnu
+twanagent-server-<server>-x86_64-pc-windows-msvc.exe
+```
+
+The app still installs a server by copying a binary built on that Mac. The release assets are what a machine without a local Cargo build can download. A server-only fix bumps the service crate, commits, and pushes a new desktop tag so the binaries are rebuilt and attached. Do not retag an existing `v*`. GitHub will not run the workflow again for a tag that already exists.
+
 ## Layout
 
 - `src/` React interface, chat client, and frontend tests in `src/lib/tests/`

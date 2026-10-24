@@ -35,6 +35,13 @@ fn apply_line(data: &str, open: &mut OpenRound) {
     let Ok(json) = serde_json::from_str::<Value>(data) else {
         return;
     };
+    if let Some(usage) = xai::parse_usage(&json) {
+        open.note_usage(
+            Some(usage.prompt_tokens),
+            Some(usage.completion_tokens),
+            Some(usage.cache_read_tokens),
+        );
+    }
     let Some(choice) = json.get("choices").and_then(|rows| rows.get(0)) else {
         return;
     };

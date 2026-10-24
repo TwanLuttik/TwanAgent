@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 import {
   canPersistTurn,
   closeDanglingToolCalls,
+  hostedChatToOpen,
   liveTurnMessages,
+  mergeHostedTranscript,
   clearPendingForChat,
   clearUnseenFinished,
   dequeuePending,
@@ -107,6 +109,30 @@ describe("liveTurnMessages", () => {
       }),
       alpha,
     );
+  });
+
+  it("keeps the chat on screen while the server list still has only the previous one", () => {
+    assert.equal(
+      hostedChatToOpen({ currentId: "new-chat", currentInRows: false, preferredId: "older-chat" }),
+      "new-chat",
+    );
+    assert.equal(
+      hostedChatToOpen({ currentId: "new-chat", currentInRows: true, preferredId: "older-chat" }),
+      "older-chat",
+    );
+    assert.equal(hostedChatToOpen({ currentId: "", currentInRows: false, preferredId: "older-chat" }), "older-chat");
+  });
+
+  it("does not let a shorter hosted transcript replace the prompt already on screen", () => {
+    const shown = [
+      { role: "user" as const, content: "create a asci lavalamp" },
+      { role: "user" as const, content: "what can you see on this machine?" },
+    ];
+    const previous = [{ role: "user" as const, content: "create a asci lavalamp" }];
+    assert.equal(mergeHostedTranscript(shown, previous), shown);
+    assert.deepEqual(mergeHostedTranscript(previous, shown), shown);
+    assert.deepEqual(mergeHostedTranscript([], previous), previous);
+    assert.equal(mergeHostedTranscript(shown, []), shown);
   });
 
   it("ignores a saved transcript from another project or another chat", () => {

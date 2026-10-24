@@ -17,11 +17,20 @@ use crate::error::{Error, Result};
 use crate::keys::ProviderKeys;
 use crate::providers::{self, ProviderId};
 
+/// Token counts from one model round. Absent when the provider sent none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RoundUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Round {
     pub text: String,
     pub tool_calls: Vec<ToolCall>,
     pub error: Option<String>,
+    pub usage: Option<RoundUsage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +190,7 @@ pub(super) struct OpenRound {
     /// Anthropic content-block index to the tool slot. A thinking block must not shift the tool.
     block_slots: Vec<Option<usize>>,
     stop: bool,
+    usage: Option<RoundUsage>,
 }
 
 impl Default for OpenRound {
@@ -191,6 +201,7 @@ impl Default for OpenRound {
             calls: Vec::new(),
             block_slots: Vec::new(),
             stop: false,
+            usage: None,
         }
     }
 }
@@ -232,11 +243,26 @@ impl OpenRound {
         if self.pending.is_empty() { None } else { Some(std::mem::take(&mut self.pending)) }
     }
 
+    /// A later usage event fills in only the sides it actually reported.
+    pub(super) fn note_usage(&mut self, prompt: Option<u64>, completion: Option<u64>, cache_read: Option<u64>) {
+        let usage = self.usage.get_or_insert(RoundUsage::default());
+        if let Some(prompt) = prompt.filter(|value| *value != u64::MAX) {
+            usage.prompt_tokens = prompt;
+        }
+        if let Some(completion) = completion.filter(|value| *value != u64::MAX) {
+            usage.completion_tokens = completion;
+        }
+        if let Some(cache_read) = cache_read.filter(|value| *value != u64::MAX) {
+            usage.cache_read_tokens = cache_read;
+        }
+    }
+
     fn finish(self) -> Round {
         Round {
             text: self.text,
             tool_calls: self.calls.into_iter().filter(|call| !call.name.is_empty()).collect(),
             error: None,
+            usage: self.usage,
         }
     }
 }
@@ -285,7 +311,7 @@ pub(super) fn failed(name: &str, status: reqwest::StatusCode, body: &str) -> Rou
         "MiniMax" => crate::providers::minimax::http_error_message(status.as_u16(), body),
         _ => crate::providers::anthropic::http_error_message(status.as_u16(), body),
     };
-    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message) }
+    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message), usage: None }
 }
 
 #[cfg(test)]

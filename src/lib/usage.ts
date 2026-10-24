@@ -17,6 +17,8 @@ export type UsageEvent = {
   /** Prompt tokens served from cache. Already inside `prompt_tokens`. Older rows omit it. */
   cache_read_tokens?: number;
   duration_ms?: number | null;
+  /** Non-empty when the row was copied from a paired server. Empty for a turn recorded here. */
+  source?: string;
 };
 
 export type UsageTotals = { prompt: number; completion: number; total: number };
@@ -25,7 +27,18 @@ export type UsageDay = UsageTotals & { date: string };
 
 export type UsageProject = UsageTotals & { path: string; name: string };
 
-export type UsageModel = UsageTotals & { model: string };
+export type UsageModel = UsageTotals & {
+  model: string;
+  /** Tokens from turns recorded on this machine. */
+  client: number;
+  /** Tokens copied from a paired server. */
+  server: number;
+};
+
+/** A copied row starts with `server:`. A turn recorded here has no source. */
+export function usageOnServer(ev: UsageEvent): boolean {
+  return (ev.source ?? "").trim().startsWith("server:");
+}
 
 export type UsageSnapshot = {
   totals: UsageTotals;
@@ -456,11 +469,19 @@ export function buildUsageSnapshot(
     const day = byDay.get(dayKey(ev.recorded_at));
     if (day) addTotals(day, delta);
     const modelId = ev.model.trim();
+    const onServer = usageOnServer(ev);
     const prevModel = byModel.get(modelId);
     if (prevModel) {
       addTotals(prevModel, delta);
+      if (onServer) prevModel.server += delta.total;
+      else prevModel.client += delta.total;
     } else {
-      byModel.set(modelId, { model: modelId, ...delta });
+      byModel.set(modelId, {
+        model: modelId,
+        ...delta,
+        client: onServer ? 0 : delta.total,
+        server: onServer ? delta.total : 0,
+      });
     }
     const key = projectKey(ev.workspace_path);
     const prev = byProject.get(key);

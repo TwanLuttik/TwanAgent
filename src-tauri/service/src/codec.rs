@@ -30,6 +30,8 @@ pub enum ClientFrame {
     CancelTurn { id: String },
     CopyKeys(ProviderKeys),
     RemoveKeys,
+    /// Usage rows written after `since_id`. Zero reads the whole log.
+    UsageSince { since_id: i64 },
 }
 
 /// Frames the server sends. `status` is display text. The tool already ran on the server.
@@ -57,6 +59,7 @@ pub enum ServerFrame {
         description: String,
     },
     Error { message: String },
+    Usage { rows: Vec<crate::usage_log::UsageRow> },
 }
 
 pub fn encode_frame<T: Serialize>(frame: &T) -> Result<Vec<u8>> {

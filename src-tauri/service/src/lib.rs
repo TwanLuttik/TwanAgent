@@ -17,6 +17,7 @@ mod session;
 mod store;
 mod tools;
 mod turn;
+mod usage_log;
 
 pub use providers::{anthropic, minimax, registry, xai};
 

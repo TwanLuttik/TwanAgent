@@ -103,6 +103,35 @@ export function liveTurnMessages(input: {
   return input.live;
 }
 
+/**
+ * A hosted turn shows the prompt immediately, then the server sends the saved
+ * transcript only when the turn finishes. A list that comes back while the
+ * first prompt is still running does not contain that chat yet. Opening the
+ * newest saved chat then paints the previous conversation over the one the
+ * user just sent. The chat on screen wins until that list includes it.
+ */
+export function hostedChatToOpen(input: {
+  currentId: string;
+  currentInRows: boolean;
+  preferredId: string;
+}): string {
+  if (input.currentId && !input.currentInRows) return input.currentId;
+  return input.preferredId;
+}
+
+/**
+ * The server copy of a hosted chat can be older than the prompt already on
+ * screen. Status frames do not carry messages, and a stopped turn may save
+ * only the first prompt. Keep the longer transcript so a resend does not
+ * replace the new prompt with the previous one.
+ */
+export function mergeHostedTranscript(shown: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (incoming.length === 0) return shown;
+  if (shown.length === 0) return incoming;
+  if (incoming.length >= shown.length) return incoming;
+  return shown;
+}
+
 export function canPersistTurn(conversationId: string, deletedIds: Iterable<string>): boolean {
   if (!conversationId) return false;
   for (const id of deletedIds) {

@@ -124,6 +124,9 @@ export function truncateImageLabel(label: string): string {
 /**
  * Unique label for a new image. A second `shot.png` becomes `shot-2.png`.
  * `taken` is every label already used, including ones typed by hand.
+ * Long names are already cut to 16 characters, so the number is kept inside
+ * that budget. Truncating after inserting it used to drop the number and loop
+ * forever, which froze the window on the second screenshot.
  */
 export function uniqueImageTokenLabel(name: string, taken: Iterable<string>): string {
   const label = imageTokenLabel(name);
@@ -133,12 +136,21 @@ export function uniqueImageTokenLabel(name: string, taken: Iterable<string>): st
   const stem = dot > 0 ? label.slice(0, dot) : label;
   const ext = dot > 0 ? label.slice(dot) : "";
   let n = 2;
-  let next = truncateImageLabel(`${stem}-${n}${ext}`);
+  let next = numberedImageLabel(stem, n, ext);
   while (used.has(next.toLowerCase())) {
     n += 1;
-    next = truncateImageLabel(`${stem}-${n}${ext}`);
+    next = numberedImageLabel(stem, n, ext);
+    if (n > 9999) return next;
   }
   return next;
+}
+
+/** `stem-n.ext` in at most 16 characters. The number is never the part that is cut. */
+function numberedImageLabel(stem: string, n: number, ext: string): string {
+  const suffix = `-${n}${ext}`;
+  const room = IMAGE_TOKEN_VISIBLE - [...suffix].length;
+  const head = room > 0 ? [...stem].slice(0, room).join("").trimEnd() : "";
+  return `${head}${suffix}`;
 }
 
 export type ImageSpan = { start: number; end: number; id: string; label: string };

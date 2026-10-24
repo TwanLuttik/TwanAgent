@@ -1,7 +1,18 @@
 name: Release
 
-# Push a v* tag, or run this by hand,
-# to build the app and attach it to a GitHub release.
+# Push a v* tag, or run this by hand, to publish one GitHub release.
+# The tag is the desktop version (`v1.0.0-beta.4`). The same release also
+# carries `twanagent-server` binaries. Their version is the service crate
+# version, which can move without the desktop version moving.
+#
+# Assets:
+#   TwanAgent_<version>_universal.app.tar.gz
+#   TwanAgent_<version>_x64-setup.exe
+#   twanagent-server-<server>-aarch64-apple-darwin
+#   twanagent-server-<server>-x86_64-apple-darwin
+#   twanagent-server-<server>-aarch64-unknown-linux-gnu
+#   twanagent-server-<server>-x86_64-unknown-linux-gnu
+#   twanagent-server-<server>-x86_64-pc-windows-msvc.exe
 on:
   workflow_dispatch:
   push:
@@ -82,6 +93,8 @@ jobs:
             macOS: download `TwanAgent.app.tar.gz`, unpack it, and move TwanAgent to Applications.
 
             Windows: download the x64 `TwanAgent_*-setup.exe` installer. Windows builds are unsigned.
+
+            Server: `twanagent-server-<version>-<target>` is the headless program. The version in that name is the service crate, not the desktop tag. Targets are `aarch64-apple-darwin`, `x86_64-apple-darwin`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu`, and `x86_64-pc-windows-msvc.exe`.
 
             An ad-hoc signed build still needs to be allowed once in System Settings, Privacy & Security. A Developer ID signature and notarization need the Apple secrets listed in the workflow file.
           releaseDraft: false
@@ -166,6 +179,9 @@ jobs:
       - name: Build unsigned NSIS installer
         run: bun run tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign --ci
 
+      - name: Build the Windows server
+        run: cargo build --manifest-path src-tauri/service/Cargo.toml --locked --release --target x86_64-pc-windows-msvc --bin twanagent-server
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
@@ -173,9 +189,99 @@ jobs:
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
 
+      - name: Upload the Windows server
+        uses: actions/upload-artifact@v4
+        with:
+          name: twanagent-server-windows
+          path: src-tauri/service/target/x86_64-pc-windows-msvc/release/twanagent-server.exe
+          if-no-files-found: error
+
+  server-macos:
+    name: twanagent-server macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/service
+
+      - name: Build macOS servers
+        run: |
+          set -euo pipefail
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --manifest-path src-tauri/service/Cargo.toml --locked --release --target "$target" --bin twanagent-server
+          done
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/service/Cargo.toml | head -n 1)
+          mkdir -p server-dist
+          cp "src-tauri/service/target/aarch64-apple-darwin/release/twanagent-server" "server-dist/twanagent-server-${version}-aarch64-apple-darwin"
+          cp "src-tauri/service/target/x86_64-apple-darwin/release/twanagent-server" "server-dist/twanagent-server-${version}-x86_64-apple-darwin"
+
+      - name: Upload macOS servers
+        uses: actions/upload-artifact@v4
+        with:
+          name: twanagent-server-macos
+          path: server-dist/twanagent-server-*
+          if-no-files-found: error
+
+  server-linux:
+    name: twanagent-server Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/service
+
+      - name: Install cross-linkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc-x86-64-linux-gnu
+          mkdir -p "$HOME/.cargo"
+          cat >> "$HOME/.cargo/config.toml" <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          [target.x86_64-unknown-linux-gnu]
+          linker = "x86_64-linux-gnu-gcc"
+          EOF
+
+      - name: Build Linux servers
+        env:
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CC_x86_64_unknown_linux_gnu: x86_64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          for target in aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            cargo build --manifest-path src-tauri/service/Cargo.toml --locked --release --target "$target" --bin twanagent-server
+          done
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/service/Cargo.toml | head -n 1)
+          mkdir -p server-dist
+          cp "src-tauri/service/target/aarch64-unknown-linux-gnu/release/twanagent-server" "server-dist/twanagent-server-${version}-aarch64-unknown-linux-gnu"
+          cp "src-tauri/service/target/x86_64-unknown-linux-gnu/release/twanagent-server" "server-dist/twanagent-server-${version}-x86_64-unknown-linux-gnu"
+
+      - name: Upload Linux servers
+        uses: actions/upload-artifact@v4
+        with:
+          name: twanagent-server-linux
+          path: server-dist/twanagent-server-*
+          if-no-files-found: error
+
   publish-windows:
-    name: Attach Windows installer to release
-    needs: [macos, windows]
+    name: Attach Windows installer and servers
+    needs: [macos, windows, server-macos, server-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -183,9 +289,24 @@ jobs:
         with:
           name: TwanAgent-windows-x86_64
           path: windows-installer
+      - uses: actions/download-artifact@v4
+        with:
+          name: twanagent-server-macos
+          path: server-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: twanagent-server-linux
+          path: server-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: twanagent-server-windows
+          path: server-windows
       - name: Upload to the existing release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          gh release upload "v$version" windows-installer/*-setup.exe --clobber
+          server=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/service/Cargo.toml | head -n 1)
+          mv "server-windows/twanagent-server.exe" "server-dist/twanagent-server-${server}-x86_64-pc-windows-msvc.exe"
+          gh release upload "v$version" windows-installer/*-setup.exe server-dist/twanagent-server-* --clobber

@@ -60,6 +60,58 @@ export function isSameProject(a: string, b: string): boolean {
   return Boolean(a) && Boolean(b) && projectKey(a) === projectKey(b);
 }
 
+/** One sidebar chat. The project is part of the key because ids can repeat across folders. */
+export type ChatSelection = { path: string; id: string };
+
+export function chatSelectionKey(path: string, id: string): string {
+  return `${projectKey(path)}\t${id}`;
+}
+
+export function sameChatSelection(a: ChatSelection, b: ChatSelection): boolean {
+  return a.id === b.id && isSameProject(a.path, b.path);
+}
+
+/**
+ * Click selection for the sidebar. A plain click keeps one chat. Cmd/Ctrl toggles
+ * it into the set. Shift extends from the anchor through the visible order.
+ */
+export function nextChatSelection(
+  current: ChatSelection[],
+  anchor: ChatSelection | null,
+  clicked: ChatSelection,
+  order: ChatSelection[],
+  mods: { toggle: boolean; range: boolean },
+): { selected: ChatSelection[]; anchor: ChatSelection } {
+  if (mods.range && anchor) {
+    const from = order.findIndex((row) => sameChatSelection(row, anchor));
+    const to = order.findIndex((row) => sameChatSelection(row, clicked));
+    if (from >= 0 && to >= 0) {
+      const [start, end] = from <= to ? [from, to] : [to, from];
+      const range = order.slice(start, end + 1);
+      if (mods.toggle) {
+        const seen = new Set(current.map((row) => chatSelectionKey(row.path, row.id)));
+        const extra = range.filter((row) => !seen.has(chatSelectionKey(row.path, row.id)));
+        return { selected: [...current, ...extra], anchor };
+      }
+      return { selected: range, anchor };
+    }
+  }
+  if (mods.toggle) {
+    const hit = current.some((row) => sameChatSelection(row, clicked));
+    return {
+      selected: hit ? current.filter((row) => !sameChatSelection(row, clicked)) : [...current, clicked],
+      anchor: clicked,
+    };
+  }
+  return { selected: [clicked], anchor: clicked };
+}
+
+/** Chats a bulk action should touch. The right-clicked row joins the set when it was not already in it. */
+export function archiveTargets(selected: ChatSelection[], clicked: ChatSelection): ChatSelection[] {
+  if (selected.some((row) => sameChatSelection(row, clicked))) return selected;
+  return [clicked];
+}
+
 export function buildProjectGroups(
   fromDisk: ProjectRow[],
   recents: string[],
@@ -148,9 +200,32 @@ export function renameConversationInGroups(
 }
 
 /**
+ * The first launch frame. A project in the snapshot already has its chats, so the
+ * sidebar can paint them with the header instead of inserting them a moment later.
+ * A project the snapshot does not know keeps an empty list and is filled afterwards.
+ */
+export function groupsFromSidebarSnapshot(
+  rows: ProjectRow[],
+  snapshot: { path: string; conversations: ConversationSummary[]; journeys: JourneySummary[] }[],
+): ProjectChatGroup[] {
+  const byPath = new Map(snapshot.map((group) => [projectKey(group.path), group]));
+  return rows.map((row) => {
+    const cached = byPath.get(projectKey(row.path));
+    return {
+      ...row,
+      conversations: cached?.conversations ?? [],
+      journeys: cached?.journeys ?? [],
+    };
+  });
+}
+
+/**
  * A startup pass loads projects one at a time. `incoming` is only the prefix
  * that has finished. Projects not in that prefix keep the chats they already had,
  * so a later pass does not flash "No chats yet" over them.
+ *
+ * A project created or opened after that pass started is not in `incoming`.
+ * It stays in the list. Dropping it would hide the folder the user just added.
  */
 export function mergeLoadedProjectGroups(
   previous: ProjectChatGroup[],

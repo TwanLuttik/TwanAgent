@@ -193,6 +193,16 @@ describe("image tokens", () => {
     assert.equal(imageToken("image.png"), "[image.png]");
   });
 
+  it("numbers a second screenshot whose name is already truncated", () => {
+    const name = "CleanShot 2026-10-23 at 3.38.14 PM.png";
+    const first = uniqueImageTokenLabel(name, []);
+    const second = uniqueImageTokenLabel(name, [first]);
+    assert.equal(first, "CleanShot 202...");
+    assert.notEqual(second.toLowerCase(), first.toLowerCase());
+    assert.ok([...second].length <= 16, second);
+    assert.match(second, /-2/);
+  });
+
   it("keeps the bracket placeholder to 16 characters", () => {
     assert.equal(imageTokenLabel("short.png"), "short.png");
     assert.equal(imageTokenLabel("CleanShot 2026-10-23 at 3.38.14 PM.png"), "CleanShot 202...");

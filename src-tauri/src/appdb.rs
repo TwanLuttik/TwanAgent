@@ -383,6 +383,11 @@ fn project_key(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
 }
 
+/// The same key the sidebar index stores, so a caller outside this module can match a row.
+pub fn project_key_public(path: &str) -> String {
+    project_key(path)
+}
+
 /// True once this project's sidebar rows have been copied into the index.
 pub fn sidebar_cached(conn: &Connection, project: &str) -> Result<bool> {
     let found: Option<String> = conn
@@ -576,6 +581,99 @@ pub fn sidebar_transcripts(conn: &Connection, project: &str) -> Result<Vec<crate
         out.push(serde_json::from_str(&row?)?);
     }
     Ok(out)
+}
+
+/// Every indexed project, in sidebar order, with the chats and journeys already copied into app.db.
+/// A project that has never been indexed is left out. The caller still reads that project's store.
+pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProject>> {
+    let projects = list_projects(conn)?;
+    let mut chats = conn.prepare(
+        "SELECT project_path, id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived
+         FROM sidebar_conversations ORDER BY project_path ASC, sort_order ASC, id ASC",
+    )?;
+    let chat_rows = chats.query_map([], conversation_summary_row)?;
+    let mut by_chat: std::collections::HashMap<String, Vec<crate::dev::ConversationSummary>> = std::collections::HashMap::new();
+    for row in chat_rows {
+        let (key, summary) = row?;
+        by_chat.entry(key).or_default().push(summary);
+    }
+    let mut journeys_stmt = conn.prepare(
+        "SELECT project_path, id, title, created_at, updated_at, sort_order, collapsed, color
+         FROM sidebar_journeys ORDER BY project_path ASC, sort_order ASC, id ASC",
+    )?;
+    let journey_rows = journeys_stmt.query_map([], journey_row)?;
+    let mut by_journey: std::collections::HashMap<String, Vec<crate::dev::Journey>> = std::collections::HashMap::new();
+    for row in journey_rows {
+        let (key, journey) = row?;
+        by_journey.entry(key).or_default().push(journey);
+    }
+    let mut cached = conn.prepare("SELECT project_path, cloud FROM sidebar_projects")?;
+    let cached_rows = cached.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? == 1)))?;
+    let mut cloud_by_path = std::collections::HashMap::new();
+    for row in cached_rows {
+        let (key, cloud) = row?;
+        cloud_by_path.insert(key, cloud);
+    }
+    let mut out = Vec::new();
+    for project in projects {
+        let key = project_key(&project.path);
+        let Some(cloud) = cloud_by_path.get(&key).copied() else {
+            continue;
+        };
+        let mut conversations = by_chat.remove(&key).unwrap_or_default();
+        if cloud {
+            conversations.retain(|row| !is_local_cloud_draft(row));
+        }
+        out.push(crate::dev::SidebarProject {
+            path: project.path,
+            name: project.name,
+            remote: cloud,
+            conversations,
+            journeys: by_journey.remove(&key).unwrap_or_default(),
+        });
+    }
+    Ok(out)
+}
+
+fn is_local_cloud_draft(row: &crate::dev::ConversationSummary) -> bool {
+    let title = row.title.trim();
+    (title.is_empty() || title == "New chat") && row.kind != "terminal"
+}
+
+fn conversation_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, crate::dev::ConversationSummary)> {
+    let window: Option<i64> = row.get(10)?;
+    Ok((
+        row.get(0)?,
+        crate::dev::ConversationSummary {
+            id: row.get(1)?,
+            title: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+            kind: row.get(5)?,
+            journey_id: row.get(6)?,
+            sort_order: row.get(7)?,
+            effort: row.get(8)?,
+            model: row.get(9)?,
+            context_window: window.and_then(|value| u64::try_from(value).ok()),
+            permission: row.get(11)?,
+            archived: row.get::<_, i64>(12)? != 0,
+        },
+    ))
+}
+
+fn journey_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, crate::dev::Journey)> {
+    Ok((
+        row.get(0)?,
+        crate::dev::Journey {
+            id: row.get(1)?,
+            title: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+            sort_order: row.get(5)?,
+            collapsed: row.get::<_, i64>(6)? != 0,
+            color: row.get(7)?,
+        },
+    ))
 }
 
 pub fn sidebar_for(

@@ -673,8 +673,14 @@ html[data-theme-mode="light"] .model-tip {
   display: block;
 }
 
+.file-drag-overlay,
+.file-drag-overlay * {
+  pointer-events: none;
+}
+
 .file-drag-image {
   display: flex;
+  width: max-content;
   max-width: 240px;
   align-items: center;
   gap: 6px;

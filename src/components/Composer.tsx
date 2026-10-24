@@ -1763,20 +1763,28 @@ function ModelSelect({
             <div className="flex w-9 shrink-0 flex-col gap-0.5 border-r border-line/20 bg-panel/40 p-1" role="group" aria-label="Model providers">
               {providers.map((row) => {
                 const on = focus === row.id;
+                const locked = lockedProviders != null && !lockedProviders.includes(row.id);
                 return (
                   <button
                     key={row.id}
                     type="button"
                     aria-pressed={on}
-                    aria-label={row.label}
-                    onClick={() => setFocus((current) => (current === row.id ? null : row.id))}
+                    aria-disabled={locked}
+                    aria-label={locked ? `${row.label}, no key on this server` : row.label}
+                    title={locked ? "This server does not have this provider key" : undefined}
+                    onClick={() => {
+                      if (locked) return;
+                      setFocus((current) => (current === row.id ? null : row.id));
+                    }}
                     onMouseEnter={(event) => {
                       const box = event.currentTarget.getBoundingClientRect();
                       setProviderTip({ label: row.label, top: box.top + box.height / 2, left: box.right + 8 });
                     }}
                     onMouseLeave={() => setProviderTip(null)}
                     data-colored={on || undefined}
-                    className={`group/minimax flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors duration-150 ${providerIconClass(row.id, on)}`}
+                    className={`group/minimax flex size-7 items-center justify-center rounded-md transition-colors duration-150 ${
+                      locked ? "cursor-not-allowed text-muted/35" : `cursor-pointer ${providerIconClass(row.id, on)}`
+                    }`}
                   >
                     <Symbol name={row.icon} className="size-3.5" />
                   </button>

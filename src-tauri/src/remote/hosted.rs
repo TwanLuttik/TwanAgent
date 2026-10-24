@@ -723,6 +723,103 @@ pub fn dev_hosted_sidebar_cached(
     Ok((rows, journeys, transcripts))
 }
 
+/// Copy each hosted project's usage log into the local usage database.
+/// The cursor is the last server row id already copied, so a second sync only fetches what is new.
+/// A server that is offline, or an older server that has no usage log, is skipped.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_usage_sync(state: State<'_, AppState>) -> Result<usize> {
+    let data_dir = state.data_dir.clone();
+    let conn = crate::appdb::open(&data_dir)?;
+    let projects = crate::remote::config::list_remote_projects(&conn)?;
+    drop(conn);
+    let mut added = 0usize;
+    for project in projects {
+        match sync_one_project(&state, &data_dir, &project).await {
+            Ok(count) => added += count,
+            Err(err) => eprintln!("usage sync skipped {}: {err}", project.name),
+        }
+    }
+    Ok(added)
+}
+
+async fn sync_one_project(
+    state: &State<'_, AppState>,
+    data_dir: &std::path::Path,
+    project: &crate::remote::config::RemoteProject,
+) -> Result<usize> {
+    let conn = crate::appdb::open(data_dir)?;
+    let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
+        .ok_or_else(|| Error::NotFound("machine not found".into()))?;
+    let server = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+        .ok_or_else(|| Error::Other("server is not paired".into()))?;
+    if !server.paired {
+        return Ok(0);
+    }
+    let token = server_token(&conn, &server.id)?;
+    let key = crate::appdb::project_key_public(&project.mount_path);
+    let since_id = crate::appdb::get_setting(&conn, &usage_cursor_key(&key))?
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
+        .max(0);
+    drop(conn);
+    let frame = ClientFrame::UsageSince { since_id };
+    let bytes = resident_bytes(&project.remote_path, &frame, &token)?;
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+    let command = hosted_command(&encoded);
+    let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
+    let pool = state.ssh_pool.clone();
+    let mount = project.mount_path.clone();
+    let name = project.name.clone();
+    let data = data_dir.to_path_buf();
+    crate::state::run_blocking(move || {
+        let result = pool.exec(
+            &machine,
+            secret.as_deref(),
+            &crate::remote::ssh::ExecRequest {
+                cwd: "/".into(),
+                command,
+                timeout_secs: 60,
+            },
+        )?;
+        if result.timed_out || result.exit_code.is_some_and(|code| code != 0) && result.stdout_bytes.len() < 4 {
+            return Err(Error::Other(format!("could not read the usage log for {name}")));
+        }
+        let (frame, _) = decode_server_reply(&result.stdout_bytes, &result.stderr)?;
+        let rows = match frame {
+            ServerFrame::Usage { rows } => rows,
+            ServerFrame::Error { message } => return Err(Error::Other(message)),
+            _ => return Ok(0),
+        };
+        let cursor = rows.iter().map(|row| row.id).max().unwrap_or(since_id);
+        let synced: Vec<crate::usage::SyncedUsage> = rows
+            .iter()
+            .map(|row| crate::usage::SyncedUsage {
+                source: format!("server:{key}:{}", row.id),
+                recorded_at: row.recorded_at.clone(),
+                workspace_path: mount.clone(),
+                workspace_name: name.clone(),
+                conversation_id: row.conversation_id.clone(),
+                conversation_title: row.conversation_title.clone(),
+                model: row.model.clone(),
+                prompt_tokens: row.prompt_tokens,
+                completion_tokens: row.completion_tokens,
+                cache_read_tokens: row.cache_read_tokens,
+            })
+            .collect();
+        let added = crate::usage::merge_synced(&data, &synced)?;
+        if cursor > since_id {
+            let conn = crate::appdb::open(&data)?;
+            crate::appdb::set_setting(&conn, &usage_cursor_key(&key), &cursor.to_string())?;
+        }
+        Ok(added)
+    })
+    .await
+}
+
+fn usage_cursor_key(project_key: &str) -> String {
+    format!("usage-sync:{project_key}")
+}
+
 /// The last transcript saved for one cloud chat. Null until that chat has been opened here.
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_hosted_conversation_cached(

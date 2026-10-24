@@ -24,6 +24,9 @@ pub struct UsageEvent {
     pub cache_read_tokens: u64,
     #[serde(default)]
     pub duration_ms: Option<i64>,
+    /// Non-empty when the row was copied from a paired server. Empty for a turn recorded here.
+    #[serde(default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +105,27 @@ pub fn reset_db(data_dir: &Path) -> Result<UsageDbInfo> {
     Ok(db_info(data_dir))
 }
 
+const USAGE_EVENT_COLUMNS: &str = "id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens, source";
+
+fn read_usage_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEvent> {
+    Ok(UsageEvent {
+        id: row.get(0)?,
+        recorded_at: row.get(1)?,
+        workspace_path: row.get(2)?,
+        workspace_name: row.get(3)?,
+        conversation_id: row.get(4)?,
+        conversation_title: row.get(5)?,
+        model: row.get(6)?,
+        prompt_tokens: row.get::<_, i64>(7)? as u64,
+        completion_tokens: row.get::<_, i64>(8)? as u64,
+        total_tokens: row.get::<_, i64>(9)? as u64,
+        cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
+        duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
+        source: row.get(12)?,
+    })
+}
+
 fn open(data_dir: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data_dir)?;
     let conn = Connection::open(db_path(data_dir))?;
@@ -135,6 +159,8 @@ fn ensure_cache_column(conn: &Connection) -> Result<()> {
         "ALTER TABLE usage_events ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // A row copied from a server. Empty for a turn recorded on this machine.
+    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT ''", []);
     Ok(())
 }
 
@@ -195,6 +221,7 @@ pub fn record(data_dir: &Path, rec: UsageRecord) -> Result<Option<UsageEvent>> {
         total_tokens: total,
         cache_read_tokens: rec.cache_read_tokens.min(rec.prompt_tokens),
         duration_ms: rec.duration_ms.filter(|ms| *ms >= 0),
+        source: String::new(),
     }))
 }
 
@@ -238,29 +265,13 @@ pub fn replace_workspace_paths(data_dir: &Path, moves: &[(String, String)]) -> R
 pub fn list_since(data_dir: &Path, since: Option<&str>) -> Result<Vec<UsageEvent>> {
     let conn = open(data_dir)?;
     ensure_cache_column(&conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {USAGE_EVENT_COLUMNS}
          FROM usage_events
          WHERE (?1 IS NULL OR recorded_at >= ?1)
          ORDER BY recorded_at ASC, id ASC",
-    )?;
-    let rows = stmt.query_map([since], |row| {
-        Ok(UsageEvent {
-            id: row.get(0)?,
-            recorded_at: row.get(1)?,
-            workspace_path: row.get(2)?,
-            workspace_name: row.get(3)?,
-            conversation_id: row.get(4)?,
-            conversation_title: row.get(5)?,
-            model: row.get(6)?,
-            prompt_tokens: row.get::<_, i64>(7)? as u64,
-            completion_tokens: row.get::<_, i64>(8)? as u64,
-            total_tokens: row.get::<_, i64>(9)? as u64,
-            cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
-            duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
-        })
-    })?;
+    ))?;
+    let rows = stmt.query_map([since], read_usage_event)?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);
@@ -282,30 +293,14 @@ pub fn list_for_conversation(
     let workspace = normalize_workspace(workspace_path);
     let conn = open(data_dir)?;
     ensure_cache_column(&conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
-                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {USAGE_EVENT_COLUMNS}
          FROM usage_events
          WHERE conversation_id = ?1
            AND (?2 = '' OR lower(rtrim(replace(workspace_path, '\\', '/'), '/')) = lower(?2))
          ORDER BY recorded_at ASC, id ASC",
-    )?;
-    let rows = stmt.query_map(params![id, workspace], |row| {
-        Ok(UsageEvent {
-            id: row.get(0)?,
-            recorded_at: row.get(1)?,
-            workspace_path: row.get(2)?,
-            workspace_name: row.get(3)?,
-            conversation_id: row.get(4)?,
-            conversation_title: row.get(5)?,
-            model: row.get(6)?,
-            prompt_tokens: row.get::<_, i64>(7)? as u64,
-            completion_tokens: row.get::<_, i64>(8)? as u64,
-            total_tokens: row.get::<_, i64>(9)? as u64,
-            cache_read_tokens: row.get::<_, i64>(11)?.max(0) as u64,
-            duration_ms: row.get::<_, Option<i64>>(10)?.filter(|ms| *ms >= 0),
-        })
-    })?;
+    ))?;
+    let rows = stmt.query_map(params![id, workspace], read_usage_event)?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);
@@ -340,6 +335,195 @@ pub async fn dev_usage_for_conversation(
         list_for_conversation(&data_dir, &conversation_id, &workspace)
     })
     .await
+}
+
+/// One cloud chat the desktop has already copied from the server.
+/// The server keeps no usage log. `prompt_tokens` is the context of its latest turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudUsageChat {
+    pub project_path: String,
+    pub project_name: String,
+    pub conversation_id: String,
+    pub title: String,
+    pub model: String,
+    pub updated_at: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+/// One row copied from a server's usage log. `source` is what keeps a second sync from inserting it again.
+#[derive(Debug, Clone)]
+pub struct SyncedUsage {
+    pub source: String,
+    pub recorded_at: String,
+    pub workspace_path: String,
+    pub workspace_name: String,
+    pub conversation_id: String,
+    pub conversation_title: String,
+    pub model: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
+/// Insert server rows this machine has not copied yet. Returns how many were new.
+pub fn merge_synced(data_dir: &Path, rows: &[SyncedUsage]) -> Result<usize> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let conn = open(data_dir)?;
+    ensure_cache_column(&conn)?;
+    let mut added = 0usize;
+    for row in rows {
+        let source = row.source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM usage_events WHERE source = ?1",
+            [source],
+            |found| found.get(0),
+        )?;
+        if exists > 0 {
+            continue;
+        }
+        let path = normalize_workspace(&row.workspace_path);
+        if path.is_empty() {
+            continue;
+        }
+        let total = row.prompt_tokens.saturating_add(row.completion_tokens);
+        conn.execute(
+            "INSERT INTO usage_events (
+                recorded_at, workspace_path, workspace_name, conversation_id, conversation_title,
+                model, prompt_tokens, completion_tokens, total_tokens, duration_ms, cache_read_tokens, source
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)",
+            params![
+                row.recorded_at,
+                path,
+                row.workspace_name,
+                row.conversation_id,
+                row.conversation_title,
+                row.model,
+                row.prompt_tokens as i64,
+                row.completion_tokens as i64,
+                total as i64,
+                row.cache_read_tokens.min(row.prompt_tokens) as i64,
+                source,
+            ],
+        )?;
+        added += 1;
+    }
+    Ok(added)
+}
+
+/// A hosted project. `chats` is empty when none of its conversations have been opened here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudUsageProject {
+    pub project_path: String,
+    pub project_name: String,
+    pub chats: Vec<CloudUsageChat>,
+}
+
+/// Cloud projects, and the hosted chats cached on this machine.
+/// A chat that was never opened here has no row, so its tokens are not counted.
+pub fn cloud_usage(data_dir: &Path) -> Result<Vec<CloudUsageProject>> {
+    if !crate::appdb::db_path(data_dir).exists() {
+        return Ok(Vec::new());
+    }
+    let conn = crate::appdb::open(data_dir)?;
+    let projects = cloud_project_names(&conn)?;
+    let mut grouped: std::collections::BTreeMap<String, CloudUsageProject> = projects
+        .iter()
+        .filter(|(_, (_, cloud))| *cloud)
+        .map(|(path, (name, _))| {
+            (
+                path.clone(),
+                CloudUsageProject {
+                    project_path: path.clone(),
+                    project_name: name.clone(),
+                    chats: Vec::new(),
+                },
+            )
+        })
+        .collect();
+    let mut stmt = conn.prepare(
+        "SELECT project_path, id, body FROM sidebar_transcripts ORDER BY project_path ASC, id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (project_path, conversation_id, body) = row?;
+        let Some(project) = grouped.get_mut(&project_path) else {
+            continue;
+        };
+        let Ok(conversation) = serde_json::from_str::<crate::dev::Conversation>(&body) else {
+            continue;
+        };
+        let Some(usage) = conversation.context_usage else {
+            continue;
+        };
+        if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
+            continue;
+        }
+        project.chats.push(CloudUsageChat {
+            project_path,
+            project_name: project.project_name.clone(),
+            conversation_id: if conversation.id.is_empty() { conversation_id } else { conversation.id },
+            title: conversation.title,
+            model: conversation.model.unwrap_or_default(),
+            updated_at: conversation.updated_at,
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+        });
+    }
+    let mut out: Vec<_> = grouped.into_values().collect();
+    out.sort_by(|a, b| b.chats.len().cmp(&a.chats.len()).then_with(|| a.project_name.cmp(&b.project_name)));
+    Ok(out)
+}
+
+fn cloud_project_names(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, (String, bool)>> {
+    let mut names = std::collections::HashMap::new();
+    let mut projects = conn.prepare("SELECT path, name FROM projects")?;
+    let project_rows = projects.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    for row in project_rows {
+        let (path, name) = row?;
+        names.insert(crate::appdb::project_key_public(&path), name);
+    }
+    let remotes = crate::remote::config::list_remote_projects(conn).unwrap_or_default();
+    for remote in remotes {
+        let name = remote.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        names.insert(crate::appdb::project_key_public(&remote.mount_path), name.to_string());
+    }
+    let mut clouds = conn.prepare("SELECT project_path, cloud FROM sidebar_projects")?;
+    let cloud_rows = clouds.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    let mut out = std::collections::HashMap::new();
+    for row in cloud_rows {
+        let (path, cloud) = row?;
+        let name = names.get(&path).cloned().unwrap_or_else(|| folder_name(&path));
+        out.insert(path, (name, cloud == 1));
+    }
+    Ok(out)
+}
+
+fn folder_name(path: &str) -> String {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_string()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_usage_cloud(state: State<'_, AppState>) -> Result<Vec<CloudUsageProject>> {
+    cloud_usage(&state.data_dir)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -498,7 +682,56 @@ mod tests {
         record(dir.path(), rec("/proj/beta", 20, 2)).unwrap();
         let again = list_since(dir.path(), None).unwrap();
         assert_eq!(again.len(), 2);
+        assert_eq!(again[0].source, "");
         let future = list_since(dir.path(), Some("2099-01-01T00:00:00Z")).unwrap();
         assert!(future.is_empty());
+    }
+
+    #[test]
+    fn lists_the_server_source_of_a_copied_row() {
+        let dir = tempdir().unwrap();
+        record(dir.path(), rec("/proj/alpha", 10, 1)).unwrap();
+        let added = merge_synced(
+            dir.path(),
+            &[SyncedUsage {
+                source: "server:hello:4".into(),
+                recorded_at: "2026-10-02T00:00:00.000Z".into(),
+                workspace_path: "/proj/hello".into(),
+                workspace_name: "Hello-world".into(),
+                conversation_id: "c9".into(),
+                conversation_title: "On the server".into(),
+                model: "minimax-m3".into(),
+                prompt_tokens: 80,
+                completion_tokens: 20,
+                cache_read_tokens: 0,
+            }],
+        )
+        .unwrap();
+        assert_eq!(added, 1);
+        let rows = list_since(dir.path(), None).unwrap();
+        assert_eq!(rows.len(), 2);
+        let local = rows.iter().find(|row| row.conversation_id == "c1").unwrap();
+        assert_eq!(local.source, "");
+        let copied = rows.iter().find(|row| row.conversation_id == "c9").unwrap();
+        assert_eq!(copied.source, "server:hello:4");
+        assert_eq!(copied.total_tokens, 100);
+        let again = merge_synced(
+            dir.path(),
+            &[SyncedUsage {
+                source: "server:hello:4".into(),
+                recorded_at: "2026-10-02T00:00:00.000Z".into(),
+                workspace_path: "/proj/hello".into(),
+                workspace_name: "Hello-world".into(),
+                conversation_id: "c9".into(),
+                conversation_title: "On the server".into(),
+                model: "minimax-m3".into(),
+                prompt_tokens: 80,
+                completion_tokens: 20,
+                cache_read_tokens: 0,
+            }],
+        )
+        .unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(list_since(dir.path(), None).unwrap().len(), 2);
     }
 }

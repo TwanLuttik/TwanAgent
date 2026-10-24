@@ -12,7 +12,6 @@ import {
 } from "../lib/core";
 import {
   expandCollapsedProject,
-  isAppProject,
   isLinkedWorktreePath,
   isSameProject,
   moveProjectGroup,
@@ -43,7 +42,7 @@ import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForCha
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, type PendingMessage, type RunningTurn } from "../lib/turn";
 import { publishWorktreeList, tabProjectKey, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
@@ -89,8 +88,6 @@ export type LibraryDeps = {
   activeId: string;
   runningId: string;
   runningTurns: Record<string, RunningTurn>;
-  projectsRoot: string;
-  legacyProjectsRoot: string;
   pendingClosePath: string | null;
   dirtyFiles: Record<string, boolean>;
   usageByChat: Record<string, ChatUsage>;
@@ -195,8 +192,7 @@ export type LibraryDeps = {
 
 export function useLibrary(deps: LibraryDeps) {
   const {
-    workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats, projectsRoot,
-    legacyProjectsRoot,
+    workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
     runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
@@ -352,8 +348,8 @@ async function deleteProjectFromSidebar(path: string, mode: "list" | "files" | "
   setProjectSettings((current) => (current && isSameProject(current.path, path) ? null : current));
   try {
     // Deleting files removes the folder. Removing from the list only forgets it,
-    // except for a project the app created, which has nowhere else to live.
-    if (mode === "files" || isAppProject(path, projectsRoot) || isAppProject(path, legacyProjectsRoot)) {
+    // including a project the app created. The folder stays until the user asks.
+    if (mode === "files") {
       await api.deleteProject(path);
     } else {
       await api.removeProject(path);
@@ -438,6 +434,10 @@ async function adoptWorktreeName(ws: string, branch: string) {
 
 function applyWorkspace(path: string) {
   const savedId = loadConversation(path);
+  // Create, clone, and open all land here. The sidebar list is loaded once at
+  // startup, so a folder that did not exist then never appears unless we add it now.
+  // A linked checkout stays under its repo instead of becoming its own project.
+  if (!isLinkedWorktreePath(path, worktreeListsFor(path))) rememberOpenedProject(path);
   if (!isSameProject(path, workspace)) {
     const entering = allProjectGroups.find((group) => isSameProject(group.path, path));
     // Show the project we are opening from the rows it already has, in this same
@@ -1008,8 +1008,13 @@ async function openChat(id: string, tabs = chatTabsByProjectRef.current, path = 
       full.compaction?.summary && full.compaction.through > 0
         ? insertCompactionEvent(loaded, full.compaction.through)
         : loaded;
-    shownMessages.current.set(id, withNotice);
-    if (shownId.current === id) setMessages(withNotice);
+    // Opening the chat we just sent must not swap in the transcript cached
+    // before this prompt. The server copy replaces it only once it has caught up.
+    const shown = hostedChatsRef.current
+      ? mergeHostedTranscript(shownMessages.current.get(id) ?? liveByChatRef.current.get(id)?.messages ?? [], withNotice)
+      : withNotice;
+    shownMessages.current.set(id, shown);
+    if (shownId.current === id) setMessages(shown);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
     if (full.compaction?.summary && full.compaction.through > 0) {
       setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
@@ -1127,7 +1132,11 @@ async function watchHosted(ws: string, id: string) {
         });
         if (shownId.current === id) setRunningActivity(activity);
       } else if (ev.kind === "done" && ev.conversation) {
-        const messages = (ev.conversation.messages as ChatMessage[]) ?? [];
+        const incoming = (ev.conversation.messages as ChatMessage[]) ?? [];
+        const held = liveByChatRef.current.get(id)?.messages ?? shownMessages.current.get(id) ?? [];
+        // The follow socket replays the tail. A done from the turn before this
+        // prompt is shorter than the messages already on screen, so it stays.
+        const messages = mergeHostedTranscript(held, incoming);
         if (messages.length) {
           shownMessages.current.set(id, messages);
           liveByChatRef.current.set(id, {
@@ -1142,7 +1151,7 @@ async function watchHosted(ws: string, id: string) {
             setStreamText("");
             setRunningActivity(null);
           }
-        } else {
+        } else if (!held.length) {
           liveByChatRef.current.delete(id);
         }
       } else if (ev.kind === "idle" || ev.kind === "error") {
@@ -1184,8 +1193,27 @@ async function withBackfilledTimes(ws: string, id: string, messages: ChatMessage
   return backfillFinishedAt(messages, events);
 }
 
-async function archiveChat(id: string, archived = true, path = workspace) {
-  if (!path) return;
+async function archiveChats(targets: { path: string; id: string }[], archived = true) {
+  const seen = new Set<string>();
+  const rows = targets.filter((row) => {
+    if (!row.path || !row.id) return false;
+    const key = `${projectKey(row.path)}\t${row.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const failed: string[] = [];
+  for (const row of rows) {
+    const ok = await archiveChat(row.id, archived, row.path);
+    if (!ok) failed.push(row.id);
+  }
+  if (failed.length && failed.length < rows.length) {
+    setFlash({ kind: "err", text: `Archived ${rows.length - failed.length} of ${rows.length} chats.` });
+  }
+}
+
+async function archiveChat(id: string, archived = true, path = workspace): Promise<boolean> {
+  if (!path) return false;
   if (archived) {
     setPendingByChat((prev) => {
       const next = clearPendingForChat(prev, id);
@@ -1201,7 +1229,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
     await api.archiveConversation(path, id, archived);
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
-    return;
+    return false;
   }
   const patch = (rows: ConversationSummary[]) =>
     rows.map((row) => (row.id === id ? { ...row, archived } : row));
@@ -1214,7 +1242,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
       }),
     );
   }
-  if (!archived) return;
+  if (!archived) return true;
   setChatTabsByProject((prev) => {
     const key = tabProjectKey(path);
     const tabs = prev[key];
@@ -1227,6 +1255,7 @@ async function archiveChat(id: string, archived = true, path = workspace) {
   if (isSameProject(path, workspace) && activeId === id) {
     await reloadConversations(workspace);
   }
+  return true;
 }
 
 async function removeChat(id: string, path = workspace) {
@@ -1627,6 +1656,7 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     revealListedChatRef,
     toggleSubagent,
     archiveChat,
+    archiveChats,
     removeChat,
     persist,
     watchHosted,

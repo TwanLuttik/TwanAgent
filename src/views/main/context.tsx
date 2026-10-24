@@ -117,6 +117,7 @@ export type MainModel = {
   /** True while a cloud project is still opening its server. Send stays off. */
   cloudConnecting: boolean;
   archiveChat: MainFn;
+  archiveChats: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;
   renameJourney: MainFn;
@@ -186,6 +187,7 @@ export type SidebarSlice = {
   activeId: string;
   allProjectGroups: ProjectChatGroup[];
   archiveChat: MainFn;
+  archiveChats: MainFn;
   collapsedProjects: string[];
   conversations: ConversationSummary[];
   createJourneyFromChat: MainFn;
@@ -221,6 +223,8 @@ export type SidebarSlice = {
   showSettings: boolean;
   showUsage: boolean;
   showDocs: boolean;
+  /** False until the first frame has every cached chat. The list stays blank until then. */
+  sidebarReady: boolean;
   startNewChat: MainFn;
   toggleJourney: MainFn;
   toggleProjectCollapsed: MainFn;

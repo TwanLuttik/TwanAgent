@@ -23,7 +23,7 @@ export type SubagentRecord = {
 export type SubagentEvent =
   | { type: "start"; record: SubagentRecord }
   | { type: "delta"; id: string; text: string }
-  | { type: "reasoning"; id: string; text: string }
+  | { type: "reasoning"; id: string; text: string; append?: boolean }
   | { type: "tool"; id: string; label: string }
   | { type: "update"; id: string; messages: ChatMessage[] }
   | { type: "done"; id: string; status: Exclude<SubagentStatus, "running">; summary: string; messages: ChatMessage[] }
@@ -138,6 +138,71 @@ export function emptySubagent(partial: {
   };
 }
 
+/** One `subagent` event from a local turn. The page turns this into a dock update. */
+export function subagentFromLocalEvent(raw: string): SubagentEvent | null {
+  let body: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const id = String(body.id ?? "").trim();
+  const kind = String(body.event ?? "").trim();
+  if (!id || !kind) return null;
+  if (kind === "start") {
+    const type = parseSubagentType(body.type);
+    const description = String(body.description ?? "").trim() || "Subagent";
+    return {
+      type: "start",
+      record: emptySubagent({
+        id,
+        description: description.slice(0, 80),
+        type,
+        prompt: String(body.prompt ?? ""),
+      }),
+    };
+  }
+  if (kind === "delta") return { type: "delta", id, text: String(body.text ?? "") };
+  if (kind === "reasoning") {
+    return {
+      type: "reasoning",
+      id,
+      text: String(body.text ?? ""),
+      append: body.append === true,
+    };
+  }
+  if (kind === "tool") {
+    const label = String(body.label ?? "").trim();
+    return label ? { type: "tool", id, label } : null;
+  }
+  if (kind === "update") {
+    return { type: "update", id, messages: localSubagentMessages(body.messages) };
+  }
+  if (kind === "error") return { type: "error", id, error: String(body.error ?? "Subagent failed.") };
+  if (kind === "done") {
+    const status = body.status === "stopped" || body.status === "error" ? body.status : "done";
+    return {
+      type: "done",
+      id,
+      status,
+      summary: String(body.summary ?? ""),
+      messages: localSubagentMessages(body.messages),
+    };
+  }
+  return null;
+}
+
+function localSubagentMessages(raw: unknown): ChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((row): row is ChatMessage => {
+    if (!row || typeof row !== "object") return false;
+    const role = (row as { role?: unknown }).role;
+    return role === "assistant" || role === "user" || role === "tool" || role === "system";
+  });
+}
+
 export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent): SubagentRecord[] {
   if (event.type === "start") {
     if (rows.some((row) => row.id === event.record.id)) return rows;
@@ -146,7 +211,12 @@ export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent)
   return rows.map((row) => {
     if (row.id !== event.id) return row;
     if (event.type === "delta") return { ...row, streamText: row.streamText + event.text };
-    if (event.type === "reasoning") return { ...row, streamReasoning: event.text };
+    if (event.type === "reasoning") {
+      return {
+        ...row,
+        streamReasoning: event.append ? row.streamReasoning + event.text : event.text,
+      };
+    }
     if (event.type === "tool") return { ...row, tools: [...row.tools, event.label] };
     if (event.type === "update") {
       return { ...row, messages: event.messages, streamText: "", streamReasoning: "" };

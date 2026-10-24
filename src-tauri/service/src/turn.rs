@@ -289,6 +289,7 @@ fn run_live_turn_inner(
             on_event(TurnEvent::Error(message.clone()));
             return Err(Error::Other(message));
         }
+        record_round_usage(service, &conversation, model_name, round.usage);
         if round.tool_calls.is_empty() {
             crate::files::set_command_cancel(None);
             let text = if round.text.trim().is_empty() && !saw_delta {
@@ -350,6 +351,28 @@ fn run_live_turn_inner(
     let message = "the turn ran too many tool rounds".to_string();
     on_event(TurnEvent::Error(message.clone()));
     Err(Error::Other(message))
+}
+
+/// The usage log is a record of the turn, not part of the turn. A write that fails
+/// leaves the conversation saved and the reply on its way.
+fn record_round_usage(
+    service: &ProjectService,
+    conversation: &Conversation,
+    model: &str,
+    usage: Option<crate::model::RoundUsage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    let _ = crate::usage_log::record_in_store(
+        &service.store_dir,
+        &conversation.id,
+        &conversation.title,
+        model,
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        usage.cache_read_tokens,
+    );
 }
 
 fn finish_cancelled(

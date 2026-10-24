@@ -6,9 +6,10 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { isSameProject, matchesSidebarQuery, sidebarActivity, sidebarTodoKey, visibleConversations, visibleJourneys, type SidebarActivityItem } from "../../lib/all-projects";
+import { archiveTargets, chatSelectionKey, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarTodoKey, visibleConversations, visibleJourneys, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
+import { ProjectMark } from "../../components/ProjectMark";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
 import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import { forgetPaneWorkspace } from "../../lib/pane-sessions";
@@ -146,6 +147,7 @@ export function AppSidebar() {
 
 function CollapsedRail() {
   const { allProjectGroups, openProjectFromSidebar, workspace } = useSidebar();
+  const logoRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
   const [tip, setTip] = useState<{ name: string; top: number; left: number } | null>(null);
   return (
     <div className="absolute inset-0 z-30 flex flex-col">
@@ -169,7 +171,13 @@ function CollapsedRail() {
                 current ? "bg-wash-strong text-accent" : "text-muted hover:bg-wash hover:text-ink"
               }`}
             >
-              <Symbol name="folder.fill" className="size-4" />
+              <ProjectMark
+                path={group.path}
+                remote={Boolean(group.remote)}
+                refresh={logoRefresh}
+                active={current}
+                className="size-4"
+              />
             </button>
           );
         })}
@@ -314,6 +322,7 @@ function ProjectsNav({
   const {
     activeId,
     allProjectGroups,
+    archiveChats,
     collapsedProjects,
     deleteProjectFromSidebar,
     forgetProjectRow,
@@ -331,12 +340,17 @@ function ProjectsNav({
     unseenFinished,
     showUsage,
     showDocs,
+    sidebarReady,
     reorderProjects,
     startNewChat,
     toggleProjectCollapsed,
     workspace,
   } = useSidebar();
   const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
+  const [picked, setPicked] = useState<ChatSelection[]>([]);
+  const pickAnchor = useRef<ChatSelection | null>(null);
+  const pickedRef = useRef(picked);
+  pickedRef.current = picked;
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -418,6 +432,7 @@ function ProjectsNav({
     loadGitLabels.current(false);
   }, [gitRows]);
   const gitRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
+  const logoRefresh = gitRefresh;
   const seenGitRefresh = useRef(gitRefresh);
   useEffect(() => {
     if (gitRefresh === seenGitRefresh.current) return;
@@ -670,6 +685,67 @@ function ProjectsNav({
     setArchiveOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
+  const groupsRef = useRef(shownGroups);
+  groupsRef.current = shownGroups;
+  const archiveOpenRef = useRef(archiveOpen);
+  archiveOpenRef.current = archiveOpen;
+  const worktreeChatsRef = useRef(worktreeChats);
+  worktreeChatsRef.current = worktreeChats;
+
+  function visibleOrder(): ChatSelection[] {
+    const out: ChatSelection[] = [];
+    const push = (path: string, rows: ConversationSummary[]) => {
+      for (const row of rows) out.push({ path, id: row.id });
+    };
+    for (const group of groupsRef.current) {
+      const showArchived = Boolean(archiveOpenRef.current[projectKey(group.path)]);
+      push(group.path, visibleConversations(group.conversations, showArchived));
+      if (showArchived) continue;
+      for (const child of worktreesFor(group.path) ?? []) {
+        push(child.path, visibleConversations(worktreeChatsRef.current[projectKey(child.path)] ?? [], false));
+      }
+    }
+    return out;
+  }
+
+  function selectChat(
+    path: string,
+    id: string,
+    mods: { toggle: boolean; range: boolean },
+  ) {
+    const clicked = { path, id };
+    const next = nextChatSelection(pickedRef.current, pickAnchor.current, clicked, visibleOrder(), mods);
+    pickAnchor.current = next.anchor;
+    setPicked(next.selected);
+  }
+
+  const selectedKeys = useMemo(
+    () => new Set(picked.map((row) => chatSelectionKey(row.path, row.id))),
+    [picked],
+  );
+
+  function archiveSelected(path: string, id: string, archived: boolean, selected: ChatSelection[]) {
+    const targets = archiveTargets(selected, { path, id });
+    setPicked([]);
+    pickAnchor.current = null;
+    void archiveChats(targets, archived).then(() => {
+      const touched = new Set(targets.map((row) => projectKey(row.path)));
+      setWorktreeChats((prev) => {
+        if (!Object.keys(prev).some((key) => touched.has(key))) return prev;
+        const next = { ...prev };
+        for (const key of touched) {
+          if (!next[key]) continue;
+          next[key] = next[key].map((row) => {
+            const hit = targets.some((target) => target.id === row.id && projectKey(target.path) === key);
+            return hit ? { ...row, archived } : row;
+          });
+        }
+        queueMicrotask(() => publishWorktreeChats(next));
+        return next;
+      });
+    });
+  }
+
   return (
     <>
       <SidebarSearch query={query} onQuery={setQuery} />
@@ -686,7 +762,7 @@ function ProjectsNav({
         <NewChatMenu disabled={!workspace} onPick={(kind) => void startNewChat(kind)} />
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
-        <AllProjectsList
+        {sidebarReady ? <AllProjectsList
           groups={shownGroups}
           activeWorkspace={workspace}
           projectsRoot={projectsRoot}
@@ -719,6 +795,7 @@ function ProjectsNav({
           onToggleArchive={toggleArchive}
           gitByProject={gitByProject}
           chatQuery={searching ? query : ""}
+          logoRefresh={logoRefresh}
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
           renderWorktree={(child) => (
@@ -730,6 +807,11 @@ function ProjectsNav({
                 dimmed={fullPage}
                 todoByChat={todoByChat}
                 loadingId={isSameProject(child.path, workspace) ? openingId : ""}
+                selectedKeys={selectedKeys}
+                onSelectChat={selectChat}
+                onArchiveSelected={(id, archived) =>
+                  archiveSelected(child.path, id, archived, pickedRef.current)
+                }
               />
             </div>
           )}
@@ -742,9 +824,14 @@ function ProjectsNav({
               archivedView={showArchived}
               todoByChat={todoByChat}
               loadingId={isSameProject(group.path, workspace) ? openingId : ""}
+              selectedKeys={selectedKeys}
+              onSelectChat={selectChat}
+              onArchiveSelected={(id, archived) =>
+                archiveSelected(group.path, id, archived, pickedRef.current)
+              }
             />
           )}
-        />
+        /> : null}
       </div>
       <div className="relative z-10 flex flex-col gap-1 px-2.5 pb-3">
         <UpdateRow />
@@ -987,6 +1074,9 @@ function ProjectConversations({
   archivedView,
   todoByChat,
   loadingId = "",
+  selectedKeys,
+  onSelectChat,
+  onArchiveSelected,
 }: {
   conversations: ConversationSummary[];
   journeys: JourneySummary[];
@@ -995,6 +1085,9 @@ function ProjectConversations({
   archivedView?: boolean;
   todoByChat: Record<string, TodoBadge>;
   loadingId?: string;
+  selectedKeys?: ReadonlySet<string>;
+  onSelectChat?: (path: string, id: string, mods: { toggle: boolean; range: boolean }) => void;
+  onArchiveSelected?: (id: string, archived: boolean) => void;
 }) {
   const {
     activeId,
@@ -1054,8 +1147,14 @@ function ProjectConversations({
     () => ({
       onOpen: (id: string) =>
         path ? void actions.current.openSidebarChat(path, id) : actions.current.openListedChat(id),
+      onSelect: path && onSelectChat
+        ? (id: string, mods: { toggle: boolean; range: boolean }) => onSelectChat(path, id, mods)
+        : undefined,
       onDelete: (id: string) => void actions.current.removeChat(id, path),
-      onArchive: (id: string, archived: boolean) => void actions.current.archiveChat(id, archived, path),
+      onArchive: (id: string, archived: boolean) =>
+        onArchiveSelected
+          ? onArchiveSelected(id, archived)
+          : void actions.current.archiveChat(id, archived, path),
       onReorder: (fromId: string, toId: string) => void actions.current.reorderChats(fromId, toId, path),
       onReorderSidebar: (
         fromId: string,
@@ -1074,7 +1173,7 @@ function ProjectConversations({
       onMoveToJourney: (id: string, journeyId: string) => void actions.current.moveConversation(id, journeyId, path),
       onSetColor: (id: string, color: JourneyColor) => void actions.current.setJourneyColor(id, color, path),
     }),
-    [path],
+    [path, onSelectChat, onArchiveSelected],
   );
   const runningPreview = useMemo(
     () => (id: string) => conversationActivityLabel(runningTurns[id]?.activity),
@@ -1102,6 +1201,15 @@ function ProjectConversations({
       todoFor={todoFor}
       showSettings={dimmed}
       archivedView={archivedView}
+      selectedIds={
+        path && selectedKeys
+          ? new Set(
+              conversations
+                .filter((row) => selectedKeys.has(chatSelectionKey(path, row.id)))
+                .map((row) => row.id),
+            )
+          : undefined
+      }
       {...handlers}
     />
   );

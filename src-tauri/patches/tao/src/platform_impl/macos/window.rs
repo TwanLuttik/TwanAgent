@@ -573,8 +573,11 @@ impl UnownedWindow {
         set_max_inner_size(&ns_window, max_size);
       }
 
-      // register for drag and drop operations.
-      ns_window.registerForDraggedTypes(&NSArray::arrayWithObject(appkit::NSFilenamesPboardType));
+      // Do not register the window as a drop target. The delegate implements
+      // NSDraggingDestination, so a registration makes AppKit hand the drag to the
+      // window before WKWebView. WebKit then replaces the page with an empty drag
+      // image: the window goes black on the first file drag and stops taking mouse
+      // events. The webview registers for file URLs itself and reports the drop.
     }
 
     // Since `win_attribs` is put into a mutex below, we'll just copy these

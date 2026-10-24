@@ -54,9 +54,11 @@ export function ConversationList({
   todoFor,
   showSettings,
   onOpen,
+  onSelect,
   onDelete,
   onArchive,
   archivedView,
+  selectedIds,
   onReorder,
   onReorderSidebar,
   onCreateJourney,
@@ -79,9 +81,13 @@ export function ConversationList({
   todoFor?: (id: string) => TodoBadge | null;
   showSettings: boolean;
   onOpen: (id: string) => void;
+  /** Cmd/Ctrl toggles, Shift extends. A plain click still opens the chat. */
+  onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
   onArchive?: (id: string, archived: boolean) => void;
   archivedView?: boolean;
+  /** Chat ids in this list that are part of the multi-selection. */
+  selectedIds?: ReadonlySet<string>;
   onReorder: (fromId: string, toId: string) => void;
   onReorderSidebar: (fromId: string, fromKind: "journey" | "conversation", toId: string, toKind: "journey" | "conversation") => void;
   onCreateJourney: (id: string) => void;
@@ -239,7 +245,13 @@ export function ConversationList({
                 <SortableRow
                   key={item.key}
                   item={item}
-                  selected={item.kind === "chat" && item.conversation.id === activeId && !showSettings}
+                  selected={
+                    item.kind === "chat" &&
+                    (selectedIds
+                      ? selectedIds.has(item.conversation.id)
+                      : item.conversation.id === activeId && !showSettings)
+                  }
+                  onSelect={onSelect}
                   running={
                     item.kind === "chat" &&
                     (item.conversation.id in runningIds || loadingId === item.conversation.id)
@@ -323,6 +335,9 @@ export function ConversationList({
             setMenu(null);
           }}
           archivedView={archivedView}
+          archiveCount={
+            menu.target.type === "chat" && selectedIds?.has(menu.target.id) ? selectedIds.size : 1
+          }
           onArchiveChat={() => {
             if (menu.target.type === "chat" && onArchive) {
               onArchive(menu.target.id, !archivedView);
@@ -445,6 +460,7 @@ const SortableRow = memo(function SortableRow({
   renaming,
   age,
   onOpen,
+  onSelect,
   onDelete,
   onToggle,
   onOpenKnowledge,
@@ -465,6 +481,7 @@ const SortableRow = memo(function SortableRow({
   renaming: boolean;
   age: string;
   onOpen: (id: string) => void;
+  onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
   onToggle: (id: string) => void;
   onOpenKnowledge: (id: string) => void;
@@ -525,6 +542,7 @@ const SortableRow = memo(function SortableRow({
           age={age}
           rowId={item.conversation.id}
           onOpen={onOpen}
+          onSelect={onSelect}
           onDelete={onDelete}
         />
       )}
@@ -690,6 +708,7 @@ const ConversationCard = memo(function ConversationCard({
   age,
   rowId = "",
   onOpen,
+  onSelect,
   onDelete,
 }: {
   row: ConversationSummary;
@@ -704,6 +723,7 @@ const ConversationCard = memo(function ConversationCard({
   age?: string;
   rowId?: string;
   onOpen?: (id: string) => void;
+  onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete?: (id: string) => void;
 }) {
   const showPreview = Boolean(running && preview);
@@ -724,7 +744,15 @@ const ConversationCard = memo(function ConversationCard({
       <button
         type="button"
         disabled={placeholder || overlay}
-        onClick={() => onOpen?.(rowId)}
+        onClick={(ev) => {
+          if (onSelect && (ev.metaKey || ev.ctrlKey || ev.shiftKey)) {
+            ev.preventDefault();
+            onSelect(rowId, { toggle: ev.metaKey || ev.ctrlKey, range: ev.shiftKey });
+            return;
+          }
+          onSelect?.(rowId, { toggle: false, range: false });
+          onOpen?.(rowId);
+        }}
         className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-[6px] pr-1 pl-2 text-left text-[13px] text-ink disabled:cursor-default"
       >
         <span className="min-w-0 flex-1">
@@ -781,6 +809,7 @@ function ChatContextMenu({
   onDeleteChat,
   onArchiveChat,
   archivedView,
+  archiveCount = 1,
   onRemove,
   onRename,
   onDeleteJourney,
@@ -796,6 +825,7 @@ function ChatContextMenu({
   onDeleteChat: () => void;
   onArchiveChat: () => void;
   archivedView?: boolean;
+  archiveCount?: number;
   onRemove: () => void;
   onRename: () => void;
   onDeleteJourney: () => void;
@@ -815,7 +845,16 @@ function ChatContextMenu({
             : []),
           ...(!archivedView && target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),
           { label: "Copy ID", onClick: () => copyDebugId(target.id, onClose) },
-          { label: archivedView ? "Unarchive" : "Archive", onClick: onArchiveChat },
+          {
+            label: archivedView
+              ? archiveCount > 1
+                ? `Unarchive ${archiveCount}`
+                : "Unarchive"
+              : archiveCount > 1
+                ? `Archive ${archiveCount}`
+                : "Archive",
+            onClick: onArchiveChat,
+          },
           { label: "Delete", onClick: onDeleteChat },
         ];
 

@@ -208,6 +208,18 @@ fn remote_workspace(state: &AppState, workspace: &str) -> bool {
         .is_some()
 }
 
+/// Every project whose chats are already in the index, in sidebar order.
+/// One read, so launch paints the list once instead of growing it project by project.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_sidebar_snapshot(state: State<'_, AppState>) -> Result<Vec<super::types::SidebarProject>> {
+    let data_dir = state.data_dir.clone();
+    crate::dev::commands::off_main(move || {
+        let conn = crate::appdb::open(&data_dir)?;
+        crate::appdb::sidebar_snapshot(&conn)
+    })
+    .await
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_list_conversations(
     state: State<'_, AppState>,

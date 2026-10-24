@@ -26,6 +26,7 @@ import * as api from "../lib/tauri";
 import type { ProjectRemoval } from "../lib/tauri";
 import { formatBytes } from "../lib/usage";
 import { AnchoredMenu } from "./ContextMenu";
+import { ProjectMark } from "./ProjectMark";
 import { Symbol } from "./Symbol";
 
 export function AllProjectsList({
@@ -48,6 +49,7 @@ export function AllProjectsList({
   onToggleArchive,
   gitByProject,
   chatQuery = "",
+  logoRefresh = 0,
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -69,6 +71,8 @@ export function AllProjectsList({
   gitByProject?: Record<string, ProjectGit>;
   /** When set, a project only lists the chats whose title matches. */
   chatQuery?: string;
+  /** Bumps when a project file changes, so a new favicon replaces the folder. */
+  logoRefresh?: number;
 }) {
   const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
@@ -176,9 +180,12 @@ export function AllProjectsList({
                   current ? "text-ink" : "text-ink/75"
                 }`}
               >
-                <Symbol
-                  name="folder.fill"
-                  className={`size-3.5 shrink-0 ${current ? "text-accent" : "text-muted"}`}
+                <ProjectMark
+                  path={group.path}
+                  remote={Boolean(group.remote)}
+                  refresh={logoRefresh}
+                  active={current}
+                  className="size-3.5"
                 />
                 <span className="min-w-0 truncate">{group.name}</span>
                 <ProjectMarks remote={group.remote} server={group.server} />
@@ -270,7 +277,6 @@ export function AllProjectsList({
           y={menu.y}
           name={menu.group.name}
           path={menu.group.path}
-          appManaged={isAppProject(menu.group.path, projectsRoot) || isAppProject(menu.group.path, legacyProjectsRoot)}
           onNewChat={() => {
             onNewChat(menu.group.path);
             setMenu(null);
@@ -658,7 +664,6 @@ export function ProjectContextMenu({
   y,
   name,
   path,
-  appManaged,
   onNewChat,
   onSettings,
   onDelete,
@@ -668,7 +673,6 @@ export function ProjectContextMenu({
   y: number;
   name: string;
   path?: string;
-  appManaged: boolean;
   onNewChat?: () => void;
   onSettings?: () => void;
   onDelete: () => void;
@@ -715,7 +719,7 @@ export function ProjectContextMenu({
         onClick={onDelete}
         className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-err hover:bg-inset"
       >
-        {appManaged ? "Delete project" : "Remove from list"}
+        Remove project
       </button>
     </AnchoredMenu>
   );
@@ -768,9 +772,7 @@ export function DeleteProjectDialog({
       >
         <div className="text-[13px] font-medium text-ink">Remove {name}?</div>
         <p className="mt-1 text-[12px] text-muted">
-          {appManaged
-            ? "This project lives in the app folder, so removing it also deletes its files."
-            : "Choose what leaves the disk. The project folder stays unless you delete it."}
+          Choose what leaves the disk. The project folder stays unless you delete it.
         </p>
         <div className="mt-3 flex flex-col gap-0.5" role="radiogroup" aria-label="What to remove">
           {hasWorktrees ? (
@@ -795,14 +797,12 @@ export function DeleteProjectDialog({
             selected={chosen === "files"}
             onClick={() => setMode("files")}
           />
-          {appManaged ? null : (
-            <DeleteChoice
-              label="Remove from list"
-              detail="The folder on disk is left alone. It just leaves the sidebar."
-              selected={chosen === "list"}
-              onClick={() => setMode("list")}
-            />
-          )}
+          <DeleteChoice
+            label="Remove from list"
+            detail="The folder on disk is left alone. It just leaves the sidebar."
+            selected={chosen === "list"}
+            onClick={() => setMode("list")}
+          />
         </div>
         <div className="mt-3 flex items-center justify-end gap-1.5">
           <button

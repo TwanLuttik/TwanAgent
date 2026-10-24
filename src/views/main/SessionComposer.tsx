@@ -186,7 +186,7 @@ export const SessionComposer = memo(function SessionComposer({
       models={models}
       model={settings.model}
       onModel={(id) => pickModel(id, boundId)}
-      lockedProviders={boundId && remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
+      lockedProviders={remoteWorkspace ? remoteWorkspace.providers ?? [] : null}
       effort={settings.effort}
       onEffort={(id) => pickEffort(id, boundId)}
       contextWindow={settings.contextWindow}

@@ -51,8 +51,10 @@ pub(super) fn apply_line(data: &str, open: &mut OpenRound) {
             open.tool_block(index as usize).arguments.push_str(&partial);
         }
         SseEvent::Stop => open.stop = true,
+        SseEvent::Usage { prompt_tokens, completion_tokens, cache_read_tokens, .. } => {
+            open.note_usage(Some(prompt_tokens), Some(completion_tokens), Some(cache_read_tokens));
+        }
         SseEvent::Reasoning(_)
-        | SseEvent::Usage { .. }
         | SseEvent::ThinkingStart { .. }
         | SseEvent::RedactedThinking { .. }
         | SseEvent::ThinkingSignature { .. } => {}

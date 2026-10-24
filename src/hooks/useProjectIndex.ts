@@ -4,6 +4,7 @@ import {
   applyLiveProjectChats,
   isLocalCloudDraft,
   isSameProject,
+  groupsFromSidebarSnapshot,
   mergeLoadedProjectGroups,
   placeProjectChats,
   sameJourneyList,
@@ -58,6 +59,9 @@ export function useProjectIndex({
 }) {
   const [recents, setRecents] = useState(loadRecentWorkspaces);
   const [allProjectGroups, setAllProjectGroups] = useState<ProjectChatGroup[]>([]);
+  // False until the first frame has every cached chat. The list stays hidden so
+  // project names do not paint, then jump as each conversation list arrives.
+  const [sidebarReady, setSidebarReady] = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState(loadCollapsedProjects);
   const [projectsRoot, setProjectsRoot] = useState("");
   const [legacyProjectsRoot, setLegacyProjectsRoot] = useState("");
@@ -108,22 +112,29 @@ export function useProjectIndex({
         const rows = sidebarProjects(fromDisk).map((row) =>
           remoteMounts.has(projectKey(row.path)) ? { ...row, remote: true } : row,
         );
-        // Names paint before any chat database opens. The open project goes first
-        // so its chats arrive before the rest of the list.
-        if (!cancelled) {
-          setAllProjectGroups((prev) =>
-            mergeLoadedProjectGroups(
-              prev,
-              rows.map((row) => ({ ...row, conversations: [], journeys: [] })),
-            ),
-          );
+        // One read of the index. Cached chats paint with their project instead of
+        // staggering in after the names. A project the index does not know yet stays empty.
+        let snapshot: Awaited<ReturnType<typeof api.sidebarSnapshot>> = [];
+        try {
+          snapshot = await api.sidebarSnapshot();
+        } catch {
+          snapshot = [];
         }
+        if (cancelled) return;
+        const firstFrame = groupsFromSidebarSnapshot(rows, snapshot);
+        setAllProjectGroups((prev) => mergeLoadedProjectGroups(prev, firstFrame));
+        setSidebarReady(true);
+        const cached = new Set(snapshot.map((group) => projectKey(group.path)));
         const openPath = workspaceRef.current;
+        // Indexed projects are already on screen. Only a project missing from the
+        // snapshot still needs its own store, and the open one goes first.
+        // `loaded` starts as that frame so each fill keeps the chats already painted.
+        const pending = rows.filter((row) => !cached.has(projectKey(row.path)));
         const ordered = [
-          ...rows.filter((row) => isSameProject(row.path, openPath)),
-          ...rows.filter((row) => !isSameProject(row.path, openPath)),
+          ...pending.filter((row) => isSameProject(row.path, openPath)),
+          ...pending.filter((row) => !isSameProject(row.path, openPath)),
         ];
-        const loaded: ProjectChatGroup[] = [];
+        const loaded: ProjectChatGroup[] = firstFrame.map((group) => ({ ...group }));
         for (const row of ordered) {
           if (cancelled) return;
           const [listed, journeyListed] = await Promise.all([
@@ -193,7 +204,10 @@ export function useProjectIndex({
           }
         }
       } catch (e) {
-        if (!cancelled) setFlash({ kind: "err", text: String(e) });
+        if (!cancelled) {
+          setSidebarReady(true);
+          setFlash({ kind: "err", text: String(e) });
+        }
       }
     })();
     return () => {
@@ -240,5 +254,6 @@ export function useProjectIndex({
     projectsRoot,
     legacyProjectsRoot,
     pathsReady,
+    sidebarReady,
   };
 }

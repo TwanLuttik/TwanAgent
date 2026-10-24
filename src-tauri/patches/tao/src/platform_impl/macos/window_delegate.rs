@@ -13,11 +13,12 @@ use objc2::{
   msg_send,
   rc::Retained,
   runtime::{AnyClass as Class, AnyObject as Object, ClassBuilder as ClassDecl, Sel},
+  ClassType,
 };
 use objc2_app_kit::{
   self as appkit, NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
 };
-use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSString, NSUInteger};
+use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSString, NSURL, NSUInteger};
 use once_cell::sync::Lazy;
 
 use crate::{
@@ -419,21 +420,17 @@ extern "C" fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
 
   use std::path::PathBuf;
 
-  let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
-
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-
-      with_state(this, |state| {
-        state.emit_event(WindowEvent::HoveredFile(PathBuf::from(path)));
-      });
-    }
+  let paths = unsafe { dragged_file_paths(sender) };
+  if paths.is_empty() {
+    // Not a file drag. Declining lets the webview handle it instead of leaving
+    // this window as the destination for a drag it cannot finish.
+    trace!("Completed `draggingEntered:` (declined)");
+    return NO;
+  }
+  for path in paths {
+    with_state(this, |state| {
+      state.emit_event(WindowEvent::HoveredFile(PathBuf::from(path)));
+    });
   }
 
   trace!("Completed `draggingEntered:`");
@@ -453,25 +450,71 @@ extern "C" fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL 
 
   use std::path::PathBuf;
 
-  let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
-
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-
-      with_state(this, |state| {
-        state.emit_event(WindowEvent::DroppedFile(PathBuf::from(path)));
-      });
-    }
+  let paths = unsafe { dragged_file_paths(sender) };
+  if paths.is_empty() {
+    trace!("Completed `performDragOperation:` (declined)");
+    return NO;
+  }
+  for path in paths {
+    with_state(this, |state| {
+      state.emit_event(WindowEvent::DroppedFile(PathBuf::from(path)));
+    });
   }
 
   trace!("Completed `performDragOperation:`");
   YES
+}
+
+/// File paths on the drag pasteboard. Finder publishes `public.file-url`.
+/// Older sources still publish the deprecated filename list, so both are read.
+/// An empty result means this is not a file drag and the destination must decline it.
+unsafe fn dragged_file_paths(sender: id) -> Vec<String> {
+  unsafe {
+    let pb: Retained<NSPasteboard> = msg_send![sender, draggingPasteboard];
+    let mut paths = Vec::new();
+
+    let classes = NSArray::from_slice(&[NSURL::class()]);
+    let urls: Option<Retained<NSArray>> =
+      NSPasteboard::readObjectsForClasses_options(&pb, &classes, None);
+    if let Some(urls) = urls {
+      for item in urls {
+        let Some(url) = item.downcast_ref::<NSURL>() else {
+          continue;
+        };
+        if !url.isFileURL() {
+          continue;
+        }
+        let Some(url) = url.filePathURL() else {
+          continue;
+        };
+        let Some(path) = url.path() else {
+          continue;
+        };
+        let path = CStr::from_ptr(path.UTF8String()).to_string_lossy().into_owned();
+        if !path.is_empty() {
+          paths.push(path);
+        }
+      }
+      if !paths.is_empty() {
+        return paths;
+      }
+    }
+
+    #[allow(deprecated)]
+    if let Some(list) = NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) {
+      if let Ok(list) = list.downcast::<NSArray>() {
+        for item in list {
+          if let Ok(name) = item.downcast::<NSString>() {
+            let path = CStr::from_ptr(name.UTF8String()).to_string_lossy().into_owned();
+            if !path.is_empty() {
+              paths.push(path);
+            }
+          }
+        }
+      }
+    }
+    paths
+  }
 }
 
 /// Invoked when the dragging operation is complete

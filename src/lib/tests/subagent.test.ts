@@ -7,6 +7,7 @@ import {
   emptySubagent,
   parseSpawnArgs,
   parseSubagentType,
+  subagentFromLocalEvent,
   subagentsForChat,
   subagentSystemPrompt,
   subagentTranscript,
@@ -223,6 +224,52 @@ describe("subagentTranscript", () => {
   it("falls back to the summary when nothing else is present", () => {
     assert.deepEqual(subagentTranscript({ ...start, summary: "All clear." }), ["All clear."]);
     assert.deepEqual(subagentTranscript(start), []);
+  });
+});
+
+describe("subagentFromLocalEvent", () => {
+  it("starts a dock row from a local turn", () => {
+    const event = subagentFromLocalEvent(
+      JSON.stringify({
+        event: "start",
+        id: "child-1",
+        description: "Find parser",
+        type: "explore",
+        prompt: "Find the parser",
+      }),
+    );
+    assert.equal(event?.type, "start");
+    if (event?.type !== "start") return;
+    assert.equal(event.record.id, "child-1");
+    assert.equal(event.record.type, "explore");
+    assert.equal(event.record.description, "Find parser");
+  });
+
+  it("appends streamed reasoning and keeps a full reasoning snapshot", () => {
+    const chunk = subagentFromLocalEvent(JSON.stringify({ event: "reasoning", id: "child-1", text: "Look", append: true }));
+    const snapshot = subagentFromLocalEvent(JSON.stringify({ event: "reasoning", id: "child-1", text: "Look again" }));
+    assert.deepEqual(chunk, { type: "reasoning", id: "child-1", text: "Look", append: true });
+    assert.deepEqual(snapshot, { type: "reasoning", id: "child-1", text: "Look again", append: false });
+    let rows = applySubagentEvent([], {
+      type: "start",
+      record: emptySubagent({ id: "child-1", description: "Find parser", type: "explore", prompt: "Find" }),
+    });
+    rows = applySubagentEvent(rows, chunk!);
+    rows = applySubagentEvent(rows, {
+      type: "reasoning",
+      id: "child-1",
+      text: " at src",
+      append: true,
+    });
+    assert.equal(rows[0].streamReasoning, "Look at src");
+    rows = applySubagentEvent(rows, snapshot!);
+    assert.equal(rows[0].streamReasoning, "Look again");
+  });
+
+  it("ignores a payload that is not a subagent event", () => {
+    assert.equal(subagentFromLocalEvent("not json"), null);
+    assert.equal(subagentFromLocalEvent(JSON.stringify({ event: "delta" })), null);
+    assert.equal(subagentFromLocalEvent(JSON.stringify({ id: "child-1", event: "nope" })), null);
   });
 });
 

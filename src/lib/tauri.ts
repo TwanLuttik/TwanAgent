@@ -343,6 +343,8 @@ export type ApiUsageEvent = {
   /** Prompt tokens served from cache. Already inside `prompt_tokens`. */
   cache_read_tokens?: number;
   duration_ms?: number | null;
+  /** Non-empty when the row was copied from a paired server. Empty for a turn recorded here. */
+  source?: string;
 };
 export type ApiUsageRecord = {
   workspace_path: string;
@@ -1156,6 +1158,19 @@ export async function getHostedConversation(workspace: string, id: string): Prom
   };
 }
 
+export type SidebarProject = {
+  path: string;
+  name: string;
+  remote?: boolean;
+  conversations: ConversationSummary[];
+  journeys: Journey[];
+};
+
+/** Every indexed project, in sidebar order, with the chats already copied into the app database. */
+export function sidebarSnapshot(): Promise<SidebarProject[]> {
+  return invoke("dev_sidebar_snapshot");
+}
+
 export function listConversations(workspace: string): Promise<ConversationSummary[]> {
   return invoke("dev_list_conversations", { workspace });
 }
@@ -1542,8 +1557,40 @@ export function usageRecord(event: ApiUsageRecord): Promise<ApiUsageEvent | null
   return invoke("dev_usage_record", { event });
 }
 
+/** Copy each paired server's usage log into the local one. Returns how many rows were new. */
+export function usageSync(): Promise<number> {
+  return invoke("dev_usage_sync");
+}
+
 export function usageList(since?: string): Promise<ApiUsageEvent[]> {
   return invoke("dev_usage_list", { since: since ?? null });
+}
+
+/** One hosted chat the desktop has already copied from its server. */
+export type ApiCloudUsageChat = {
+  project_path: string;
+  project_name: string;
+  conversation_id: string;
+  title: string;
+  model: string;
+  updated_at: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+};
+
+/** A hosted project. `chats` is empty when none of its conversations have been opened here. */
+export type ApiCloudUsageProject = {
+  project_path: string;
+  project_name: string;
+  chats: ApiCloudUsageChat[];
+};
+
+/**
+ * Cloud projects and the chats cached on this machine. The server keeps no usage
+ * log, so a chat's tokens are the context of its latest turn, not a history.
+ */
+export function usageCloud(): Promise<ApiCloudUsageProject[]> {
+  return invoke("dev_usage_cloud");
 }
 
 /** Finish stamps for one chat. Opening a conversation does not read the whole usage history. */

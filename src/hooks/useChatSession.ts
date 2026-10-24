@@ -16,7 +16,7 @@ import {
   loadPermission,
   saveConversation,
 } from "../lib/prefs";
-import { clearUnseenFinished, composerSettingsForChat, liveTurnMessages, localTurnsToRejoin, patchRunningTurn, type RunningTurn } from "../lib/turn";
+import { clearUnseenFinished, composerSettingsForChat, hostedChatToOpen, liveTurnMessages, localTurnsToRejoin, patchRunningTurn, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
 
@@ -204,25 +204,45 @@ export function useChatSession({
       // A model switch on an empty chat updates the in-memory row before disk.
       // Replacing the list with the stale row would send the previous model.
       const fresh = conversationsRef.current;
+      const listed = new Set(rows.map((row) => row.id));
+      // A cloud chat is created on the server by the prompt. Until that list
+      // includes it, the row only exists here. Dropping it is what lets the
+      // reload open the previous conversation over the one just sent.
+      const pending = hostedChats
+        ? fresh.filter((row) => row.id && !listed.has(row.id) && !isLocalCloudDraft(row))
+        : [];
       setConversations(
-        rows.map((row) => {
-          const live = fresh.find((item) => item.id === row.id);
-          if (!live?.model || live.model === row.model) return row;
-          return {
-            ...row,
-            model: live.model,
-            effort: live.effort ?? row.effort,
-            context_window: live.context_window ?? row.context_window,
-            permission: live.permission ?? row.permission,
-          };
-        }),
+        [
+          ...pending,
+          ...rows.map((row) => {
+            const live = fresh.find((item) => item.id === row.id);
+            if (!live?.model || live.model === row.model) return row;
+            return {
+              ...row,
+              model: live.model,
+              effort: live.effort ?? row.effort,
+              context_window: live.context_window ?? row.context_window,
+              permission: live.permission ?? row.permission,
+            };
+          }),
+        ],
       );
       setJourneys(keptJourneys);
       const visible = rows.filter((row) => !isArchivedConversation(row));
       const saved = loadConversation(ws);
       const savedRow = rows.find((row) => row.id === saved);
       const preferred = preferredOpenConversation(visible, savedRow && !isArchivedConversation(savedRow) ? saved : "");
-      const want = preferId || preferred?.id || "";
+      const currentId = activeIdRef.current;
+      // The first prompt of a cloud chat is on screen before the server list
+      // includes it. Preferring the last saved chat would paint that older
+      // conversation while this one is still waiting on SSH.
+      const want = hostedChats
+        ? hostedChatToOpen({
+            currentId,
+            currentInRows: Boolean(currentId) && rows.some((row) => row.id === currentId),
+            preferredId: preferId || preferred?.id || "",
+          })
+        : preferId || preferred?.id || "";
       if (!hostedChats) {
         void markLiveLocalTurns(
           rows.map((row) => row.id).filter((id) => id !== want),
@@ -243,6 +263,12 @@ export function useChatSession({
       }
       const found = rows.find((row) => row.id === want);
       if (!found) {
+        // The chat on screen was just created. The server list does not have it
+        // yet, so fetching the preferred older chat would replace this prompt.
+        if (hostedChats && want === currentId) {
+          setOpeningId?.("");
+          return;
+        }
         setActiveId("");
         setMessages([]);
         setOpeningId?.("");

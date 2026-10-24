@@ -421,6 +421,7 @@ export function MainView() {
     projectsRoot,
     legacyProjectsRoot,
     pathsReady,
+    sidebarReady,
   } = useProjectIndex({
     workspace,
     setWorkspace,
@@ -788,8 +789,6 @@ export function MainView() {
     activeId,
     runningId,
     runningTurns,
-    projectsRoot,
-    legacyProjectsRoot,
     pendingClosePath,
     dirtyFiles,
     usageByChat,
@@ -978,6 +977,7 @@ export function MainView() {
     toggleSubagent,
     removeChat,
     archiveChat,
+    archiveChats,
     reorderChats,
     reorderSidebar,
     createJourneyFromChat,
@@ -1474,6 +1474,7 @@ export function MainView() {
     activeId,
     allProjectGroups,
     archiveChat,
+    archiveChats,
     collapsedProjects,
     conversations,
     createJourneyFromChat,
@@ -1507,6 +1508,7 @@ export function MainView() {
     showSettings,
     showUsage,
     showDocs,
+    sidebarReady,
     startNewChat,
     toggleJourney,
     toggleProjectCollapsed,
@@ -1530,6 +1532,7 @@ export function MainView() {
     sidebar.showSettings !== showSettings ||
     sidebar.showUsage !== showUsage ||
     sidebar.showDocs !== showDocs ||
+    sidebar.sidebarReady !== sidebarReady ||
     sidebar.workspace !== workspace;
   if (sidebarChanged) {
     sidebarRef.current = {
@@ -1537,6 +1540,7 @@ export function MainView() {
       activeId,
       allProjectGroups,
       archiveChat,
+      archiveChats,
       collapsedProjects,
       conversations,
       createJourneyFromChat,
@@ -1570,6 +1574,7 @@ export function MainView() {
       showSettings,
       showUsage,
       showDocs,
+      sidebarReady,
       startNewChat,
       toggleJourney,
       toggleProjectCollapsed,
@@ -1578,6 +1583,7 @@ export function MainView() {
   } else if (sidebarRef.current) {
     const live = sidebarRef.current;
     live.archiveChat = archiveChat;
+    live.archiveChats = archiveChats;
     live.createJourneyFromChat = createJourneyFromChat;
     live.deleteJourney = deleteJourney;
     live.deleteProjectFromSidebar = deleteProjectFromSidebar;
@@ -1714,6 +1720,7 @@ export function MainView() {
     remoteWorkspace,
     cloudConnecting: cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady),
     archiveChat,
+    archiveChats,
     removeChat,
     removePendingAt,
     renameJourney,

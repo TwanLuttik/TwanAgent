@@ -15,7 +15,7 @@ pub mod skills;
 pub(crate) mod types;
 
 pub use types::{
-    Conversation, ConversationSummary, DevChatUsage, DevCompaction, Journey, SidebarItem,
+    Conversation, ConversationSummary, DevChatUsage, DevCompaction, Journey, SidebarItem, SidebarProject,
 };
 
 pub(crate) use mcp::open_path;

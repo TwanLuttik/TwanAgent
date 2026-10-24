@@ -60,7 +60,6 @@ export function MainShell() {
             y={projectMenu.y}
             name={projectMenu.name}
             path={projectMenu.path}
-            appManaged={isAppProject(projectMenu.path, projectsRoot) || isAppProject(projectMenu.path, legacyProjectsRoot)}
             onNewChat={() => {
               void startNewChat("chat", undefined, projectMenu.path);
               setProjectMenu(null);
