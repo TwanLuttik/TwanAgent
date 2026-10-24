@@ -1,7 +1,7 @@
 name: Release
 
 # Push a v* tag, or run this by hand, to publish one GitHub release.
-# The tag is the desktop version (`v1.0.0-beta.4`). The same release also
+# The tag is the desktop version (`v1.0.0-beta.5`). The same release also
 # carries `twanagent-server` binaries. Their version is the service crate
 # version, which can move without the desktop version moving.
 #
@@ -160,12 +160,10 @@ jobs:
 
       - name: Install frontend from the committed lockfile
         run: |
-          bun install --frozen-lockfile --no-save
+          bun install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git diff --exit-code -- package-lock.json
+          git diff --exit-code -- package-lock.json bun.lock
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Bun imports package-lock.json and writes a transient bun.lock even with --no-save.
-          if (Test-Path 'bun.lock') { Remove-Item -LiteralPath 'bun.lock' }
 
       - name: Frontend tests
         run: bun run test

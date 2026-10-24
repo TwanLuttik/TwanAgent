@@ -40,8 +40,9 @@ if ($LASTEXITCODE -ne 0) { throw 'The committed lockfile changed' }
 if (Test-Path 'bun.lock') { Remove-Item -LiteralPath 'bun.lock' }
 ```
 
-Bun 1.4.3 imports the npm lockfile but still writes a transient `bun.lock` with
-`--no-save`. The workflow removes that generated file; no Bun lockfile is committed.
+The Windows release installs with `bun install --frozen-lockfile`. Both
+`package-lock.json` and `bun.lock` are committed. A version bump has to update
+the root `version` in `package-lock.json` as well, or the frozen install fails.
 Use `bun run test` for the frontend tests and `bun x tsc --noEmit` for typechecking.
 
 ## Run
@@ -128,7 +129,7 @@ A signed build checks GitHub releases when the sidebar opens. If a newer prerele
 
 The desktop version and the server version are two numbers.
 
-- Desktop: `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. This is the GitHub tag, such as `v1.0.0-beta.4`.
+- Desktop: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the root `version` in `package-lock.json`. This is the GitHub tag, such as `v1.0.0-beta.5`.
 - Server: `src-tauri/service/Cargo.toml`. `twanagent-server --version` prints this. Bump it whenever the server binary changes, even when the desktop version stays put.
 
 One tag publishes both. Pushing `v*` runs `.github/workflows/release.yml`. The macOS job creates the GitHub release and attaches the universal app. The Windows job attaches the unsigned installer and `twanagent-server` for Windows. The server job attaches the macOS and Linux server binaries. The asset names carry the service crate version:

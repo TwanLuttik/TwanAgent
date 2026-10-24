@@ -6,7 +6,7 @@ Pairing writes `~/.twanagent/auth-token` on the machine. That token is not an SS
 
 The server version is the `twanagent-service` crate version, not the app version. Bump it in `src-tauri/service/Cargo.toml` before a build you want offered as an update. An unchanged version counts as already installed.
 
-A desktop release also publishes the server. The GitHub tag is the app version (`v1.0.0-beta.4`). The same release carries `twanagent-server-<server>-<target>` assets for macOS arm64 and x86_64, Linux arm64 and x86_64, and Windows x64. See [DEVELOPMENT.md](../DEVELOPMENT.md#release).
+A desktop release also publishes the server. The GitHub tag is the app version (`v1.0.0-beta.5`). The same release carries `twanagent-server-<server>-<target>` assets for macOS arm64 and x86_64, Linux arm64 and x86_64, and Windows x64. See [DEVELOPMENT.md](../DEVELOPMENT.md#release).
 
 ## Check
 
