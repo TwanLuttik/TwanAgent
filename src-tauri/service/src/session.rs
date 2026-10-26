@@ -425,6 +425,7 @@ mod tests {
             effort: String::new(),
             permission: "ask".into(),
             project: String::new(),
+            context_window: None,
         }
     }
 

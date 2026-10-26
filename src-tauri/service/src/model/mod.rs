@@ -31,6 +31,8 @@ pub struct Round {
     pub tool_calls: Vec<ToolCall>,
     pub error: Option<String>,
     pub usage: Option<RoundUsage>,
+    /// Not streamed to the desktop. A summary uses it when the reply text is empty.
+    pub reasoning: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,13 +60,13 @@ pub fn tool_defs() -> Value {
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. Skips node_modules, target, dist, build, and .git. Use this instead of a shell search.",
+                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. The pattern is a case-insensitive substring, not a regular expression. Every text file is searched, including .ts and .tsx, unless glob says otherwise. Skips node_modules, target, dist, build, and .git. A miss means the substring was not found. It does not mean a file type was skipped. Use this instead of a shell search.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Text to find. Matched case-insensitively." },
+                        "pattern": { "type": "string", "description": "Literal text to find. Matched case-insensitively. Not a regular expression: dots and brackets match themselves." },
                         "path": { "type": "string", "description": "Folder or file relative to the workspace. Empty searches the whole workspace." },
-                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs or src/**/*.ts. Empty searches every text file." }
+                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs, *.ts, or src/**/*.tsx. * matches any file name, including .ts and .tsx. Empty searches every text file." }
                     },
                     "required": ["pattern"]
                 }
@@ -185,6 +187,7 @@ fn key_for(keys: &ProviderKeys, provider: ProviderId) -> Result<String> {
 
 pub(super) struct OpenRound {
     text: String,
+    reasoning: String,
     pending: String,
     calls: Vec<ToolCall>,
     /// Anthropic content-block index to the tool slot. A thinking block must not shift the tool.
@@ -197,6 +200,7 @@ impl Default for OpenRound {
     fn default() -> Self {
         Self {
             text: String::new(),
+            reasoning: String::new(),
             pending: String::new(),
             calls: Vec::new(),
             block_slots: Vec::new(),
@@ -213,6 +217,12 @@ impl OpenRound {
         }
         self.text.push_str(text);
         self.pending.push_str(text);
+    }
+
+    fn push_reasoning(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.reasoning.push_str(text);
+        }
     }
 
     /// xAI tool indexes are already tool-relative. Anthropic block indexes are not.
@@ -263,6 +273,7 @@ impl OpenRound {
             tool_calls: self.calls.into_iter().filter(|call| !call.name.is_empty()).collect(),
             error: None,
             usage: self.usage,
+            reasoning: self.reasoning,
         }
     }
 }
@@ -311,7 +322,7 @@ pub(super) fn failed(name: &str, status: reqwest::StatusCode, body: &str) -> Rou
         "MiniMax" => crate::providers::minimax::http_error_message(status.as_u16(), body),
         _ => crate::providers::anthropic::http_error_message(status.as_u16(), body),
     };
-    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message), usage: None }
+    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message), usage: None, reasoning: String::new() }
 }
 
 #[cfg(test)]

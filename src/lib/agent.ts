@@ -25,11 +25,12 @@ import {
   compactionPrompt,
   insertCompactionEvent,
   isContextLengthError,
+  keepCompaction,
   messagesForContext,
   promptExceedsWindow,
   readCompactionState,
   shouldAutoCompact,
-  splitForCompaction,
+  splitForShrink,
   type CompactionState,
 } from "./compact.ts";
 import {
@@ -399,6 +400,7 @@ export type LocalTurnEvent = {
   tool?: ChatToolCall | null;
   messages?: ChatMessage[] | null;
   usage?: ChatUsage | null;
+  compaction?: CompactionState | null;
 };
 
 /**
@@ -437,6 +439,7 @@ export async function resumeLocalTurn(input: {
             kind: "saved",
             messages: latest,
             usage: parseChatUsage(event.conversation.context_usage),
+            compaction: keepCompaction(null, event.conversation.compaction),
           });
           return;
         }
@@ -485,7 +488,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
   let transcript = opts.messages;
   let compaction = opts.compaction ?? null;
   let promptTokens = opts.priorPromptTokens ?? 0;
-  if (opts.allowSpawn !== false && shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)) {
+  if (shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)) {
     const next = await compactContext(transcript, compaction, opts);
     if (next) {
       compaction = next;
@@ -505,10 +508,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onUpdate?.(transcript);
     }
     if (opts.signal.aborted) return transcript;
-    if (
-      opts.allowSpawn !== false &&
-      shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)
-    ) {
+    if (shouldAutoCompact(promptTokens, opts.contextWindow ?? 0)) {
       const next = await compactContext(transcript, compaction, opts);
       if (next && next.through !== compaction?.through) {
         compaction = next;
@@ -541,7 +541,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       result = await streamCompletion(prompt, opts, imageCache);
     }
     if (opts.signal.aborted) return transcript;
-    if (result.error && !compactedAfterOverflow && isContextLengthError(result.error) && opts.allowSpawn !== false) {
+    if (result.error && !compactedAfterOverflow && isContextLengthError(result.error)) {
       const next = await compactContext(transcript, compaction, opts);
       if (next && next.through !== compaction?.through) {
         compactedAfterOverflow = true;
@@ -667,7 +667,7 @@ async function compactContext(
 ): Promise<CompactionState | null> {
   if (opts.signal.aborted) return null;
   const source = messagesForContext(stored, current).messages;
-  const { older, cut } = splitForCompaction(source);
+  const { older, cut } = splitForShrink(source);
   if (!older.length || cut >= source.length) return null;
   const previous = readCompactionState(source)?.summary ?? current?.summary ?? "";
   const result = await streamCompletion(

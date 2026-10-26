@@ -83,13 +83,14 @@ pub fn remote_grep_command(root: &str, pattern: &str, rel: &str, glob: &str) -> 
     }
     let remote = remote_join(root, rel)?;
     let quoted = super::ssh::shell_single_quote(&remote);
+    let root_q = super::ssh::shell_single_quote(root);
     let pattern_q = super::ssh::shell_single_quote(pattern);
     let glob_q = super::ssh::shell_single_quote(glob.trim());
     let prune = heavy_prune();
     let script = remote_search_script(GREP_PROGRAM);
     Ok(format!(
         "if [ ! -e {quoted} ]; then echo 'path was not found' >&2; exit 1; fi; \
-         find {quoted} \\( {prune} \\) -prune -o -type f -print0 -o -true | {script} {quoted} {pattern_q} {glob_q}"
+         find {quoted} \\( {prune} \\) -prune -o -type f -print0 -o -true | {script} {root_q} {quoted} {pattern_q} {glob_q}"
     ))
 }
 
@@ -126,13 +127,17 @@ fn remote_search_script(program: &str) -> String {
 
 const GREP_PROGRAM: &str = r#"import os, sys
 root = os.path.realpath(sys.argv[1])
-pat = sys.argv[2].lower()
-glob = sys.argv[3]
+start = os.path.realpath(sys.argv[2])
+pat = sys.argv[3].lower()
+glob = sys.argv[4]
 limit = 100
 hits = []
 files = sys.stdin.buffer.read().split(b"\0")
 
 def match(pat, text):
+    # Characters, not bytes. A byte-wise `*` misses `*.ts` on a name like café.ts.
+    pat = list(pat)
+    text = list(text)
     pi = ti = 0
     star = None
     while ti < len(text):
@@ -197,7 +202,9 @@ for raw in files:
                 break
 
 if not hits:
-    sys.stdout.write("No matches.\n")
+    scope = "the workspace" if start == root else os.path.relpath(start, root)
+    note = "Searched every text file. .ts, .tsx, and other source files are included." if not glob else "File glob: %s." % glob
+    sys.stdout.write("No matches for \"%s\" in %s. %s This is a case-insensitive substring, not a regular expression. Nothing was skipped because of its extension.\n" % (sys.argv[3], scope, note))
 else:
     sys.stdout.write("\n".join(hits))
     if len(hits) >= limit:
@@ -212,6 +219,9 @@ limit = 200
 hits = []
 
 def match(pat, text):
+    # Characters, not bytes. A byte-wise `*` misses `*.ts` on a name like café.ts.
+    pat = list(pat)
+    text = list(text)
     pi = ti = 0
     star = None
     while ti < len(text):
@@ -576,6 +586,7 @@ mod tests {
         assert!(grep.contains("-name 'node_modules'"));
         assert!(grep.contains("'answer'"));
         assert!(grep.contains("'*.rs'"));
+        assert!(grep.contains("python3 -c") && grep.contains("'/srv/billing' '/srv/billing/src'"));
         assert!(grep.contains("python3 -c \"$(printf '%s'"));
         assert!(!grep.contains("pattern is empty"));
         assert!(remote_grep_command("/srv/billing", "", "", "").is_err());
@@ -606,6 +617,25 @@ mod tests {
         assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
         assert!(text.contains("src/app.ts:1:"), "{text}");
         assert!(!text.contains("node_modules"));
+        std::fs::write(root.join("src/café.ts"), "export const answer = 7;\n").unwrap();
+        let unicode = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(remote_grep_command(&root_s, "answer", "", "*.ts").unwrap())
+            .output()
+            .unwrap();
+        let unicode_text = String::from_utf8_lossy(&unicode.stdout);
+        assert!(unicode.status.success(), "{}", String::from_utf8_lossy(&unicode.stderr));
+        assert!(unicode_text.contains("src/café.ts:"), "{unicode_text}");
+        let missed = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(remote_grep_command(&root_s, "missing-symbol", "src", "*.ts").unwrap())
+            .output()
+            .unwrap();
+        let missed_text = String::from_utf8_lossy(&missed.stdout);
+        assert!(missed.status.success(), "{}", String::from_utf8_lossy(&missed.stderr));
+        assert!(missed_text.contains("No matches for \"missing-symbol\" in src."), "{missed_text}");
+        assert!(missed_text.contains("File glob: *.ts."), "{missed_text}");
+        assert!(missed_text.contains("not a regular expression"), "{missed_text}");
         let listed = std::process::Command::new("sh")
             .arg("-c")
             .arg(remote_glob_command(&root_s, "**/*.ts", "").unwrap())

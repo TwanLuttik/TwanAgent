@@ -290,13 +290,13 @@ fn base_tools_json() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "grep",
-                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. Skips node_modules, target, dist, build, and .git. Use this to find a symbol instead of listing folders or running a shell search.",
+                "description": "Search file contents in the workspace. Returns matching lines as path:line:text. The pattern is a case-insensitive substring, not a regular expression. Every text file is searched, including .ts and .tsx, unless glob says otherwise. Skips node_modules, target, dist, build, and .git. A miss means the substring was not found. It does not mean a file type was skipped. Use this to find a symbol instead of listing folders or running a shell search.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "Text to find. Matched case-insensitively." },
+                        "pattern": { "type": "string", "description": "Literal text to find. Matched case-insensitively. Not a regular expression: dots and brackets match themselves." },
                         "path": { "type": "string", "description": "Folder or file relative to the workspace. Empty searches the whole workspace." },
-                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs or src/**/*.ts. Empty searches every text file." }
+                        "glob": { "type": "string", "description": "Optional file glob, such as *.rs, *.ts, or src/**/*.tsx. * matches any file name, including .ts and .tsx. Empty searches every text file." }
                     },
                     "required": ["pattern"]
                 }

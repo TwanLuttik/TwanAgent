@@ -1399,6 +1399,7 @@ export function hostedTurn(input: {
   model?: string;
   effort?: string;
   permission?: string;
+  contextWindow?: number;
 }): Promise<void> {
   return invoke("dev_hosted_turn", {
     workspace: input.workspace,
@@ -1410,6 +1411,8 @@ export function hostedTurn(input: {
     model: input.model ?? null,
     effort: input.effort ?? null,
     permission: input.permission ?? null,
+    contextWindow: input.contextWindow ?? null,
+    context_window: input.contextWindow ?? null,
   });
 }
 

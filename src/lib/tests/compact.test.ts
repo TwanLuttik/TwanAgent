@@ -17,6 +17,8 @@ import {
   readCompactionState,
   renderCompactionTranscript,
   shouldAutoCompact,
+  keepCompaction,
+  shrinkCut,
   splitForCompaction,
 } from "../compact.ts";
 import type { ChatMessage } from "../core.ts";
@@ -85,6 +87,41 @@ describe("compactionCut", () => {
   });
 });
 
+describe("shrinkCut", () => {
+  it("folds older user turns before it folds tool rounds", () => {
+    assert.equal(shrinkCut(thread), compactionCut(thread));
+  });
+
+  it("folds older tool rounds when the whole overflow is one user turn", () => {
+    const loop = [
+      user("find the crash"),
+      assistant("", [{ id: "1", name: "read_file", arguments: "{}" }]),
+      tool("1", "a"),
+      assistant("", [{ id: "2", name: "read_file", arguments: "{}" }]),
+      tool("2", "b"),
+      assistant("", [{ id: "3", name: "read_file", arguments: "{}" }]),
+      tool("3", "c"),
+      assistant("", [{ id: "4", name: "read_file", arguments: "{}" }]),
+      tool("4", "d"),
+    ];
+    assert.equal(shrinkCut(loop), 5);
+    assert.equal(loop[shrinkCut(loop)]?.tool_calls?.[0]?.id, "3");
+    const stored = insertCompactionEvent(loop, 5);
+    const view = messagesForContext(stored, { summary: "Read the first files.", through: 5 }).messages;
+    assert.equal(shrinkCut(view), 4);
+    assert.equal(view[4]?.tool_calls?.[0]?.id, "4");
+  });
+
+  it("leaves a single tool round in place", () => {
+    const short = [
+      user("find the crash"),
+      assistant("", [{ id: "1", name: "read_file", arguments: "{}" }]),
+      tool("1", "a"),
+    ];
+    assert.equal(shrinkCut(short), short.length);
+  });
+});
+
 describe("applyCompaction", () => {
   it("replaces older turns with one summary and keeps the tail", () => {
     const next = applyCompaction(thread, "Fixed login in src/login.ts.", 4);
@@ -134,6 +171,19 @@ describe("insertCompactionEvent", () => {
     assert.equal(again[5]?.content, "also add a test");
     assert.equal(again[7]?.content, "Added the test.");
     assert.equal(insertCompactionEvent(again, 6), again);
+  });
+});
+
+describe("keepCompaction", () => {
+  it("keeps a summary saved during the turn ahead of the one from the start", () => {
+    const held = { summary: "Fixed login.", through: 4 };
+    assert.deepEqual(
+      keepCompaction(held, { summary: " Read the first files. ", through: 5.2 }),
+      { summary: "Read the first files.", through: 5 },
+    );
+    assert.deepEqual(keepCompaction(held, null), held);
+    assert.deepEqual(keepCompaction(held, { summary: " ", through: 8 }), held);
+    assert.equal(keepCompaction(null, { summary: "Kept", through: 0 }), null);
   });
 });
 

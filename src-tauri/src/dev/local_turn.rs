@@ -18,6 +18,8 @@ use crate::state::AppState;
 
 const EVENT: &str = "dev-local-turn";
 const FAILURE_PREFIX: &str = "Couldn't continue: ";
+const CONTEXT_LIMIT_MESSAGE: &str =
+    "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LocalTurnStart {
@@ -232,19 +234,84 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
     let mut transcript = request.messages.clone();
     let saved_len = 0usize;
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
+    let (mut prompt_tokens, mut compaction) = load_budget(data_dir, &request.workspace, id);
+    let mut overflow_retries = 0u8;
+    let mut round_index = 0usize;
     loop {
+        if round_index >= MAX_ROUNDS {
+            fail(app, id, &mut transcript, "the turn ran too many tool rounds");
+            save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+            emit_saved(app, id, &transcript, None, compaction.as_ref());
+            return;
+        }
         if stopped(live) {
             emit(app, id, "stopped", None, None, None);
             return;
         }
         close_dangling(&mut transcript);
-        let prompt = build_prompt(workspace, &transcript, &request.system, &permission, &model, plan);
-        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone()).await_round() {
+        match fit_prompt(
+            app,
+            data_dir,
+            workspace,
+            &request.workspace,
+            id,
+            &model,
+            &request.effort,
+            window,
+            &live.cancel,
+            live,
+            &mut transcript,
+            &mut compaction,
+            &mut prompt_tokens,
+            None,
+        ) {
+            Fit::Ready => {}
+            Fit::Stopped => {
+                emit(app, id, "stopped", None, None, None);
+                return;
+            }
+            Fit::TooBig => {
+                fail(app, id, &mut transcript, CONTEXT_LIMIT_MESSAGE);
+                save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                emit_saved(app, id, &transcript, None, compaction.as_ref());
+                return;
+            }
+        }
+        let prompt = build_prompt(workspace, &transcript, compaction.as_ref(), &request.system, &permission, &model, plan);
+        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false).await_round() {
             Ok(round) => round,
             Err(err) => {
-                fail(app, id, &mut transcript, &err.to_string());
+                let message = err.to_string();
+                if recover_overflow(
+                    app,
+                    data_dir,
+                    workspace,
+                    &request.workspace,
+                    id,
+                    &model,
+                    &request.effort,
+                    window,
+                    &live.cancel,
+                    live,
+                    &mut transcript,
+                    &mut compaction,
+                    &mut prompt_tokens,
+                    &mut overflow_retries,
+                    &message,
+                    None,
+                ) {
+                    continue;
+                }
+                if stopped(live) {
+                    save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                    emit_saved(app, id, &transcript, None, compaction.as_ref());
+                    emit(app, id, "stopped", None, None, None);
+                    return;
+                }
+                let text = context_failure_text(&message);
+                fail(app, id, &mut transcript, text);
                 save(data_dir, &request.workspace, id, &transcript, saved_len, None);
-                emit_saved(app, id, &transcript, None);
+                emit_saved(app, id, &transcript, None, compaction.as_ref());
                 return;
             }
         };
@@ -252,16 +319,47 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
         if stopped(live) || round.error.as_deref() == Some("Stopped.") {
             keep_partial(&mut transcript, &round);
             save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
             emit(app, id, "stopped", None, None, None);
             return;
         }
-        if let Some(error) = round.error {
-            fail(app, id, &mut transcript, &error);
+        if let Some(error) = round.error.clone() {
+            if recover_overflow(
+                app,
+                data_dir,
+                workspace,
+                &request.workspace,
+                id,
+                &model,
+                &request.effort,
+                window,
+                &live.cancel,
+                live,
+                &mut transcript,
+                &mut compaction,
+                &mut prompt_tokens,
+                &mut overflow_retries,
+                &error,
+                None,
+            ) {
+                continue;
+            }
+            if stopped(live) {
+                save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+                emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+                emit(app, id, "stopped", None, None, None);
+                return;
+            }
+            let text = context_failure_text(&error);
+            fail(app, id, &mut transcript, text);
             save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
             return;
         }
+        if let Some(usage) = round.usage.as_ref() {
+            prompt_tokens = usage.prompt_tokens;
+        }
+        overflow_retries = 0;
         if round.tool_calls.is_empty() {
             if round.text.trim().is_empty() && round.reasoning.trim().is_empty() {
                 fail(app, id, &mut transcript, "Grok returned an empty reply.");
@@ -269,13 +367,13 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
                 transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
             }
             save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref());
+            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
             emit(app, id, "done", None, None, None);
             return;
         }
         transcript.push(assistant_value(&round.text, &round.reasoning, &round.tool_calls, &round.thinking));
         save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-        emit_saved(app, id, &transcript, round.usage.as_ref());
+        emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
         let mut contents = Vec::with_capacity(round.tool_calls.len());
         let mut spawn_waits: Vec<(usize, std::thread::JoinHandle<String>)> = Vec::new();
         for call in &round.tool_calls {
@@ -367,8 +465,9 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
                 "content": stored,
             }));
             save(data_dir, &request.workspace, id, &transcript, saved_len, None);
-            emit_saved(app, id, &transcript, None);
+            emit_saved(app, id, &transcript, None, compaction.as_ref());
         }
+        round_index += 1;
     }
 }
 
@@ -398,6 +497,8 @@ struct RoundWait {
     messages: Vec<Value>,
     cancel: Arc<AtomicBool>,
     journey_id: Option<String>,
+    /// A compaction summary must not paint the chat as if the model were answering.
+    quiet: bool,
 }
 
 impl RoundWait {
@@ -413,6 +514,7 @@ impl RoundWait {
             messages,
             cancel,
             journey_id,
+            quiet,
         } = self;
         let state = app.state::<AppState>();
         let progress_app = app.clone();
@@ -440,7 +542,7 @@ impl RoundWait {
             },
             cancel.clone(),
             move |progress| {
-                if progress.text.is_empty() {
+                if quiet || progress.text.is_empty() {
                     return;
                 }
                 if let Some(child_id) = progress_child.as_deref() {
@@ -491,6 +593,7 @@ fn stream_round(
     messages: Vec<Value>,
     cancel: &Arc<AtomicBool>,
     journey_id: Option<String>,
+    quiet: bool,
 ) -> RoundWait {
     RoundWait {
         app: app.clone(),
@@ -506,6 +609,7 @@ fn stream_round(
         messages,
         cancel: cancel.clone(),
         journey_id,
+        quiet,
     }
 }
 
@@ -723,8 +827,25 @@ fn drive_subagent(
     let plan = crate::model_providers::registry::plan_mode(crate::model_providers::registry::find(&model));
     let permission = normalize_permission(&request.permission);
     let mut transcript = request.messages.clone();
+    let mut compaction: Option<super::types::DevCompaction> = None;
+    let mut prompt_tokens = 0u64;
+    let mut overflow_retries = 0u8;
+    let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let mut failed = String::new();
+    let mut round_index = 0usize;
     loop {
+        if round_index >= MAX_ROUNDS {
+            let error = "the turn ran too many tool rounds".to_string();
+            emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
+            emit_subagent(
+                app,
+                parent_id,
+                "done",
+                child_id,
+                json!({ "status": "error", "summary": error, "messages": transcript }),
+            );
+            return format!("Subagent failed: {error}");
+        }
         if stopped_flag(cancel) || stopped(parent) {
             let summary = if failed.is_empty() { "Stopped.".to_string() } else { failed };
             emit_subagent(
@@ -737,7 +858,47 @@ fn drive_subagent(
             return format!("Subagent stopped: {description}");
         }
         close_dangling(&mut transcript);
-        let prompt = build_child_prompt(&transcript, &request.system);
+        match fit_prompt(
+            app,
+            data_dir,
+            workspace,
+            &request.workspace,
+            parent_id,
+            &model,
+            &request.effort,
+            window,
+            cancel,
+            parent,
+            &mut transcript,
+            &mut compaction,
+            &mut prompt_tokens,
+            Some(child_id),
+        ) {
+            Fit::Ready => {}
+            Fit::Stopped => {
+                emit_subagent(
+                    app,
+                    parent_id,
+                    "done",
+                    child_id,
+                    json!({ "status": "stopped", "summary": "Stopped.", "messages": transcript }),
+                );
+                return format!("Subagent stopped: {description}");
+            }
+            Fit::TooBig => {
+                let error = CONTEXT_LIMIT_MESSAGE.to_string();
+                emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
+                emit_subagent(
+                    app,
+                    parent_id,
+                    "done",
+                    child_id,
+                    json!({ "status": "error", "summary": error, "messages": transcript }),
+                );
+                return format!("Subagent failed: {error}");
+            }
+        }
+        let prompt = build_child_prompt(&transcript, compaction.as_ref(), &request.system);
         let stream_id = format!("subagent:{child_id}");
         if let Some(turn) = live(parent_id) {
             if let Ok(mut streams) = turn.child_streams.lock() {
@@ -751,10 +912,11 @@ fn drive_subagent(
             Some(child_id),
             &model,
             &request.effort,
-            request.context_window.filter(|value| *value > 0).unwrap_or(0),
+            window,
             prompt,
             cancel,
             request.journey_id.clone(),
+            false,
         )
         .await_round()
         {
@@ -762,15 +924,46 @@ fn drive_subagent(
             Err(err) => {
                 forget_child_stream(parent_id, &stream_id);
                 let error = err.to_string();
-                emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
+                if recover_overflow(
+                    app,
+                    data_dir,
+                    workspace,
+                    &request.workspace,
+                    parent_id,
+                    &model,
+                    &request.effort,
+                    window,
+                    cancel,
+                    parent,
+                    &mut transcript,
+                    &mut compaction,
+                    &mut prompt_tokens,
+                    &mut overflow_retries,
+                    &error,
+                    Some(child_id),
+                ) {
+                    continue;
+                }
+                if stopped_flag(cancel) || stopped(parent) {
+                    emit_subagent(
+                        app,
+                        parent_id,
+                        "done",
+                        child_id,
+                        json!({ "status": "stopped", "summary": "Stopped.", "messages": transcript }),
+                    );
+                    return format!("Subagent stopped: {description}");
+                }
+                let text = context_failure_text(&error).to_string();
+                emit_subagent(app, parent_id, "error", child_id, json!({ "error": text }));
                 emit_subagent(
                     app,
                     parent_id,
                     "done",
                     child_id,
-                    json!({ "status": "error", "summary": error, "messages": transcript }),
+                    json!({ "status": "error", "summary": text, "messages": transcript }),
                 );
-                return format!("Subagent failed: {error}");
+                return format!("Subagent failed: {text}");
             }
         };
         forget_child_stream(parent_id, &stream_id);
@@ -786,17 +979,51 @@ fn drive_subagent(
             return format!("Subagent stopped: {description}");
         }
         if let Some(error) = round.error.clone() {
-            failed = error.clone();
-            emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
+            if recover_overflow(
+                app,
+                data_dir,
+                workspace,
+                &request.workspace,
+                parent_id,
+                &model,
+                &request.effort,
+                window,
+                cancel,
+                parent,
+                &mut transcript,
+                &mut compaction,
+                &mut prompt_tokens,
+                &mut overflow_retries,
+                &error,
+                Some(child_id),
+            ) {
+                continue;
+            }
+            if stopped_flag(cancel) || stopped(parent) {
+                emit_subagent(
+                    app,
+                    parent_id,
+                    "done",
+                    child_id,
+                    json!({ "status": "stopped", "summary": "Stopped.", "messages": transcript }),
+                );
+                return format!("Subagent stopped: {description}");
+            }
+            failed = context_failure_text(&error).to_string();
+            emit_subagent(app, parent_id, "error", child_id, json!({ "error": failed }));
             emit_subagent(
                 app,
                 parent_id,
                 "done",
                 child_id,
-                json!({ "status": "error", "summary": error, "messages": transcript }),
+                json!({ "status": "error", "summary": failed, "messages": transcript }),
             );
             return format!("Subagent failed: {failed}");
         }
+        if let Some(usage) = round.usage.as_ref() {
+            prompt_tokens = usage.prompt_tokens;
+        }
+        overflow_retries = 0;
         if !round.streamed_reasoning && !round.reasoning.trim().is_empty() {
             emit_subagent(app, parent_id, "reasoning", child_id, json!({ "text": round.reasoning.trim() }));
         }
@@ -876,6 +1103,7 @@ fn drive_subagent(
             }));
             emit_subagent(app, parent_id, "update", child_id, json!({ "messages": transcript }));
         }
+        round_index += 1;
     }
 }
 
@@ -999,9 +1227,10 @@ fn journey_knowledge(data_dir: &Path, workspace: &str, journey_id: Option<&str>)
 
 /// The child prompt is its own system text plus its own transcript.
 /// Tools the child must not use are refused in `child_tool_block` before they run.
-fn build_child_prompt(transcript: &[Value], system: &str) -> Vec<Value> {
+fn build_child_prompt(transcript: &[Value], compaction: Option<&super::types::DevCompaction>, system: &str) -> Vec<Value> {
+    let context = super::compact::messages_for_context(transcript, compaction);
     let mut messages = vec![json!({ "role": "system", "content": system.trim() })];
-    messages.extend(transcript.iter().cloned());
+    messages.extend(super::compact::api_messages(&context));
     messages
 }
 
@@ -1195,6 +1424,7 @@ fn json_ok<T: serde::Serialize>(result: Result<T>) -> Result<String> {
     result.and_then(|value| serde_json::to_string_pretty(&value).map_err(Error::from))
 }
 
+const MAX_ROUNDS: usize = 24;
 const TOOL_TEXT_CAP: usize = 24_000;
 const TOOL_TEXT_HEAD: usize = 20_000;
 const TOOL_TEXT_TAIL: usize = 2_000;
@@ -1214,6 +1444,7 @@ fn cap_tool_text(text: &str) -> String {
 fn build_prompt(
     workspace: &Path,
     transcript: &[Value],
+    compaction: Option<&super::types::DevCompaction>,
     system: &str,
     permission: &str,
     model: &str,
@@ -1237,9 +1468,286 @@ fn build_prompt(
     } else {
         system.trim().to_string()
     };
+    let context = super::compact::messages_for_context(transcript, compaction);
     let mut messages = vec![json!({ "role": "system", "content": base })];
-    messages.extend(transcript.iter().cloned());
+    messages.extend(super::compact::api_messages(&context));
     messages
+}
+
+enum Fit {
+    Ready,
+    Stopped,
+    TooBig,
+}
+
+enum FoldStep {
+    Folded,
+    None,
+    Stopped,
+}
+
+fn context_failure_text(message: &str) -> &str {
+    if super::compact::is_context_length_error(message) {
+        CONTEXT_LIMIT_MESSAGE
+    } else {
+        message
+    }
+}
+
+/// The next prompt is measured from the last stored round, not from the webview.
+fn load_budget(data_dir: &Path, workspace: &str, id: &str) -> (u64, Option<super::types::DevCompaction>) {
+    let dir = super::conv::conv_store_dir(data_dir, workspace);
+    let Ok(row) = crate::store::with_conn(&dir, |conn| crate::store::get_conversation(conn, id)) else {
+        return (0, None);
+    };
+    let tokens = row.context_usage.as_ref().map(|usage| usage.prompt_tokens).unwrap_or(0);
+    (tokens, row.compaction)
+}
+
+fn fit_prompt(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace: &Path,
+    workspace_key: &str,
+    id: &str,
+    model: &str,
+    effort: &str,
+    window: u64,
+    cancel: &Arc<AtomicBool>,
+    live: &Arc<LiveTurn>,
+    transcript: &mut Vec<Value>,
+    compaction: &mut Option<super::types::DevCompaction>,
+    prompt_tokens: &mut u64,
+    child_id: Option<&str>,
+) -> Fit {
+    if stopped(live) || stopped_flag(cancel) {
+        return Fit::Stopped;
+    }
+    let can_fold = super::compact::plan_fold(transcript, compaction.as_ref()).is_some();
+    match super::compact::budget_action(*prompt_tokens, window, can_fold) {
+        super::compact::BudgetAction::Send => Fit::Ready,
+        super::compact::BudgetAction::Stop => Fit::TooBig,
+        super::compact::BudgetAction::Fold { times } => match fold_up_to(
+            app,
+            data_dir,
+            workspace,
+            workspace_key,
+            id,
+            model,
+            effort,
+            window,
+            cancel,
+            live,
+            transcript,
+            compaction,
+            prompt_tokens,
+            child_id,
+            times,
+        ) {
+            FoldStep::Folded => Fit::Ready,
+            FoldStep::Stopped => Fit::Stopped,
+            FoldStep::None => {
+                if super::compact::prompt_exceeds_window(*prompt_tokens, window) {
+                    Fit::TooBig
+                } else {
+                    Fit::Ready
+                }
+            }
+        },
+    }
+}
+
+fn recover_overflow(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace: &Path,
+    workspace_key: &str,
+    id: &str,
+    model: &str,
+    effort: &str,
+    window: u64,
+    cancel: &Arc<AtomicBool>,
+    live: &Arc<LiveTurn>,
+    transcript: &mut Vec<Value>,
+    compaction: &mut Option<super::types::DevCompaction>,
+    prompt_tokens: &mut u64,
+    overflow_retries: &mut u8,
+    message: &str,
+    child_id: Option<&str>,
+) -> bool {
+    if *overflow_retries >= 1 || !super::compact::is_context_length_error(message) {
+        return false;
+    }
+    *overflow_retries = overflow_retries.saturating_add(1);
+    match fold_up_to(
+        app,
+        data_dir,
+        workspace,
+        workspace_key,
+        id,
+        model,
+        effort,
+        window,
+        cancel,
+        live,
+        transcript,
+        compaction,
+        prompt_tokens,
+        child_id,
+        4,
+    ) {
+        FoldStep::Folded => true,
+        FoldStep::None | FoldStep::Stopped => false,
+    }
+}
+
+fn fold_up_to(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace: &Path,
+    workspace_key: &str,
+    id: &str,
+    model: &str,
+    effort: &str,
+    window: u64,
+    cancel: &Arc<AtomicBool>,
+    live: &Arc<LiveTurn>,
+    transcript: &mut Vec<Value>,
+    compaction: &mut Option<super::types::DevCompaction>,
+    prompt_tokens: &mut u64,
+    child_id: Option<&str>,
+    times: u8,
+) -> FoldStep {
+    let mut folded = false;
+    for _ in 0..times {
+        if stopped(live) || stopped_flag(cancel) {
+            return FoldStep::Stopped;
+        }
+        match fold_once(
+            app,
+            data_dir,
+            workspace,
+            workspace_key,
+            id,
+            model,
+            effort,
+            window,
+            cancel,
+            live,
+            transcript,
+            compaction,
+            prompt_tokens,
+            child_id,
+        ) {
+            FoldStep::Folded => folded = true,
+            FoldStep::None => break,
+            FoldStep::Stopped => return FoldStep::Stopped,
+        }
+    }
+    if folded { FoldStep::Folded } else { FoldStep::None }
+}
+
+fn fold_once(
+    app: &AppHandle,
+    data_dir: &Path,
+    _workspace: &Path,
+    workspace_key: &str,
+    id: &str,
+    model: &str,
+    effort: &str,
+    window: u64,
+    cancel: &Arc<AtomicBool>,
+    live: &Arc<LiveTurn>,
+    transcript: &mut Vec<Value>,
+    compaction: &mut Option<super::types::DevCompaction>,
+    prompt_tokens: &mut u64,
+    child_id: Option<&str>,
+) -> FoldStep {
+    let Some(plan) = super::compact::plan_fold(transcript, compaction.as_ref()) else {
+        return FoldStep::None;
+    };
+    if stopped(live) || stopped_flag(cancel) {
+        return FoldStep::Stopped;
+    }
+    let stream_id = match child_id {
+        Some(child) => format!("compact:{child}"),
+        None => format!("compact:{id}"),
+    };
+    let round = match stream_round(
+        app,
+        id,
+        &stream_id,
+        None,
+        model,
+        effort,
+        window,
+        super::compact::compaction_prompt(&plan.older, &plan.previous_summary),
+        cancel,
+        None,
+        true,
+    )
+    .await_round()
+    {
+        Ok(round) => round,
+        Err(_) => {
+            return if stopped(live) || stopped_flag(cancel) {
+                FoldStep::Stopped
+            } else {
+                FoldStep::None
+            };
+        }
+    };
+    record_round_usage(data_dir, workspace_key, id, model, round.usage.as_ref());
+    if stopped(live) || stopped_flag(cancel) || round.error.as_deref() == Some("Stopped.") {
+        return FoldStep::Stopped;
+    }
+    if round.error.is_some() {
+        return FoldStep::None;
+    }
+    let summary = if !round.text.trim().is_empty() {
+        round.text.trim().to_string()
+    } else {
+        round.reasoning.trim().to_string()
+    };
+    let Some(next) = super::compact::commit_fold(transcript, &summary, plan.through) else {
+        return FoldStep::None;
+    };
+    // The summary request is not the size of the next prompt.
+    *prompt_tokens = 0;
+    *compaction = Some(next);
+    if let Some(state) = compaction.as_ref() {
+        persist_fold(app, data_dir, workspace_key, id, transcript, state, child_id);
+    }
+    FoldStep::Folded
+}
+
+/// Parent folds are stored on the conversation. A child folds in memory only.
+fn persist_fold(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace_key: &str,
+    id: &str,
+    transcript: &[Value],
+    compaction: &super::types::DevCompaction,
+    child_id: Option<&str>,
+) {
+    if let Some(child_id) = child_id {
+        emit_subagent(app, id, "update", child_id, json!({ "messages": transcript }));
+        return;
+    }
+    let cleared = super::types::DevChatUsage {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+    };
+    save(data_dir, workspace_key, id, transcript, 0, Some(&cleared));
+    let dir = super::conv::conv_store_dir(data_dir, workspace_key);
+    let _ = crate::store::with_conn(&dir, |conn| {
+        crate::store::set_conversation_compaction(conn, id, compaction)
+    });
+    emit_saved(app, id, transcript, Some(&cleared), Some(compaction));
 }
 
 fn fail(app: &AppHandle, id: &str, transcript: &mut Vec<Value>, error: &str) {
@@ -1378,11 +1886,20 @@ fn save(
     });
 }
 
-fn emit_saved(app: &AppHandle, id: &str, messages: &[Value], usage: Option<&super::types::DevChatUsage>) {
-    let conversation = match usage {
-        Some(usage) => json!({ "id": id, "messages": messages, "context_usage": usage }),
-        None => json!({ "id": id, "messages": messages }),
-    };
+fn emit_saved(
+    app: &AppHandle,
+    id: &str,
+    messages: &[Value],
+    usage: Option<&super::types::DevChatUsage>,
+    compaction: Option<&super::types::DevCompaction>,
+) {
+    let mut conversation = json!({ "id": id, "messages": messages });
+    if let Some(usage) = usage {
+        conversation["context_usage"] = serde_json::to_value(usage).unwrap_or(Value::Null);
+    }
+    if let Some(compaction) = compaction {
+        conversation["compaction"] = serde_json::to_value(compaction).unwrap_or(Value::Null);
+    }
     emit(app, id, "saved", None, None, Some(conversation));
 }
 
@@ -1529,6 +2046,75 @@ mod tests {
         assert_eq!(int_arg(&args, "offset"), Some(10));
         assert_eq!(int_arg(&args, "limit"), Some(51));
         assert_eq!(int_arg(&args, "missing"), None);
+    }
+
+    #[test]
+    fn the_next_round_starts_from_the_stored_prompt_and_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("proj");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let ws = workspace.to_str().unwrap();
+        let row = crate::dev::Conversation {
+            id: "c1".into(),
+            title: "Hello".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            kind: "chat".into(),
+            messages: vec![json!({ "role": "user", "content": "hi" })],
+            context_usage: Some(crate::dev::DevChatUsage {
+                prompt_tokens: 400_000,
+                completion_tokens: 10,
+                total_tokens: 400_010,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            }),
+            compaction: Some(crate::dev::DevCompaction {
+                summary: "Read the first files.".into(),
+                through: 5,
+            }),
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        };
+        let store = crate::dev::conv::conv_store_dir(dir.path(), ws);
+        crate::store::with_conn(&store, |conn| crate::store::save_conversation(conn, &row)).unwrap();
+        let (tokens, compaction) = load_budget(dir.path(), ws, "c1");
+        assert_eq!(tokens, 400_000);
+        let compaction = compaction.expect("summary");
+        assert_eq!(compaction.summary, "Read the first files.");
+        assert_eq!(compaction.through, 5);
+        let (missing, none) = load_budget(dir.path(), ws, "missing");
+        assert_eq!(missing, 0);
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn the_model_prompt_sends_the_summary_instead_of_the_folded_reads() {
+        let mut stored = vec![
+            json!({ "role": "user", "content": "find the crash" }),
+            json!({ "role": "assistant", "content": "", "reasoning": "private thought", "tool_calls": [{ "id": "1", "name": "read_file", "arguments": "{}" }] }),
+            json!({ "role": "tool", "tool_call_id": "1", "content": "first-file" }),
+            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "2", "name": "read_file", "arguments": "{}" }] }),
+            json!({ "role": "tool", "tool_call_id": "2", "content": "second-file" }),
+            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "3", "name": "read_file", "arguments": "{}" }] }),
+            json!({ "role": "tool", "tool_call_id": "3", "content": "third-file" }),
+            json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "4", "name": "read_file", "arguments": "{}" }] }),
+            json!({ "role": "tool", "tool_call_id": "4", "content": "last-file" }),
+        ];
+        let state = crate::dev::compact::commit_fold(&mut stored, "Read the first files.", 5).unwrap();
+        let prompt = build_prompt(Path::new("workspace"), &stored, Some(&state), "", "ask", "grok-4.7", false);
+        let rendered = serde_json::to_string(&prompt).unwrap();
+        assert!(rendered.contains("Read the first files."));
+        assert!(!rendered.contains("private thought"));
+        assert!(!rendered.contains("Conversation compacted"));
+        assert!(!rendered.contains("first-file"));
+        assert!(rendered.contains("last-file"));
+        assert!(prompt.iter().any(|msg| msg["tool_calls"][0]["id"].as_str() == Some("4")));
+        assert!(prompt.iter().all(|msg| msg["tool_calls"][0]["id"].as_str() != Some("1")));
     }
 
     #[test]

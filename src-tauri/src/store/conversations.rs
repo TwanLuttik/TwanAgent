@@ -4,7 +4,7 @@ use super::{
     insert_conversation, load_messages, next_sort, replace_messages_from, row_to_conversation,
     sync_messages,
 };
-use crate::dev::{Conversation, ConversationSummary, DevChatUsage};
+use crate::dev::{Conversation, ConversationSummary, DevChatUsage, DevCompaction};
 use crate::error::{Error, Result};
 
 struct ConvHead {
@@ -257,6 +257,18 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
     }
     let sort = next_sort(conn, conv.journey_id.as_deref())?;
     insert_conversation(conn, conv, sort)
+}
+
+pub fn set_conversation_compaction(conn: &Connection, id: &str, compaction: &DevCompaction) -> Result<()> {
+    let raw = serde_json::to_string(compaction)?;
+    let n = conn.execute(
+        "UPDATE conversations SET compaction = ?1 WHERE id = ?2",
+        params![raw, id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound("conversation not found".into()));
+    }
+    Ok(())
 }
 
 pub fn set_conversation_archived(conn: &Connection, id: &str, archived: bool) -> Result<()> {

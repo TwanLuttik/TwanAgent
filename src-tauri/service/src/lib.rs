@@ -5,6 +5,7 @@
 //! Tools run here, next to the files. The GUI only renders what comes back.
 
 mod codec;
+mod compact;
 mod error;
 mod files;
 mod keys;

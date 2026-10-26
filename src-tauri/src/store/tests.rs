@@ -123,6 +123,27 @@ fn save_keeps_compaction_until_a_new_one_is_written() {
     assert_eq!(updated.compaction.as_ref().unwrap().through, 8);
 }
 
+#[test]
+fn a_turn_can_replace_the_stored_summary_without_rewriting_the_row() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let row = conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]);
+    save_conversation(&conn, &row).unwrap();
+    set_conversation_compaction(
+        &conn,
+        "c1",
+        &crate::dev::DevCompaction {
+            summary: "Read the first files.".into(),
+            through: 5,
+        },
+    )
+    .unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.compaction.as_ref().unwrap().summary, "Read the first files.");
+    assert_eq!(loaded.compaction.as_ref().unwrap().through, 5);
+    assert_eq!(loaded.title, "Hello");
+}
+
 fn message_row_ids(conn: &Connection, id: &str) -> Vec<(i64, i64, String)> {
     let mut stmt = conn
         .prepare(

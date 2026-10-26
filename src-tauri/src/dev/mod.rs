@@ -1,5 +1,6 @@
 pub mod chat;
 pub(crate) mod cmd;
+mod compact;
 pub mod local_turn;
 pub mod commands;
 pub mod conv;

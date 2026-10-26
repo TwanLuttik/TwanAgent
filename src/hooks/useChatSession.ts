@@ -340,6 +340,16 @@ export function useChatSession({
           onMessages: (next) => {
             if (activeIdRef.current === found.id) setMessages(next);
           },
+          onCompaction: (compaction) => {
+            setCompactionByChat((prev) =>
+              prev[found.id]?.summary === compaction.summary && prev[found.id]?.through === compaction.through
+                ? prev
+                : { ...prev, [found.id]: compaction },
+            );
+          },
+          onUsage: (usage) => {
+            setUsageByChat((prev) => ({ ...prev, [found.id]: usage }));
+          },
           onStream: (text) => {
             if (activeIdRef.current !== found.id) return;
             setLiveStream((prev) => ({ streamText: `${prev.streamText}${text}` }));
@@ -482,6 +492,8 @@ export async function rejoinLocalTurn(input: {
   onMessages: (messages: ChatMessage[]) => void;
   onStream: (text: string) => void;
   onReasoning: (text: string) => void;
+  onCompaction?: (compaction: { summary: string; through: number }) => void;
+  onUsage?: (usage: ChatUsage) => void;
 }): Promise<void> {
   if (!input.workspace || !input.chatId || input.turns.has(input.chatId)) return;
   const running = await api.localTurns();
@@ -498,6 +510,8 @@ export async function rejoinLocalTurn(input: {
       signal: ac.signal,
       resume: true,
       onEvent: (event) => {
+        if (event.compaction?.summary && event.compaction.through > 0) input.onCompaction?.(event.compaction);
+        if (event.usage) input.onUsage?.(event.usage);
         if (event.kind === "saved" && event.messages?.length) input.onMessages(event.messages);
         else if (event.kind === "delta" && event.text) input.onStream(event.text);
         else if (event.kind === "reasoning" && event.text) input.onReasoning(event.text);

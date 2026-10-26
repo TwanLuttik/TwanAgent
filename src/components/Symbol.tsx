@@ -637,6 +637,12 @@ const ICONS: Record<string, ReactNode> = {
   "paintbrush.fill": (
     <path d="M14.8 4.6a2.1 2.1 0 0 1 3 0l1.6 1.6a2.1 2.1 0 0 1 0 3L9.2 19.4H4.6v-4.6Z" fill="currentColor" />
   ),
+  "arrow.clockwise": (
+    <>
+      <path d="M19.2 12a7.2 7.2 0 1 1-2.1-5.1" {...stroke} />
+      <path d="M19.4 4.2v4.6h-4.6" {...stroke} />
+    </>
+  ),
   gearshape: (
     <>
       <circle cx="12" cy="12" r="3.1" {...stroke} />

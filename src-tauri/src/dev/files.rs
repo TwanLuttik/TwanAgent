@@ -511,7 +511,11 @@ pub fn grep(workspace: &Path, pattern: &str, rel: &str, glob_pattern: &str) -> R
     } else {
         return Err(Error::Other("path was not found".into()));
     }
-    Ok(search_text(&hits, truncated || hits.len() >= SEARCH_MATCHES, "No matches."))
+    Ok(search_text(
+        &hits,
+        truncated || hits.len() >= SEARCH_MATCHES,
+        &grep_empty(pattern, rel.trim(), glob_pattern),
+    ))
 }
 
 /// Path search. `*` stays in one segment. `**` crosses folders. Heavy trees are skipped.
@@ -640,6 +644,19 @@ fn search_clip(line: &str) -> String {
     let mut chars = trimmed.chars();
     let taken: String = chars.by_ref().take(SEARCH_SNIPPET).collect();
     if chars.next().is_some() { format!("{taken}…") } else { taken }
+}
+
+/// Names the pattern and glob so a miss is not mistaken for a skipped file type.
+fn grep_empty(pattern: &str, path: &str, glob: &str) -> String {
+    let where_text = if path.is_empty() { "the workspace" } else { path };
+    let mut text = format!("No matches for \"{pattern}\" in {where_text}.");
+    if glob.is_empty() {
+        text.push_str(" Searched every text file. .ts, .tsx, and other source files are included.");
+    } else {
+        text.push_str(&format!(" File glob: {glob}."));
+    }
+    text.push_str(" This is a case-insensitive substring, not a regular expression. Nothing was skipped because of its extension.");
+    text
 }
 
 fn search_text(hits: &[String], truncated: bool, empty: &str) -> String {
@@ -873,7 +890,13 @@ mod tests {
         let paths = glob(dir.path(), "**/*.ts", "").unwrap();
         assert!(paths.contains("src/app.ts"));
         assert!(!paths.contains("node_modules"));
-        assert_eq!(grep(dir.path(), "missing", "src", "").unwrap(), "No matches.");
+        let none = grep(dir.path(), "missing", "src", "*.ts").unwrap();
+        assert!(none.contains("No matches for \"missing\" in src."), "{none}");
+        assert!(none.contains("File glob: *.ts."), "{none}");
+        assert!(none.contains("not a regular expression"), "{none}");
+        fs::write(dir.path().join("src/café.ts"), "export const answer = 7;\n").unwrap();
+        let unicode = grep(dir.path(), "answer", "", "*.ts").unwrap();
+        assert!(unicode.contains("src/café.ts:"), "{unicode}");
         assert!(grep(dir.path(), "  ", "", "").is_err());
     }
 

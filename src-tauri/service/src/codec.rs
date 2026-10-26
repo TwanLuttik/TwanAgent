@@ -106,6 +106,7 @@ mod tests {
             effort: "low".into(),
             permission: "ask".into(),
             project: String::new(),
+            context_window: None,
         });
         let bytes = encode_frame(&frame).unwrap();
         let (decoded, used): (ClientFrame, usize) = decode_frame(&bytes).unwrap();

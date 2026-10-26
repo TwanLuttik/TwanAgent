@@ -46,6 +46,7 @@ fn apply_line(data: &str, open: &mut OpenRound) {
         return;
     };
     let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+    open.push_reasoning(&xai::reasoning_from_delta(&delta));
     open.push_text(&xai::text_from_content(delta.get("content").unwrap_or(&Value::Null)));
     for fragment in xai::tool_fragments(&delta) {
         apply_fragment(open, fragment);

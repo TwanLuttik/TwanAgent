@@ -62,7 +62,7 @@ pub fn grep(workspace: &Path, query: &GrepQuery) -> Result<String> {
     Ok(finish(
         &hits,
         truncated || hits.len() >= MAX_MATCHES,
-        "No matches.",
+        &grep_empty(pattern, query.path.trim(), glob),
     ))
 }
 
@@ -210,6 +210,20 @@ fn clip(line: &str) -> String {
     }
 }
 
+/// What the model reads when nothing matched. Names the pattern and glob so a
+/// miss is not mistaken for a file type the search skipped.
+fn grep_empty(pattern: &str, path: &str, glob: &str) -> String {
+    let where_text = if path.is_empty() { "the workspace" } else { path };
+    let mut text = format!("No matches for \"{pattern}\" in {where_text}.");
+    if glob.is_empty() {
+        text.push_str(" Searched every text file. .ts, .tsx, and other source files are included.");
+    } else {
+        text.push_str(&format!(" File glob: {glob}."));
+    }
+    text.push_str(" This is a case-insensitive substring, not a regular expression. Nothing was skipped because of its extension.");
+    text
+}
+
 fn finish(hits: &[String], truncated: bool, empty: &str) -> String {
     if hits.is_empty() {
         return empty.to_string();
@@ -282,21 +296,26 @@ fn match_parts(pattern: &[&str], path: &[&str]) -> bool {
     segment_match(pattern[0], path[0]) && match_parts(&pattern[1..], &path[1..])
 }
 
+/// `*` and `?` match Unicode scalar values, not bytes. A byte-wise `*` would
+/// fail to match `*.ts` against a name that contains a multibyte character.
 fn segment_match(pattern: &str, text: &str) -> bool {
-    segment_at(pattern.as_bytes(), text.as_bytes())
+    segment_at(
+        &pattern.chars().collect::<Vec<_>>(),
+        &text.chars().collect::<Vec<_>>(),
+    )
 }
 
-fn segment_at(pattern: &[u8], text: &[u8]) -> bool {
+fn segment_at(pattern: &[char], text: &[char]) -> bool {
     let mut pi = 0;
     let mut ti = 0;
     let mut star: Option<(usize, usize)> = None;
     while ti < text.len() {
-        if pi < pattern.len() && (pattern[pi] == b'?' || eq_ignore_ascii(pattern[pi], text[ti])) {
+        if pi < pattern.len() && (pattern[pi] == '?' || eq_ignore_char(pattern[pi], text[ti])) {
             pi += 1;
             ti += 1;
             continue;
         }
-        if pi < pattern.len() && pattern[pi] == b'*' {
+        if pi < pattern.len() && pattern[pi] == '*' {
             star = Some((pi, ti));
             pi += 1;
             continue;
@@ -309,13 +328,13 @@ fn segment_at(pattern: &[u8], text: &[u8]) -> bool {
         }
         return false;
     }
-    while pi < pattern.len() && pattern[pi] == b'*' {
+    while pi < pattern.len() && pattern[pi] == '*' {
         pi += 1;
     }
     pi == pattern.len()
 }
 
-fn eq_ignore_ascii(left: u8, right: u8) -> bool {
+fn eq_ignore_char(left: char, right: char) -> bool {
     left.to_ascii_lowercase() == right.to_ascii_lowercase()
 }
 
@@ -358,7 +377,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(none, "No matches.");
+        assert!(none.contains("No matches for \"missing-symbol\" in src."), "{none}");
+        assert!(none.contains(".ts"), "{none}");
+        assert!(none.contains("not a regular expression"), "{none}");
         let err = grep(
             dir.path(),
             &GrepQuery {
@@ -409,5 +430,10 @@ mod tests {
         assert!(!glob_match("*.ts", "src/app.ts"));
         assert!(!glob_match("src/*.ts", "src/lib/app.ts"));
         assert!(glob_match("App.TS", "app.ts"));
+        // A byte-wise `*` stops inside the multibyte character and misses `.ts`.
+        assert!(matches_glob("*.ts", "src/café.ts"));
+        assert!(matches_glob("*.tsx", "pages/コンピューター.tsx"));
+        assert!(glob_match("*.ts", "café.ts"));
+        assert!(!matches_glob("*.ts", "src/café.tsx"));
     }
 }

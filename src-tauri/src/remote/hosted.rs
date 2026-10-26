@@ -19,6 +19,7 @@ pub struct HostedTurn {
     pub model: String,
     pub effort: String,
     pub permission: String,
+    pub context_window: Option<u64>,
 }
 
 /// Build the only frame a send is allowed to produce.
@@ -42,6 +43,7 @@ pub fn prompt_frame(turn: &HostedTurn) -> Result<ClientFrame> {
             turn.permission.trim().to_string()
         },
         project: String::new(),
+        context_window: turn.context_window.filter(|value| *value > 0),
     }))
 }
 
@@ -85,6 +87,7 @@ pub async fn dev_hosted_turn(
     model: Option<String>,
     effort: Option<String>,
     permission: Option<String>,
+    context_window: Option<u64>,
 ) -> Result<()> {
     let root = state.require_workspace(&workspace)?;
     let project = crate::remote::project_for_workspace(&state, &root)?
@@ -108,6 +111,7 @@ pub async fn dev_hosted_turn(
         model: model.unwrap_or_default(),
         effort: effort.unwrap_or_default(),
         permission: permission.unwrap_or_else(|| "ask".into()),
+        context_window: context_window.filter(|value| *value > 0),
     })?;
     let bytes = resident_bytes(&project.remote_path, &frame, &token)?;
     let remote_path = project.remote_path.clone();
@@ -941,6 +945,7 @@ mod tests {
             model: "grok-4".into(),
             effort: "low".into(),
             permission: "ask".into(),
+            context_window: None,
         })
         .unwrap();
         let bytes = twanagent_service::encode_frame(&frame).unwrap();

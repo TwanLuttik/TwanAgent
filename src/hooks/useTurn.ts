@@ -1,5 +1,6 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
 import { completeTurn, resumeLocalTurn } from "../lib/agent";
+import { keepCompaction } from "../lib/compact";
 import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
 import {
   activityFromToolCall,
@@ -1183,6 +1184,7 @@ async function runTurn(
         model: turnSettings.model,
         effort: turnSettings.effort,
         permission: turnSettings.permission,
+        contextWindow: turnSettings.contextWindow || undefined,
       });
       // The open chat joins under another stream id. Its `done` replaces the live copy
       // and clears the stream. The sender's own join resolves `finished` directly.
@@ -1239,7 +1241,11 @@ async function runTurn(
           journeyId: kind === "chat" ? journeyId : undefined,
           allowSpawn: true,
           signal: ac.signal,
-          onEvent: (event) => applyDetachedEvent(id, ws, visible, event),
+          onEvent: (event) => {
+            latestCompaction = keepCompaction(latestCompaction, event.compaction);
+            if (event.usage) latestUsage = event.usage;
+            applyDetachedEvent(id, ws, visible, event);
+          },
         })
       : await completeTurn({
       workspace: ws,

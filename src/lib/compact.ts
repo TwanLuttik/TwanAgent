@@ -38,6 +38,20 @@ export type CompactionState = {
 };
 
 /**
+ * A summary written while the turn is running replaces the one captured at the start.
+ * An empty payload leaves the held summary alone, so a later save does not wipe it.
+ */
+export function keepCompaction(
+  held: CompactionState | null,
+  saved: { summary?: string; through?: number } | null | undefined,
+): CompactionState | null {
+  const summary = saved?.summary?.trim() ?? "";
+  const through = Math.floor(saved?.through ?? 0);
+  if (!summary || through <= 0) return held;
+  return { summary, through };
+}
+
+/**
  * Drop a visible compaction notice at `through` without moving later messages.
  * The notice is a system message, so it is not sent to the model, and it does
  * not change the stored boundary. Another compaction keeps the earlier notice.
@@ -108,11 +122,50 @@ export function compactionCut(messages: ChatMessage[], verbatimTurns = COMPACTIO
   return starts[starts.length - keep] ?? messages.length;
 }
 
+/** Assistant messages that called tools. Their results sit on the following tool messages. */
+function toolRoundStarts(messages: ChatMessage[]): number[] {
+  const starts: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg?.role === "assistant" && (msg.tool_calls?.length ?? 0) > 0) starts.push(i);
+  }
+  return starts;
+}
+
+function toolRoundCut(messages: ChatMessage[], keep: number): number {
+  const starts = toolRoundStarts(messages);
+  const retain = Math.max(1, Math.floor(keep));
+  if (starts.length <= retain) return messages.length;
+  return starts[starts.length - retain] ?? messages.length;
+}
+
+/**
+ * Where to fold. Prefer the last two user turns. A tool loop inside those turns
+ * never reaches that cut, so fall back to keeping the last two tool rounds, then one.
+ */
+export function shrinkCut(messages: ChatMessage[]): number {
+  const atTurns = compactionCut(messages);
+  if (atTurns > 0 && atTurns < messages.length) return atTurns;
+  const keepTwo = toolRoundCut(messages, 2);
+  if (keepTwo > 0 && keepTwo < messages.length) return keepTwo;
+  const keepOne = toolRoundCut(messages, 1);
+  return keepOne > 0 && keepOne < messages.length ? keepOne : messages.length;
+}
+
 export function splitForCompaction(
   messages: ChatMessage[],
   verbatimTurns = COMPACTION_VERBATIM_TURNS,
 ): { older: ChatMessage[]; recent: ChatMessage[]; cut: number } {
   const cut = compactionCut(messages, verbatimTurns);
+  if (cut <= 0 || cut >= messages.length) {
+    return { older: [], recent: messages, cut: messages.length };
+  }
+  return { older: messages.slice(0, cut), recent: messages.slice(cut), cut };
+}
+
+/** Same shape as `splitForCompaction`, using `shrinkCut` so a tool loop can fold. */
+export function splitForShrink(messages: ChatMessage[]): { older: ChatMessage[]; recent: ChatMessage[]; cut: number } {
+  const cut = shrinkCut(messages);
   if (cut <= 0 || cut >= messages.length) {
     return { older: [], recent: messages, cut: messages.length };
   }
