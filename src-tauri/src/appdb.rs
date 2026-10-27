@@ -3,11 +3,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use tauri::{AppHandle, Manager, State};
-
 use crate::dev::{expand_folder_path, path_string, FolderSuggestion};
 use crate::error::{Error, Result};
-use crate::state::AppState;
 
 const SCHEMA_VERSION: i64 = 3;
 const DB_FILE: &str = "app.db";
@@ -19,11 +16,36 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
 
 pub fn open(data_dir: &Path) -> Result<Connection> {
     fs::create_dir_all(data_dir)?;
-    let conn = Connection::open(db_path(data_dir))?;
+    let path = db_path(data_dir);
+    let conn = Connection::open(&path)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    init_schema(&conn)?;
+    // Migrations are not free, and almost every command opens this file.
+    // A fresh file still migrates. A file left at the current version does not.
+    if !schema_ready(&conn)? {
+        init_schema(&conn)?;
+    } else {
+        ensure_compat(&conn)?;
+    }
     Ok(conn)
+}
+
+fn schema_ready(conn: &Connection) -> Result<bool> {
+    let table: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if table.is_none() {
+        return Ok(false);
+    }
+    let version: Option<i64> = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .optional()?
+        .flatten();
+    Ok(version == Some(SCHEMA_VERSION))
 }
 
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -97,8 +119,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
-    migrate_remote_tables(conn)?;
-    migrate_sidebar_cache(conn)?;
+    ensure_compat(conn)?;
     let version: Option<i64> = conn
         .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -111,6 +132,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [SCHEMA_VERSION],
         )?;
     }
+    Ok(())
+}
+
+/// Tables and columns added after a database was already stamped at the current version.
+/// `CREATE TABLE IF NOT EXISTS` plus the column probes. Safe to run on every open.
+fn ensure_compat(conn: &Connection) -> Result<()> {
+    migrate_remote_tables(conn)?;
+    migrate_sidebar_cache(conn)?;
     Ok(())
 }
 
@@ -1024,47 +1053,8 @@ fn list_settings(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_list_projects(state: State<'_, AppState>) -> Result<Vec<FolderSuggestion>> {
-    let conn = open(&state.data_dir)?;
-    list_projects(&conn)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_add_project(app: AppHandle, path: String) -> Result<FolderSuggestion> {
-    let root = expand_folder_path(&path)?;
-    let state = app.state::<AppState>();
-    let canon = state.register_workspace(&app, &root)?;
-    let conn = open(&state.data_dir)?;
-    add_project(&conn, &canon)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_reorder_projects(
-    state: State<'_, AppState>,
-    paths: Vec<String>,
-) -> Result<Vec<FolderSuggestion>> {
-    let conn = open(&state.data_dir)?;
-    reorder_projects(&conn, &paths)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_remove_project(state: State<'_, AppState>, path: String) -> Result<bool> {
-    let conn = open(&state.data_dir)?;
-    remove_project(&conn, &path)
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_get_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>> {
-    let conn = open(&state.data_dir)?;
-    get_setting(&conn, key.trim())
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub fn dev_app_set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<()> {
-    let conn = open(&state.data_dir)?;
-    set_setting(&conn, &key, &value)
-}
+#[path = "appdb/commands.rs"]
+pub mod commands;
 
 #[cfg(test)]
 mod tests {

@@ -256,15 +256,11 @@ fn account_email(value: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// A Claude login leaves credentials in `~/.claude` or the macOS keychain. The email is optional.
+/// A Claude login leaves credentials on disk. The email is optional.
+/// The login keychain is not read. `security` asks for the keychain password
+/// when this app is not allowed to see the item, and the usage screen checks
+/// this account every time it opens.
 pub fn read_claude_account(home: &Path) -> Option<(bool, Option<String>)> {
-    read_claude_account_with(home, keychain_credentials)
-}
-
-pub fn read_claude_account_with(
-    home: &Path,
-    keychain: impl Fn() -> Option<String>,
-) -> Option<(bool, Option<String>)> {
     let claude = home.join(".claude");
     let creds = claude.join(".credentials.json");
     if creds.is_file() {
@@ -284,7 +280,7 @@ pub fn read_claude_account_with(
             return Some((true, account_email(oauth)));
         }
     }
-    keychain().and_then(|raw| oauth_login(&raw))
+    cli_access_token(home, false).map(|_| (true, cli_account_email(home)))
 }
 
 fn oauth_access_token(raw: &str) -> Option<String> {
@@ -307,29 +303,6 @@ fn oauth_login(raw: &str) -> Option<(bool, Option<String>)> {
     let oauth = value.get("claudeAiOauth")?;
     let _ = token;
     Some((true, account_email(oauth).or_else(|| account_email(&value))))
-}
-
-/// Current Claude Code builds keep the OAuth token in the login keychain, not on disk.
-fn keychain_credentials() -> Option<String> {
-    #[cfg(target_os = "macos")]
-    {
-        let out = Command::new("security")
-            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if raw.is_empty() {
-            return None;
-        }
-        return Some(raw);
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,21 +364,11 @@ fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool)
     })
 }
 
-/// The login the settings screen counts as signed in. Keychain first, then the credentials file.
-/// An expired keychain item is skipped so a still-valid file token can be used.
+/// The login the settings screen counts as signed in.
+/// `~/.claude/.credentials.json` first, then the Claude CLI credentials file.
+/// The login keychain is not read, so opening usage never asks for its password.
 pub fn read_claude_access_token(home: &Path) -> Option<String> {
-    read_claude_access_token_with(home, keychain_credentials)
-}
-
-pub fn read_claude_access_token_with(
-    home: &Path,
-    keychain: impl Fn() -> Option<String>,
-) -> Option<String> {
-    let sources = [
-        keychain(),
-        fs::read_to_string(home.join(".claude").join(".credentials.json")).ok(),
-    ];
-    for raw in sources.into_iter().flatten() {
+    if let Some(raw) = fs::read_to_string(home.join(".claude").join(".credentials.json")).ok() {
         if let Some(token) = oauth_access_token(&raw) {
             return Some(token);
         }
@@ -1402,8 +1365,7 @@ mod tests {
     #[test]
     fn claude_account_reads_credentials_and_oauth_email() {
         let dir = tempfile::tempdir().unwrap();
-        let none = || None;
-        assert_eq!(read_claude_account_with(dir.path(), none), None);
+        assert_eq!(read_claude_account(dir.path()), None);
         let home = dir.path().join(".claude");
         fs::create_dir_all(&home).unwrap();
         fs::write(
@@ -1412,7 +1374,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            read_claude_account_with(dir.path(), none),
+            read_claude_account(dir.path()),
             Some((true, Some("ada@example.com".into())))
         );
         fs::write(
@@ -1421,26 +1383,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            read_claude_account_with(dir.path(), none),
+            read_claude_account(dir.path()),
             Some((true, Some("ada@example.com".into())))
         );
     }
 
     #[test]
-    fn expired_keychain_does_not_hide_a_fresh_file_token() {
+    fn an_expired_credentials_file_is_not_a_login() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join(".claude");
         fs::create_dir_all(&home).unwrap();
         fs::write(
             home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_claude_access_token(dir.path()), None);
+        fs::write(
+            home.join(".credentials.json"),
             r#"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000}}"#,
         )
         .unwrap();
-        let expired = r#"{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}"#;
-        assert_eq!(
-            read_claude_access_token_with(dir.path(), || Some(expired.into())).as_deref(),
-            Some("file-token")
-        );
+        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
     }
 
     #[test]
@@ -1490,29 +1454,23 @@ mod tests {
     }
 
     #[test]
-    fn signed_in_keychain_login_is_the_token_used_to_chat() {
+    fn a_credentials_file_signs_in_without_the_keychain() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = r#"{"claudeAiOauth":{"accessToken":"keychain-token","expiresAt":4102444800000},"emailAddress":"ada@example.com"}"#;
-        assert_eq!(
-            read_claude_access_token_with(dir.path(), || Some(raw.into())).as_deref(),
-            Some("keychain-token")
-        );
-        let expired = r#"{"claudeAiOauth":{"accessToken":"old-token","expiresAt":1}}"#;
-        assert_eq!(
-            read_claude_access_token_with(dir.path(), || Some(expired.into())),
-            None
-        );
+        assert_eq!(read_claude_access_token(dir.path()), None);
         let home = dir.path().join(".claude");
         fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
         fs::write(
             home.join(".credentials.json"),
             r#"{"claudeAiOauth":{"accessToken":"file-token"}}"#,
         )
         .unwrap();
-        assert_eq!(
-            read_claude_access_token_with(dir.path(), || None).as_deref(),
-            Some("file-token")
-        );
+        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
     }
 
     #[test]
@@ -1558,18 +1516,25 @@ mod tests {
     }
 
     #[test]
-    fn claude_account_reads_oauth_from_the_keychain_payload() {
+    fn claude_account_reads_oauth_from_the_credentials_file() {
         let dir = tempfile::tempdir().unwrap();
-        let raw = r#"{"claudeAiOauth":{"accessToken":"secret-token"},"emailAddress":"ada@example.com"}"#;
+        let home = dir.path().join(".claude");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"secret-token"},"emailAddress":"ada@example.com"}"#,
+        )
+        .unwrap();
         assert_eq!(
-            read_claude_account_with(dir.path(), || Some(raw.into())),
+            read_claude_account(dir.path()),
             Some((true, Some("ada@example.com".into())))
         );
-        let mcp_only = r#"{"mcpOAuth":{"server":{"accessToken":""}}}"#;
-        assert_eq!(
-            read_claude_account_with(dir.path(), || Some(mcp_only.into())),
-            None
-        );
+        fs::write(
+            home.join(".credentials.json"),
+            r#"{"mcpOAuth":{"server":{"accessToken":""}}}"#,
+        )
+        .unwrap();
+        assert_eq!(read_claude_account(dir.path()), None);
     }
 
     #[cfg(unix)]

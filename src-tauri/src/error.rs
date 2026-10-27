@@ -44,6 +44,17 @@ impl From<rusqlite::Error> for Error {
     }
 }
 
+impl From<twanagent_service::Error> for Error {
+    fn from(err: twanagent_service::Error) -> Self {
+        match err {
+            twanagent_service::Error::NotFound(message) => Error::NotFound(message),
+            twanagent_service::Error::Io(err) => Error::Io(err),
+            twanagent_service::Error::Json(err) => Error::Json(err),
+            twanagent_service::Error::Other(message) => Error::Other(message),
+        }
+    }
+}
+
 impl Serialize for Error {
     fn serialize<S: serde::Serializer>(
         &self,

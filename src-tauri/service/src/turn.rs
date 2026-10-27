@@ -279,11 +279,8 @@ fn run_live_turn_with(
         ask,
     };
     let model_name = model_id(request).to_string();
-    let mut round_index = 0usize;
+    // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
-        if round_index >= MAX_ROUNDS {
-            return stop_with_message(service, &mut conversation, &mut on_event, "the turn ran too many tool rounds");
-        }
         if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return finish_cancelled(service, &mut conversation, &mut on_event);
         }
@@ -409,11 +406,9 @@ fn run_live_turn_with(
         if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
             return finish_cancelled(service, &mut conversation, &mut on_event);
         }
-        round_index += 1;
     }
 }
 
-const MAX_ROUNDS: usize = 24;
 const CONTEXT_LIMIT_MESSAGE: &str =
     "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
 const FAILURE_PREFIX: &str = "Couldn't continue: ";
@@ -909,6 +904,56 @@ mod tests {
         let tool = saved.messages.iter().find(|msg| msg["role"] == "tool").unwrap();
         assert_eq!(message_text(tool), "User skipped this command.");
         assert!(saved.messages.iter().any(|msg| message_text(msg) == "Stopped after the skip."));
+    }
+
+    #[test]
+    fn a_turn_keeps_going_past_twenty_four_tool_rounds() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let service = ProjectService::open(&project, root.path().join("store")).unwrap();
+        let mut calls = 0u32;
+        let saved = run_live_turn_with(
+            &service,
+            &TurnRequest {
+                conversation_id: "c1".into(),
+                prompt: "keep looking".into(),
+                model: "grok-4".into(),
+                effort: String::new(),
+                permission: "approve-all".into(),
+                project: String::new(),
+                context_window: None,
+            },
+            &LocalWorkspace { root: project },
+            &mut |_messages: &[Value], _on_delta: &mut dyn FnMut(&str)| {
+                calls += 1;
+                if calls <= 24 {
+                    return Ok(crate::model::Round {
+                        text: String::new(),
+                        tool_calls: vec![crate::model::ToolCall {
+                            id: format!("c{calls}"),
+                            name: "read_file".into(),
+                            arguments: r#"{"path":"missing.txt"}"#.into(),
+                        }],
+                        error: None,
+                        usage: Some(crate::model::RoundUsage {
+                            prompt_tokens: 1000,
+                            completion_tokens: 20,
+                            cache_read_tokens: 0,
+                        }),
+                        reasoning: String::new(),
+                    });
+                }
+                Ok(text_round("Still working."))
+            },
+            None,
+            None,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(calls, 25);
+        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Still working."));
+        assert!(!saved.messages.iter().any(|msg| message_text(msg).contains("too many tool rounds")));
     }
 
     fn tool_loop() -> Vec<Value> {

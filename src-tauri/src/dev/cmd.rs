@@ -47,7 +47,10 @@ os._exit(0)
 
 struct LiveCommand {
     /// The detached job. A trailing `&` is moved into its own session, so this is that session.
+    /// Zero while the shell is still in the foreground and Stop should kill that process tree.
     pid: u32,
+    child: Option<u32>,
+    stopped: bool,
 }
 
 fn live_commands() -> &'static Mutex<HashMap<String, LiveCommand>> {
@@ -55,17 +58,42 @@ fn live_commands() -> &'static Mutex<HashMap<String, LiveCommand>> {
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Stop a command that was left running in the background. Missing ids are already gone.
+/// Stop a command this chat started. A foreground shell is killed now.
+/// A detached job is killed by the pid it printed. Missing ids are already gone.
 pub fn stop_command(id: &str) -> Result<()> {
-    let live = live_commands()
+    let live = {
+        let mut map = live_commands().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(live) = map.get_mut(id) else {
+            return Ok(());
+        };
+        // The runner sees `stopped` on its next poll and only then forgets the id.
+        // Clearing the pid here keeps a second click from killing a reused process.
+        let taken = LiveCommand {
+            pid: live.pid,
+            child: live.child.take(),
+            stopped: true,
+        };
+        live.pid = 0;
+        live.stopped = true;
+        taken
+    };
+    if live.pid != 0 {
+        kill_process_group(live.pid);
+    }
+    if let Some(child) = live.child {
+        kill_pid_tree(child);
+    }
+    Ok(())
+}
+
+fn remember_running(id: &str, child: u32) {
+    if id.is_empty() || child == 0 {
+        return;
+    }
+    live_commands()
         .lock()
         .unwrap_or_else(|err| err.into_inner())
-        .remove(id);
-    let Some(live) = live else {
-        return Ok(());
-    };
-    kill_process_group(live.pid);
-    Ok(())
+        .insert(id.to_string(), LiveCommand { pid: 0, child: Some(child), stopped: false });
 }
 
 fn remember_command(id: &str, pid: u32) {
@@ -75,7 +103,7 @@ fn remember_command(id: &str, pid: u32) {
     live_commands()
         .lock()
         .unwrap_or_else(|err| err.into_inner())
-        .insert(id.to_string(), LiveCommand { pid });
+        .insert(id.to_string(), LiveCommand { pid, child: None, stopped: false });
 }
 
 fn forget_command(id: &str) {
@@ -89,9 +117,14 @@ fn forget_command(id: &str) {
 }
 
 fn kill_process_group(pid: u32) {
+    kill_pid_tree(pid);
+}
+
+fn kill_pid_tree(pid: u32) {
     #[cfg(unix)]
     {
         // The launcher's session leader has already exited. Its child, the command, is left behind.
+        // A foreground shell is its own session, so killing the group reaches the command too.
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
             libc::kill(pid as i32, libc::SIGKILL);
@@ -439,6 +472,7 @@ fn run_command_with_timeout(
     }
     let mut out_buf = Vec::new();
     let mut err_buf = Vec::new();
+    remember_running(id, child.id());
     let started = std::time::Instant::now();
     let limit = if detaches {
         Duration::from_secs(CMD_DETACH_SECS)
@@ -451,6 +485,14 @@ fn run_command_with_timeout(
         emit_fresh(&out_buf, out_added, &mut on_chunk);
         emit_fresh(&err_buf, err_added, &mut on_chunk);
         match child.try_wait() {
+            Ok(Some(_)) if command_was_stopped(id) => {
+                forget_command(id);
+                let out_added = read_available(&mut stdout, &mut out_buf);
+                let err_added = read_available(&mut stderr, &mut err_buf);
+                emit_fresh(&out_buf, out_added, &mut on_chunk);
+                emit_fresh(&err_buf, err_added, &mut on_chunk);
+                break CommandWait::Stopped;
+            }
             Ok(Some(status)) => {
                 let out_added = read_available(&mut stdout, &mut out_buf);
                 let err_added = read_available(&mut stderr, &mut err_buf);
@@ -484,6 +526,15 @@ fn run_command_with_timeout(
                 emit_fresh(&err_buf, err_added, &mut on_chunk);
                 break CommandWait::TimedOut;
             }
+            Ok(None) if command_was_stopped(id) => {
+                let _ = kill_command_tree(&mut child);
+                forget_command(id);
+                let out_added = read_available(&mut stdout, &mut out_buf);
+                let err_added = read_available(&mut stderr, &mut err_buf);
+                emit_fresh(&out_buf, out_added, &mut on_chunk);
+                emit_fresh(&err_buf, err_added, &mut on_chunk);
+                break CommandWait::Stopped;
+            }
             Ok(None) => thread::sleep(Duration::from_millis(40)),
             Err(e) => {
                 forget_command(id);
@@ -503,6 +554,18 @@ enum CommandWait {
     Exited(std::process::ExitStatus),
     TimedOut,
     Detached,
+    Stopped,
+}
+
+fn command_was_stopped(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    live_commands()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .get(id)
+        .is_some_and(|live| live.stopped)
 }
 
 fn detached_pid(stdout: &[u8]) -> Option<u32> {
@@ -541,6 +604,12 @@ fn format_command_output(stdout: &[u8], stderr: &[u8], outcome: CommandWait) -> 
                 text.push('\n');
             }
             text.push_str(&format!("command timed out after {CMD_TIMEOUT_SECS}s"));
+        }
+        CommandWait::Stopped => {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str("Skipped: stopped.");
         }
         CommandWait::Detached => {
             if !text.is_empty() {
@@ -593,6 +662,37 @@ mod tests {
         };
         let out = run_command(dir.path(), cmd).unwrap();
         assert!(out.contains("hi"));
+    }
+
+    #[test]
+    fn stop_ends_a_foreground_command_on_the_first_call() {
+        let dir = temp_ws();
+        let id = format!("stop-{}", std::process::id());
+        let dir_path = dir.path().to_path_buf();
+        let command = if cfg!(windows) {
+            "ping -n 30 127.0.0.1".to_string()
+        } else {
+            "sleep 30".to_string()
+        };
+        let id_for_run = id.clone();
+        let worker = thread::spawn(move || {
+            run_command_streaming(&dir_path, &command, &id_for_run, |_| {})
+        });
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(2) && !command_was_stopped(&id) {
+            if live_commands().lock().unwrap().contains_key(&id) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            live_commands().lock().unwrap().contains_key(&id),
+            "the command never registered"
+        );
+        stop_command(&id).unwrap();
+        let out = worker.join().unwrap().unwrap();
+        assert!(out.contains("Skipped: stopped."), "{out}");
+        assert!(started.elapsed() < Duration::from_secs(5), "stop waited for the command");
     }
 
     #[test]

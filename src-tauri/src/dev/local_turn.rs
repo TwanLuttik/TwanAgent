@@ -72,6 +72,8 @@ struct LiveTurn {
     children: Mutex<Vec<Arc<AtomicBool>>>,
     /// Model streams opened by those children. Stop cancels these as well as the parent.
     child_streams: Mutex<Vec<String>>,
+    /// Shell processes this chat started. Stop kills them instead of waiting out the command.
+    commands: Mutex<Vec<String>>,
 }
 
 fn turns() -> &'static Mutex<HashMap<String, Arc<LiveTurn>>> {
@@ -137,6 +139,15 @@ pub fn dev_local_turn_stop(conversation_id: String) {
             super::chat::dev_chat_cancel(stream_id);
         }
     };
+    // The parent round uses the chat id. A compaction round uses compact:<chat id>.
+    // Child rounds use their own ids, cancelled above. One click has to reach all of them.
+    super::chat::dev_chat_cancel(conversation_id.clone());
+    super::chat::dev_chat_cancel(format!("compact:{conversation_id}"));
+    if let Ok(mut commands) = turn.commands.lock() {
+        for command_id in commands.drain(..) {
+            let _ = super::cmd::stop_command(&command_id);
+        }
+    };
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -193,6 +204,7 @@ pub async fn dev_local_turn_start(
         plan: Mutex::new(Vec::new()),
         children: Mutex::new(Vec::new()),
         child_streams: Mutex::new(Vec::new()),
+        commands: Mutex::new(Vec::new()),
     });
     if let Ok(mut map) = turns().lock() {
         map.insert(id.clone(), live_turn.clone());
@@ -236,14 +248,8 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let (mut prompt_tokens, mut compaction) = load_budget(data_dir, &request.workspace, id);
     let mut overflow_retries = 0u8;
-    let mut round_index = 0usize;
+    // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
-        if round_index >= MAX_ROUNDS {
-            fail(app, id, &mut transcript, "the turn ran too many tool rounds");
-            save(data_dir, &request.workspace, id, &transcript, saved_len, None);
-            emit_saved(app, id, &transcript, None, compaction.as_ref());
-            return;
-        }
         if stopped(live) {
             emit(app, id, "stopped", None, None, None);
             return;
@@ -467,7 +473,6 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             save(data_dir, &request.workspace, id, &transcript, saved_len, None);
             emit_saved(app, id, &transcript, None, compaction.as_ref());
         }
-        round_index += 1;
     }
 }
 
@@ -520,9 +525,15 @@ impl RoundWait {
         let progress_app = app.clone();
         let progress_id = conversation_id.clone();
         let progress_child = subagent_id.clone();
-        if let Ok(mut map) = super::chat::streams().lock() {
-            map.insert(stream_id.clone(), cancel.clone());
-        }
+        // Register before the request starts. Stop during the handshake has to find this flag,
+        // not a map that is still empty until the HTTP call returns.
+        let cancel = if let Ok(mut map) = super::chat::streams().lock() {
+            let flag = map.get(&stream_id).cloned().unwrap_or_else(|| cancel.clone());
+            map.insert(stream_id.clone(), flag.clone());
+            flag
+        } else {
+            cancel
+        };
         let streamed_text_flag = Arc::new(AtomicBool::new(false));
         let streamed_reasoning_flag = Arc::new(AtomicBool::new(false));
         let streamed_text_progress = streamed_text_flag.clone();
@@ -530,6 +541,7 @@ impl RoundWait {
         let collected = tauri::async_runtime::block_on(super::chat::collect_chat_round(
             app.clone(),
             state,
+            stream_id.clone(),
             Value::Array(messages),
             Some(model),
             Some(effort).filter(|value| !value.trim().is_empty()),
@@ -644,7 +656,7 @@ fn run_tool(
         "glob" => super::files::glob(workspace, str_arg(&args, "pattern"), str_arg(&args, "path")),
         "read_file" => super::files::read_file(workspace, str_arg(&args, "path")).and_then(|text| {
             twanagent_service::numbered_lines(&text, int_arg(&args, "offset"), int_arg(&args, "limit"))
-                .map_err(|err| Error::Other(err.to_string()))
+                .map_err(Error::from)
         }),
         "write_file" => super::files::write_file(workspace, str_arg(&args, "path"), str_arg(&args, "contents"))
             .map(|_| format!("Wrote {}", str_arg(&args, "path"))),
@@ -832,20 +844,8 @@ fn drive_subagent(
     let mut overflow_retries = 0u8;
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let mut failed = String::new();
-    let mut round_index = 0usize;
+    // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
-        if round_index >= MAX_ROUNDS {
-            let error = "the turn ran too many tool rounds".to_string();
-            emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
-            emit_subagent(
-                app,
-                parent_id,
-                "done",
-                child_id,
-                json!({ "status": "error", "summary": error, "messages": transcript }),
-            );
-            return format!("Subagent failed: {error}");
-        }
         if stopped_flag(cancel) || stopped(parent) {
             let summary = if failed.is_empty() { "Stopped.".to_string() } else { failed };
             emit_subagent(
@@ -1103,7 +1103,6 @@ fn drive_subagent(
             }));
             emit_subagent(app, parent_id, "update", child_id, json!({ "messages": transcript }));
         }
-        round_index += 1;
     }
 }
 
@@ -1111,6 +1110,10 @@ fn forget_child_stream(conversation_id: &str, stream_id: &str) {
     let Some(turn) = live(conversation_id) else {
         return;
     };
+    forget_stream(&turn, stream_id);
+}
+
+fn forget_stream(turn: &LiveTurn, stream_id: &str) {
     if let Ok(mut streams) = turn.child_streams.lock() {
         streams.retain(|id| id != stream_id);
     };
@@ -1296,9 +1299,20 @@ fn run_shell(
     }
     let app_chunks = app.clone();
     let id = conversation_id.to_string();
-    super::cmd::run_command_streaming(workspace, command, &uuid::Uuid::new_v4().to_string(), move |chunk| {
+    let command_id = uuid::Uuid::new_v4().to_string();
+    if let Ok(mut commands) = live.commands.lock() {
+        commands.push(command_id.clone());
+    }
+    let outcome = super::cmd::run_command_streaming(workspace, command, &command_id, move |chunk| {
         emit(&app_chunks, &id, "command", Some(chunk.to_string()), None, None);
-    })
+    });
+    if let Ok(mut commands) = live.commands.lock() {
+        commands.retain(|running| running != &command_id);
+    }
+    if stopped_flag(&live.cancel) {
+        return Ok("Skipped: stopped.".into());
+    }
+    outcome
 }
 
 fn ask_shell(app: &AppHandle, conversation_id: &str, command: &str, live: &LiveTurn) -> Result<bool> {
@@ -1424,7 +1438,6 @@ fn json_ok<T: serde::Serialize>(result: Result<T>) -> Result<String> {
     result.and_then(|value| serde_json::to_string_pretty(&value).map_err(Error::from))
 }
 
-const MAX_ROUNDS: usize = 24;
 const TOOL_TEXT_CAP: usize = 24_000;
 const TOOL_TEXT_HEAD: usize = 20_000;
 const TOOL_TEXT_TAIL: usize = 2_000;
@@ -1673,6 +1686,13 @@ fn fold_once(
         Some(child) => format!("compact:{child}"),
         None => format!("compact:{id}"),
     };
+    // A child summary is not the chat id Stop cancels on its own. Remember it with the
+    // other child streams so the same click reaches this request.
+    if child_id.is_some() {
+        if let Ok(mut streams) = live.child_streams.lock() {
+            streams.push(stream_id.clone());
+        }
+    }
     let round = match stream_round(
         app,
         id,
@@ -1688,8 +1708,16 @@ fn fold_once(
     )
     .await_round()
     {
-        Ok(round) => round,
+        Ok(round) => {
+            if child_id.is_some() {
+                forget_stream(live, &stream_id);
+            }
+            round
+        }
         Err(_) => {
+            if child_id.is_some() {
+                forget_stream(live, &stream_id);
+            }
             return if stopped(live) || stopped_flag(cancel) {
                 FoldStep::Stopped
             } else {

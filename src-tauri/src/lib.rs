@@ -21,151 +21,14 @@ mod store;
 mod update;
 mod usage;
 mod web_search;
+mod command_surface;
+mod window;
 mod workspace;
-
-use std::path::PathBuf;
 
 use tauri::Manager;
 
 use state::AppState;
-
-const WINDOW_SIZE_KEY: &str = "window.size";
-const WINDOW_MAXIMIZED_KEY: &str = "window.maximized";
-const WINDOW_MIN_WIDTH: f64 = 880.0;
-const WINDOW_MIN_HEIGHT: f64 = 560.0;
-
-/// `"1100x740"` from the settings table. Empty when it was never saved or cannot be read.
-fn saved_window_size(data_dir: &std::path::Path) -> Option<(f64, f64)> {
-    let conn = appdb::open(data_dir).ok()?;
-    let raw = appdb::get_setting(&conn, WINDOW_SIZE_KEY).ok()??;
-    parse_window_size(&raw)
-}
-
-fn parse_window_size(raw: &str) -> Option<(f64, f64)> {
-    let (width, height) = raw.trim().split_once('x')?;
-    let width: f64 = width.trim().parse().ok()?;
-    let height: f64 = height.trim().parse().ok()?;
-    if !width.is_finite() || !height.is_finite() {
-        return None;
-    }
-    if width < WINDOW_MIN_WIDTH || height < WINDOW_MIN_HEIGHT {
-        return None;
-    }
-    Some((width, height))
-}
-
-fn save_window_size(data_dir: &std::path::Path, width: f64, height: f64) {
-    let Some((width, height)) = parse_window_size(&format!("{width}x{height}")) else {
-        return;
-    };
-    let Ok(conn) = appdb::open(data_dir) else {
-        return;
-    };
-    let _ = appdb::set_setting(&conn, WINDOW_SIZE_KEY, &format!("{width}x{height}"));
-}
-
-fn saved_window_maximized(data_dir: &std::path::Path) -> bool {
-    let Ok(conn) = appdb::open(data_dir) else {
-        return false;
-    };
-    appdb::get_setting(&conn, WINDOW_MAXIMIZED_KEY)
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("1")
-}
-
-fn save_window_maximized(data_dir: &std::path::Path, maximized: bool) {
-    let Ok(conn) = appdb::open(data_dir) else {
-        return;
-    };
-    let _ = appdb::set_setting(&conn, WINDOW_MAXIMIZED_KEY, if maximized { "1" } else { "0" });
-}
-
-/// The last session's size, applied before the window is shown so it does not open and then jump.
-fn restore_window_size(app: &tauri::App, data_dir: &std::path::Path) {
-    let Some((width, height)) = saved_window_size(data_dir) else {
-        return;
-    };
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)));
-    nudge_window_on_screen(&window);
-    if saved_window_maximized(data_dir) {
-        let _ = window.maximize();
-    }
-}
-
-/// Moves the window back only when the restored size leaves it outside the monitor.
-fn nudge_window_on_screen(window: &tauri::WebviewWindow) {
-    let Ok(monitor) = window.current_monitor() else {
-        return;
-    };
-    let Some(monitor) = monitor else {
-        return;
-    };
-    let Ok(position) = window.outer_position() else {
-        return;
-    };
-    let Ok(size) = window.outer_size() else {
-        return;
-    };
-    let area = monitor.position();
-    let screen = monitor.size();
-    let margin = 40;
-    let max_x = area.x + screen.width as i32 - margin;
-    let max_y = area.y + screen.height as i32 - margin;
-    let fits = position.x < max_x
-        && position.y < max_y
-        && position.x + size.width as i32 > area.x
-        && position.y + size.height as i32 > area.y;
-    if !fits {
-        let _ = window.center();
-    }
-}
-
-/// Debug runs keep their own app data so `tauri dev` cannot read or rewrite a release install.
-pub(crate) fn isolate_data_dir(dir: PathBuf) -> PathBuf {
-    if !cfg!(debug_assertions) {
-        return dir;
-    }
-    let name = dir
-        .file_name()
-        .map(|name| format!("{}-dev", name.to_string_lossy()))
-        .unwrap_or_else(|| "app.twanagent.desktop-dev".into());
-    dir.with_file_name(name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn window_size_rejects_a_missing_or_too_small_value() {
-        assert_eq!(parse_window_size("1280x800"), Some((1280.0, 800.0)));
-        assert_eq!(parse_window_size(" 1440 x 900 "), Some((1440.0, 900.0)));
-        assert_eq!(parse_window_size(""), None);
-        assert_eq!(parse_window_size("1100"), None);
-        assert_eq!(parse_window_size("400x300"), None);
-        assert_eq!(parse_window_size("nanx800"), None);
-    }
-
-    #[test]
-    fn debug_data_dir_is_a_sibling_of_the_release_dir() {
-        let release = PathBuf::from("/Users/me/Library/Application Support/app.twanagent.desktop");
-        let got = isolate_data_dir(release.clone());
-        if cfg!(debug_assertions) {
-            assert_eq!(
-                got,
-                PathBuf::from("/Users/me/Library/Application Support/app.twanagent.desktop-dev")
-            );
-            assert_ne!(got, release);
-        } else {
-            assert_eq!(got, release);
-        }
-    }
-}
+use window::isolate_data_dir;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -188,31 +51,14 @@ pub fn run() {
             let _ = app
                 .asset_protocol_scope()
                 .allow_directory(&space_corner, true);
-            restore_window_size(app, &state.data_dir);
+            window::restore_window_size(app, &state.data_dir);
             let data_dir = state.data_dir.clone();
             app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 let data_dir = data_dir.clone();
-                let window = window.clone();
                 window.clone().on_window_event(move |event| {
                     if let tauri::WindowEvent::Resized(size) = event {
-                        // A minimized window reports 0×0. Saving that would reopen the app tiny.
-                        if size.width == 0 || size.height == 0 {
-                            return;
-                        }
-                        let maximized = window.is_maximized().unwrap_or(false);
-                        save_window_maximized(&data_dir, maximized);
-                        // The maximized frame fills the screen. The restored size is what we want back.
-                        if maximized {
-                            return;
-                        }
-                        // The event is in physical pixels. The config size is in points, so a
-                        // Retina display has to be scaled back or the window grows every launch.
-                        let scale = window.scale_factor().unwrap_or(1.0);
-                        if scale <= 0.0 {
-                            return;
-                        }
-                        save_window_size(&data_dir, f64::from(size.width) / scale, f64::from(size.height) / scale);
+                        window::note_window_resize(&window, &data_dir, *size);
                     }
                 });
             }
@@ -240,71 +86,71 @@ pub fn run() {
             dev::keys::dev_minimax_key_status,
             dev::keys::dev_set_minimax_key,
             dev::keys::dev_clear_minimax_key,
-            dev::commands::dev_projects_root,
-            dev::commands::dev_projects_location,
-            dev::commands::dev_list_projects,
-            dev::commands::dev_opened_workspaces,
-            dev::commands::dev_forget_workspace,
-            dev::commands::dev_open_folder,
-            dev::commands::dev_suggest_folders,
-            dev::commands::dev_create_project,
-            dev::commands::dev_delete_project,
-            dev::commands::dev_project_removal,
-            dev::commands::dev_delete_project_worktrees,
-            dev::commands::dev_clone_repo,
-            dev::commands::dev_tree_signature,
-            dev::commands::dev_list_dir,
-            dev::commands::dev_grep,
-            dev::commands::dev_glob,
-            dev::commands::dev_read_file,
-            dev::commands::dev_read_pdf,
-            dev::commands::dev_read_user_mcp,
-            dev::commands::dev_write_user_mcp,
-            dev::commands::dev_open_user_mcp,
-            dev::commands::dev_mcp_auth_names,
-            dev::commands::dev_mcp_clear_auth,
-            dev::commands::dev_mcp_sign_in,
-            dev::commands::dev_list_skill_files,
-            dev::commands::dev_read_user_skill,
-            dev::commands::dev_write_user_skill,
-            dev::commands::dev_resolve_file,
-            dev::commands::dev_existing_files,
-            dev::commands::dev_file_preview,
-            dev::commands::dev_rename_path,
-            dev::commands::dev_move_paths,
-            dev::commands::dev_delete_paths,
-            dev::commands::dev_create_dir,
-            dev::commands::dev_write_file,
-            dev::commands::dev_edit_file,
-            dev::commands::dev_git_status,
-            dev::commands::dev_git_diff,
-            dev::commands::dev_git_branches,
-            dev::commands::dev_git_summary,
-            dev::commands::dev_git_project_summary,
-            dev::commands::dev_git_switch,
-            dev::commands::dev_git_create_branch,
-            dev::commands::dev_git_stage,
-            dev::commands::dev_git_unstage,
-            dev::commands::dev_git_discard,
-            dev::commands::dev_git_commit,
-            dev::commands::dev_git_identity,
-            dev::commands::dev_git_set_identity,
-            dev::commands::dev_git_sync,
-            dev::commands::dev_git_stash,
-            dev::commands::dev_git_log,
-            dev::commands::dev_git_show,
-            dev::commands::dev_git_file_at,
-            dev::commands::dev_git_worktrees,
-            dev::commands::dev_git_pull_requests,
-            dev::commands::dev_git_pull_requests_cached,
-            dev::commands::dev_git_pull_request_checkout,
-            dev::commands::dev_git_worktree_add,
-            dev::commands::dev_git_worktree_rename,
-            dev::commands::dev_git_worktree_remove,
-            dev::commands::dev_run_command,
-            dev::commands::dev_stop_command,
-            dev::commands::dev_open_url,
-            dev::commands::dev_reveal_folder,
+            dev::commands::project_cmds::dev_projects_root,
+            dev::commands::project_cmds::dev_projects_location,
+            dev::commands::project_cmds::dev_list_projects,
+            dev::commands::project_cmds::dev_opened_workspaces,
+            dev::commands::project_cmds::dev_forget_workspace,
+            dev::commands::project_cmds::dev_open_folder,
+            dev::commands::project_cmds::dev_suggest_folders,
+            dev::commands::project_cmds::dev_create_project,
+            dev::commands::project_cmds::dev_delete_project,
+            dev::commands::project_cmds::dev_project_removal,
+            dev::commands::project_cmds::dev_delete_project_worktrees,
+            dev::commands::project_cmds::dev_clone_repo,
+            dev::commands::file_cmds::dev_tree_signature,
+            dev::commands::file_cmds::dev_list_dir,
+            dev::commands::file_cmds::dev_grep,
+            dev::commands::file_cmds::dev_glob,
+            dev::commands::file_cmds::dev_read_file,
+            dev::commands::file_cmds::dev_read_pdf,
+            dev::commands::file_cmds::dev_read_user_mcp,
+            dev::commands::file_cmds::dev_write_user_mcp,
+            dev::commands::file_cmds::dev_open_user_mcp,
+            dev::commands::file_cmds::dev_mcp_auth_names,
+            dev::commands::file_cmds::dev_mcp_clear_auth,
+            dev::commands::file_cmds::dev_mcp_sign_in,
+            dev::commands::file_cmds::dev_list_skill_files,
+            dev::commands::file_cmds::dev_read_user_skill,
+            dev::commands::file_cmds::dev_write_user_skill,
+            dev::commands::file_cmds::dev_resolve_file,
+            dev::commands::file_cmds::dev_existing_files,
+            dev::commands::file_cmds::dev_file_preview,
+            dev::commands::file_cmds::dev_rename_path,
+            dev::commands::file_cmds::dev_move_paths,
+            dev::commands::file_cmds::dev_delete_paths,
+            dev::commands::file_cmds::dev_create_dir,
+            dev::commands::file_cmds::dev_write_file,
+            dev::commands::file_cmds::dev_edit_file,
+            dev::commands::git_cmds::dev_git_status,
+            dev::commands::git_cmds::dev_git_diff,
+            dev::commands::git_cmds::dev_git_branches,
+            dev::commands::git_cmds::dev_git_summary,
+            dev::commands::git_cmds::dev_git_project_summary,
+            dev::commands::git_cmds::dev_git_switch,
+            dev::commands::git_cmds::dev_git_create_branch,
+            dev::commands::git_cmds::dev_git_stage,
+            dev::commands::git_cmds::dev_git_unstage,
+            dev::commands::git_cmds::dev_git_discard,
+            dev::commands::git_cmds::dev_git_commit,
+            dev::commands::git_cmds::dev_git_identity,
+            dev::commands::git_cmds::dev_git_set_identity,
+            dev::commands::git_cmds::dev_git_sync,
+            dev::commands::git_cmds::dev_git_stash,
+            dev::commands::git_cmds::dev_git_log,
+            dev::commands::git_cmds::dev_git_show,
+            dev::commands::git_cmds::dev_git_file_at,
+            dev::commands::git_cmds::dev_git_worktrees,
+            dev::commands::git_cmds::dev_git_pull_requests,
+            dev::commands::git_cmds::dev_git_pull_requests_cached,
+            dev::commands::git_cmds::dev_git_pull_request_checkout,
+            dev::commands::git_cmds::dev_git_worktree_add,
+            dev::commands::git_cmds::dev_git_worktree_rename,
+            dev::commands::git_cmds::dev_git_worktree_remove,
+            dev::commands::shell_cmds::dev_run_command,
+            dev::commands::shell_cmds::dev_stop_command,
+            dev::commands::shell_cmds::dev_open_url,
+            dev::commands::shell_cmds::dev_reveal_folder,
             dev::conv::dev_sidebar_snapshot,
             dev::conv::dev_list_conversations,
             dev::conv::dev_get_conversation,
@@ -380,12 +226,12 @@ pub fn run() {
             remote::hosted::dev_usage_sync,
             remote::hosted::dev_hosted_sidebar_cached,
             remote::hosted::dev_hosted_conversation_cached,
-            appdb::dev_app_list_projects,
-            appdb::dev_app_add_project,
-            appdb::dev_app_reorder_projects,
-            appdb::dev_app_remove_project,
-            appdb::dev_app_get_setting,
-            appdb::dev_app_set_setting,
+            appdb::commands::dev_app_list_projects,
+            appdb::commands::dev_app_add_project,
+            appdb::commands::dev_app_reorder_projects,
+            appdb::commands::dev_app_remove_project,
+            appdb::commands::dev_app_get_setting,
+            appdb::commands::dev_app_set_setting,
             anthropic::dev_account_usage,
             anthropic::dev_account_usage_cached,
             minimax::dev_minimax_account_usage,

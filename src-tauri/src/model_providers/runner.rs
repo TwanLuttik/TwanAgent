@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
+use tokio::time::timeout;
 
 use super::event::{
     apply_thinking, apply_tool, finished_thinking, finished_tools, merge_usage, StreamPiece,
@@ -246,6 +247,19 @@ impl<'a> StreamSession<'a> {
         }
         let _ = self.app.emit("dev-chat", event);
     }
+
+    fn stopped(&mut self) {
+        self.flush();
+        self.emit(DevChatEvent {
+            stream_id: self.stream_id.into(),
+            kind: "error".into(),
+            text: Some("Stopped.".into()),
+            tool_calls: None,
+            usage: None,
+            thinking: None,
+            conversation: None,
+        });
+    }
 }
 
 /// Drive one HTTP stream. `parse` turns each `data:` payload into zero or more pieces.
@@ -261,21 +275,26 @@ pub async fn consume_sse(
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
     let mut session = StreamSession::new(app, stream_id);
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // A quiet socket used to ignore Stop until the next byte. Poll the flag instead.
+        let next = timeout(Duration::from_millis(100), stream.next()).await;
+        let chunk = match next {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => {
+                session.flush();
+                session.finish(on_stop_text(&session));
+                return Ok(());
+            }
+            Err(_) => {
+                if cancel.load(Ordering::Relaxed) {
+                    session.stopped();
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         if cancel.load(Ordering::Relaxed) {
-            session.flush();
-            let _ = app.emit(
-                "dev-chat",
-                DevChatEvent {
-                    stream_id: stream_id.into(),
-                    kind: "error".into(),
-                    text: Some("Stopped.".into()),
-                    tool_calls: None,
-                    usage: None,
-                    thinking: None,
-                    conversation: None,
-                },
-            );
+            session.stopped();
             return Ok(());
         }
         let chunk = match chunk {
@@ -318,11 +337,6 @@ pub async fn consume_sse(
             }
         }
     }
-    session.flush();
-    if session.has_output() {
-        session.finish(on_stop_text(&session));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
