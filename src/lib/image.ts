@@ -5,8 +5,10 @@ export type { ChatImage };
 export const IMAGE_MAX_EDGE = 2048;
 export const MAX_PROMPT_IMAGES = 8;
 
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|jfif)$/i;
-const REJECTED_IMAGE = /svg|heic|heif/;
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|jfif|heic|heif)$/i;
+// SVG is XML, not a bitmap the model can see. HEIC and HEIF are accepted and
+// converted to JPEG or PNG before they are stored.
+const REJECTED_IMAGE = /svg/;
 
 export type FileLike = {
   type?: string;
@@ -26,9 +28,22 @@ export function mimeType(value: string): string {
   return value.toLowerCase().split(";")[0]?.trim() ?? "";
 }
 
+function isHeicMime(mime: string): boolean {
+  return (
+    mime === "image/heic" ||
+    mime === "image/heif" ||
+    mime === "image/heic-sequence" ||
+    mime === "image/heif-sequence" ||
+    mime === "public.heic" ||
+    mime === "public.heif"
+  );
+}
+
 export function isImageMime(value: string): boolean {
   const mime = mimeType(value);
-  if (!mime.startsWith("image/") || REJECTED_IMAGE.test(mime)) return false;
+  if (!mime || REJECTED_IMAGE.test(mime)) return false;
+  if (isHeicMime(mime)) return true;
+  if (!mime.startsWith("image/")) return false;
   return (
     mime === "image/png" ||
     mime === "image/jpeg" ||

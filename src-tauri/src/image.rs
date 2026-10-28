@@ -36,6 +36,8 @@ pub fn space_corner_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(SPACE_CORNER_DIR)
 }
 
+/// Extensions the composer and the corner picker accept.
+/// Keep this in sync with `IMAGE_EXT` in `src/lib/image.ts`.
 fn is_image_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".png")
@@ -45,9 +47,13 @@ fn is_image_name(name: &str) -> bool {
         || lower.ends_with(".webp")
         || lower.ends_with(".bmp")
         || lower.ends_with(".jfif")
+        || crate::heic::is_heic_name(&lower)
 }
 
 const MAX_SOURCE_BYTES: u64 = 50 * 1024 * 1024;
+/// The corner is drawn at 360px. Cap a converted HEIC well above that so a
+/// retina sidebar stays sharp without decoding a 48 megapixel photo.
+const CORNER_HEIC_EDGE: u32 = 4096;
 
 /// Copy a user-picked picture into the app data folder so the corner keeps working
 /// after the original file is moved or deleted.
@@ -68,28 +74,31 @@ pub fn copy_space_corner_image(data_dir: &Path, source: &str) -> Result<Prepared
     if bytes.is_empty() {
         return Err(Error::Other("image is empty".into()));
     }
-    let reader = ImageReader::new(Cursor::new(bytes.as_slice()))
-        .with_guessed_format()
-        .map_err(|e| Error::Other(format!("Couldn’t read image: {e}")))?;
-    let format = reader.format();
-    let img = reader
-        .decode()
-        .map_err(|_| Error::Other("This image format isn’t supported.".into()))?;
-    let (width, height) = img.dimensions();
+    let raster = open_raster(&bytes, &name, CORNER_HEIC_EDGE)?;
+    let (width, height) = raster.image.dimensions();
     if width == 0 || height == 0 {
         return Err(Error::Other("image has no pixels".into()));
     }
-    let (ext, mime) = passthrough_format(format).unwrap_or(("png", "image/png"));
+    // HEIC has no passthrough. Store JPEG or PNG so the sidebar can paint it.
+    let (ext, mime, encoded) = if let Some((ext, mime)) = passthrough_format(raster.format) {
+        (ext.to_string(), mime.to_string(), bytes)
+    } else {
+        encode_resized(&raster.image)?
+    };
     let dir = space_corner_dir(data_dir);
     fs::create_dir_all(&dir)?;
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
-        if entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+        if entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
             let _ = fs::remove_file(entry.path());
         }
     }
     let stored = dir.join(format!("{SPACE_CORNER_FILE}.{ext}"));
-    fs::write(&stored, &bytes)?;
+    fs::write(&stored, &encoded)?;
     Ok(PreparedImage {
         id: SPACE_CORNER_FILE.into(),
         path: stored.to_string_lossy().replace('\\', "/"),
@@ -110,7 +119,11 @@ pub fn space_corner_image(data_dir: &Path) -> Result<Option<PreparedImage>> {
     let mut found: Option<PathBuf> = None;
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
-        if !entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+        if !entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
             continue;
         }
         let path = entry.path();
@@ -157,7 +170,11 @@ pub fn clear_space_corner_image(data_dir: &Path) -> Result<()> {
     }
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
-        if entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+        if entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -245,6 +262,46 @@ fn passthrough_format(format: Option<ImageFormat>) -> Option<(&'static str, &'st
     }
 }
 
+struct Raster {
+    image: DynamicImage,
+    format: Option<ImageFormat>,
+    source_width: u32,
+    source_height: u32,
+}
+
+/// Decode a prompt or corner image.
+///
+/// HEIC is not a format this crate or the model API can carry, so those bytes
+/// are decoded with the system and come back with `format: None`. Callers then
+/// store JPEG or PNG instead of the original file.
+fn open_raster(bytes: &[u8], name: &str, heic_max_edge: u32) -> Result<Raster> {
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| Error::Other(format!("Couldn’t read image: {e}")))?;
+    let format = reader.format();
+    match reader.decode() {
+        Ok(image) => {
+            let (source_width, source_height) = image.dimensions();
+            Ok(Raster {
+                image,
+                format,
+                source_width,
+                source_height,
+            })
+        }
+        Err(_) if crate::heic::should_decode_heic(name, bytes) => {
+            let decoded = crate::heic::decode_heic(bytes, heic_max_edge)?;
+            Ok(Raster {
+                image: decoded.image,
+                format: None,
+                source_width: decoded.stored_width,
+                source_height: decoded.stored_height,
+            })
+        }
+        Err(_) => Err(Error::Other("This image format isn’t supported.".into())),
+    }
+}
+
 pub fn prepare_image(
     data_dir: &Path,
     bytes: &[u8],
@@ -254,31 +311,28 @@ pub fn prepare_image(
     if bytes.is_empty() {
         return Err(Error::Other("image is empty".into()));
     }
-    let reader = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| Error::Other(format!("Couldn’t read image: {e}")))?;
-    let format = reader.format();
-    let img = reader
-        .decode()
-        .map_err(|_| Error::Other("This image format isn’t supported.".into()))?;
-    let (orig_w, orig_h) = img.dimensions();
-    if orig_w == 0 || orig_h == 0 {
+    let raster = open_raster(bytes, name, MAX_EDGE)?;
+    if raster.source_width == 0 || raster.source_height == 0 {
         return Err(Error::Other("image has no pixels".into()));
     }
-    let resized = needs_resize(orig_w, orig_h);
-    let out = if resized {
-        img.resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Triangle)
+    let resized = needs_resize(raster.source_width, raster.source_height);
+    let (cur_w, cur_h) = raster.image.dimensions();
+    let out = if needs_resize(cur_w, cur_h) {
+        raster
+            .image
+            .resize(MAX_EDGE, MAX_EDGE, image::imageops::FilterType::Triangle)
     } else {
-        img
+        raster.image
     };
     let (width, height) = out.dimensions();
-    let (ext, mime, encoded) = if resized {
-        encode_resized(&out)?
-    } else if let Some((ext, mime)) = passthrough_format(format) {
-        (ext.to_string(), mime.to_string(), bytes.to_vec())
-    } else {
-        encode_resized(&out)?
-    };
+    // A downscaled HEIC is already within the cap, but it still has to be
+    // re-encoded. Only an original PNG, JPEG, GIF, WebP, or BMP is stored as-is.
+    let (ext, mime, encoded) =
+        if let Some((ext, mime)) = passthrough_format(raster.format).filter(|_| !resized) {
+            (ext.to_string(), mime.to_string(), bytes.to_vec())
+        } else {
+            encode_resized(&out)?
+        };
 
     let id = uuid::Uuid::new_v4().to_string();
     let dir = attachments_dir(data_dir).join(folder_name(conversation_id));
@@ -528,5 +582,82 @@ mod tests {
         let outside = dir.path().join("secret.png");
         fs::write(&outside, b"nope").unwrap();
         assert!(image_data_url(dir.path(), outside.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn rejects_bytes_that_only_pretend_to_be_heic() {
+        let dir = tempdir().unwrap();
+        let mut bytes = vec![0u8; 24];
+        bytes[4..8].copy_from_slice(b"ftyp");
+        bytes[8..12].copy_from_slice(b"heic");
+        let err = prepare_image(dir.path(), &bytes, "a.heic", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("HEIC"), "{err}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn converts_heic_into_a_jpeg_the_model_can_read() {
+        let dir = tempdir().unwrap();
+        let heic = crate::heic::heic_via_sips(&png_bytes(64, 48, 255));
+        let out = prepare_image(dir.path(), &heic, "IMG_1.HEIC", Some("chat")).unwrap();
+        assert_eq!(out.name, "IMG_1.HEIC");
+        assert_eq!(out.width, 64);
+        assert_eq!(out.height, 48);
+        assert!(!out.resized);
+        assert_eq!(out.mime, "image/jpeg");
+        assert!(out.path.ends_with(".jpg"), "{}", out.path);
+        assert!(out.path.contains("/chat/"));
+        let url = image_data_url(dir.path(), &out.path).unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn downscales_a_wide_heic() {
+        let dir = tempdir().unwrap();
+        let heic = crate::heic::heic_via_sips(&png_bytes(3000, 1000, 255));
+        let out = prepare_image(dir.path(), &heic, "wide.heic", None).unwrap();
+        assert_eq!(out.width, 2048);
+        assert!((682..=683).contains(&out.height), "height {}", out.height);
+        assert!(out.resized);
+        assert_eq!(out.mime, "image/jpeg");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prepares_heic_from_a_dropped_path() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("drop.heif");
+        fs::write(&src, crate::heic::heic_via_sips(&png_bytes(16, 12, 255))).unwrap();
+        let out = prepare_image_from_path(dir.path(), src.to_str().unwrap(), None).unwrap();
+        assert_eq!(out.name, "drop.heif");
+        assert_eq!(out.width, 16);
+        assert_eq!(out.height, 12);
+        assert_eq!(out.mime, "image/jpeg");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn copies_a_heic_corner_as_a_bitmap_the_sidebar_can_show() {
+        let dir = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let src = src_dir.path().join("corner.heic");
+        fs::write(&src, crate::heic::heic_via_sips(&png_bytes(24, 18, 255))).unwrap();
+        let out = copy_space_corner_image(dir.path(), src.to_str().unwrap()).unwrap();
+        assert_eq!(out.name, "corner.heic");
+        assert_eq!(out.width, 24);
+        assert_eq!(out.height, 18);
+        assert!(
+            out.path.ends_with("/space-corner/image.jpg"),
+            "{}",
+            out.path
+        );
+        fs::remove_file(&src).unwrap();
+        let kept = space_corner_image(dir.path()).unwrap().unwrap();
+        assert_eq!(kept.width, 24);
+        assert_eq!(kept.height, 18);
+        assert_eq!(kept.mime, "image/jpeg");
     }
 }

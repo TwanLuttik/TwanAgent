@@ -9,6 +9,7 @@ mod error;
 pub use model_providers::anthropic;
 pub use model_providers::grok_cli;
 pub use model_providers::minimax;
+mod heic;
 mod image;
 mod paths;
 mod perf;

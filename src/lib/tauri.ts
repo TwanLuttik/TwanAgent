@@ -62,7 +62,7 @@ export async function pickDir(): Promise<string | null> {
 }
 
 const IMAGE_FILTERS = [
-  { name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "jfif"] },
+  { name: "Image", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "jfif", "heic", "heif"] },
 ];
 
 export async function pickImage(): Promise<string | null> {

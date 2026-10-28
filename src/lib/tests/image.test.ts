@@ -47,13 +47,17 @@ describe("isImageFile", () => {
     assert.equal(isImageFile({ type: "image/jpeg", name: "a.jpg" }), true);
     assert.equal(isImageFile({ type: "", name: "shot.JPEG" }), true);
     assert.equal(isImageFile({ type: "image/webp", name: "a.webp" }), true);
+    assert.equal(isImageFile({ type: "image/heic", name: "a.heic" }), true);
+    assert.equal(isImageFile({ type: "image/heif-sequence", name: "a.heif" }), true);
+    assert.equal(isImageFile({ type: "", name: "IMG_0001.HEIC" }), true);
+    assert.equal(isImageFile({ type: "public.heic", name: "paste" }), true);
   });
 
   it("rejects non-images and svg", () => {
     assert.equal(isImageFile({ type: "text/plain", name: "a.txt" }), false);
     assert.equal(isImageFile({ type: "image/svg+xml", name: "a.svg" }), false);
     assert.equal(isImageFile({ type: "", name: "notes.md" }), false);
-    assert.equal(isImageFile({ type: "image/heic", name: "a.heic" }), false);
+    assert.equal(isImageFile({ type: "image/svg+xml", name: "photo.heic" }), false);
   });
 });
 
@@ -90,8 +94,9 @@ describe("imagePathsFromDrop", () => {
         "/Users/me/notes.md",
         "C:\\tmp\\photo.jpeg",
         "/tmp/icon.svg",
+        "/Users/me/Pictures/IMG_0001.HEIC",
       ]),
-      ["/Users/me/Desktop/shot.PNG", "C:\\tmp\\photo.jpeg"],
+      ["/Users/me/Desktop/shot.PNG", "C:\\tmp\\photo.jpeg", "/Users/me/Pictures/IMG_0001.HEIC"],
     );
   });
 });
