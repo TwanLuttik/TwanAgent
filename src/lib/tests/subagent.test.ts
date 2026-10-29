@@ -44,11 +44,6 @@ describe("childCanUseTool", () => {
     assert.equal(childCanUseTool("general-purpose", "spawn_subagent"), false);
   });
 
-  it("never lets a child update journey knowledge", () => {
-    assert.equal(childCanUseTool("general-purpose", "update_journey_knowledge"), false);
-    assert.equal(childCanUseTool("explore", "update_journey_knowledge"), false);
-  });
-
   it("never lets a child write parent todos", () => {
     assert.equal(childCanUseTool("general-purpose", "todo_write"), false);
     assert.equal(childCanUseTool("explore", "todo_write"), false);
@@ -84,17 +79,6 @@ describe("subagentSystemPrompt", () => {
     assert.match(
       String(subagentSystemPrompt("/tmp/app", "general-purpose", "Edit files", "approve-all").content),
       /without asking/,
-    );
-  });
-
-  it("includes journey knowledge when provided", () => {
-    assert.match(
-      String(subagentSystemPrompt("/tmp/app", "explore", "Find parser", "ask", "- voice is casual").content),
-      /Journey knowledge:[\s\S]*voice is casual/,
-    );
-    assert.doesNotMatch(
-      String(subagentSystemPrompt("/tmp/app", "explore", "Find parser").content),
-      /Journey knowledge:/,
     );
   });
 

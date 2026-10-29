@@ -1493,14 +1493,9 @@ describe("withSystem", () => {
     assert.doesNotMatch(String(systemPrompt("/tmp/app").content), /on Build/);
   });
 
-  it("appends journey knowledge and omits an empty file", () => {
-    const withNotes = systemPrompt("/tmp/app", "ask", "- brand is blue");
-    assert.match(String(withNotes.content), /Journey knowledge:/);
-    assert.match(String(withNotes.content), /brand is blue/);
-    assert.match(String(withNotes.content), /update_journey_knowledge/);
-    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", "  ").content), /Journey knowledge:/);
-    const injected = withSystem("/tmp/app", [{ role: "user", content: "hi" }], undefined, "ask", "- keep tone short");
-    assert.match(String(injected[0].content), /keep tone short/);
+  it("does not add journey notes to the system prompt", () => {
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", "- brand is blue").content), /Journey knowledge:/);
+    assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask", "- brand is blue").content), /update_journey_knowledge/);
   });
 
   it("mentions detected MCP servers and omits them when none exist", () => {

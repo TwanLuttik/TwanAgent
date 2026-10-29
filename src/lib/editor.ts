@@ -76,22 +76,18 @@ export function skillSourceFromPath(path: string): string | null {
   return source || null;
 }
 
-export function editorTabTitle(path: string, journeyTitles?: Record<string, string>): string {
+export function editorTabTitle(path: string): string {
   if (isAllDiffPath(path)) return "All changes";
   const mcp = mcpSourceFromPath(path);
   if (mcp) return editorTabTitle(mcp);
   const skill = skillSourceFromPath(path);
   if (skill) return editorTabTitle(skill);
-  if (path.startsWith("journey:")) {
-    const id = path.slice("journey:".length);
-    return journeyTitles?.[id] || "Knowledge";
-  }
   const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] || path || "Untitled";
 }
 
 export function normalizeEditorPath(path: string): string {
-  if (path.startsWith("journey:") || isAllDiffPath(path) || isMcpEditorPath(path) || isSkillEditorPath(path)) {
+  if (isAllDiffPath(path) || isMcpEditorPath(path) || isSkillEditorPath(path)) {
     return path;
   }
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -245,7 +241,6 @@ function fileExtension(path: string): string {
 }
 
 export function isMarkdownPath(path: string): boolean {
-  if (path.startsWith("journey:")) return true;
   const ext = fileExtension(path);
   return ext === "md" || ext === "markdown";
 }

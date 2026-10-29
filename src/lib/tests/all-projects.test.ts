@@ -27,14 +27,13 @@ import {
   matchesSidebarQuery,
   sidebarActivity,
   visibleConversations,
-  visibleJourneys,
+  nextTopSort,
   archiveTargets,
   chatSelectionKey,
   nextChatSelection,
   type ChatSelection,
 } from "../all-projects.ts";
-import type { JourneySummary } from "../journey.ts";
-import type { ConversationSummary } from "../tauri.ts";
+import type { ConversationSummary, Journey as JourneySummary } from "../tauri.ts";
 
 function chat(id: string, title = id): ConversationSummary {
   return {
@@ -160,7 +159,7 @@ describe("applyLiveProjectChats", () => {
     );
     const next = applyLiveProjectChats(
       groups,
-      { workspace: "/app/beta", conversations: [chat("a1", "Alpha chat")], journeys: [] },
+      { workspace: "/app/beta", conversations: [chat("a1", "Alpha chat")] },
       "/app/alpha",
     );
     assert.equal(next, groups);
@@ -181,7 +180,6 @@ describe("applyLiveProjectChats", () => {
       {
         workspace: "/mounts/cloud",
         conversations: [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
-        journeys: [],
       },
       "/mounts/cloud",
     );
@@ -197,7 +195,6 @@ describe("applyLiveProjectChats", () => {
     const live = {
       workspace: "/work/billing-worktrees/feat-login",
       conversations: [chat("wt", "Fix the login")],
-      journeys: [],
     };
     assert.equal(applyLiveProjectChats(groups, live, live.workspace), groups);
     assert.equal(placeProjectChats(groups, live.workspace, live.conversations, [], live.workspace), groups);
@@ -217,7 +214,7 @@ describe("applyLiveProjectChats", () => {
     );
     const next = applyLiveProjectChats(
       groups,
-      { workspace: "/app/beta", conversations: [chat("b1", "Beta chat"), chat("b2", "New")], journeys: [] },
+      { workspace: "/app/beta", conversations: [chat("b1", "Beta chat"), chat("b2", "New")] },
       "/app/beta",
     );
     assert.deepEqual(
@@ -617,6 +614,15 @@ describe("sidebarProjects", () => {
   });
 });
 
+describe("nextTopSort", () => {
+  it("puts a new row above the current top", () => {
+    assert.equal(nextTopSort([]), 0);
+    assert.equal(nextTopSort([0, 1, 2]), -1);
+    assert.equal(nextTopSort([-3, 0, 4]), -4);
+    assert.equal(nextTopSort([undefined, 2]), -1);
+  });
+});
+
 describe("isAppProject", () => {
   it("is true only for a direct child of the app projects folder", () => {
     assert.equal(isAppProject("/app/projects/demo", "/app/projects"), true);
@@ -629,23 +635,20 @@ describe("isAppProject", () => {
 });
 
 describe("archived conversations", () => {
-  it("hides archived chats until the archive is open, and only then keeps journeys that still have one", () => {
+  it("hides archived chats until the archive is open", () => {
     const rows = [
       chat("live"),
-      { ...chat("old"), archived: true, journey_id: "j1" },
+      { ...chat("old"), archived: true },
       { ...chat("gone"), archived: true },
     ];
-    const journeys = [journey("j1"), journey("empty")];
     assert.deepEqual(
       visibleConversations(rows, false).map((row) => row.id),
       ["live"],
     );
-    assert.deepEqual(visibleJourneys(journeys, rows, false).map((row) => row.id), ["j1", "empty"]);
     assert.deepEqual(
       visibleConversations(rows, true).map((row) => row.id),
       ["old", "gone"],
     );
-    assert.deepEqual(visibleJourneys(journeys, rows, true).map((row) => row.id), ["j1"]);
     assert.equal(projectHasArchived(rows), true);
     assert.equal(projectHasArchived([chat("live")]), false);
   });

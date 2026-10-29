@@ -87,7 +87,7 @@ export function isSessionPlanPath(path: string): boolean {
 
 /** Workspace edits are rejected while planning. The session plan file is not one of these tools. */
 export function planModeBlocksTool(name: string): boolean {
-  return name === "write_file" || name === "edit_file" || name === "update_journey_knowledge";
+  return name === "write_file" || name === "edit_file";
 }
 
 export function planModeBlockMessage(path = ""): string {

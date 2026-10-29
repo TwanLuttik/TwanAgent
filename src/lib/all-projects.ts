@@ -1,7 +1,6 @@
 import { folderName, mergeProjectRows, projectKey, type ProjectRow } from "./core.ts";
 import { formatRelativeAge } from "./relative-time.ts";
-import type { JourneySummary } from "./journey.ts";
-import type { ConversationSummary } from "./tauri.ts";
+import type { ConversationSummary, Journey as JourneySummary } from "./tauri.ts";
 
 export type ProjectSidebarData = {
   conversations: ConversationSummary[];
@@ -9,6 +8,18 @@ export type ProjectSidebarData = {
 };
 
 export type ProjectChatGroup = ProjectRow & ProjectSidebarData;
+
+/** One less than the current top, so a new row sorts above the existing list. */
+export function nextTopSort(orders: Array<number | undefined>): number {
+  let min = 0;
+  let seen = false;
+  for (const order of orders) {
+    const value = typeof order === "number" && Number.isFinite(order) ? order : 0;
+    if (!seen || value < min) min = value;
+    seen = true;
+  }
+  return seen ? min - 1 : 0;
+}
 
 export function isArchivedConversation(row: { archived?: boolean }): boolean {
   return row.archived === true;
@@ -35,21 +46,6 @@ export function preferredOpenConversation<T extends { id: string; title?: string
   const saved = visible.find((row) => row.id === savedId);
   if (saved) return saved;
   return visible.find((row) => !isEmptyChatDraft(row)) ?? visible[0];
-}
-
-/** Journeys that still have a visible child. Empty journeys stay in the normal list. */
-export function visibleJourneys<T extends { id: string }>(
-  journeys: T[],
-  conversations: { journey_id?: string | null; archived?: boolean }[],
-  showArchived: boolean,
-): T[] {
-  if (!showArchived) return journeys;
-  const ids = new Set(
-    visibleConversations(conversations, true)
-      .map((row) => row.journey_id)
-      .filter((id): id is string => Boolean(id)),
-  );
-  return journeys.filter((journey) => ids.has(journey.id));
 }
 
 export function projectHasArchived(conversations: { archived?: boolean }[]): boolean {
@@ -354,7 +350,7 @@ export function isLinkedWorktreePath(path: string, worktrees: { path: string; ma
 /** Keep a project's in-memory chats on that project only after they have finished loading. */
 export function applyLiveProjectChats(
   groups: ProjectChatGroup[],
-  live: { workspace: string; conversations: ConversationSummary[]; journeys: JourneySummary[] },
+  live: { workspace: string; conversations: ConversationSummary[] },
   loadedFor: string,
 ): ProjectChatGroup[] {
   if (!live.workspace || !isSameProject(loadedFor, live.workspace)) return groups;
@@ -367,7 +363,7 @@ export function applyLiveProjectChats(
       group.remote && live.conversations.some(isLocalCloudDraft)
         ? cloudChatsWithoutLocalDrafts(live.conversations)
         : live.conversations;
-    return { ...group, conversations, journeys: live.journeys };
+    return { ...group, conversations, journeys: [] };
   });
   return patched;
 }

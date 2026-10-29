@@ -56,7 +56,6 @@ export function ChatStage() {
     dirtyFiles,
     editor,
     folderOpen,
-    journeys,
     opened,
     openChat,
     openWorkspaceFile,
@@ -252,7 +251,6 @@ export function ChatStage() {
               editor={editor}
               dirtyFiles={dirtyFiles}
               pendingClosePath={pendingClosePath}
-              journeyTitles={Object.fromEntries(journeys.map((row: { id: string; title: string }) => [row.id, row.title]))}
               onMarkdownView={(mode) =>
                 setEditor((prev: typeof editor) => setEditorMarkdownView(prev, editor.activePath ?? "", mode))
               }

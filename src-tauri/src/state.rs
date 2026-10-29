@@ -111,6 +111,26 @@ impl AppState {
         for root in opened.iter() {
             let _ = app.asset_protocol_scope().allow_directory(root, true);
         }
+        drop(opened);
+        // A project under the projects folder can be listed before it is registered.
+        // Its icon is an asset URL, so the folder has to be allowed or the image 403s
+        // and the sidebar keeps the folder glyph.
+        let _ = app.asset_protocol_scope().allow_directory(&self.projects_root, true);
+        if self.legacy_projects_root != self.projects_root {
+            let _ = app
+                .asset_protocol_scope()
+                .allow_directory(&self.legacy_projects_root, true);
+        }
+        if let Ok(conn) = appdb::open(&self.data_dir) {
+            if let Ok(rows) = appdb::list_projects(&conn) {
+                for row in rows {
+                    let path = PathBuf::from(&row.path);
+                    if path.is_dir() {
+                        let _ = app.asset_protocol_scope().allow_directory(&path, true);
+                    }
+                }
+            }
+        }
     }
 }
 

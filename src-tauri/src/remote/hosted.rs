@@ -215,21 +215,27 @@ fn frame_conversation(frame: &ClientFrame) -> String {
     }
 }
 
+fn usable_server_token(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|token| token.len() >= 32)
+}
+
+/// The row is the same token pairing wrote into the keychain. Prefer it so a
+/// usage sync does not ask for the login keychain password on every open.
+fn server_token_from(stored: Option<&str>, keychain: Option<&str>) -> Option<String> {
+    usable_server_token(stored)
+        .or_else(|| usable_server_token(keychain))
+        .map(str::to_string)
+}
+
 fn server_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> {
-    if let Some(token) = crate::secrets::get_agent_token(server_id) {
-        if token.trim().len() >= 32 {
-            return Ok(token);
-        }
-    }
-    // A server paired before the token moved to the keychain still has it in the row.
-    let token: Option<String> = conn
+    let stored: Option<String> = conn
         .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
         .map_err(|err| Error::Other(err.to_string()))?;
-    let token = token
-        .filter(|value| value.trim().len() >= 32)
-        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))?;
-    let _ = crate::secrets::set_agent_token(server_id, &token);
-    Ok(token)
+    if let Some(token) = server_token_from(stored.as_deref(), None) {
+        return Ok(token);
+    }
+    server_token_from(None, crate::secrets::get_agent_token(server_id).as_deref())
+        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))
 }
 
 fn serve_feed_command() -> String {
@@ -770,7 +776,12 @@ async fn sync_one_project(
     let bytes = resident_bytes(&project.remote_path, &frame, &token)?;
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
     let command = hosted_command(&encoded);
-    let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
+    // A live session does not need the password again. Reading it asks the keychain.
+    let secret = if state.ssh_pool.is_alive(&machine.id) {
+        None
+    } else {
+        machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret)
+    };
     let pool = state.ssh_pool.clone();
     let mount = project.mount_path.clone();
     let name = project.name.clone();
@@ -907,6 +918,22 @@ pub async fn dev_hosted_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_server_token_is_used_without_the_keychain() {
+        let saved = "s".repeat(32);
+        let keychain = "k".repeat(32);
+        assert_eq!(
+            server_token_from(Some(&saved), Some(&keychain)).as_deref(),
+            Some(saved.as_str())
+        );
+        assert_eq!(
+            server_token_from(Some(" short "), Some(&keychain)).as_deref(),
+            Some(keychain.as_str())
+        );
+        assert_eq!(server_token_from(None, Some("short")), None);
+        assert_eq!(server_token_from(Some("  "), None), None);
+    }
 
     #[test]
     fn a_copy_banner_is_not_reported_as_a_short_frame() {

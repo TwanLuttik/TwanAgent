@@ -810,7 +810,7 @@ mod tests {
         assert!(!claude.iter().any(|name| name == "exit_plan_mode"));
         assert!(claude.iter().any(|name| name == "grep"));
         assert!(claude.iter().any(|name| name == "glob"));
-        assert!(claude.iter().any(|name| name == "update_journey_knowledge"));
+        assert!(!claude.iter().any(|name| name == "update_journey_knowledge"));
     }
 
     #[test]

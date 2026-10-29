@@ -149,7 +149,7 @@ export function AllProjectsList({
           ? listed.conversations.length === 0
           : showArchived
             ? !hasArchived
-            : !git && !group.conversations.some((row) => !row.archived) && group.journeys.length === 0;
+            : !git && !group.conversations.some((row) => !row.archived);
         return (
           <ProjectSection
             key={projectKey(group.path)}

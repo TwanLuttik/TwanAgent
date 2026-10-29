@@ -3,26 +3,6 @@
 //! The names and argument shapes are the contract the React client and the turn loop share.
 //! Adding a tool means a schema here and a match arm in `local_turn`.
 
-fn journey_tool_json() -> serde_json::Value {
-    serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": "update_journey_knowledge",
-            "description": "Update this Journey's shared knowledge markdown. Use replace for a full rewrite, or edit to change one unique passage.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mode": { "type": "string", "enum": ["replace", "edit"] },
-                    "contents": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" }
-                },
-                "required": ["mode"]
-            }
-        }
-    })
-}
-
 const PLAN_TOOL_NAMES: &[&str] = &["enter_plan_mode", "exit_plan_mode"];
 
 pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
@@ -30,7 +10,8 @@ pub(crate) fn tools_json(include_journey: bool) -> serde_json::Value {
 }
 
 /// Claude chats do not get Grok's plan-mode tools. The gate lives in the client too.
-pub(crate) fn tools_json_for(include_journey: bool, include_plan: bool) -> serde_json::Value {
+/// `include_journey` is ignored. Journeys are no longer part of the product.
+pub(crate) fn tools_json_for(_include_journey: bool, include_plan: bool) -> serde_json::Value {
     let mut tools = base_tools_json();
     if !include_plan {
         if let Some(list) = tools.as_array_mut() {
@@ -40,11 +21,6 @@ pub(crate) fn tools_json_for(include_journey: bool, include_plan: bool) -> serde
                     .and_then(|name| name.as_str())
                     .is_none_or(|name| !PLAN_TOOL_NAMES.contains(&name))
             });
-        }
-    }
-    if include_journey {
-        if let Some(list) = tools.as_array_mut() {
-            list.push(journey_tool_json());
         }
     }
     tools

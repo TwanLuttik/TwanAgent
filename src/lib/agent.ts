@@ -84,7 +84,7 @@ export async function executeTool(
   childType?: SubagentType,
   permission: PermissionMode = "ask",
   signal?: AbortSignal,
-  journeyId?: string,
+  _journeyId?: string,
   onProgress?: ToolProgress,
   plan?: PlanToolIO,
   commandChatId?: string,
@@ -188,18 +188,6 @@ export async function executeTool(
         if (parsed.error) return `Error: ${parsed.error}`;
         return formatTodoWriteResult(parsed.todos);
       }
-      case "update_journey_knowledge":
-        if (!journeyId) return "Error: update_journey_knowledge is only available in a Journey chat.";
-        return api.updateJourneyKnowledge(workspace, journeyId, {
-          mode: String(args.mode ?? ""),
-          contents: args.contents == null ? undefined : String(args.contents),
-          oldString: args.old_string == null && args.oldString == null
-            ? undefined
-            : String(args.old_string ?? args.oldString ?? ""),
-          newString: args.new_string == null && args.newString == null
-            ? undefined
-            : String(args.new_string ?? args.newString ?? ""),
-        });
       default:
         return `Unknown tool: ${call.name}`;
     }
@@ -636,8 +624,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         call.name === "write_file" ||
         call.name === "edit_file" ||
         call.name === "run_command" ||
-        call.name === "git_commit" ||
-        call.name === "update_journey_knowledge"
+        call.name === "git_commit"
       ) {
         opts.onRefresh?.();
       }

@@ -5,7 +5,6 @@ import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
 import type { ChatMessage, ConversationActivity, LiveToolRow } from "../lib/core";
 import { clearLiveStream, setLiveStream } from "../lib/live-stream";
 import { isArchivedConversation, isLocalCloudDraft, isSameProject, preferredOpenConversation } from "../lib/all-projects";
-import type { JourneySummary } from "../lib/journey";
 import { emptySubagentDock, type SubagentDockState } from "../lib/subagent";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import {
@@ -38,7 +37,6 @@ export function useChatSession({
   hostedChats,
   models,
   setConversations,
-  setJourneys,
   setActiveId,
   setMessages,
   setUnseenFinished,
@@ -53,7 +51,6 @@ export function useChatSession({
   setEffort,
   setContextWindow,
   setPermission,
-  journeysRef,
   workspaceRef,
   conversationsRef,
   activeIdRef,
@@ -77,7 +74,6 @@ export function useChatSession({
   hostedChats: boolean;
   models: Runtime["models"];
   setConversations: Update<ConversationSummary[]>;
-  setJourneys: Update<JourneySummary[]>;
   setActiveId: Update<string>;
   setMessages: Update<ChatMessage[]>;
   setUnseenFinished: Update<ReadonlySet<string>>;
@@ -99,7 +95,6 @@ export function useChatSession({
   effortRef: RefObject<string>;
   contextWindowRef: RefObject<number>;
   permissionRef: RefObject<PermissionMode>;
-  journeysRef: RefObject<JourneySummary[]>;
   runningWsRef: RefObject<string>;
   runningIdRef: RefObject<string>;
   turnsRef?: RefObject<Map<string, AbortController>>;
@@ -137,7 +132,6 @@ export function useChatSession({
         sidebarLoadedForRef.current = "";
         cachePaintedForRef.current = "";
         setConversations([]);
-        setJourneys([]);
         setActiveId("");
         setMessages([]);
         return;
@@ -149,11 +143,10 @@ export function useChatSession({
           const cached = await api.hostedSidebarCached(ws);
           if (!isSameProject(ws, workspaceRef.current)) return;
           rememberCloudTranscripts(cloudTranscriptsRef.current, ws, cached.transcripts);
-          if (cached.conversations.length > 0 || cached.journeys.length > 0) {
+          if (cached.conversations.length > 0) {
             cachePaintedForRef.current = ws;
             sidebarLoadedForRef.current = ws;
             setConversations(cached.conversations);
-            setJourneys(cached.journeys);
             const savedId = preferId || (holdEmptyChatRef?.current ? "" : loadConversation(ws));
             const row = cached.conversations.find((item) => item.id === savedId);
             const transcript = row ? cached.transcripts.find((item) => item.id === row.id) : undefined;
@@ -195,12 +188,8 @@ export function useChatSession({
       if (conversationsRef.current.length === 0 && rows.length > 0) {
         setConversations(rows);
       }
-      // A cloud project's journeys are part of the cached server copy. The local
-      // journey table is the empty mount, so reading it would wipe that copy.
-      const nextJourneys = hostedChats ? [] : await api.listJourneys(ws).catch(() => [] as JourneySummary[]);
       if (!isSameProject(ws, workspaceRef.current)) return;
       sidebarLoadedForRef.current = ws;
-      const keptJourneys = hostedChats ? journeysRef.current : nextJourneys;
       // A model switch on an empty chat updates the in-memory row before disk.
       // Replacing the list with the stale row would send the previous model.
       const fresh = conversationsRef.current;
@@ -227,7 +216,6 @@ export function useChatSession({
           }),
         ],
       );
-      setJourneys(keptJourneys);
       const visible = rows.filter((row) => !isArchivedConversation(row));
       const saved = loadConversation(ws);
       const savedRow = rows.find((row) => row.id === saved);
@@ -397,7 +385,6 @@ export function useChatSession({
       hostedChats,
       models,
       setConversations,
-      setJourneys,
       setActiveId,
       setMessages,
       setUnseenFinished,
@@ -419,7 +406,6 @@ export function useChatSession({
       effortRef,
       contextWindowRef,
       permissionRef,
-      journeysRef,
       runningWsRef,
       runningIdRef,
       turnsRef,

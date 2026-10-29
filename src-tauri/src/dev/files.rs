@@ -180,6 +180,11 @@ pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<DevEntry>> {
             } else {
                 None
             },
+            modified: if meta.is_file() {
+                meta.modified().ok().and_then(system_time_ms)
+            } else {
+                None
+            },
         });
     }
     rows.sort_by(|a, b| {
@@ -875,6 +880,9 @@ mod tests {
             rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["b", "a.txt"]
         );
+        let file = rows.iter().find(|row| row.name == "a.txt").unwrap();
+        assert!(file.modified.unwrap_or(0) > 0);
+        assert!(rows.iter().find(|row| row.name == "b").unwrap().modified.is_none());
     }
 
     #[test]

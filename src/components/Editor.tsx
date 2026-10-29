@@ -17,7 +17,7 @@ import {
   type EditorState,
   type MarkdownOpenMode,
 } from "../lib/editor";
-import { parseJourneyId } from "../lib/journey";
+
 import { userMcpRel } from "../lib/mcp";
 import { userSkillRel } from "../lib/skill";
 import { addedFileDiff, deletedFileDiff, gutterMarksFromDiff, parseGitDiff, type GutterMark } from "../lib/git-diff";
@@ -50,7 +50,6 @@ export function Editor({
   editor,
   dirtyFiles,
   pendingClosePath,
-  journeyTitles,
   onMarkdownView,
   onDirty,
   onSelectTab,
@@ -65,7 +64,6 @@ export function Editor({
   editor: EditorState;
   dirtyFiles: Record<string, boolean>;
   pendingClosePath: string | null;
-  journeyTitles: Record<string, string>;
   onMarkdownView?: (mode: MarkdownOpenMode) => void;
   onDirty?: (path: string, dirty: boolean) => void;
   onSelectTab: (path: string) => void;
@@ -170,7 +168,6 @@ export function Editor({
       !path ||
       fileView === "diff" ||
       media ||
-      parseJourneyId(path) ||
       isMcpEditorPath(path) ||
       isSkillEditorPath(path)
     ) {
@@ -290,7 +287,6 @@ export function Editor({
           editor={editor}
           dirtyFiles={dirtyFiles}
           pendingClosePath={pendingClosePath}
-          journeyTitles={journeyTitles}
           onFile={onSelectTab}
           onPinFile={onPinTab}
           onCloseFile={onCloseTab}
@@ -361,11 +357,7 @@ export function Editor({
       )}
       <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1 text-[11px] text-muted">
         <span className="min-w-0 truncate">
-          {isAllDiffPath(path)
-            ? "All changes"
-            : parseJourneyId(path)
-              ? "Journey knowledge"
-              : (mcpSourceFromPath(path) ?? skillSourceFromPath(path) ?? path)}
+          {isAllDiffPath(path) ? "All changes" : (mcpSourceFromPath(path) ?? skillSourceFromPath(path) ?? path)}
         </span>
         <span className="ml-auto shrink-0">
           {fileView === "diff"
@@ -498,8 +490,6 @@ function SelectionChatTooltip({
 }
 
 async function readEditorFile(workspace: string, file: string): Promise<string> {
-  const journeyId = parseJourneyId(file);
-  if (journeyId) return api.getJourneyKnowledge(workspace, journeyId);
   const mcp = mcpSourceFromPath(file);
   if (mcp) {
     const rel = userMcpRel(mcp);
@@ -516,11 +506,6 @@ async function readEditorFile(workspace: string, file: string): Promise<string> 
 }
 
 async function writeEditorFile(workspace: string, file: string, contents: string): Promise<void> {
-  const journeyId = parseJourneyId(file);
-  if (journeyId) {
-    await api.saveJourneyKnowledge(workspace, journeyId, contents);
-    return;
-  }
   const mcp = mcpSourceFromPath(file);
   if (mcp) {
     const rel = userMcpRel(mcp);
@@ -545,10 +530,6 @@ async function writeEditorFile(workspace: string, file: string, contents: string
 }
 
 function languageExtension(path: string) {
-  if (parseJourneyId(path)) {
-    const table = langs as Record<string, () => Extension>;
-    return typeof table.md === "function" ? table.md() : null;
-  }
   const name = editorTabTitle(path).toLowerCase();
   const i = name.lastIndexOf(".");
   const ext = i > 0 ? name.slice(i + 1) : "";

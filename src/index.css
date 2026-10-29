@@ -655,6 +655,17 @@ html[data-theme-mode="light"] .model-tip {
   height: 0;
 }
 
+/* The model list keeps one scrollbar width. A hover color change was shoving the rows. */
+.model-menu-list {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-ink) 28%, transparent) transparent;
+}
+
+.model-menu-list::-webkit-scrollbar-thumb,
+.model-menu-list:hover::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-ink) 28%, transparent);
+}
+
 .file-row.file-drop-target {
   background: color-mix(in srgb, var(--color-accent) 24%, var(--color-canvas));
   color: var(--color-ink);

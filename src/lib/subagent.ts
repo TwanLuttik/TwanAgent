@@ -52,7 +52,7 @@ export function parseSpawnArgs(raw: string): SpawnArgs {
 }
 
 export function childCanUseTool(type: SubagentType, name: string): boolean {
-  if (name === "spawn_subagent" || name === "update_journey_knowledge" || name === "todo_write") return false;
+  if (name === "spawn_subagent" || name === "todo_write") return false;
   if (name === "enter_plan_mode" || name === "exit_plan_mode") return false;
   if (type === "explore" || type === "plan") {
     return name !== "write_file" && name !== "edit_file" && name !== "run_command";
@@ -90,7 +90,7 @@ export function subagentSystemPrompt(
   type: SubagentType,
   description: string,
   permission: PermissionMode = "ask",
-  knowledge?: string,
+  _knowledge?: string,
   modelId?: string,
 ): ChatMessage {
   const limits =
@@ -99,7 +99,6 @@ export function subagentSystemPrompt(
       : type === "plan"
         ? "You are a plan agent. Search with grep and glob, explore the codebase and the web, then produce a structured plan. Do not edit files or run shell commands."
         : "You are a general-purpose subagent. Inspect and edit this folder as needed.";
-  const knowledgeBlock = (knowledge ?? "").trim() ? `\nJourney knowledge:\n${knowledge!.trim()}` : "";
   const name = agentNameFor(modelId ?? "");
   const id = (modelId ?? "").trim();
   const who = name && id
@@ -114,7 +113,7 @@ Workspace: ${workspace}
 Task: ${description}
 ${limits}
 ${permissionSystemLine(permission)}
-Be concise. End with a clear summary of findings or work done.${knowledgeBlock}`,
+Be concise. End with a clear summary of findings or work done.`,
   };
 }
 

@@ -1,6 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { ProjectChatGroup } from "../../lib/all-projects";
-import type { JourneySummary } from "../../lib/journey";
 import type { TabItem, TabMenu } from "../../lib/split-pane";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { RunningTurn } from "../../lib/turn";
@@ -44,8 +43,6 @@ export type MainModel = {
   holdScrollForOlder: MainFn;
   contextWindow: any;
   conversations: any;
-  createJourneyFromChat: MainFn;
-  deleteJourney: MainFn;
   deleteProjectFromSidebar: MainFn;
   dirtyFiles: any;
   draft: any;
@@ -61,13 +58,11 @@ export type MainModel = {
   expandedAgents: any;
   fileDrag: any;
   folderOpen: any;
-  journeys: any;
   mcpBusy: any;
   mcpServers: any;
   messages: any;
   model: any;
   models: any;
-  moveConversation: MainFn;
   onSidebarResizeStart: MainFn;
   openChat: MainFn;
   /** Open a chat from this project's list without moving a split that already shows it. */
@@ -75,7 +70,6 @@ export type MainModel = {
   opened: any;
   openFolder: MainFn;
   openingId: any;
-  openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
   openProjectSettings: MainFn;
   openServers: MainFn;
@@ -120,10 +114,8 @@ export type MainModel = {
   archiveChats: MainFn;
   removeChat: MainFn;
   removePendingAt: MainFn;
-  renameJourney: MainFn;
   reorderChats: MainFn;
   reorderProjects: MainFn;
-  reorderSidebar: MainFn;
   runningId: any;
   runningTurns: any;
   unseenFinished: any;
@@ -142,7 +134,6 @@ export type MainModel = {
   setEditor: MainFn;
   toggleSubagent: MainFn;
   setFolderOpen: MainFn;
-  setJourneyColor: MainFn;
   setPendingDeleteProject: MainFn;
   setProjectMenu: MainFn;
   setShowSettings: MainFn;
@@ -167,7 +158,6 @@ export type MainModel = {
   skills: any;
   startNewChat: MainFn;
   subagents: any;
-  toggleJourney: MainFn;
   toggleMcpServer: MainFn;
   toggleProjectCollapsed: MainFn;
   toggleSkill: MainFn;
@@ -190,19 +180,14 @@ export type SidebarSlice = {
   archiveChats: MainFn;
   collapsedProjects: string[];
   conversations: ConversationSummary[];
-  createJourneyFromChat: MainFn;
-  deleteJourney: MainFn;
   deleteProjectFromSidebar: MainFn;
   /** Drop a project row without deleting its folder. A linked worktree uses this. */
   forgetProjectRow: MainFn;
-  journeys: JourneySummary[];
   legacyProjectsRoot: string;
   messages: MainModel["messages"];
-  moveConversation: MainFn;
   openChat: MainFn;
   openListedChat: MainFn;
   openingId: string;
-  openJourneyKnowledge: MainFn;
   openProjectFromSidebar: MainFn;
   /** Open a folder even when it is already the current project. Deleting a worktree uses this. */
   switchToProject: MainFn;
@@ -212,21 +197,17 @@ export type SidebarSlice = {
   projectSettings: MainModel["projectSettings"];
   projectsRoot: string;
   removeChat: MainFn;
-  renameJourney: MainFn;
   setProjectMenu: MainFn;
   reorderChats: MainFn;
   reorderProjects: MainFn;
-  reorderSidebar: MainFn;
   runningTurns: Record<string, RunningTurn>;
   unseenFinished: ReadonlySet<string>;
-  setJourneyColor: MainFn;
   showSettings: boolean;
   showUsage: boolean;
   showDocs: boolean;
   /** False until the first frame has every cached chat. The list stays blank until then. */
   sidebarReady: boolean;
   startNewChat: MainFn;
-  toggleJourney: MainFn;
   toggleProjectCollapsed: MainFn;
   workspace: string;
 };

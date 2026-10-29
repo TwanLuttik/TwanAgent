@@ -287,12 +287,6 @@ describe("isMarkdownPath", () => {
     assert.equal(opened.activePath, path);
   });
 
-  it("treats journey knowledge tabs as Markdown", () => {
-    assert.equal(isMarkdownPath("journey:abc"), true);
-    assert.equal(markdownViewForTab("journey:abc", "editor"), "editor");
-    assert.equal(editorTabTitle("journey:abc"), "Knowledge");
-    assert.equal(editorTabTitle("journey:abc", { abc: "Marketing" }), "Marketing");
-  });
 });
 
 describe("markdownViewForTab", () => {

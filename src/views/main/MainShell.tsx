@@ -61,7 +61,7 @@ export function MainShell() {
             name={projectMenu.name}
             path={projectMenu.path}
             onNewChat={() => {
-              void startNewChat("chat", undefined, projectMenu.path);
+              void startNewChat("chat", projectMenu.path);
               setProjectMenu(null);
             }}
             onSettings={() => {

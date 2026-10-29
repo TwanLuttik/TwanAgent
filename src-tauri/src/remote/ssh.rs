@@ -187,6 +187,11 @@ impl Pool {
         Ok(Arc::from(session))
     }
 
+    pub fn is_alive(&self, machine_id: &str) -> bool {
+        let map = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
+        map.get(machine_id).is_some_and(|pooled| pooled.session.alive())
+    }
+
     pub fn session(&self, machine: &Machine, secret: Option<&str>) -> Result<Arc<dyn SshSession>> {
         {
             let map = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -380,6 +385,20 @@ mod tests {
             auth_material(&row, Some("secret")).unwrap(),
             AuthUse::Password("secret")
         );
+    }
+
+    #[test]
+    fn a_live_session_is_alive_until_it_is_dropped() {
+        let pool = Pool::new(Arc::new(FakeConnector {
+            connects: Arc::new(AtomicUsize::new(0)),
+            die_after: None,
+        }));
+        let machine = machine();
+        assert!(!pool.is_alive(&machine.id));
+        pool.session(&machine, None).unwrap();
+        assert!(pool.is_alive(&machine.id));
+        pool.drop_machine(&machine.id);
+        assert!(!pool.is_alive(&machine.id));
     }
 
     #[test]

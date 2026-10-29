@@ -1,5 +1,4 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import {
   DndContext,
   DragOverlay,
@@ -24,28 +23,13 @@ import { CSS, type Transform } from "@dnd-kit/utilities";
 import { AnchoredMenu } from "./ContextMenu";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
-import {
-  buildSidebar,
-  JOURNEY_COLORS,
-  journeyWash,
-  parseJourneyColor,
-  type JourneyColor,
-  type JourneySummary,
-  type SidebarNode,
-} from "../lib/journey";
-import type { ConversationKind } from "../lib/terminal-chat";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { formatModelName } from "../lib/usage";
 
-type MenuTarget =
-  | { type: "chat"; id: string; journeyId?: string | null }
-  | { type: "journey"; id: string };
-
 export function ConversationList({
   conversations,
-  journeys,
   activeId,
   runningIds,
   unseenIds,
@@ -60,19 +44,8 @@ export function ConversationList({
   archivedView,
   selectedIds,
   onReorder,
-  onReorderSidebar,
-  onCreateJourney,
-  onOpenKnowledge,
-  onNewChat,
-  onToggleCollapse,
-  onRenameJourney,
-  onDeleteJourney,
-  onRemoveFromJourney,
-  onMoveToJourney,
-  onSetColor,
 }: {
   conversations: ConversationSummary[];
-  journeys: JourneySummary[];
   activeId: string;
   runningIds: Record<string, unknown>;
   unseenIds?: ReadonlySet<string>;
@@ -89,58 +62,39 @@ export function ConversationList({
   /** Chat ids in this list that are part of the multi-selection. */
   selectedIds?: ReadonlySet<string>;
   onReorder: (fromId: string, toId: string) => void;
-  onReorderSidebar: (fromId: string, fromKind: "journey" | "conversation", toId: string, toKind: "journey" | "conversation") => void;
-  onCreateJourney: (id: string) => void;
-  onOpenKnowledge: (id: string) => void;
-  onNewChat: (journeyId: string, kind: ConversationKind) => void;
-  onToggleCollapse: (id: string) => void;
-  onRenameJourney: (id: string, title: string) => void;
-  onDeleteJourney: (id: string, deleteChats: boolean) => void;
-  onRemoveFromJourney: (id: string) => void;
-  onMoveToJourney: (id: string, journeyId: string) => void;
-  onSetColor: (id: string, color: JourneyColor) => void;
 }) {
   const [draggingId, setDraggingId] = useState<UniqueIdentifier | null>(null);
   const [overId, setOverId] = useState<UniqueIdentifier | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const listRef = useRef<HTMLDivElement>(null);
   const [overlayWidth, setOverlayWidth] = useState<number | undefined>();
-  const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const openRowMenu = useMemo(
-    () => (ev: MouseEvent, target: MenuTarget) => {
+    () => (ev: MouseEvent, id: string) => {
       ev.preventDefault();
       ev.stopPropagation();
-      setMenu({ x: ev.clientX, y: ev.clientY, target });
+      setMenu({ x: ev.clientX, y: ev.clientY, id });
     },
     [],
   );
-  const [renameId, setRenameId] = useState<string | null>(null);
-  const finishRename = useMemo(() => () => setRenameId(null), []);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const nodes = useMemo(() => buildSidebar(conversations, journeys), [conversations, journeys]);
-  const items = useMemo(() => flattenNodes(nodes), [nodes]);
-  const groups = useMemo(() => groupItems(items), [items]);
-  const sortableIds = useMemo(() => items.map((item) => item.key), [items]);
+  const sortableIds = useMemo(() => conversations.map((row) => row.id), [conversations]);
   const itemIndex = useMemo(() => {
     const index = new Map<string, number>();
-    items.forEach((item, i) => index.set(item.key, i));
+    conversations.forEach((row, i) => index.set(row.id, i));
     return index;
-  }, [items]);
+  }, [conversations]);
 
   useEffect(() => {
     function onDoc() {
       setMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
-      if (ev.key === "Escape") {
-        setMenu(null);
-        setDeleteId(null);
-      }
+      if (ev.key === "Escape") setMenu(null);
     }
     document.addEventListener("mousedown", onDoc);
     window.addEventListener("keydown", onKey);
@@ -150,31 +104,28 @@ export function ConversationList({
     };
   }, []);
 
-  const ageKey = items
-    .map((item) => (item.kind === "chat" ? item.conversation.updated_at : ""))
-    .join("\n");
+  const ageKey = conversations.map((row) => row.updated_at).join("\n");
   useEffect(() => {
     let timer = 0;
     const arm = () => {
       const now = Date.now();
       setNowMs((prev) => (Math.abs(now - prev) < 500 ? prev : now));
       let wait = 60_000;
-      for (const item of items) {
-        if (item.kind !== "chat") continue;
-        if (item.conversation.id in runningIds || loadingId === item.conversation.id) continue;
-        wait = Math.min(wait, relativeAgeTickMs(item.conversation.updated_at, now));
+      for (const row of conversations) {
+        if (row.id in runningIds || loadingId === row.id) continue;
+        wait = Math.min(wait, relativeAgeTickMs(row.updated_at, now));
       }
       timer = window.setTimeout(arm, wait);
     };
     arm();
     return () => window.clearTimeout(timer);
-    // The joined timestamps are the clock input. `items` is rebuilt whenever they change.
+    // The joined timestamps are the clock input. `conversations` is rebuilt whenever they change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ageKey, runningIds, loadingId]);
 
-  if (conversations.length === 0 && journeys.length === 0) return null;
+  if (conversations.length === 0) return null;
 
-  const dragging = items.find((row) => row.key === draggingId) ?? null;
+  const dragging = conversations.find((row) => row.id === draggingId) ?? null;
 
   function onDragStart(ev: DragStartEvent) {
     setDraggingId(ev.active.id);
@@ -192,38 +143,13 @@ export function ConversationList({
     setDraggingId(null);
     setOverId(null);
     if (!over || active.id === over.id) return;
-    const from = parseItemKey(String(active.id));
-    const to = parseItemKey(String(over.id));
-    if (!from || !to) return;
-    if (from.kind === "conversation" && to.kind === "journey") {
-      onMoveToJourney(from.id, to.id);
-      return;
-    }
-    if (from.kind === "conversation" && to.kind === "conversation") {
-      const fromRow = conversations.find((c) => c.id === from.id);
-      const toRow = conversations.find((c) => c.id === to.id);
-      if (fromRow?.journey_id && !toRow?.journey_id) {
-        onRemoveFromJourney(from.id);
-        return;
-      }
-      if (fromRow?.journey_id === toRow?.journey_id) {
-        onReorder(from.id, to.id);
-        return;
-      }
-      if (toRow?.journey_id) {
-        onMoveToJourney(from.id, toRow.journey_id);
-        return;
-      }
-    }
-    onReorderSidebar(from.id, from.kind, to.id, to.kind);
+    onReorder(String(active.id), String(over.id));
   }
 
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
-      // Group wrappers are each row's DOM parent. restrictToParentElement would
-      // trap the collision rect inside a single item so nothing can be reordered.
       modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
@@ -235,87 +161,47 @@ export function ConversationList({
     >
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
         <div ref={listRef} className="flex flex-col gap-0.5" role="list">
-          {groups.map((group) => (
-            <div
-              key={group.key}
-              className={group.wash ? "rounded-[8px] py-0.5" : undefined}
-              style={group.wash ? { background: group.wash } : undefined}
-            >
-              {group.items.map((item) => (
-                <SortableRow
-                  key={item.key}
-                  item={item}
-                  selected={
-                    item.kind === "chat" &&
-                    (selectedIds
-                      ? selectedIds.has(item.conversation.id)
-                      : item.conversation.id === activeId && !showSettings)
-                  }
-                  onSelect={onSelect}
-                  running={
-                    item.kind === "chat" &&
-                    (item.conversation.id in runningIds || loadingId === item.conversation.id)
-                  }
-                  unseen={item.kind === "chat" && Boolean(unseenIds?.has(item.conversation.id))}
-                  preview={
-                    item.kind === "chat" && item.conversation.id in runningIds
-                      ? runningPreview(item.conversation.id)
-                      : ""
-                  }
-                  todo={item.kind === "chat" ? todoFor?.(item.conversation.id) ?? null : null}
-                  dragging={draggingId === item.key}
-                  insert={Boolean(draggingId && overId === item.key && draggingId !== item.key)}
-                  insertAfter={
-                    Boolean(draggingId) &&
-                    (itemIndex.get(String(draggingId)) ?? -1) < (itemIndex.get(item.key) ?? -1)
-                  }
-                  renaming={item.kind === "journey" && renameId === item.journey.id}
-                  age={
-                    item.kind === "chat" &&
-                    !(item.conversation.id in runningIds) &&
-                    loadingId !== item.conversation.id
-                      ? formatRelativeAge(item.conversation.updated_at, nowMs)
-                      : ""
-                  }
-                  onOpen={onOpen}
-                  onDelete={onDelete}
-                  onToggle={onToggleCollapse}
-                  onOpenKnowledge={onOpenKnowledge}
-                  onNewChat={onNewChat}
-                  onRename={onRenameJourney}
-                  onRenameDone={finishRename}
-                  onContextMenu={openRowMenu}
-                />
-              ))}
-            </div>
+          {conversations.map((row) => (
+            <SortableRow
+              key={row.id}
+              row={row}
+              selected={selectedIds ? selectedIds.has(row.id) : row.id === activeId && !showSettings}
+              onSelect={onSelect}
+              running={row.id in runningIds || loadingId === row.id}
+              unseen={Boolean(unseenIds?.has(row.id))}
+              preview={row.id in runningIds ? runningPreview(row.id) : ""}
+              todo={todoFor?.(row.id) ?? null}
+              dragging={draggingId === row.id}
+              insert={Boolean(draggingId && overId === row.id && draggingId !== row.id)}
+              insertAfter={
+                Boolean(draggingId) && (itemIndex.get(String(draggingId)) ?? -1) < (itemIndex.get(row.id) ?? -1)
+              }
+              age={
+                !(row.id in runningIds) && loadingId !== row.id ? formatRelativeAge(row.updated_at, nowMs) : ""
+              }
+              onOpen={onOpen}
+              onDelete={onDelete}
+              onContextMenu={openRowMenu}
+            />
           ))}
         </div>
       </SortableContext>
       <DragOverlay dropAnimation={null}>
         {dragging ? (
           <div style={overlayWidth ? { width: overlayWidth } : undefined}>
-            {dragging.kind === "journey" ? (
-              <JourneyCard journey={dragging.journey} overlay />
-            ) : (
-              <ConversationCard
-                row={dragging.conversation}
-                selected={dragging.conversation.id === activeId && !showSettings}
-                running={
-                  dragging.conversation.id in runningIds || loadingId === dragging.conversation.id
-                }
-                preview={
-                  dragging.conversation.id in runningIds ? runningPreview(dragging.conversation.id) : ""
-                }
-                todo={todoFor?.(dragging.conversation.id) ?? null}
-                indent={dragging.indent}
-                age={
-                  !(dragging.conversation.id in runningIds) && loadingId !== dragging.conversation.id
-                    ? formatRelativeAge(dragging.conversation.updated_at, nowMs)
-                    : ""
-                }
-                overlay
-              />
-            )}
+            <ConversationCard
+              row={dragging}
+              selected={dragging.id === activeId && !showSettings}
+              running={dragging.id in runningIds || loadingId === dragging.id}
+              preview={dragging.id in runningIds ? runningPreview(dragging.id) : ""}
+              todo={todoFor?.(dragging.id) ?? null}
+              age={
+                !(dragging.id in runningIds) && loadingId !== dragging.id
+                  ? formatRelativeAge(dragging.updated_at, nowMs)
+                  : ""
+              }
+              overlay
+            />
           </div>
         ) : null}
       </DragOverlay>
@@ -323,60 +209,17 @@ export function ConversationList({
         <ChatContextMenu
           x={menu.x}
           y={menu.y}
-          target={menu.target}
-          runningIds={runningIds}
-          onClose={() => setMenu(null)}
-          onCreateJourney={() => {
-            if (menu.target.type === "chat") onCreateJourney(menu.target.id);
-            setMenu(null);
-          }}
-          onDeleteChat={() => {
-            if (menu.target.type === "chat") onDelete(menu.target.id);
-            setMenu(null);
-          }}
+          id={menu.id}
           archivedView={archivedView}
-          archiveCount={
-            menu.target.type === "chat" && selectedIds?.has(menu.target.id) ? selectedIds.size : 1
-          }
-          onArchiveChat={() => {
-            if (menu.target.type === "chat" && onArchive) {
-              onArchive(menu.target.id, !archivedView);
-            }
-            setMenu(null);
-          }}
-          onRemove={() => {
-            if (menu.target.type === "chat") onRemoveFromJourney(menu.target.id);
-            setMenu(null);
-          }}
-          color={
-            menu.target.type === "journey"
-              ? parseJourneyColor(journeys.find((row) => row.id === menu.target.id)?.color)
-              : ""
-          }
-          onRename={() => {
-            if (menu.target.type === "journey") setRenameId(menu.target.id);
-            setMenu(null);
-          }}
-          onSetColor={(color) => {
-            if (menu.target.type === "journey") onSetColor(menu.target.id, color);
-          }}
-          onDeleteJourney={() => {
-            if (menu.target.type === "journey") setDeleteId(menu.target.id);
-            setMenu(null);
-          }}
-        />
-      ) : null}
-      {deleteId ? (
-        <DeleteJourneyDialog
-          title={journeys.find((j) => j.id === deleteId)?.title ?? "Journey"}
-          onCancel={() => setDeleteId(null)}
-          onKeep={() => {
-            onDeleteJourney(deleteId, false);
-            setDeleteId(null);
-          }}
+          archiveCount={selectedIds?.has(menu.id) ? selectedIds.size : 1}
+          onClose={() => setMenu(null)}
           onDelete={() => {
-            onDeleteJourney(deleteId, true);
-            setDeleteId(null);
+            onDelete(menu.id);
+            setMenu(null);
+          }}
+          onArchive={() => {
+            onArchive?.(menu.id, !archivedView);
+            setMenu(null);
           }}
         />
       ) : null}
@@ -384,71 +227,8 @@ export function ConversationList({
   );
 }
 
-type FlatItem =
-  | { key: string; kind: "journey"; journey: JourneySummary; indent: boolean }
-  | { key: string; kind: "chat"; conversation: ConversationSummary; indent: boolean };
-
-function groupItems(items: FlatItem[]): { key: string; wash?: string; items: FlatItem[] }[] {
-  const groups: { key: string; wash?: string; items: FlatItem[] }[] = [];
-  for (const item of items) {
-    if (item.kind === "journey") {
-      groups.push({
-        key: item.key,
-        wash: journeyWash(item.journey.color),
-        items: [item],
-      });
-      continue;
-    }
-    const last = groups[groups.length - 1];
-    if (item.indent && last) {
-      last.items.push(item);
-    } else {
-      groups.push({ key: item.key, items: [item] });
-    }
-  }
-  return groups;
-}
-
-function flattenNodes(nodes: SidebarNode[]): FlatItem[] {
-  const out: FlatItem[] = [];
-  for (const node of nodes) {
-    if (node.kind === "journey") {
-      out.push({ key: itemKey("journey", node.journey.id), kind: "journey", journey: node.journey, indent: false });
-      if (!node.journey.collapsed) {
-        for (const child of node.children) {
-          out.push({ key: itemKey("chat", child.id), kind: "chat", conversation: child, indent: true });
-        }
-      }
-    } else {
-      out.push({
-        key: itemKey("chat", node.conversation.id),
-        kind: "chat",
-        conversation: node.conversation,
-        indent: false,
-      });
-    }
-  }
-  return out;
-}
-
-function itemKey(kind: "journey" | "chat", id: string) {
-  return `${kind}:${id}`;
-}
-
-/** Move the held row without stretching it to the height of the row it passes over. */
-function rowDragTransform(transform: Transform | null): string | undefined {
-  if (!transform) return undefined;
-  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
-}
-
-function parseItemKey(key: string): { kind: "journey" | "conversation"; id: string } | null {
-  if (key.startsWith("journey:")) return { kind: "journey", id: key.slice("journey:".length) };
-  if (key.startsWith("chat:")) return { kind: "conversation", id: key.slice("chat:".length) };
-  return null;
-}
-
 const SortableRow = memo(function SortableRow({
-  item,
+  row,
   selected,
   running,
   unseen,
@@ -457,19 +237,13 @@ const SortableRow = memo(function SortableRow({
   dragging,
   insert,
   insertAfter,
-  renaming,
   age,
   onOpen,
   onSelect,
   onDelete,
-  onToggle,
-  onOpenKnowledge,
-  onNewChat,
-  onRename,
-  onRenameDone,
   onContextMenu,
 }: {
-  item: FlatItem;
+  row: ConversationSummary;
   selected: boolean;
   running: boolean;
   unseen?: boolean;
@@ -478,35 +252,25 @@ const SortableRow = memo(function SortableRow({
   dragging: boolean;
   insert: boolean;
   insertAfter: boolean;
-  renaming: boolean;
   age: string;
   onOpen: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
-  onToggle: (id: string) => void;
-  onOpenKnowledge: (id: string) => void;
-  onNewChat: (journeyId: string, kind: ConversationKind) => void;
-  onRename: (id: string, title: string) => void;
-  onRenameDone: () => void;
-  onContextMenu: (ev: MouseEvent, target: MenuTarget) => void;
+  onContextMenu: (ev: MouseEvent, id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: item.key,
+    id: row.id,
   });
   const hidden = isDragging || dragging;
-  const drag = item.kind === "chat" ? { ...attributes, ...listeners } : undefined;
 
   return (
     <div
       ref={setNodeRef}
       style={{ transform: rowDragTransform(transform), transition }}
-      className={`relative ${item.kind === "chat" ? "group/chat touch-none" : "group"}`}
-      role="listitem"
-      {...drag}
-      onContextMenu={(ev) => {
-        if (item.kind === "journey") onContextMenu(ev, { type: "journey", id: item.journey.id });
-        else onContextMenu(ev, { type: "chat", id: item.conversation.id, journeyId: item.conversation.journey_id });
-      }}
+      className="group/chat relative touch-none"
+      {...attributes}
+      {...listeners}
+      onContextMenu={(ev) => onContextMenu(ev, row.id)}
     >
       {insert ? (
         <div
@@ -515,185 +279,29 @@ const SortableRow = memo(function SortableRow({
           }`}
         />
       ) : null}
-      {item.kind === "journey" ? (
-        <JourneyCard
-          journey={item.journey}
-          placeholder={hidden}
-          renaming={renaming}
-          drag={attributes}
-          dragListeners={listeners}
-          rowId={item.journey.id}
-          onToggle={onToggle}
-          onOpenKnowledge={onOpenKnowledge}
-          onNewChat={onNewChat}
-          onRename={onRename}
-          onRenameDone={onRenameDone}
-        />
-      ) : (
-        <ConversationCard
-          row={item.conversation}
-          selected={selected}
-          running={running}
-          unseen={unseen}
-          preview={preview}
-          todo={todo}
-          indent={item.indent}
-          placeholder={hidden}
-          age={age}
-          rowId={item.conversation.id}
-          onOpen={onOpen}
-          onSelect={onSelect}
-          onDelete={onDelete}
-        />
-      )}
+      <ConversationCard
+        row={row}
+        selected={selected}
+        running={running}
+        unseen={unseen}
+        preview={preview}
+        todo={todo}
+        placeholder={hidden}
+        age={age}
+        rowId={row.id}
+        onOpen={onOpen}
+        onSelect={onSelect}
+        onDelete={onDelete}
+      />
     </div>
   );
 });
 
-const JourneyCard = memo(function JourneyCard({
-  journey,
-  placeholder,
-  overlay,
-  renaming,
-  drag,
-  dragListeners,
-  rowId = "",
-  onToggle,
-  onOpenKnowledge,
-  onNewChat,
-  onRename,
-  onRenameDone,
-}: {
-  journey: JourneySummary;
-  placeholder?: boolean;
-  overlay?: boolean;
-  renaming?: boolean;
-  drag?: DraggableAttributes;
-  dragListeners?: DraggableSyntheticListeners;
-  rowId?: string;
-  onToggle?: (id: string) => void;
-  onOpenKnowledge?: (id: string) => void;
-  onNewChat?: (journeyId: string, kind: ConversationKind) => void;
-  onRename?: (id: string, title: string) => void;
-  onRenameDone?: () => void;
-}) {
-  const [draft, setDraft] = useState(journey.title);
-  const [menuOpen, setMenuOpen] = useState(false);
-  useEffect(() => {
-    setDraft(journey.title);
-  }, [journey.title, renaming]);
-
-  return (
-    <div
-      className={`group flex items-center rounded-[6px] py-0.5 select-none ${
-        overlay
-          ? "cursor-grabbing border border-line bg-canvas shadow-card"
-          : placeholder
-            ? "opacity-0"
-            : "hover:bg-wash"
-      }`}
-    >
-      <div className="w-1.5 shrink-0" />
-      <button
-        type="button"
-        disabled={placeholder || overlay || renaming}
-        onClick={() => onToggle?.(rowId)}
-        className="flex size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-wash hover:text-ink"
-        aria-label={journey.collapsed ? "Expand journey" : "Collapse journey"}
-      >
-        <Symbol name={journey.collapsed ? "chevron.right" : "chevron.down"} className="size-3" />
-      </button>
-      {renaming ? (
-        <input
-          autoFocus
-          value={draft}
-          onChange={(ev) => setDraft(ev.target.value)}
-          onBlur={() => {
-            onRename?.(rowId, draft.trim() || journey.title);
-            onRenameDone?.();
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter") {
-              onRename?.(rowId, draft.trim() || journey.title);
-              onRenameDone?.();
-            }
-            if (ev.key === "Escape") {
-              onRename?.(rowId, journey.title);
-              onRenameDone?.();
-            }
-          }}
-          className="mr-1 min-w-0 flex-1 rounded bg-canvas px-1 py-[5px] text-[13px] text-ink outline-none select-text"
-        />
-      ) : (
-        <button
-          type="button"
-          disabled={placeholder || overlay}
-          onClick={() => onToggle?.(rowId)}
-          className="flex min-w-0 flex-1 touch-none items-center py-[7px] pr-1 text-left text-[13px] font-medium text-ink"
-          {...drag}
-          {...dragListeners}
-        >
-          <span className="block min-w-0 truncate">{journey.title}</span>
-        </button>
-      )}
-      {!overlay ? (
-        <div className={`mr-1 flex shrink-0 items-center gap-0.5 ${placeholder ? "hidden" : ""}`}>
-          <button
-            type="button"
-            aria-label="Open journey knowledge"
-            title="Knowledge"
-            onClick={() => onOpenKnowledge?.(rowId)}
-            className="flex size-6 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink"
-          >
-            <Symbol name="doc.fill" className="size-3.5" />
-          </button>
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="New conversation in journey"
-              title="New chat"
-              onClick={() => setMenuOpen((v) => !v)}
-              className="flex size-6 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink"
-            >
-              <Symbol name="plus" className="size-3" />
-            </button>
-            {menuOpen ? (
-              <div
-                role="menu"
-                className="absolute top-full right-0 z-30 mt-1 min-w-[132px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    onNewChat?.(rowId, "chat");
-                    setMenuOpen(false);
-                  }}
-                  className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-                >
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    onNewChat?.(rowId, "terminal");
-                    setMenuOpen(false);
-                  }}
-                  className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-                >
-                  Terminal
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : (
-        <div className="mr-1 size-6 shrink-0" />
-      )}
-    </div>
-  );
-});
+/** Move the held row without stretching it to the height of the row it passes over. */
+function rowDragTransform(transform: Transform | null): string | undefined {
+  if (!transform) return undefined;
+  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+}
 
 const ConversationCard = memo(function ConversationCard({
   row,
@@ -702,7 +310,6 @@ const ConversationCard = memo(function ConversationCard({
   unseen,
   preview,
   todo,
-  indent,
   placeholder,
   overlay,
   age,
@@ -717,7 +324,6 @@ const ConversationCard = memo(function ConversationCard({
   unseen?: boolean;
   preview: string;
   todo?: TodoBadge | null;
-  indent?: boolean;
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
@@ -729,7 +335,7 @@ const ConversationCard = memo(function ConversationCard({
   const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group/chat relative flex items-center rounded-[6px] select-none ${indent ? "pl-3" : ""} ${
+      className={`group/chat relative flex items-center rounded-[6px] select-none ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
@@ -802,154 +408,51 @@ const ConversationCard = memo(function ConversationCard({
 function ChatContextMenu({
   x,
   y,
-  target,
-  runningIds,
+  id,
   onClose,
-  onCreateJourney,
-  onDeleteChat,
-  onArchiveChat,
+  onDelete,
+  onArchive,
   archivedView,
   archiveCount = 1,
-  onRemove,
-  onRename,
-  onDeleteJourney,
-  color,
-  onSetColor,
 }: {
   x: number;
   y: number;
-  target: MenuTarget;
-  runningIds: Record<string, unknown>;
+  id: string;
   onClose: () => void;
-  onCreateJourney: () => void;
-  onDeleteChat: () => void;
-  onArchiveChat: () => void;
+  onDelete: () => void;
+  onArchive: () => void;
   archivedView?: boolean;
   archiveCount?: number;
-  onRemove: () => void;
-  onRename: () => void;
-  onDeleteJourney: () => void;
-  color: JourneyColor;
-  onSetColor: (color: JourneyColor) => void;
 }) {
-  const items =
-    target.type === "journey"
-      ? [
-          { label: "Rename", onClick: onRename },
-          { label: "Copy ID", onClick: () => copyDebugId(target.id, onClose) },
-          { label: "Delete", onClick: onDeleteJourney },
-        ]
-      : [
-          ...(!archivedView && !target.journeyId && !(target.id in runningIds)
-            ? [{ label: "Create Journey", onClick: onCreateJourney }]
-            : []),
-          ...(!archivedView && target.journeyId ? [{ label: "Remove from Journey", onClick: onRemove }] : []),
-          { label: "Copy ID", onClick: () => copyDebugId(target.id, onClose) },
-          {
-            label: archivedView
-              ? archiveCount > 1
-                ? `Unarchive ${archiveCount}`
-                : "Unarchive"
-              : archiveCount > 1
-                ? `Archive ${archiveCount}`
-                : "Archive",
-            onClick: onArchiveChat,
-          },
-          { label: "Delete", onClick: onDeleteChat },
-        ];
-
+  const archiveLabel = archivedView
+    ? archiveCount > 1
+      ? `Unarchive ${archiveCount}`
+      : "Unarchive"
+    : archiveCount > 1
+      ? `Archive ${archiveCount}`
+      : "Archive";
+  const itemClass =
+    "flex h-7 w-full cursor-pointer items-center px-2.5 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash";
   return (
     <AnchoredMenu x={x} y={y}>
-      {items.map((item) => (
-        <button
-          key={item.label}
-          type="button"
-          role="menuitem"
-          onClick={item.onClick}
-          className="flex h-7 w-full cursor-pointer items-center px-2.5 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash"
-        >
-          {item.label}
-        </button>
-      ))}
-      {target.type === "journey" ? (
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5" role="group" aria-label="Journey color">
-          {JOURNEY_COLORS.map((opt) => {
-            const selected = color === opt.id;
-            return (
-              <button
-                key={opt.id || "none"}
-                type="button"
-                title={opt.label}
-                aria-label={opt.label}
-                aria-pressed={selected}
-                onClick={() => onSetColor(opt.id)}
-                className={`size-3.5 rounded-full border ${
-                  selected ? "border-ink" : "border-line"
-                } ${opt.id ? "" : "bg-canvas"}`}
-                style={opt.wash ? { background: opt.swatch } : undefined}
-              />
-            );
-          })}
-        </div>
-      ) : null}
-      {items.length === 0 ? (
-        <button type="button" className="hidden" onClick={onClose}>
-          Close
-        </button>
-      ) : null}
-    </AnchoredMenu>
-  );
-}
-
-function copyDebugId(id: string, onDone: () => void) {
-  void navigator.clipboard.writeText(id).catch(() => undefined);
-  onDone();
-}
-
-function DeleteJourneyDialog({
-  title,
-  onCancel,
-  onKeep,
-  onDelete,
-}: {
-  title: string;
-  onCancel: () => void;
-  onKeep: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20" onMouseDown={onCancel}>
-      <div
-        className="w-[280px] rounded-lg border border-line bg-canvas p-3 shadow-card"
-        onMouseDown={(ev) => ev.stopPropagation()}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          void navigator.clipboard.writeText(id).catch(() => undefined);
+          onClose();
+        }}
+        className={itemClass}
       >
-        <div className="text-[13px] font-medium text-ink">Delete {title}?</div>
-        <p className="mt-1 text-[12px] text-muted">Keep the conversations or delete them with this Journey.</p>
-        <div className="mt-3 flex flex-col gap-1">
-          <button
-            type="button"
-            onClick={onKeep}
-            className="rounded-[6px] px-2 py-1.5 text-left text-[13px] text-ink hover:bg-wash"
-          >
-            Keep conversations
-          </button>
-          <button
-            type="button"
-            onClick={onDelete}
-            className="rounded-[6px] px-2 py-1.5 text-left text-[13px] text-err hover:bg-wash"
-          >
-            Delete conversations
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-[6px] px-2 py-1.5 text-left text-[13px] text-muted hover:bg-wash"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+        Copy ID
+      </button>
+      <button type="button" role="menuitem" onClick={onArchive} className={itemClass}>
+        {archiveLabel}
+      </button>
+      <button type="button" role="menuitem" onClick={onDelete} className={itemClass}>
+        Delete
+      </button>
+    </AnchoredMenu>
   );
 }
 
@@ -991,5 +494,3 @@ const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) 
     </span>
   );
 });
-
-

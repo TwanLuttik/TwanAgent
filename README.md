@@ -10,7 +10,7 @@ It runs on macOS, Linux, and Windows.
 - **Edit the codebase.** The agent reads, writes, and patches files. You can open the same files in the built-in editor, preview Markdown, and inspect images and video.
 - **Review git changes.** See status, diffs, branches, and the lines a change added or removed.
 - **Run a terminal.** Keep a shell or a Grok terminal next to the chat. Commands the agent wants to run can wait for your approval.
-- **Work across projects.** The sidebar holds local folders, archived chats, and Journeys that share notes between related conversations.
+- **Work across projects.** The sidebar holds local folders and archived chats.
 - **Open a project on another machine.** Connect over SSH, browse the remote folder, and run the agent's commands there.
 - **Queue the next message.** Send a follow-up while a reply is still streaming. Dictate into the composer, attach images, and mention files with `@`.
 - **See what the turn cost.** Usage is estimated per model, including Claude and Grok rates.

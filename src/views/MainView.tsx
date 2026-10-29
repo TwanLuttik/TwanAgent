@@ -40,7 +40,7 @@ import {
 import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
 import { imagePathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
-import type { JourneySummary } from "../lib/journey";
+
 import { parseConversationKind } from "../lib/terminal-chat";
 import { codeTabEditor, emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, skillEditorPath, type EditorState } from "../lib/editor";
 import {
@@ -162,7 +162,6 @@ export function MainView() {
     dictate,
   } = useSpeech(setFlash);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [journeys, setJourneys] = useState<JourneySummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>(loadComposerDrafts);
@@ -300,9 +299,8 @@ export function MainView() {
   const remoteForRef = useRef("");
   const remoteKnownRef = useLiveRef(remoteKnown);
   const linkReadyRef = useLiveRef(linkReady);
-  const sidebarSyncRef = useLiveRef({ workspace, conversations, journeys });
+  const sidebarSyncRef = useLiveRef({ workspace, conversations });
   const conversationsRef = useLiveRef(conversations);
-  const journeysRef = useLiveRef(journeys);
   const cloudTranscriptsRef = useRef(new Map<string, import("../lib/tauri").Conversation>());
   const sidebarLoadedForRef = useRef("");
   const deletedIdsRef = useRef(new Set<string>());
@@ -375,7 +373,6 @@ export function MainView() {
     hostedChats,
     models,
     setConversations,
-    setJourneys,
     setActiveId,
     setMessages,
     setUnseenFinished,
@@ -398,7 +395,6 @@ export function MainView() {
     effortRef,
     contextWindowRef,
     permissionRef,
-    journeysRef,
     runningWsRef,
     runningIdRef,
     sidebarLoadedForRef,
@@ -426,7 +422,6 @@ export function MainView() {
     workspace,
     setWorkspace,
     conversations,
-    journeys,
     remoteWorkspace,
     remoteForRef,
     sidebarSyncRef,
@@ -783,7 +778,6 @@ export function MainView() {
   const library = useLibrary({
     workspace,
     conversations,
-    journeys,
     allProjectGroups,
     messages,
     activeId,
@@ -807,7 +801,7 @@ export function MainView() {
     openSettings,
     reloadConversations,
     hostedChats,
-    runTurn: (ws, id, next, after, journeyIdOverride) => runTurnRef.current(ws, id, next, after, journeyIdOverride),
+    runTurn: (ws, id, next, after) => runTurnRef.current(ws, id, next, after),
     scroller,
     runningWsRef,
     modelRef,
@@ -831,7 +825,6 @@ export function MainView() {
     sidebarLoadedForRef,
     setWorkspace,
     setConversations,
-    setJourneys,
     setAllProjectGroups,
     setMessages,
     setActiveId,
@@ -979,14 +972,6 @@ export function MainView() {
     archiveChat,
     archiveChats,
     reorderChats,
-    reorderSidebar,
-    createJourneyFromChat,
-    openJourneyKnowledge,
-    toggleJourney,
-    setJourneyColor,
-    renameJourney,
-    deleteJourney,
-    moveConversation,
   } = library;
 
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -1477,18 +1462,13 @@ export function MainView() {
     archiveChats,
     collapsedProjects,
     conversations,
-    createJourneyFromChat,
-    deleteJourney,
     deleteProjectFromSidebar,
     forgetProjectRow,
-    journeys,
     legacyProjectsRoot,
     messages,
-    moveConversation,
     openChat,
     openListedChat,
     openingId,
-    openJourneyKnowledge,
     openProjectFromSidebar,
     switchToProject,
     rememberOpenedProject,
@@ -1497,20 +1477,16 @@ export function MainView() {
     projectSettings,
     projectsRoot,
     removeChat,
-    renameJourney,
     setProjectMenu,
     reorderChats,
     reorderProjects,
-    reorderSidebar,
     runningTurns,
     unseenFinished,
-    setJourneyColor,
     showSettings,
     showUsage,
     showDocs,
     sidebarReady,
     startNewChat,
-    toggleJourney,
     toggleProjectCollapsed,
     workspace,
   };
@@ -1520,7 +1496,6 @@ export function MainView() {
     sidebar.allProjectGroups !== allProjectGroups ||
     sidebar.collapsedProjects !== collapsedProjects ||
     sidebar.conversations !== conversations ||
-    sidebar.journeys !== journeys ||
     sidebar.legacyProjectsRoot !== legacyProjectsRoot ||
     sidebar.messages !== messages ||
     sidebar.openingId !== openingId ||
@@ -1543,18 +1518,13 @@ export function MainView() {
       archiveChats,
       collapsedProjects,
       conversations,
-      createJourneyFromChat,
-      deleteJourney,
       deleteProjectFromSidebar,
       forgetProjectRow,
-      journeys,
       legacyProjectsRoot,
       messages,
-      moveConversation,
       openChat,
       openListedChat,
       openingId,
-      openJourneyKnowledge,
       openProjectFromSidebar,
       switchToProject,
       rememberOpenedProject,
@@ -1563,20 +1533,16 @@ export function MainView() {
       projectSettings,
       projectsRoot,
       removeChat,
-      renameJourney,
       setProjectMenu,
       reorderChats,
       reorderProjects,
-      reorderSidebar,
       runningTurns,
       unseenFinished,
-      setJourneyColor,
       showSettings,
       showUsage,
       showDocs,
       sidebarReady,
       startNewChat,
-      toggleJourney,
       toggleProjectCollapsed,
       workspace,
     };
@@ -1584,27 +1550,19 @@ export function MainView() {
     const live = sidebarRef.current;
     live.archiveChat = archiveChat;
     live.archiveChats = archiveChats;
-    live.createJourneyFromChat = createJourneyFromChat;
-    live.deleteJourney = deleteJourney;
     live.deleteProjectFromSidebar = deleteProjectFromSidebar;
     live.forgetProjectRow = forgetProjectRow;
-    live.moveConversation = moveConversation;
     live.openChat = openChat;
     live.openListedChat = openListedChat;
-    live.openJourneyKnowledge = openJourneyKnowledge;
     live.openProjectFromSidebar = openProjectFromSidebar;
     live.switchToProject = switchToProject;
     live.rememberOpenedProject = rememberOpenedProject;
     live.openProjectSettings = openProjectSettings;
     live.openSidebarChat = openSidebarChat;
     live.removeChat = removeChat;
-    live.renameJourney = renameJourney;
     live.reorderChats = reorderChats;
     live.reorderProjects = reorderProjects;
-    live.reorderSidebar = reorderSidebar;
-    live.setJourneyColor = setJourneyColor;
     live.startNewChat = startNewChat;
-    live.toggleJourney = toggleJourney;
     live.toggleProjectCollapsed = toggleProjectCollapsed;
   }
   const sidebarValue = sidebarRef.current;
@@ -1645,8 +1603,6 @@ export function MainView() {
     holdScrollForOlder,
     contextWindow,
     conversations,
-    createJourneyFromChat,
-    deleteJourney,
     deleteProjectFromSidebar,
     dirtyFiles,
     draft,
@@ -1662,19 +1618,16 @@ export function MainView() {
     expandedAgents,
     fileDrag,
     folderOpen,
-    journeys,
     mcpBusy,
     mcpServers,
     messages,
     model,
     models,
-    moveConversation,
     onSidebarResizeStart,
     openChat,
     opened,
     openFolder,
     openingId,
-    openJourneyKnowledge,
     openProjectFromSidebar,
     openProjectSettings,
     openServers,
@@ -1723,10 +1676,8 @@ export function MainView() {
     archiveChats,
     removeChat,
     removePendingAt,
-    renameJourney,
     reorderChats,
     reorderProjects,
-    reorderSidebar,
     runningId,
     runningTurns,
     unseenFinished,
@@ -1744,7 +1695,6 @@ export function MainView() {
     setEditor,
     toggleSubagent,
     setFolderOpen,
-    setJourneyColor,
     setPendingDeleteProject,
     setProjectMenu,
     setShowSettings,
@@ -1769,7 +1719,6 @@ export function MainView() {
     skills,
     startNewChat,
     subagents,
-    toggleJourney,
     toggleMcpServer,
     toggleProjectCollapsed,
     toggleSkill,

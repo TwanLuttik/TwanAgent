@@ -314,6 +314,7 @@ impl RemoteFiles {
                     path,
                     kind: if dir { "dir" } else { "file" }.into(),
                     size: None,
+                    modified: None,
                 }
             })
             .collect())

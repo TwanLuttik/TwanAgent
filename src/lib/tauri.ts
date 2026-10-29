@@ -233,7 +233,14 @@ export function openedWorkspaces(): Promise<string[]> {
 export function forgetWorkspace(path: string): Promise<boolean> {
   return invoke("dev_forget_workspace", { path });
 }
-export type Entry = { name: string; path: string; kind: "file" | "dir" | string; size: number | null };
+export type Entry = {
+  name: string;
+  path: string;
+  kind: "file" | "dir" | string;
+  size: number | null;
+  /** Milliseconds. Present for files. A replaced icon changes this, so the sidebar reloads it. */
+  modified?: number | null;
+};
 export type GitChange = {
   path: string;
   original?: string | null;

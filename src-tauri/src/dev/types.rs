@@ -15,6 +15,10 @@ pub struct DevEntry {
     pub path: String,
     pub kind: String,
     pub size: Option<u64>,
+    /// File mtime in milliseconds. Absent for folders. The sidebar uses it so a
+    /// replaced icon is not served from the webview cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

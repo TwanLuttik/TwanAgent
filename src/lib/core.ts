@@ -347,9 +347,6 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
     const label = String(args.description ?? "").trim();
     return label ? `Subagent: ${label}` : "Subagent";
   }
-  if (name === "update_journey_knowledge") {
-    return String(args.mode ?? "") === "edit" ? "Edit journey knowledge" : "Update journey knowledge";
-  }
   if (name === "todo_write") return "Updated todos";
   if (name === "enter_plan_mode") return "Enter plan mode";
   if (name === "exit_plan_mode") return "Exit plan mode";
@@ -460,10 +457,6 @@ export function toolDetail(call: ChatToolCall): string {
     const pattern = String(args.pattern ?? "").trim();
     const where = String(args.path ?? "").trim();
     return [pattern, where].filter(Boolean).join(" ");
-  }
-  if (call.name === "update_journey_knowledge") {
-    const mode = String(args.mode ?? "").trim();
-    return mode ? `journey knowledge (${mode})` : "journey knowledge";
   }
   return "";
 }
@@ -1186,7 +1179,7 @@ export function worktreeSystemLine(checkout?: WorktreeCheckout | null): string {
 export function systemPrompt(
   workspace: string,
   permission: PermissionMode = "ask",
-  knowledge?: string,
+  _knowledge?: string,
   mcpServers?: DetectedMcpServer[],
   skills?: DetectedSkill[],
   remote?: RemoteWorkspace | null,
@@ -1194,9 +1187,6 @@ export function systemPrompt(
   planLine?: string,
   worktree?: WorktreeCheckout | null,
 ): ChatMessage {
-  const knowledgeBlock = (knowledge ?? "").trim()
-    ? `\nJourney knowledge:\n${knowledge!.trim()}\nDurable notes for this Journey go in update_journey_knowledge, not workspace files.`
-    : "";
   const extra = extraSystemLines(mcpServers, skills);
   const remoteLine = remoteWorkspaceLine(remote);
   const worktreeLine = worktreeSystemLine(worktree);
@@ -1213,7 +1203,7 @@ For independent research, planning, or parallel work, call spawn_subagent. Each 
 For multi-step work, call todo_write to keep a short step list above the input. Update it as you go, including mid-turn. Keep at most one item in_progress.
 For current facts, news, docs, or anything that may have changed, call web_search instead of guessing. Cite the source URLs it returns.
 To find code, call grep for contents and glob for paths. Do not use the shell to search.
-Prefer edit_file for small changes. Don't commit unless asked. Be concise.${knowledgeBlock}${extra}`,
+Prefer edit_file for small changes. Don't commit unless asked. Be concise.${extra}`,
   };
 }
 

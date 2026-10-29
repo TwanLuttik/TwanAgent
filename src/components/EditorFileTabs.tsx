@@ -1,6 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { editorTabTitle, isAllDiffPath, isMcpEditorPath, isSkillEditorPath, type EditorState } from "../lib/editor";
-import { parseJourneyId } from "../lib/journey";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
 
@@ -8,7 +7,6 @@ export function EditorFileTabs({
   editor,
   dirtyFiles,
   pendingClosePath,
-  journeyTitles,
   onFile,
   onPinFile,
   onCloseFile,
@@ -16,7 +14,6 @@ export function EditorFileTabs({
   editor: EditorState;
   dirtyFiles: Record<string, boolean>;
   pendingClosePath: string | null;
-  journeyTitles: Record<string, string>;
   onFile: (path: string) => void;
   onPinFile: (path: string) => void;
   onCloseFile: (path: string) => void;
@@ -31,10 +28,6 @@ export function EditorFileTabs({
         <EditorFileTab
           key={tab.path}
           path={tab.path}
-          title={(() => {
-            const id = parseJourneyId(tab.path);
-            return id ? editorTabTitle(tab.path, journeyTitles) : undefined;
-          })()}
           preview={Boolean(tab.preview)}
           changes={tab.view === "diff"}
           selected={editor.focus === "file" && tab.path === editor.activePath}

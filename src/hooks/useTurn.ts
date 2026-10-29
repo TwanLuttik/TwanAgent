@@ -65,7 +65,6 @@ import {
   type SubagentDockState,
   type SubagentRecord,
 } from "../lib/subagent";
-import { parseConversationKind } from "../lib/terminal-chat";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
 import { setSecondaryLiveStream } from "../lib/live-stream";
 import { rememberSplitPane } from "../lib/split-pane";
@@ -229,13 +228,7 @@ export function bindTurn(deps: TurnDeps) {
     deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
-function systemForDetached(
-  ws: string,
-  id: string,
-  settings: { model: string; permission: string },
-  kind: string,
-  knowledge: string,
-): string {
+function systemForDetached(ws: string, id: string, settings: { model: string; permission: string }): string {
   const checkout = worktreeCheckoutFor(ws, worktreeListsFor(ws));
   const planLine = providerProfile(settings.model).planMode
     ? planModeSystemLine(planForChat(id).state, `~/.grok/sessions/<workspace>/${id}/plan.md`)
@@ -244,7 +237,7 @@ function systemForDetached(
     systemPrompt(
       ws,
       parsePermissionMode(settings.permission),
-      kind === "chat" ? knowledge : "",
+      "",
       mcpServersRef.current,
       skillsRef.current,
       remoteRef.current,
@@ -1045,7 +1038,6 @@ async function runTurn(
   id: string,
   next: ChatMessage[],
   after?: (done: ChatMessage[]) => Promise<void>,
-  journeyIdOverride?: string,
 ) {
   rememberLive(id, { messages: next, streamText: "", streamReasoning: "", liveTools: [], activity: null });
   showLive(id);
@@ -1110,8 +1102,6 @@ async function runTurn(
     models,
     { ...chip, model: chosenModel || chip.model },
   );
-  const journeyId = journeyIdOverride || chat?.journey_id || undefined;
-  const kind = parseConversationKind(chat?.kind);
   if (hostedTurnStaysOnServer(remoteRef.current)) {
     const prompt = [...next].reverse().find((message) => message.role === "user");
     const text = String(prompt?.content ?? "").trim();
@@ -1219,14 +1209,6 @@ async function runTurn(
       if (visible()) setFlash({ kind: "err", text: String(e) });
     }
   }
-  let knowledge = "";
-  if (journeyId && kind === "chat") {
-    try {
-      knowledge = await api.getJourneyKnowledge(ws, journeyId);
-    } catch {
-      knowledge = "";
-    }
-  }
   try {
     const done = !hostedTurnStaysOnServer(remoteRef.current)
       ? await resumeLocalTurn({
@@ -1237,8 +1219,7 @@ async function runTurn(
           effort: turnSettings.effort,
           contextWindow: turnSettings.contextWindow || undefined,
           permission: turnSettings.permission,
-          system: systemForDetached(ws, id, turnSettings, kind, knowledge),
-          journeyId: kind === "chat" ? journeyId : undefined,
+          system: systemForDetached(ws, id, turnSettings),
           allowSpawn: true,
           signal: ac.signal,
           onEvent: (event) => {
@@ -1254,8 +1235,6 @@ async function runTurn(
       effort: turnSettings.effort,
       contextWindow: turnSettings.contextWindow || undefined,
       allowSpawn: true,
-      journeyId: kind === "chat" ? journeyId : undefined,
-      journeyKnowledge: kind === "chat" ? knowledge : undefined,
       mcpServers: mcpServersRef.current,
       skills: skillsRef.current,
       remote: remoteRef.current,

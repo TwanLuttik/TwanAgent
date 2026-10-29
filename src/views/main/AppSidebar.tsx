@@ -6,7 +6,7 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { archiveTargets, chatSelectionKey, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarTodoKey, visibleConversations, visibleJourneys, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
+import { archiveTargets, chatSelectionKey, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { ProjectMark } from "../../components/ProjectMark";
@@ -17,7 +17,7 @@ import { saveConversation } from "../../lib/prefs";
 import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
-import type { JourneyColor, JourneySummary } from "../../lib/journey";
+
 import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
 import { installAppUpdate, relaunchAppUpdate, useAppUpdate } from "../../lib/update-store";
@@ -767,7 +767,7 @@ function ProjectsNav({
           collapsed={collapsedProjects}
           onToggleCollapsed={toggleProjectCollapsed}
           onOpenProject={openProjectFromSidebar}
-          onNewChat={(path) => void startNewChat("chat", undefined, path)}
+          onNewChat={(path) => void startNewChat("chat", path)}
           onOpenSettings={openProjectSettings}
           onDeleteProject={(path, mode) => {
             const gone = mode === "worktrees"
@@ -799,7 +799,6 @@ function ProjectsNav({
             <div className="pl-4">
               <ProjectConversations
                 conversations={visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false)}
-                journeys={[]}
                 path={child.path}
                 dimmed={fullPage}
                 todoByChat={todoByChat}
@@ -815,7 +814,6 @@ function ProjectsNav({
           renderList={(group, { showArchived }) => (
             <ProjectConversations
               conversations={visibleConversations(group.conversations, showArchived)}
-              journeys={visibleJourneys(group.journeys, group.conversations, showArchived)}
               path={group.path}
               dimmed={fullPage}
               archivedView={showArchived}
@@ -1078,7 +1076,6 @@ function todoSignature(messages: ChatMessage[]): string {
 
 function ProjectConversations({
   conversations,
-  journeys,
   path,
   dimmed,
   archivedView,
@@ -1089,7 +1086,6 @@ function ProjectConversations({
   onArchiveSelected,
 }: {
   conversations: ConversationSummary[];
-  journeys: JourneySummary[];
   path?: string;
   dimmed: boolean;
   archivedView?: boolean;
@@ -1102,56 +1098,26 @@ function ProjectConversations({
   const {
     activeId,
     archiveChat,
-    createJourneyFromChat,
-    deleteJourney,
-    moveConversation,
-    openChat,
-    openJourneyKnowledge,
     openSidebarChat,
     removeChat,
-    renameJourney,
     reorderChats,
-    reorderSidebar,
     runningTurns,
     unseenFinished,
-    setJourneyColor,
-    startNewChat,
-    toggleJourney,
     openListedChat,
   } = useSidebar();
   const actions = useRef({
     archiveChat,
-    createJourneyFromChat,
-    deleteJourney,
-    moveConversation,
-    openChat,
-    openJourneyKnowledge,
     openSidebarChat,
     removeChat,
-    renameJourney,
     reorderChats,
-    reorderSidebar,
-    setJourneyColor,
-    startNewChat,
-    toggleJourney,
     openListedChat,
   });
   actions.current = {
     archiveChat,
-    createJourneyFromChat,
-    deleteJourney,
-    moveConversation,
-    openChat,
-    openListedChat,
-    openJourneyKnowledge,
     openSidebarChat,
     removeChat,
-    renameJourney,
     reorderChats,
-    reorderSidebar,
-    setJourneyColor,
-    startNewChat,
-    toggleJourney,
+    openListedChat,
   };
   const handlers = useMemo(
     () => ({
@@ -1166,22 +1132,6 @@ function ProjectConversations({
           ? onArchiveSelected(id, archived)
           : void actions.current.archiveChat(id, archived, path),
       onReorder: (fromId: string, toId: string) => void actions.current.reorderChats(fromId, toId, path),
-      onReorderSidebar: (
-        fromId: string,
-        fromKind: "journey" | "conversation",
-        toId: string,
-        toKind: "journey" | "conversation",
-      ) => void actions.current.reorderSidebar(fromId, fromKind, toId, toKind, path),
-      onCreateJourney: (id: string) => void actions.current.createJourneyFromChat(id, path),
-      onOpenKnowledge: (id: string) => void actions.current.openJourneyKnowledge(id, path),
-      onNewChat: (journeyId: string, kind: "chat" | "terminal") =>
-        void actions.current.startNewChat(kind, journeyId, path),
-      onToggleCollapse: (id: string) => void actions.current.toggleJourney(id, path),
-      onRenameJourney: (id: string, title: string) => void actions.current.renameJourney(id, title, path),
-      onDeleteJourney: (id: string, deleteChats: boolean) => void actions.current.deleteJourney(id, deleteChats, path),
-      onRemoveFromJourney: (id: string) => void actions.current.moveConversation(id, null, path),
-      onMoveToJourney: (id: string, journeyId: string) => void actions.current.moveConversation(id, journeyId, path),
-      onSetColor: (id: string, color: JourneyColor) => void actions.current.setJourneyColor(id, color, path),
     }),
     [path, onSelectChat, onArchiveSelected],
   );
@@ -1202,7 +1152,6 @@ function ProjectConversations({
   return (
     <ConversationList
       conversations={conversations}
-      journeys={journeys}
       activeId={activeId}
       runningIds={runningTurns}
       unseenIds={unseenFinished}

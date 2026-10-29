@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "macos")]
 use security_framework::passwords::{
@@ -198,6 +200,9 @@ fn write_account(service: &str, account: &str, value: &str) -> std::result::Resu
         .map_err(|err| err.to_string())?;
     #[cfg(not(any(target_os = "macos", windows)))]
     return unsupported_keychain(service, account, Some(value));
+    // The verify read has to see the keychain, not a value remembered from before the write.
+    #[cfg(any(target_os = "macos", windows))]
+    forget_account(service, account);
     #[cfg(any(target_os = "macos", windows))]
     match read_account(service, account)? {
         Some(stored) if stored == value => Ok(()),
@@ -208,22 +213,79 @@ fn write_account(service: &str, account: &str, value: &str) -> std::result::Resu
 
 #[cfg(target_os = "macos")]
 fn remove_account(service: &str, account: &str) -> std::result::Result<(), String> {
-    match delete_generic_password(service, account) {
+    let removed = match delete_generic_password(service, account) {
         Ok(()) => Ok(()),
         Err(err) if err.code() == -25300 => Ok(()),
         Err(err) => Err(err.to_string()),
-    }
+    };
+    forget_account(service, account);
+    removed
 }
 
 #[cfg(target_os = "macos")]
 fn read_account(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
+    if let Some(cached) = recall_account(service, account) {
+        return cached;
+    }
+    let read = read_account_uncached(service, account);
+    remember_account(service, account, &read);
+    read
+}
+
+#[cfg(target_os = "macos")]
+fn read_account_uncached(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
     match get_generic_password(service, account) {
         Ok(bytes) => String::from_utf8(bytes)
             .map(Some)
             .map_err(|_| "keychain item is not text".to_string()),
+        // errSecItemNotFound. A missing item does not show the password dialog.
         Err(err) if err.code() == -25300 => Ok(None),
+        // User cancelled, the prompt was refused, or the keychain would not interact.
+        // Remembering these stops the usage page from asking again on every visit.
+        Err(err) if matches!(err.code(), -128 | -25293 | -25308) => Err(format!("keychain prompt: {err}")),
         Err(err) => Err(err.to_string()),
     }
+}
+
+#[derive(Clone)]
+enum Remembered {
+    Value(String),
+    Missing,
+    Denied(String),
+}
+
+fn keychain_memory() -> &'static Mutex<HashMap<String, Remembered>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Remembered>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn account_cache_key(service: &str, account: &str) -> String {
+    format!("{service}\0{account}")
+}
+
+fn recall_account(service: &str, account: &str) -> Option<std::result::Result<Option<String>, String>> {
+    let cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+    match cache.get(&account_cache_key(service, account))? {
+        Remembered::Value(value) => Some(Ok(Some(value.clone()))),
+        Remembered::Missing => Some(Ok(None)),
+        Remembered::Denied(message) => Some(Err(message.clone())),
+    }
+}
+
+fn remember_account(service: &str, account: &str, read: &std::result::Result<Option<String>, String>) {
+    let remembered = match read {
+        Ok(Some(value)) => Remembered::Value(value.clone()),
+        Ok(None) => Remembered::Missing,
+        Err(message) if message.starts_with("keychain prompt:") => Remembered::Denied(message.clone()),
+        Err(_) => return,
+    };
+    let mut cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+    cache.insert(account_cache_key(service, account), remembered);
+}
+
+fn forget_account(service: &str, account: &str) {
+    let mut cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+    cache.remove(&account_cache_key(service, account));
 }
 
 // Select the native credential explicitly: production must never use keyring's mock fallback.
@@ -457,6 +519,26 @@ pub fn resolve_minimax_key_on_disk(data_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod xai_key_tests {
     use super::*;
+
+    #[test]
+    fn a_remembered_keychain_read_is_not_asked_again_until_it_is_forgotten() {
+        let service = "app.twanagent.test";
+        let account = "usage-sync";
+        forget_account(service, account);
+        assert!(recall_account(service, account).is_none());
+        remember_account(service, account, &Ok(Some("token".into())));
+        assert_eq!(recall_account(service, account).unwrap().unwrap().as_deref(), Some("token"));
+        // A failure that was not the password dialog must not stick.
+        forget_account(service, account);
+        remember_account(service, account, &Err("disk full".into()));
+        assert!(recall_account(service, account).is_none());
+        remember_account(service, account, &Err("keychain prompt: cancelled".into()));
+        assert!(recall_account(service, account).unwrap().is_err());
+        forget_account(service, account);
+        remember_account(service, account, &Ok(None));
+        assert_eq!(recall_account(service, account).unwrap().unwrap(), None);
+        forget_account(service, account);
+    }
 
     #[test]
     fn ssh_secret_roundtrip_does_not_touch_the_xai_key() {

@@ -7,14 +7,12 @@ import {
   groupsFromSidebarSnapshot,
   mergeLoadedProjectGroups,
   placeProjectChats,
-  sameJourneyList,
   sameSidebarConversationList,
   sidebarProjects,
   stampProjectServer,
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
-import type { JourneySummary } from "../lib/journey";
 import {
   loadCollapsedProjects,
   loadRecentWorkspaces,
@@ -36,7 +34,6 @@ export function useProjectIndex({
   workspace,
   setWorkspace,
   conversations,
-  journeys,
   remoteWorkspace,
   remoteForRef,
   sidebarSyncRef,
@@ -48,10 +45,9 @@ export function useProjectIndex({
   workspace: string;
   setWorkspace: Update<string>;
   conversations: ConversationSummary[];
-  journeys: JourneySummary[];
   remoteWorkspace: RemoteWorkspace | null;
   remoteForRef: RefObject<string>;
-  sidebarSyncRef: RefObject<{ workspace: string; conversations: ConversationSummary[]; journeys: JourneySummary[] }>;
+  sidebarSyncRef: RefObject<{ workspace: string; conversations: ConversationSummary[] }>;
   sidebarLoadedForRef: RefObject<string>;
   workspaceRef: RefObject<string>;
   cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
@@ -137,10 +133,10 @@ export function useProjectIndex({
         const loaded: ProjectChatGroup[] = firstFrame.map((group) => ({ ...group }));
         for (const row of ordered) {
           if (cancelled) return;
-          const [listed, journeyListed] = await Promise.all([
-            api.listConversations(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as ConversationSummary[], failed: true })),
-            api.listJourneys(row.path).then((rows) => ({ rows, failed: false })).catch(() => ({ rows: [] as JourneySummary[], failed: true })),
-          ]);
+          const listed = await api
+            .listConversations(row.path)
+            .then((rows) => ({ rows, failed: false }))
+            .catch(() => ({ rows: [] as ConversationSummary[], failed: true }));
           if (cancelled) return;
           // A cloud call that fails, or is still the empty index, must not replace chats
           // the sidebar already showed. The next pass fills them in.
@@ -148,19 +144,14 @@ export function useProjectIndex({
           // database, which only holds empty drafts created before the link was up.
           const localRows = row.remote ? listed.rows.filter((item) => !isLocalCloudDraft(item)) : listed.rows;
           const convs = listed.failed && row.remote ? null : localRows;
-          const nextJourneys = journeyListed.failed && row.remote ? null : journeyListed.rows;
           let conversations = convs ?? [];
-          let journeys = nextJourneys ?? [];
           // The local list of a cloud project is the empty mount. Paint the last
           // server copy now, then the open project replaces it when SSH returns.
-          if (row.remote && conversations.length === 0 && journeys.length === 0 && !listed.failed && !journeyListed.failed) {
+          if (row.remote && conversations.length === 0 && !listed.failed) {
             try {
               const cached = await api.hostedSidebarCached(row.path);
               rememberCloudTranscripts(cloudTranscriptsRef.current, row.path, cached.transcripts);
-              if (cached.conversations.length > 0 || cached.journeys.length > 0) {
-                conversations = cached.conversations;
-                journeys = cached.journeys;
-              }
+              if (cached.conversations.length > 0) conversations = cached.conversations;
             } catch {
               /* the server copy is missing; the list stays empty until SSH */
             }
@@ -168,7 +159,7 @@ export function useProjectIndex({
           let next = {
             ...row,
             conversations,
-            journeys,
+            journeys: [],
             remote: Boolean(row.remote),
           };
           if (next.remote && isSameProject(next.path, workspaceRef.current)) {
@@ -220,9 +211,9 @@ export function useProjectIndex({
     if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
     // An empty list here is the gap between two projects, not a finished load.
     // A cloud project keeps the cached rows until the server list arrives.
-    if (conversations.length === 0 && journeys.length === 0) return;
+    if (conversations.length === 0) return;
     setAllProjectGroups((prev) => {
-      const placed = placeProjectChats(prev, workspace, conversations, journeys, sidebarLoadedForRef.current);
+      const placed = placeProjectChats(prev, workspace, conversations, [], sidebarLoadedForRef.current);
       const stamped = stampProjectServer(placed, workspace, remoteWorkspace, remoteForRef.current);
       if (
         stamped.length === prev.length &&
@@ -234,7 +225,7 @@ export function useProjectIndex({
             before.remote === group.remote &&
             before.server === group.server &&
             sameSidebarConversationList(before.conversations, group.conversations) &&
-            sameJourneyList(before.journeys, group.journeys)
+            before.journeys.length === group.journeys.length
           );
         })
       ) {
@@ -242,7 +233,7 @@ export function useProjectIndex({
       }
       return stamped;
     });
-  }, [workspace, conversations, journeys, remoteWorkspace, remoteForRef, sidebarLoadedForRef]);
+  }, [workspace, conversations, remoteWorkspace, remoteForRef, sidebarLoadedForRef]);
 
   return {
     recents,

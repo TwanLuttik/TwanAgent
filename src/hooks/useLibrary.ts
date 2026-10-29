@@ -15,6 +15,7 @@ import {
   isLinkedWorktreePath,
   isSameProject,
   moveProjectGroup,
+  nextTopSort,
   patchSidebarConversations,
   removeProjectGroup,
   renameConversationInGroups,
@@ -23,19 +24,9 @@ import {
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { parseChatUsage, putChatUsage, usageToPersist, type ChatUsage } from "../lib/context";
-import { closeEditorTab, emptyEditor, pinEditorTab, requestCloseEditorTab, selectChatTab, type EditorState } from "../lib/editor";
+import { closeEditorTab, emptyEditor, requestCloseEditorTab, selectChatTab, type EditorState } from "../lib/editor";
 import { insertCompactionEvent } from "../lib/compact";
 import { persistableCompaction, persistableMessages } from "../lib/image";
-import {
-  conversationHasSummarizeSource,
-  JOURNEY_SUMMARIZE_PROMPT,
-  journeyKnowledgePath,
-  lastAssistantText,
-  nextTopSort,
-  parseJourneyColor,
-  type JourneyColor,
-  type JourneySummary,
-} from "../lib/journey";
 import { forgetPaneWorkspace } from "../lib/pane-sessions";
 import { getLiveStream, setLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
 import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForChat, splitPaneCache } from "../lib/split-pane";
@@ -76,13 +67,11 @@ export type RunTurn = (
   id: string,
   next: ChatMessage[],
   after?: (done: ChatMessage[]) => Promise<void>,
-  journeyIdOverride?: string,
 ) => Promise<void>;
 
 export type LibraryDeps = {
   workspace: string;
   conversations: ConversationSummary[];
-  journeys: JourneySummary[];
   allProjectGroups: ProjectChatGroup[];
   messages: ChatMessage[];
   activeId: string;
@@ -145,7 +134,7 @@ export type LibraryDeps = {
   planByChatRef: RefObject<Map<string, GrokPlan>>;
   onPlanChange?: () => void;
   stickToBottomRef: RefObject<boolean>;
-  /** Latest sidebar rows, so a turn save does not write a stale journey or archive flag. */
+  /** Latest sidebar rows, so a turn save does not write a stale archive flag. */
   conversationsRef: RefObject<ConversationSummary[]>;
   /** Bumped when the visible chat or project changes, so a late load cannot overwrite it. */
   openGeneration: RefObject<number>;
@@ -153,7 +142,6 @@ export type LibraryDeps = {
   cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   setWorkspace: Update<string>;
   setConversations: Update<ConversationSummary[]>;
-  setJourneys: Update<JourneySummary[]>;
   setAllProjectGroups: Update<ProjectChatGroup[]>;
   setMessages: Update<ChatMessage[]>;
   setActiveId: Update<string>;
@@ -192,10 +180,10 @@ export type LibraryDeps = {
 
 export function useLibrary(deps: LibraryDeps) {
   const {
-    workspace, conversations, journeys, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats,
-    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, runTurn, scroller,
+    workspace, conversations, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats,
+    pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, scroller,
     runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
-    setWorkspace, setConversations, setJourneys, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
+    setWorkspace, setConversations, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowDocs, setShowServers, setProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
@@ -215,11 +203,6 @@ export function useLibrary(deps: LibraryDeps) {
   const shownId = useRef(activeId);
   if (activeId) shownMessages.current.set(activeId, messages);
   shownId.current = activeId;
-
-  function setPending(next: Record<string, PendingMessage[]>) {
-    pendingRef.current = next;
-    setPendingByChat(next);
-  }
 
 function closeFileTab(path: string) {
   const asked = requestCloseEditorTab(pendingClosePath, path, Boolean(dirtyFiles[path]));
@@ -269,27 +252,12 @@ function projectConversations(path: string): ConversationSummary[] {
   return allProjectGroups.find((group) => isSameProject(group.path, path))?.conversations ?? [];
 }
 
-function projectJourneys(path: string): JourneySummary[] {
-  if (isSameProject(path, workspace)) return journeys;
-  return allProjectGroups.find((group) => isSameProject(group.path, path))?.journeys ?? [];
-}
-
-function applyProjectData(
-  path: string,
-  nextConversations: ConversationSummary[],
-  nextJourneys?: JourneySummary[],
-) {
+function applyProjectData(path: string, nextConversations: ConversationSummary[]) {
   if (isSameProject(path, workspace)) {
     setConversations(nextConversations);
-    if (nextJourneys) setJourneys(nextJourneys);
     return;
   }
-  setAllProjectGroups((prev) =>
-    upsertProjectGroup(prev, path, {
-      conversations: nextConversations,
-      ...(nextJourneys ? { journeys: nextJourneys } : {}),
-    }),
-  );
+  setAllProjectGroups((prev) => upsertProjectGroup(prev, path, { conversations: nextConversations }));
 }
 
 function showSubagents(id: string) {
@@ -329,7 +297,6 @@ function clearWorkspace() {
   setDraftImages({});
   setUsageByChat({});
   setConversations([]);
-  setJourneys([]);
   setActiveId("");
   setMessages([]);
   setFolderOpen(false);
@@ -442,9 +409,8 @@ function applyWorkspace(path: string) {
     const entering = allProjectGroups.find((group) => isSameProject(group.path, path));
     // Show the project we are opening from the rows it already has, in this same
     // update. Clearing first would paint the empty gap onto the cloud project.
-    if (entering && (entering.conversations.length > 0 || entering.journeys.length > 0)) {
+    if (entering && entering.conversations.length > 0) {
       setConversations(entering.conversations);
-      setJourneys(entering.journeys);
       sidebarLoadedForRef.current = entering.path;
     } else {
       sidebarLoadedForRef.current = "";
@@ -537,7 +503,7 @@ function applyWorkspace(path: string) {
   if (!isLinkedWorktreePath(path, worktreeListsFor(path))) expandProject(path);
 }
 
-const startNewChatRef = useRef<(kind?: ConversationKind, journeyId?: string) => void>(() => {});
+const startNewChatRef = useRef<(kind?: ConversationKind) => void>(() => {});
 /** Set by the shell. True when the chat is already in a split and was only focused. */
 const revealListedChatRef = useRef<((id: string) => boolean) | null>(null);
 const openSettingsRef = useRef(openSettings);
@@ -564,7 +530,7 @@ function forgetEmptyComposer() {
   setDraftImages(forgetUnsavedDraft);
 }
 
-async function startNewChat(kind: ConversationKind = "chat", journeyId?: string, path = workspace) {
+async function startNewChat(kind: ConversationKind = "chat", path = workspace) {
   setShowSettings(false);
   setShowUsage(false);
   setShowDocs(false);
@@ -573,7 +539,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   if (!runningWsRef.current) hideSubagents();
   // A plain new chat stays off every project until the first prompt. The selector
   // only chooses where that prompt will be saved.
-  if (kind === "chat" && !journeyId) {
+  if (kind === "chat") {
     stickToBottomRef.current = true;
     setActiveId("");
     setMessages([]);
@@ -607,7 +573,7 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     },
   );
   if (chosen.model) saveModel(chosen.model);
-  const conv = conversationDraft(kind, newConversationId(), nowIso(), journeyId, chosen.effort, {
+  const conv = conversationDraft(kind, newConversationId(), nowIso(), null, chosen.effort, {
     model: chosen.model,
     contextWindow: chosen.contextWindow,
     permission: chosen.permission,
@@ -632,20 +598,13 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
     return;
   }
   const rows = projectConversations(path);
-  const journeysHere = projectJourneys(path);
-  const sortOrder = journeyId
-    ? nextTopSort(rows.filter((row) => row.journey_id === journeyId).map((row) => row.sort_order))
-    : nextTopSort([
-        ...rows.filter((row) => !row.journey_id).map((row) => row.sort_order),
-        ...journeysHere.map((row) => row.sort_order),
-      ]);
+  const sortOrder = nextTopSort(rows.map((row) => row.sort_order));
   const summary: ConversationSummary = {
     id: conv.id,
     title: conv.title,
     created_at: conv.created_at,
     updated_at: conv.updated_at,
     kind: conv.kind,
-    journey_id: journeyId ?? null,
     sort_order: sortOrder,
     effort: conv.effort ?? null,
     model: conv.model ?? null,
@@ -671,7 +630,6 @@ async function startNewChat(kind: ConversationKind = "chat", journeyId?: string,
   retargetForegroundTurn(conv.id);
   setEditor((prev) => selectChatTab(prev));
   setConversations((current) => [summary, ...current.filter((row) => row.id !== conv.id)]);
-  if (kind === "chat") planByChatRef.current.set(conv.id, emptyGrokPlan());
 }
 
 async function openSidebarChat(path: string, id: string) {
@@ -1424,10 +1382,8 @@ async function persist(
 
 async function reorderChats(fromId: string, toId: string, path = workspace) {
   const rows = projectConversations(path);
-  const from = rows.find((row) => row.id === fromId);
-  const siblings = rows.filter((row) => (row.journey_id ?? null) === (from?.journey_id ?? null));
-  const next = moveById(siblings, fromId, toId);
-  if (next === siblings) return;
+  const next = moveById(rows, fromId, toId);
+  if (next === rows) return;
   if (!path) return;
   try {
     const saved = await api.reorderConversations(
@@ -1438,201 +1394,6 @@ async function reorderChats(fromId: string, toId: string, path = workspace) {
   } catch (e) {
     setFlash({ kind: "err", text: String(e) });
     if (isSameProject(path, workspace)) await reloadConversations(workspace);
-  }
-}
-
-async function reorderSidebar(
-  fromId: string,
-  fromKind: "journey" | "conversation",
-  toId: string,
-  toKind: "journey" | "conversation",
-  path = workspace,
-) {
-  if (!path) return;
-  const groupConversations = projectConversations(path);
-  const groupJourneys = projectJourneys(path);
-  const top: api.SidebarItem[] = [];
-  const seen = new Set<string>();
-  const ordered = [...groupJourneys.map((j) => ({ kind: "journey" as const, id: j.id, sort: j.sort_order })),
-    ...groupConversations
-      .filter((c) => !c.journey_id)
-      .map((c) => ({ kind: "conversation" as const, id: c.id, sort: c.sort_order ?? 0 })),
-  ].sort((a, b) => a.sort - b.sort || a.id.localeCompare(b.id));
-  for (const row of ordered) {
-    if (seen.has(`${row.kind}:${row.id}`)) continue;
-    seen.add(`${row.kind}:${row.id}`);
-    top.push({ kind: row.kind, id: row.id });
-  }
-  const fromIdx = top.findIndex((row) => row.id === fromId && row.kind === fromKind);
-  const toIdx = top.findIndex((row) => row.id === toId && row.kind === toKind);
-  if (fromIdx < 0 || toIdx < 0) return;
-  const next = top.slice();
-  const [item] = next.splice(fromIdx, 1);
-  next.splice(toIdx, 0, item);
-  try {
-    const saved = await api.reorderSidebar(path, next);
-    applyProjectData(path, saved, await api.listJourneys(path));
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-    if (isSameProject(path, workspace)) await reloadConversations(workspace);
-  }
-}
-
-async function createJourneyFromChat(id: string, path = workspace) {
-  if (!path) return;
-  const seed = projectConversations(path).find((row) => row.id === id);
-  if (!seed || seed.journey_id || chatHasRunningTurn(runningTurns, id)) return;
-  try {
-    const journey = await api.createJourney(path, id);
-    const [rows, nextJourneys] = await Promise.all([
-      api.listConversations(path),
-      api.listJourneys(path),
-    ]);
-    applyProjectData(path, rows, nextJourneys);
-    if (!isSameProject(path, workspace)) return;
-    const loaded = id === activeId
-      ? null
-      : hostedChatsRef.current
-        ? await api.getConversationById(id)
-        : await api.getConversation(path, id);
-    const msgs = loaded ? ((loaded.messages as ChatMessage[]) ?? []) : messages;
-    if (id !== activeId) await openChat(id);
-    if (!conversationHasSummarizeSource(msgs)) return;
-    const next = [...msgs, { role: "user" as const, content: JOURNEY_SUMMARIZE_PROMPT }];
-    await runTurn(path, id, next, async (done) => {
-      const text = lastAssistantText(done);
-      if (!text) return;
-      await api.saveJourneyKnowledge(path, journey.id, text);
-      bumpFiles();
-    }, journey.id);
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-  }
-}
-
-async function openJourneyKnowledge(id: string, path = workspace) {
-  setShowSettings(false);
-  setShowUsage(false);
-  setShowDocs(false);
-  setShowServers(false);
-  setProjectSettings(null);
-  if (path && !isSameProject(path, workspace)) {
-    applyWorkspace(path);
-    setEditor(() => pinEditorTab(emptyEditor(), journeyKnowledgePath(id)));
-    return;
-  }
-  setEditor((prev) => pinEditorTab(prev, journeyKnowledgePath(id)));
-}
-
-async function toggleJourney(id: string, path = workspace) {
-  const current = projectJourneys(path).find((row) => row.id === id);
-  if (!current || !path) return;
-  const collapsed = !current.collapsed;
-  const nextJourneys = projectJourneys(path).map((row) => (row.id === id ? { ...row, collapsed } : row));
-  if (isSameProject(path, workspace)) {
-    setJourneys(nextJourneys);
-  } else {
-    setAllProjectGroups((prev) => upsertProjectGroup(prev, path, { journeys: nextJourneys }));
-  }
-  try {
-    await api.setJourneyCollapsed(path, id, collapsed);
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-    if (isSameProject(path, workspace)) await reloadConversations(workspace);
-  }
-}
-
-async function setJourneyColor(id: string, color: JourneyColor, path = workspace) {
-  if (!path) return;
-  const nextJourneys = projectJourneys(path).map((row) => (row.id === id ? { ...row, color } : row));
-  if (isSameProject(path, workspace)) {
-    setJourneys(nextJourneys);
-  } else {
-    setAllProjectGroups((prev) => upsertProjectGroup(prev, path, { journeys: nextJourneys }));
-  }
-  try {
-    const next = await api.setJourneyColor(path, id, color);
-    const painted = projectJourneys(path).map((row) =>
-      row.id === id ? { ...row, color: parseJourneyColor(next.color) } : row,
-    );
-    if (isSameProject(path, workspace)) {
-      setJourneys((rows) => rows.map((row) => (row.id === id ? { ...row, color: parseJourneyColor(next.color) } : row)));
-    } else {
-      setAllProjectGroups((prev) => upsertProjectGroup(prev, path, { journeys: painted }));
-    }
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-    if (isSameProject(path, workspace)) await reloadConversations(workspace);
-  }
-}
-
-async function renameJourney(id: string, title: string, path = workspace) {
-  if (!path) return;
-  try {
-    const next = await api.renameJourney(path, id, title);
-    if (isSameProject(path, workspace)) {
-      setJourneys((rows) => rows.map((row) => (row.id === id ? next : row)));
-    } else {
-      setAllProjectGroups((prev) =>
-        upsertProjectGroup(prev, path, {
-          journeys: (prev.find((group) => isSameProject(group.path, path))?.journeys ?? []).map((row) =>
-            row.id === id ? next : row,
-          ),
-        }),
-      );
-    }
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-  }
-}
-
-async function deleteJourney(id: string, deleteChats: boolean, path = workspace) {
-  if (!path) return;
-  const kids = projectConversations(path).filter((row) => row.journey_id === id);
-  try {
-    if (deleteChats) {
-      for (const kid of kids) {
-        deletedIdsRef.current.add(kid.id);
-        setPending(clearPendingForChat(pendingRef.current, kid.id));
-        const turn = turnsRef.current.get(kid.id);
-        if (turn) turn.abort();
-        else if (runningId === kid.id) abortRef.current?.abort();
-        await terminalSessions.dispose(kid.id);
-      }
-    }
-    await api.deleteJourney(path, id, deleteChats);
-    if (isSameProject(path, workspace)) {
-      setEditor((prev) => closeEditorTab(prev, journeyKnowledgePath(id)));
-      setDirtyFiles((prev) => {
-        const next = { ...prev };
-        delete next[journeyKnowledgePath(id)];
-        return next;
-      });
-      const prefer = deleteChats && kids.some((kid) => kid.id === activeId) ? undefined : activeId;
-      await reloadConversations(workspace, prefer);
-    } else {
-      const [rows, nextJourneys] = await Promise.all([
-        api.listConversations(path),
-        api.listJourneys(path),
-      ]);
-      applyProjectData(path, rows, nextJourneys);
-    }
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-  }
-}
-
-async function moveConversation(id: string, journeyId: string | null, path = workspace) {
-  if (!path) return;
-  try {
-    await api.moveConversation(path, id, journeyId);
-    const [rows, nextJourneys] = await Promise.all([
-      api.listConversations(path),
-      api.listJourneys(path),
-    ]);
-    applyProjectData(path, rows, nextJourneys);
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
   }
 }
 
@@ -1661,13 +1422,5 @@ async function moveConversation(id: string, journeyId: string | null, path = wor
     persist,
     watchHosted,
     reorderChats,
-    reorderSidebar,
-    createJourneyFromChat,
-    openJourneyKnowledge,
-    toggleJourney,
-    setJourneyColor,
-    renameJourney,
-    deleteJourney,
-    moveConversation,
   };
 }

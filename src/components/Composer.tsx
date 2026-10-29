@@ -1623,7 +1623,8 @@ const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
   { id: "minimax", label: "MiniMax", icon: "logo.minimax" },
 ];
 
-const PROVIDER_ORDER: ProviderId[] = ["xai", "minimax", "anthropic"];
+// Same order as the provider rail, so a click scrolls downward through the list.
+const PROVIDER_ORDER: ProviderId[] = ["xai", "anthropic", "minimax"];
 
 function orderModels(models: Model[]): Model[] {
   return [...models].sort((a, b) => {
@@ -1663,6 +1664,181 @@ function providerIconClass(id: ProviderId, on: boolean): string {
   return "bg-wash-strong text-ink";
 }
 
+function isProviderId(value: string | undefined): value is ProviderId {
+  return value === "xai" || value === "anthropic" || value === "minimax";
+}
+
+function providerSections(models: Model[]) {
+  const buckets = new Map<ProviderId, Model[]>();
+  for (const model of models) {
+    const provider = modelProvider(model);
+    const rows = buckets.get(provider);
+    if (rows) rows.push(model);
+    else buckets.set(provider, [model]);
+  }
+  const seen = new Set<ProviderId>();
+  const sections: { provider: ProviderId; families: ReturnType<typeof groupModelFamilies<Model>> }[] = [];
+  const push = (provider: ProviderId) => {
+    const rows = buckets.get(provider);
+    if (!rows?.length || seen.has(provider)) return;
+    seen.add(provider);
+    sections.push({ provider, families: groupModelFamilies(rows) });
+  };
+  for (const provider of PROVIDER_ORDER) push(provider);
+  for (const provider of buckets.keys()) push(provider);
+  return sections;
+}
+
+function scrollModelListTo(list: HTMLElement, target: HTMLElement, behavior: ScrollBehavior = "auto") {
+  const top = Math.max(0, list.scrollTop + target.getBoundingClientRect().top - list.getBoundingClientRect().top);
+  const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  list.scrollTo({ top, behavior: reduce ? "auto" : behavior });
+}
+
+/** Keep a family's heading with its first row. Later versions scroll to the row itself. */
+function modelListAnchor(row: HTMLElement): HTMLElement {
+  const family = row.closest<HTMLElement>("[data-family]");
+  if (!family) return row;
+  return family.querySelector("button") === row ? family : row;
+}
+
+function providerAtListTop(list: HTMLElement): ProviderId | null {
+  const rows = list.querySelectorAll<HTMLElement>("[data-provider-section]");
+  if (!rows.length) return null;
+  const edge = list.getBoundingClientRect().top + 8;
+  let current: ProviderId | null = null;
+  for (const row of rows) {
+    const provider = row.dataset.providerSection;
+    if (!isProviderId(provider)) continue;
+    if (row.getBoundingClientRect().top <= edge) current = provider;
+    else if (!current) return provider;
+    else break;
+  }
+  return current;
+}
+
+function ModelProviderRail({
+  providers,
+  lockedProviders,
+  selectedProvider,
+  listRef,
+  listToken,
+  onJump,
+}: {
+  providers: { id: ProviderId; label: string; icon: string }[];
+  lockedProviders: string[] | null;
+  selectedProvider: ProviderId | null;
+  listRef: RefObject<HTMLDivElement | null>;
+  listToken: string;
+  onJump: (id: ProviderId) => boolean;
+}) {
+  const [active, setActive] = useState<ProviderId | null>(selectedProvider);
+  const [providerTip, setProviderTip] = useState<{ label: string; top: number; left: number } | null>(null);
+  const holdScroll = useRef(false);
+  const finishScroll = useRef<(() => void) | null>(null);
+  const scrollTimer = useRef(0);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const read = () => {
+      if (holdScroll.current) return;
+      const next = providerAtListTop(list);
+      setActive((current) => (current === next ? current : next));
+    };
+    const release = () => {
+      holdScroll.current = false;
+      window.clearTimeout(scrollTimer.current);
+      if (finishScroll.current) list.removeEventListener("scrollend", finishScroll.current);
+      finishScroll.current = null;
+    };
+    read();
+    list.addEventListener("scroll", read, { passive: true });
+    list.addEventListener("wheel", release, { passive: true });
+    list.addEventListener("touchmove", release, { passive: true });
+    return () => {
+      release();
+      list.removeEventListener("scroll", read);
+      list.removeEventListener("wheel", release);
+      list.removeEventListener("touchmove", release);
+    };
+  }, [listRef, listToken]);
+
+  return (
+    <div className="flex w-9 max-w-9 min-w-9 shrink-0 flex-col gap-0.5 overflow-hidden border-r border-line/20 bg-panel/40 p-1" role="group" aria-label="Model providers">
+      {providers.map((row) => {
+        const on = active === row.id;
+        const locked = lockedProviders != null && !lockedProviders.includes(row.id);
+        return (
+          <button
+            key={row.id}
+            type="button"
+            aria-pressed={on}
+            aria-label={locked ? `${row.label}, no key on this server` : row.label}
+            title={locked ? "This server does not have this provider key" : undefined}
+            onClick={() => {
+              const list = listRef.current;
+              if (!list) return;
+              // Hold the scroll spy before the smooth scroll starts, or the first
+              // scroll event snaps the highlight back to the section that is leaving.
+              holdScroll.current = true;
+              if (!onJump(row.id)) {
+                holdScroll.current = false;
+                return;
+              }
+              setActive(row.id);
+              window.clearTimeout(scrollTimer.current);
+              if (finishScroll.current) list.removeEventListener("scrollend", finishScroll.current);
+              const finish = () => {
+                if (finishScroll.current !== finish) return;
+                finishScroll.current = null;
+                holdScroll.current = false;
+                window.clearTimeout(scrollTimer.current);
+                list.removeEventListener("scrollend", finish);
+                const next = providerAtListTop(list);
+                setActive((current) => (current === next ? current : next));
+              };
+              finishScroll.current = finish;
+              list.addEventListener("scrollend", finish);
+              scrollTimer.current = window.setTimeout(finish, 1000);
+            }}
+            onMouseEnter={(event) => {
+              const box = event.currentTarget.getBoundingClientRect();
+              setProviderTip({ label: row.label, top: box.top + box.height / 2, left: box.right + 8 });
+            }}
+            onMouseLeave={() => setProviderTip(null)}
+            data-colored={on || undefined}
+            className={`group/minimax flex h-7 w-full shrink-0 items-center justify-center rounded-md transition-colors duration-150 ${
+              locked && !on ? "cursor-pointer text-muted/35 hover:bg-wash" : `cursor-pointer ${providerIconClass(row.id, on)}`
+            }`}
+          >
+            <Symbol name={row.icon} className="size-3.5" />
+          </button>
+        );
+      })}
+      {createPortal(
+        <AnimatePresence>
+          {providerTip ? (
+            <motion.span
+              key={providerTip.label}
+              role="tooltip"
+              initial={{ opacity: 0, x: -4 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -4 }}
+              transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
+              style={{ top: providerTip.top, left: providerTip.left }}
+              className="pointer-events-none fixed z-50 -translate-y-1/2 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink shadow-card"
+            >
+              {providerTip.label}
+            </motion.span>
+          ) : null}
+        </AnimatePresence>,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 function ModelSelect({
   models,
   value,
@@ -1675,22 +1851,20 @@ function ModelSelect({
   lockedProviders?: string[] | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [focus, setFocus] = useState<ProviderId | null>(() => {
-    const current = models.find((row) => row.id === value);
-    return current ? modelProvider(current) : null;
-  });
   const [query, setQuery] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const wasOpen = useRef(false);
   const [menuAbove, setMenuAbove] = useState(true);
   const selected = models.find((row) => row.id === value);
   const providers = MODEL_PROVIDERS.filter((row) => models.some((model) => modelProvider(model) === row.id));
-  const [providerTip, setProviderTip] = useState<{ label: string; top: number; left: number } | null>(null);
   const needle = query.trim();
-  const scoped = focus ? models.filter((model) => modelProvider(model) === focus) : models;
-  const shown = filterModels(scoped, needle);
-  const families = groupModelFamilies(shown);
+  const shown = filterModels(models, needle);
+  const sections = providerSections(shown);
+  const listToken = shown.map((row) => row.id).join("\n");
+  const selectedProvider = selected ? modelProvider(selected) : null;
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -1699,12 +1873,17 @@ function ModelSelect({
     setMenuAbove(frame.top - 320 - 6 >= 8);
   }, [open]);
 
-  // The menu stays mounted. Switching chats must not leave the previous provider filtered in.
-  useEffect(() => {
-    if (open) return;
-    const current = models.find((row) => row.id === value);
-    setFocus(current ? modelProvider(current) : null);
-  }, [open, models, value]);
+  // Open on the selected row. The rail only scrolls; it does not filter the list.
+  useLayoutEffect(() => {
+    const justOpened = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (!justOpened) return;
+    const list = listRef.current;
+    if (!list) return;
+    const row = list.querySelector<HTMLElement>(`[data-model-id="${CSS.escape(value)}"]`);
+    if (!row) return;
+    scrollModelListTo(list, modelListAnchor(row));
+  }, [open, value]);
 
   useEffect(() => {
     if (!open) return;
@@ -1733,10 +1912,7 @@ function ModelSelect({
         aria-expanded={open}
         onClick={() => {
           setOpen((current) => {
-            if (!current) {
-              if (selected) setFocus(modelProvider(selected));
-              setQuery("");
-            }
+            if (!current) setQuery("");
             return !current;
           });
         }}
@@ -1756,60 +1932,31 @@ function ModelSelect({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: menuAbove ? 6 : -6 }}
             transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
-            className={`absolute left-0 z-30 flex h-80 w-[420px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
+            className={`no-scrollbar absolute left-0 z-30 flex h-80 w-[420px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card ${
               menuAbove ? "bottom-full mb-1 origin-bottom" : "top-full mt-1 origin-top"
             }`}
           >
-            <div className="flex w-9 shrink-0 flex-col gap-0.5 border-r border-line/20 bg-panel/40 p-1" role="group" aria-label="Model providers">
-              {providers.map((row) => {
-                const on = focus === row.id;
-                const locked = lockedProviders != null && !lockedProviders.includes(row.id);
-                return (
-                  <button
-                    key={row.id}
-                    type="button"
-                    aria-pressed={on}
-                    aria-disabled={locked}
-                    aria-label={locked ? `${row.label}, no key on this server` : row.label}
-                    title={locked ? "This server does not have this provider key" : undefined}
-                    onClick={() => {
-                      if (locked) return;
-                      setFocus((current) => (current === row.id ? null : row.id));
-                    }}
-                    onMouseEnter={(event) => {
-                      const box = event.currentTarget.getBoundingClientRect();
-                      setProviderTip({ label: row.label, top: box.top + box.height / 2, left: box.right + 8 });
-                    }}
-                    onMouseLeave={() => setProviderTip(null)}
-                    data-colored={on || undefined}
-                    className={`group/minimax flex size-7 items-center justify-center rounded-md transition-colors duration-150 ${
-                      locked ? "cursor-not-allowed text-muted/35" : `cursor-pointer ${providerIconClass(row.id, on)}`
-                    }`}
-                  >
-                    <Symbol name={row.icon} className="size-3.5" />
-                  </button>
-                );
-              })}
-            </div>
-            {createPortal(
-              <AnimatePresence>
-                {providerTip ? (
-                  <motion.span
-                    key={providerTip.label}
-                    role="tooltip"
-                    initial={{ opacity: 0, x: -4 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -4 }}
-                    transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
-                    style={{ top: providerTip.top, left: providerTip.left }}
-                    className="pointer-events-none fixed z-50 -translate-y-1/2 rounded-md border border-line bg-canvas px-2 py-1 text-[12px] font-medium text-ink shadow-card"
-                  >
-                    {providerTip.label}
-                  </motion.span>
-                ) : null}
-              </AnimatePresence>,
-              document.body,
-            )}
+            <ModelProviderRail
+              providers={providers}
+              lockedProviders={lockedProviders}
+              selectedProvider={selectedProvider}
+              listRef={listRef}
+              listToken={listToken}
+              onJump={(provider) => {
+                const list = listRef.current;
+                if (!list) return false;
+                const selectedRow =
+                  provider === selectedProvider
+                    ? list.querySelector<HTMLElement>(`[data-model-id="${CSS.escape(value)}"]`)
+                    : null;
+                const target = selectedRow
+                  ? modelListAnchor(selectedRow)
+                  : list.querySelector<HTMLElement>(`[data-provider-section="${provider}"]`);
+                if (!target) return false;
+                scrollModelListTo(list, target, "smooth");
+                return true;
+              }}
+            />
             <div className="flex min-w-0 flex-1 flex-col">
               <div className="flex shrink-0 items-center gap-2 border-b border-line/20 px-2.5">
                 <Symbol name="magnifyingglass" className="size-3.5 shrink-0 text-muted" />
@@ -1830,77 +1977,71 @@ function ModelSelect({
                   className="h-9 min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-muted"
                 />
               </div>
-              <div className="min-h-0 flex-1 overflow-auto py-1">
-              {families.length ? (
-              <AnimatePresence initial={false} mode="popLayout">
-                {families.map((family) => {
-                  const versions = family.models.length > 1;
-                  const shared = sharedModelCapabilities(family.models);
-                  return (
-                    <motion.div
-                      key={family.key}
-                      role="group"
-                      aria-label={family.label}
-                      layout
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      transition={{ duration: 0.14, ease: MODEL_MENU_EASE }}
-                      className="py-0.5"
-                    >
-                      {versions ? (
-                        <div className="flex items-center gap-2 px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
-                          <span className="min-w-0 flex-1 truncate">{family.label}</span>
-                          {shared ? <CapabilityIcons ids={shared} /> : null}
+              <div ref={listRef} className="model-menu-list min-h-0 flex-1 overflow-x-hidden overflow-y-scroll py-1 [overflow-anchor:none]">
+              {sections.length ? (
+                sections.map((section) => (
+                  <div key={section.provider} data-provider-section={section.provider}>
+                    {section.families.map((family) => {
+                      const versions = family.models.length > 1;
+                      const shared = sharedModelCapabilities(family.models);
+                      return (
+                        <div key={family.key} data-family={family.key} role="group" aria-label={family.label} className="py-0.5">
+                          {versions ? (
+                            <div className="flex items-center gap-2 px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
+                              <span className="min-w-0 flex-1 truncate">{family.label}</span>
+                              {shared ? <CapabilityIcons ids={shared} /> : null}
+                            </div>
+                          ) : null}
+                          {family.models.map((row) => {
+                            const current = row.id === value;
+                            const locked = modelLocked(row, lockedProviders);
+                            const context = contextWindowLabel(row.context_window ?? 0);
+                            const label = versions ? modelFamilyName(row.name).version || row.name : row.name;
+                            return (
+                              <button
+                                key={row.id}
+                                type="button"
+                                role="menuitemradio"
+                                data-model-id={row.id}
+                                data-provider={section.provider}
+                                aria-checked={current}
+                                aria-disabled={locked}
+                                aria-label={row.name}
+                                disabled={locked}
+                                title={locked ? "This server does not have this provider key" : undefined}
+                                onClick={() => {
+                                  if (locked) return;
+                                  onChange(row.id);
+                                  setOpen(false);
+                                }}
+                                className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 ${
+                                  versions ? "pr-2.5 pl-6" : "px-2.5"
+                                } ${
+                                  locked
+                                    ? "cursor-not-allowed text-muted/45"
+                                    : `cursor-pointer hover:bg-wash ${current ? "font-medium text-ink" : "text-ink/80"}`
+                                }`}
+                              >
+                                <ModelIcon model={row} className="size-3.5" />
+                                <span className="min-w-0 flex-1 truncate">{label}</span>
+                                {context ? (
+                                  <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
+                                    {context} ctx
+                                  </span>
+                                ) : null}
+                                <CapabilityIcons ids={row.capabilities} faded={Boolean(shared)} />
+                                <Symbol
+                                  name="checkmark"
+                                  className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${current ? "opacity-100" : "opacity-0"}`}
+                                />
+                              </button>
+                            );
+                          })}
                         </div>
-                      ) : null}
-                      {family.models.map((row) => {
-                        const current = row.id === value;
-                        const locked = modelLocked(row, lockedProviders);
-                        const context = contextWindowLabel(row.context_window ?? 0);
-                        const label = versions ? modelFamilyName(row.name).version || row.name : row.name;
-                        return (
-                          <button
-                            key={row.id}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={current}
-                            aria-disabled={locked}
-                            aria-label={row.name}
-                            disabled={locked}
-                            title={locked ? "This server does not have this provider key" : undefined}
-                            onClick={() => {
-                              if (locked) return;
-                              onChange(row.id);
-                              setOpen(false);
-                            }}
-                            className={`flex h-7 w-full items-center gap-2 text-left text-[12px] transition-colors duration-150 ${
-                              versions ? "pr-2.5 pl-6" : "px-2.5"
-                            } ${
-                              locked
-                                ? "cursor-not-allowed text-muted/45"
-                                : `cursor-pointer hover:bg-wash ${current ? "font-medium text-ink" : "text-ink/80"}`
-                            }`}
-                          >
-                            <ModelIcon model={row} className="size-3.5" />
-                            <span className="min-w-0 flex-1 truncate">{label}</span>
-                            {context ? (
-                              <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
-                                {context} ctx
-                              </span>
-                            ) : null}
-                            <CapabilityIcons ids={row.capabilities} faded={Boolean(shared)} />
-                            <Symbol
-                              name="checkmark"
-                              className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${current ? "opacity-100" : "opacity-0"}`}
-                            />
-                          </button>
-                        );
-                      })}
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
+                      );
+                    })}
+                  </div>
+                ))
               ) : (
                 <p className="px-2.5 py-2 text-[12px] text-muted">
                   {needle ? "No matching models" : "No models"}
