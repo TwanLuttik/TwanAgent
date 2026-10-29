@@ -7,8 +7,9 @@ export type ToolRevealStep = { index: number; delay: number };
  * A live trail remounts when text lands between tool batches. The same row
  * count, or a longer continuation of the labels already seen, stays put.
  * A shorter list or a fresh batch animates from the start.
- * `0` means nothing has been seen in this open turn yet, so the rows present
- * on first paint (selecting a running conversation) do not animate.
+ * An empty `seenSignature` also returns 0. That does not mean "animate the
+ * open chat": nothing was painted in this visit yet. `toolRowsVisibleOnMount`
+ * turns that into the full row count so selecting a running chat stays still.
  * Folded labels such as "Read app.ts" change text as the count grows, so a
  * same-length list counts as the rows already showing rather than a new batch.
  */
@@ -20,6 +21,19 @@ export function toolRowsAlreadyShown(signature: string, seenSignature: string): 
   const nextCount = signature.split("\n").length;
   if (nextCount === seenCount) return seenCount;
   return 0;
+}
+
+/**
+ * How many folded rows are already on screen when a live trail mounts.
+ * No signature yet means this chat was just opened, or opened again after
+ * leaving it: every call that already ran is visible at once. A signature
+ * from earlier in this visit means we are still watching, so a continuation
+ * keeps those rows and a fresh batch starts from zero.
+ */
+export function toolRowsVisibleOnMount(rowCount: number, signature: string, seenSignature: string): number {
+  if (rowCount <= 0) return 0;
+  if (!seenSignature) return rowCount;
+  return toolRowsAlreadyShown(signature, seenSignature);
 }
 
 /**

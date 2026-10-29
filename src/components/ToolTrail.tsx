@@ -10,7 +10,7 @@ import {
 } from "../lib/core";
 import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
 import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
-import { toolRevealNextAt, toolRevealSteps, toolRowsAlreadyShown } from "../lib/tool-reveal";
+import { toolRevealNextAt, toolRevealSteps, toolRowsVisibleOnMount } from "../lib/tool-reveal";
 import { Symbol } from "./Symbol";
 
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
@@ -119,10 +119,11 @@ export function ToolTrail({
   const signature = rows.map((row) => row.label).join("\n");
   if (rows.length === 0) return null;
   if (!live) {
-    if (signature) seenToolSignatures.set(conversationId, signature);
+    // History renders before the live trail. Writing its labels here made opening
+    // a running chat look like a new batch, so every call already finished staggered in.
     return <ToolTrailRows rows={rows} />;
   }
-  return <LiveToolTrail rows={rows} signature={signature} conversationId={conversationId} />;
+  return <LiveToolTrail key={conversationId} rows={rows} signature={signature} conversationId={conversationId} />;
 }
 
 function LiveToolTrail({
@@ -135,7 +136,10 @@ function LiveToolTrail({
   conversationId: string;
 }) {
   // Read before this paint records itself, so a remount can tell new rows from ones already shown.
-  const [settledOnMount] = useState(() => toolRowsAlreadyShown(signature, seenToolSignatures.get(conversationId) ?? ""));
+  // No signature means we just opened this chat: calls that already ran stay still.
+  const [settledOnMount] = useState(() =>
+    toolRowsVisibleOnMount(rows.length, signature, seenToolSignatures.get(conversationId) ?? ""),
+  );
   const shown = useStaggeredCount(rows.length, signature, settledOnMount);
   const visible = rows.slice(0, shown);
   useEffect(() => {

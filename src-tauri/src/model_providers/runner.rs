@@ -109,6 +109,10 @@ impl<'a> StreamSession<'a> {
         self.emitted_text || self.emitted_reasoning || !self.tools.rows.is_empty()
     }
 
+    pub fn has_tools(&self) -> bool {
+        !self.tools.rows.is_empty()
+    }
+
     pub fn saw_text(&self) -> bool {
         self.emitted_text || !self.pending_delta.is_empty()
     }
@@ -262,29 +266,87 @@ impl<'a> StreamSession<'a> {
     }
 }
 
+/// A whole JSON completion, not an SSE stream. Once a `data:` line has arrived the
+/// bytes are a stream, and a trailing fragment must not be parsed as a second reply.
+fn json_completion_body(raw: &str, saw_sse: bool) -> Option<&str> {
+    if saw_sse {
+        return None;
+    }
+    let body = raw.trim();
+    if body.starts_with('{') && body.ends_with('}') {
+        Some(body)
+    } else {
+        None
+    }
+}
+
+/// `Ok(true)` means the round should finish. A failure with no output is `Err`,
+/// so a provider error is not saved as an empty reply.
+fn absorb_piece(session: &mut StreamSession, piece: StreamPiece) -> Result<bool> {
+    match piece {
+        StreamPiece::Failed(message) => {
+            if session.has_output() || session.saw_text() || session.saw_reasoning() {
+                Ok(true)
+            } else {
+                Err(Error::Other(message))
+            }
+        }
+        StreamPiece::Stop => Ok(true),
+        other => {
+            session.push(other);
+            Ok(false)
+        }
+    }
+}
+
+fn feed_pieces(session: &mut StreamSession, parse: &mut impl FnMut(&str) -> Vec<StreamPiece>, data: &str) -> Result<bool> {
+    let mut stop = false;
+    for piece in parse(data) {
+        if absorb_piece(session, piece)? {
+            stop = true;
+        }
+    }
+    Ok(stop)
+}
+
+fn finish_session(
+    session: &mut StreamSession,
+    parse: &mut impl FnMut(&str) -> Vec<StreamPiece>,
+    on_stop: &mut impl FnMut(&mut StreamSession) -> Option<String>,
+    raw: &str,
+    saw_sse: bool,
+) -> Result<()> {
+    session.flush();
+    if let Some(body) = json_completion_body(raw, saw_sse) {
+        let _ = feed_pieces(session, parse, body)?;
+    }
+    let text = on_stop(session);
+    session.finish(text);
+    Ok(())
+}
+
 /// Drive one HTTP stream. `parse` turns each `data:` payload into zero or more pieces.
 /// A decode error after any output finishes the turn instead of failing it.
+/// A JSON body with no `data:` lines is one completion. Dropping it used to look empty.
 pub async fn consume_sse(
     app: &AppHandle,
     stream_id: &str,
     resp: reqwest::Response,
     cancel: Arc<AtomicBool>,
     mut parse: impl FnMut(&str) -> Vec<StreamPiece>,
-    mut on_stop_text: impl FnMut(&StreamSession) -> Option<String>,
+    mut on_stop: impl FnMut(&mut StreamSession) -> Option<String>,
 ) -> Result<()> {
     let mut stream = resp.bytes_stream();
     let mut buf = String::new();
+    let mut raw = String::new();
+    let mut saw_sse = false;
     let mut session = StreamSession::new(app, stream_id);
     loop {
         // A quiet socket used to ignore Stop until the next byte. Poll the flag instead.
         let next = timeout(Duration::from_millis(100), stream.next()).await;
         let chunk = match next {
             Ok(Some(chunk)) => chunk,
-            Ok(None) => {
-                session.flush();
-                session.finish(on_stop_text(&session));
-                return Ok(());
-            }
+            Ok(None) => return finish_session(&mut session, &mut parse, &mut on_stop, &raw, saw_sse),
             Err(_) => {
                 if cancel.load(Ordering::Relaxed) {
                     session.stopped();
@@ -301,38 +363,37 @@ pub async fn consume_sse(
             Ok(chunk) => chunk,
             Err(err) => {
                 session.flush();
-                if session.has_output() {
-                    session.finish(on_stop_text(&session));
+                if session.has_output() || session.saw_text() || session.saw_reasoning() {
+                    let text = on_stop(&mut session);
+                    session.finish(text);
                     return Ok(());
                 }
                 return Err(Error::Other(format!("error decoding response body: {err}")));
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&chunk));
+        let text = String::from_utf8_lossy(&chunk);
+        if !saw_sse && raw.len() < 4_000_000 {
+            raw.push_str(&text);
+        }
+        buf.push_str(&text);
         while let Some(idx) = buf.find('\n') {
             let line = buf[..idx].trim().to_string();
             buf.drain(..=idx);
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
+            saw_sse = true;
+            raw.clear();
             let data = data.trim();
             if data.is_empty() {
                 continue;
             }
             if data == "[DONE]" {
-                session.finish(on_stop_text(&session));
-                return Ok(());
+                return finish_session(&mut session, &mut parse, &mut on_stop, &raw, true);
             }
-            let mut stop = false;
-            for piece in parse(data) {
-                if matches!(piece, StreamPiece::Stop) {
-                    stop = true;
-                    continue;
-                }
-                session.push(piece);
-            }
-            if stop {
-                session.finish(on_stop_text(&session));
+            if feed_pieces(&mut session, &mut parse, data)? {
+                let text = on_stop(&mut session);
+                session.finish(text);
                 return Ok(());
             }
         }
@@ -378,6 +439,17 @@ mod tests {
         assert_eq!(take_coalesced(&mut pending), Some("held".into()));
         assert!(pending.is_empty());
         assert_eq!(take_coalesced(&mut pending), None);
+    }
+
+    #[test]
+    fn a_json_body_is_a_completion_only_when_no_sse_arrived() {
+        assert_eq!(
+            json_completion_body("  {\"choices\":[]}  ", false),
+            Some("{\"choices\":[]}")
+        );
+        assert_eq!(json_completion_body("{\"choices\":[]}", true), None);
+        assert_eq!(json_completion_body("data: {\"choices\":[]}", false), None);
+        assert_eq!(json_completion_body("", false), None);
     }
 
     #[test]

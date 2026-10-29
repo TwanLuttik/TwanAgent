@@ -208,10 +208,11 @@ describe("mcp copy", () => {
     assert.equal(mcpPillSummary(servers), "MCP · 1/2");
     assert.equal(mcpSystemLine([]), "");
     const line = mcpSystemLine(servers);
-    assert.match(line, /not connected/);
-    assert.match(line, /github \(\.cursor\/mcp\.json\)/);
-    assert.match(line, /railway \(\.mcp\.json\)/);
-    assert.match(line, /cannot call/);
+    assert.match(line, /mcp__server__tool/);
+    assert.match(line, /github/);
+    assert.match(line, /1 disabled/);
+    assert.doesNotMatch(line, /not connected/);
+    assert.doesNotMatch(line, /cannot call/);
   });
 });
 

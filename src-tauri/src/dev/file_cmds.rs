@@ -126,6 +126,13 @@ pub fn dev_list_skill_files(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn dev_load_skill(state: State<'_, AppState>, workspace: String, name: String) -> Result<String> {
+    let root = state.require_workspace(&workspace)?;
+    let home = crate::dev::paths::home_dir().unwrap_or_default();
+    Ok(twanagent_service::capabilities::load_skill_at(&root, &home, &name))
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn dev_read_user_skill(path: String) -> Result<String> {
     crate::dev::skills::read_user_skill(&path)
 }

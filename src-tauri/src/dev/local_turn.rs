@@ -18,6 +18,7 @@ use crate::state::AppState;
 
 const EVENT: &str = "dev-local-turn";
 const FAILURE_PREFIX: &str = "Couldn't continue: ";
+const EMPTY_REPLY: &str = "Grok returned an empty reply.";
 const CONTEXT_LIMIT_MESSAGE: &str =
     "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
 
@@ -235,6 +236,8 @@ pub async fn dev_local_turn_start(
 
 fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurnStart, live: &Arc<LiveTurn>) {
     let id = request.conversation_id.trim();
+    let home = crate::dev::paths::home_dir().unwrap_or_default();
+    let _capabilities = twanagent_service::capabilities::install(id, workspace, &home);
     let model = if request.model.trim().is_empty() {
         "grok-4.6".to_string()
     } else {
@@ -248,6 +251,7 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let (mut prompt_tokens, mut compaction) = load_budget(data_dir, &request.workspace, id);
     let mut overflow_retries = 0u8;
+    let mut model_tries = 0u8;
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
         if stopped(live) {
@@ -283,8 +287,8 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
                 return;
             }
         }
-        let prompt = build_prompt(workspace, &transcript, compaction.as_ref(), &request.system, &permission, &model, plan);
-        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false).await_round() {
+        let prompt = build_prompt(workspace, &transcript, compaction.as_ref(), &request.system, &permission, &model, plan, id);
+        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false, twanagent_service::capabilities::tool_defs(id)).await_round() {
             Ok(round) => round,
             Err(err) => {
                 let message = err.to_string();
@@ -356,6 +360,10 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
                 emit(app, id, "stopped", None, None, None);
                 return;
             }
+            if model_tries < 1 && retryable_model_error(&error) {
+                model_tries = 1;
+                continue;
+            }
             let text = context_failure_text(&error);
             fail(app, id, &mut transcript, text);
             save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
@@ -366,9 +374,16 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             prompt_tokens = usage.prompt_tokens;
         }
         overflow_retries = 0;
+        // A blank round is usually a dropped final message or a one-off empty completion.
+        // Ask once more before ending the turn. The webview loop already did this.
+        if round_is_empty(&round) && model_tries < 1 && !stopped(live) {
+            model_tries = 1;
+            continue;
+        }
+        model_tries = 0;
         if round.tool_calls.is_empty() {
-            if round.text.trim().is_empty() && round.reasoning.trim().is_empty() {
-                fail(app, id, &mut transcript, "Grok returned an empty reply.");
+            if round_is_empty(&round) {
+                fail(app, id, &mut transcript, EMPTY_REPLY);
             } else {
                 transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
             }
@@ -429,6 +444,7 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             }
             contents.push(run_tool(
                 app,
+                id,
                 id,
                 workspace,
                 data_dir,
@@ -504,6 +520,7 @@ struct RoundWait {
     journey_id: Option<String>,
     /// A compaction summary must not paint the chat as if the model were answering.
     quiet: bool,
+    extra_tools: Vec<Value>,
 }
 
 impl RoundWait {
@@ -520,6 +537,7 @@ impl RoundWait {
             cancel,
             journey_id,
             quiet,
+            extra_tools,
         } = self;
         let state = app.state::<AppState>();
         let progress_app = app.clone();
@@ -553,6 +571,7 @@ impl RoundWait {
                 journey_id.filter(|value| !value.trim().is_empty())
             },
             cancel.clone(),
+            extra_tools,
             move |progress| {
                 if quiet || progress.text.is_empty() {
                     return;
@@ -606,6 +625,7 @@ fn stream_round(
     cancel: &Arc<AtomicBool>,
     journey_id: Option<String>,
     quiet: bool,
+    extra_tools: Vec<Value>,
 ) -> RoundWait {
     RoundWait {
         app: app.clone(),
@@ -622,12 +642,14 @@ fn stream_round(
         cancel: cancel.clone(),
         journey_id,
         quiet,
+        extra_tools,
     }
 }
 
 fn run_tool(
     app: &AppHandle,
     conversation_id: &str,
+    capability_id: &str,
     workspace: &Path,
     data_dir: &Path,
     workspace_key: &str,
@@ -641,6 +663,9 @@ fn run_tool(
     context_window: Option<u64>,
     live: &Arc<LiveTurn>,
 ) -> String {
+    if let Some(text) = twanagent_service::capabilities::call(capability_id, &call.name, &call.arguments) {
+        return text;
+    }
     if permission == "read-only" && matches!(call.name.as_str(), "write_file" | "edit_file" | "run_command" | "git_commit") {
         return format!("Error: {} is blocked in read-only mode.", call.name);
     }
@@ -778,7 +803,12 @@ fn spawn_subagent(
         children.push(cancel.clone());
     }
     let knowledge = journey_knowledge(data_dir, workspace_key, journey_id);
-    let system = subagent_system(&workspace.display().to_string(), child_type, &description, permission, &knowledge, &model);
+    let mut system = subagent_system(&workspace.display().to_string(), child_type, &description, permission, &knowledge, &model);
+    let block = twanagent_service::capabilities::prompt_block(conversation_id);
+    if !block.is_empty() {
+        system.push('\n');
+        system.push_str(&block);
+    }
     let child_request = LocalTurnStart {
         workspace: workspace_key.to_string(),
         conversation_id: conversation_id.to_string(),
@@ -842,6 +872,7 @@ fn drive_subagent(
     let mut compaction: Option<super::types::DevCompaction> = None;
     let mut prompt_tokens = 0u64;
     let mut overflow_retries = 0u8;
+    let mut model_tries = 0u8;
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let mut failed = String::new();
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
@@ -899,6 +930,7 @@ fn drive_subagent(
             }
         }
         let prompt = build_child_prompt(&transcript, compaction.as_ref(), &request.system);
+        let extra_tools = twanagent_service::capabilities::tool_defs(parent_id);
         let stream_id = format!("subagent:{child_id}");
         if let Some(turn) = live(parent_id) {
             if let Ok(mut streams) = turn.child_streams.lock() {
@@ -917,6 +949,7 @@ fn drive_subagent(
             cancel,
             request.journey_id.clone(),
             false,
+            extra_tools,
         )
         .await_round()
         {
@@ -1009,6 +1042,10 @@ fn drive_subagent(
                 );
                 return format!("Subagent stopped: {description}");
             }
+            if model_tries < 1 && retryable_model_error(&error) {
+                model_tries = 1;
+                continue;
+            }
             failed = context_failure_text(&error).to_string();
             emit_subagent(app, parent_id, "error", child_id, json!({ "error": failed }));
             emit_subagent(
@@ -1024,6 +1061,11 @@ fn drive_subagent(
             prompt_tokens = usage.prompt_tokens;
         }
         overflow_retries = 0;
+        if round_is_empty(&round) && model_tries < 1 && !stopped_flag(cancel) && !stopped(parent) {
+            model_tries = 1;
+            continue;
+        }
+        model_tries = 0;
         if !round.streamed_reasoning && !round.reasoning.trim().is_empty() {
             emit_subagent(app, parent_id, "reasoning", child_id, json!({ "text": round.reasoning.trim() }));
         }
@@ -1031,8 +1073,8 @@ fn drive_subagent(
             emit_subagent(app, parent_id, "delta", child_id, json!({ "text": round.text }));
         }
         if round.tool_calls.is_empty() {
-            if round.text.trim().is_empty() && round.reasoning.trim().is_empty() {
-                let error = "Grok returned an empty reply.".to_string();
+            if round_is_empty(&round) {
+                let error = EMPTY_REPLY.to_string();
                 emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
                 emit_subagent(
                     app,
@@ -1069,6 +1111,7 @@ fn drive_subagent(
                 }
                 run_tool(
                     app,
+                    parent_id,
                     parent_id,
                     workspace,
                     data_dir,
@@ -1262,6 +1305,10 @@ fn tool_activity_label(call: &DevToolCall) -> String {
             if description.is_empty() { "Run command".into() } else { format!("Run {description}") }
         }
         "todo_write" => "Updated todos".into(),
+        "load_skill" => {
+            let name = str_arg(&args, "name").trim();
+            if name.is_empty() { "Load skill".into() } else { format!("Load skill {name}") }
+        }
         _ => call.name.clone(),
     }
 }
@@ -1454,6 +1501,20 @@ fn cap_tool_text(text: &str) -> String {
     format!("{head}\n… omitted {omitted} characters …\n{tail}")
 }
 
+fn strip_capability_lines(system: &str) -> String {
+    system
+        .lines()
+        .filter(|line| {
+            !line.contains("load_skill")
+                && !line.contains("mcp__server__tool")
+                && !line.contains("not connected")
+                && !line.contains("not auto-loaded")
+                && !line.contains("MCP this turn")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn build_prompt(
     workspace: &Path,
     transcript: &[Value],
@@ -1462,6 +1523,7 @@ fn build_prompt(
     permission: &str,
     model: &str,
     plan: bool,
+    conversation_id: &str,
 ) -> Vec<Value> {
     let base = if system.trim().is_empty() {
         let perm = match permission {
@@ -1480,6 +1542,15 @@ fn build_prompt(
         )
     } else {
         system.trim().to_string()
+    };
+    let base = strip_capability_lines(&base);
+    let block = twanagent_service::capabilities::prompt_block(conversation_id);
+    let base = if block.is_empty() {
+        base
+    } else if base.is_empty() {
+        block
+    } else {
+        format!("{base}\n{block}")
     };
     let context = super::compact::messages_for_context(transcript, compaction);
     let mut messages = vec![json!({ "role": "system", "content": base })];
@@ -1705,6 +1776,7 @@ fn fold_once(
         cancel,
         None,
         true,
+        Vec::new(),
     )
     .await_round()
     {
@@ -1962,6 +2034,43 @@ fn int_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
     args.get(key).and_then(twanagent_service::parse_line_int)
 }
 
+fn round_is_empty(round: &Round) -> bool {
+    round.error.is_none()
+        && round.tool_calls.is_empty()
+        && round.text.trim().is_empty()
+        && round.reasoning.trim().is_empty()
+}
+
+/// Transport and provider failures the webview loop already tries once more.
+/// Context-length errors are not included: those fold the transcript instead.
+fn retryable_model_error(error: &str) -> bool {
+    if super::compact::is_context_length_error(error) {
+        return false;
+    }
+    let text = error.to_lowercase();
+    if text.is_empty()
+        || text.contains("stopped")
+        || text.contains("signed in")
+        || text.contains("401")
+        || text.contains("api key")
+        || text.contains("login expired")
+    {
+        return false;
+    }
+    text.contains("xai request failed")
+        || text.contains("429")
+        || text.contains("500")
+        || text.contains("502")
+        || text.contains("503")
+        || text.contains("504")
+        || text.contains("timed out")
+        || text.contains("timeout")
+        || text.contains("decoding response body")
+        || text.contains("connection reset")
+        || text.contains("broken pipe")
+        || text.contains("model stream closed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2069,6 +2178,49 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_round_is_empty_and_a_real_reply_is_not() {
+        let mut round = Round {
+            text: "  ".into(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            thinking: Vec::new(),
+            usage: None,
+            error: None,
+            streamed_text: false,
+            streamed_reasoning: false,
+        };
+        assert!(round_is_empty(&round));
+        round.text = "done".into();
+        assert!(!round_is_empty(&round));
+        round.text.clear();
+        round.reasoning = "looked".into();
+        assert!(!round_is_empty(&round));
+        round.reasoning.clear();
+        round.tool_calls.push(DevToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        });
+        assert!(!round_is_empty(&round));
+        round.tool_calls.clear();
+        round.error = Some("xAI request failed: overloaded".into());
+        assert!(!round_is_empty(&round));
+    }
+
+    #[test]
+    fn empty_and_transport_failures_are_retried_once_but_auth_and_context_are_not() {
+        assert!(retryable_model_error("xAI request failed: overloaded"));
+        assert!(retryable_model_error("error decoding response body"));
+        assert!(retryable_model_error("the model stream closed"));
+        assert!(!retryable_model_error("Stopped."));
+        assert!(!retryable_model_error("Grok CLI login expired. Run grok login."));
+        assert!(!retryable_model_error("xAI rejected the API key."));
+        assert!(!retryable_model_error(
+            "This model's maximum context length was exceeded"
+        ));
+    }
+
+    #[test]
     fn int_arg_reads_string_and_number_line_counts() {
         let args = parse_args(r#"{"offset":"10","limit":51}"#);
         assert_eq!(int_arg(&args, "offset"), Some(10));
@@ -2134,7 +2286,7 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "4", "content": "last-file" }),
         ];
         let state = crate::dev::compact::commit_fold(&mut stored, "Read the first files.", 5).unwrap();
-        let prompt = build_prompt(Path::new("workspace"), &stored, Some(&state), "", "ask", "grok-4.7", false);
+        let prompt = build_prompt(Path::new("workspace"), &stored, Some(&state), "", "ask", "grok-4.7", false, "chat");
         let rendered = serde_json::to_string(&prompt).unwrap();
         assert!(rendered.contains("Read the first files."));
         assert!(!rendered.contains("private thought"));

@@ -57,6 +57,20 @@ body {
   background: var(--color-sidebar);
 }
 
+/* Usage, accounts, docs, and settings. Same surface as the composer, just set off the sidebar. */
+.sidebar-dock {
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-panel) 80%, var(--color-sidebar));
+  border: 1px solid color-mix(in srgb, var(--color-line) 32%, transparent);
+  box-shadow: 0 8px 16px -12px rgb(0 0 0 / 0.4);
+}
+
+html[data-theme-mode="light"] .sidebar-dock {
+  background: color-mix(in srgb, var(--color-canvas) 42%, var(--color-sidebar));
+  border-color: color-mix(in srgb, var(--color-line) 50%, transparent);
+  box-shadow: 0 6px 14px -12px rgb(0 0 0 / 0.1);
+}
+
 button,
 input,
 select,
@@ -272,6 +286,21 @@ textarea.text-transparent::selection {
   animation: rail-tip 150ms ease-out;
 }
 
+.focus-menu {
+  animation: focus-menu 120ms ease-out;
+}
+
+@keyframes focus-menu {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @keyframes rail-tip {
   from {
     opacity: 0;
@@ -284,7 +313,8 @@ textarea.text-transparent::selection {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rail-tip {
+  .rail-tip,
+  .focus-menu {
     animation: none;
   }
 }

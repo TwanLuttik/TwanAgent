@@ -172,25 +172,82 @@ pub fn tool_fragments(delta: &Value) -> Vec<ToolFragment> {
     let Some(calls) = delta.get("tool_calls").and_then(|item| item.as_array()) else {
         return Vec::new();
     };
+    // A streamed fragment with no index belongs to call 0. Later chunks repeat that index.
+    calls.iter().map(|call| call_fragment(call, 0)).collect()
+}
+
+/// Tool calls that arrived on the final `message` instead of `delta.tool_calls`.
+/// A missing index uses the array position so two calls in one chunk do not collapse.
+pub fn message_tool_calls(choice: &Value) -> Vec<ToolFragment> {
+    let Some(calls) = choice
+        .get("message")
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(|item| item.as_array())
+    else {
+        return Vec::new();
+    };
     calls
         .iter()
-        .map(|call| ToolFragment {
-            index: call.get("index").and_then(|item| item.as_u64()).unwrap_or(0) as u32,
-            id: call.get("id").and_then(|item| item.as_str()).unwrap_or("").to_string(),
-            name: call
-                .get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(|item| item.as_str())
-                .unwrap_or("")
-                .to_string(),
-            arguments: call
-                .get("function")
-                .and_then(|function| function.get("arguments"))
-                .and_then(|item| item.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
+        .enumerate()
+        .map(|(position, call)| call_fragment(call, position as u32))
+        .filter(|call| !call.name.is_empty())
         .collect()
+}
+
+/// An error object in the SSE body. Ignoring it looks like a successful empty reply.
+pub fn stream_error_message(json: &Value) -> Option<String> {
+    let err = json.get("error").filter(|value| !value.is_null())?;
+    let message = err
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| err.get("message").and_then(|item| item.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let message = message.trim();
+    if message.is_empty() {
+        return Some("xAI request failed.".into());
+    }
+    if message.to_lowercase().starts_with("xai ") {
+        return Some(message.to_string());
+    }
+    Some(format!("xAI request failed: {message}"))
+}
+
+pub fn choice_stop_error(choice: &Value) -> Option<&'static str> {
+    match choice.get("finish_reason").and_then(|item| item.as_str()).unwrap_or("") {
+        "content_filter" => Some("xAI refused this reply."),
+        "error" => Some("xAI request failed."),
+        _ => None,
+    }
+}
+
+fn call_fragment(call: &Value, index_if_missing: u32) -> ToolFragment {
+    let index = call
+        .get("index")
+        .and_then(|item| item.as_u64())
+        .map(|value| value as u32)
+        .unwrap_or(index_if_missing);
+    let function = call.get("function");
+    let name = function
+        .and_then(|item| item.get("name"))
+        .and_then(|item| item.as_str())
+        .filter(|name| !name.is_empty())
+        .or_else(|| call.get("name").and_then(|item| item.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let arguments = match function
+        .and_then(|item| item.get("arguments"))
+        .or_else(|| call.get("arguments"))
+    {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) if !other.is_null() => other.to_string(),
+        _ => String::new(),
+    };
+    ToolFragment {
+        index,
+        id: call.get("id").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+        name,
+        arguments,
+    }
 }
 
 fn api_messages(messages: &Value) -> Value {
@@ -555,5 +612,59 @@ mod tests {
         let rows = tool_fragments(&delta);
         assert_eq!(rows[0].name, "read_file");
         assert_eq!(rows[0].arguments, "{\"path\":");
+    }
+
+    #[test]
+    fn tool_fragments_read_a_top_level_name_and_object_arguments() {
+        let delta = serde_json::json!({
+            "tool_calls": [{ "id": "call-9", "name": "read_file", "arguments": { "path": "src/lib/tool-reveal.ts" } }]
+        });
+        let rows = tool_fragments(&delta);
+        assert_eq!(rows[0].index, 0);
+        assert_eq!(rows[0].name, "read_file");
+        assert_eq!(rows[0].arguments, "{\"path\":\"src/lib/tool-reveal.ts\"}");
+    }
+
+    #[test]
+    fn message_tool_calls_keep_a_final_call_the_delta_never_streamed() {
+        let choice = serde_json::json!({
+            "delta": {},
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                    { "id": "call-1", "function": { "name": "read_file", "arguments": "{\"path\":\"a.ts\"}" } },
+                    { "id": "call-2", "name": "grep", "arguments": { "pattern": "empty reply" } }
+                ]
+            }
+        });
+        let rows = message_tool_calls(&choice);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "read_file");
+        assert_eq!(rows[0].arguments, "{\"path\":\"a.ts\"}");
+        assert_eq!(rows[1].index, 1);
+        assert_eq!(rows[1].name, "grep");
+        assert!(rows[1].arguments.contains("empty reply"));
+        assert!(message_tool_calls(&serde_json::json!({ "delta": {} })).is_empty());
+    }
+
+    #[test]
+    fn stream_errors_are_not_an_empty_success() {
+        assert_eq!(
+            stream_error_message(&serde_json::json!({ "error": { "message": "overloaded", "type": "server_error" } })),
+            Some("xAI request failed: overloaded".into())
+        );
+        assert_eq!(
+            stream_error_message(&serde_json::json!({ "error": "rate limited" })),
+            Some("xAI request failed: rate limited".into())
+        );
+        assert_eq!(stream_error_message(&serde_json::json!({ "error": null })), None);
+        assert_eq!(stream_error_message(&serde_json::json!({})), None);
+        assert_eq!(choice_stop_error(&serde_json::json!({ "finish_reason": "stop" })), None);
+        assert_eq!(
+            choice_stop_error(&serde_json::json!({ "finish_reason": "content_filter" })),
+            Some("xAI refused this reply.")
+        );
     }
 }

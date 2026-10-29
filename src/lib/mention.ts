@@ -80,31 +80,48 @@ export function draftMentionSpans(text: string, files: MentionFile[]): MentionSp
 }
 
 const MENTION_LEAD = String.raw`(?:^|[\s([{])`;
+const MENTION_TAIL = String.raw`(?=$|[\s)\]}.,;:!?])`;
+/** One alternation past this is large enough for the JS regex compiler to throw. */
+const MENTION_PATTERN_MAX = 32_000;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * Show a sent file mention as `@name`. The stored prompt keeps the workspace path
  * so the model still sees it; only paths from the mention list are folded.
+ * The file list can be every file in the project. Compiling that into one regex
+ * throws "regular expression too large" and the chat render takes down the window.
  */
 export function displayFileMentions(text: string, files: MentionFile[]): string {
-  if (!text || !files.length) return text;
-  const paths = [...files]
-    .map((file) => ({
-      path: file.path.replace(/\\/g, "/"),
-      name: file.name || fileBaseName(file.path),
-    }))
-    .filter((file) => file.path.includes("/") && file.name)
-    .sort((a, b) => b.path.length - a.path.length);
-  if (!paths.length) return text;
+  if (!text || !files.length || !text.includes("/")) return text;
   const byPath = new Map<string, string>();
-  for (const file of paths) {
-    if (!byPath.has(file.path)) byPath.set(file.path, file.name);
+  for (const file of files) {
+    const path = file.path.replace(/\\/g, "/");
+    const name = file.name || fileBaseName(file.path);
+    if (!name || !path.includes("/") || path.length > text.length || byPath.has(path)) continue;
+    if (!text.includes(path)) continue;
+    byPath.set(path, name);
   }
-  const pattern = paths.map((file) => file.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const re = new RegExp(`(${MENTION_LEAD})(${pattern})(?=$|[\\s)\\]}.,;:!?])`, "g");
-  return text.replace(re, (full, lead: string, path: string) => {
-    const name = byPath.get(path);
-    return name ? `${lead}@${name}` : full;
-  });
+  if (!byPath.size) return text;
+  const ordered = [...byPath.keys()].sort((a, b) => b.length - a.length);
+  const fold = (source: string, pattern: string) =>
+    source.replace(new RegExp(`(${MENTION_LEAD})(${pattern})${MENTION_TAIL}`, "g"), (full, lead: string, path: string) => {
+      const name = byPath.get(path);
+      return name ? `${lead}@${name}` : full;
+    });
+  const pattern = ordered.map(escapeRegExp).join("|");
+  if (pattern.length <= MENTION_PATTERN_MAX) {
+    try {
+      return fold(text, pattern);
+    } catch {
+      // The compiler can still reject a pattern under the character cap.
+    }
+  }
+  let out = text;
+  for (const path of ordered) out = fold(out, escapeRegExp(path));
+  return out;
 }
 
 /** Replace each picked `@name` with that file's workspace path. Unpicked mentions stay. */

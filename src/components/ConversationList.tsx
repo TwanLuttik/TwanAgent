@@ -21,12 +21,18 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS, type Transform } from "@dnd-kit/utilities";
 import { AnchoredMenu } from "./ContextMenu";
+import { RunningElapsed } from "./RunningElapsed";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { formatModelName } from "../lib/usage";
+
+function turnStartedAt(runningIds: Readonly<Record<string, { startedAt?: number }>>, id: string): number {
+  const startedAt = runningIds[id]?.startedAt ?? 0;
+  return startedAt > 0 ? startedAt : 0;
+}
 
 export function ConversationList({
   conversations,
@@ -47,7 +53,7 @@ export function ConversationList({
 }: {
   conversations: ConversationSummary[];
   activeId: string;
-  runningIds: Record<string, unknown>;
+  runningIds: Readonly<Record<string, { startedAt?: number }>>;
   unseenIds?: ReadonlySet<string>;
   loadingId?: string;
   runningPreview: (id: string) => string;
@@ -179,6 +185,7 @@ export function ConversationList({
               age={
                 !(row.id in runningIds) && loadingId !== row.id ? formatRelativeAge(row.updated_at, nowMs) : ""
               }
+              startedAt={turnStartedAt(runningIds, row.id)}
               onOpen={onOpen}
               onDelete={onDelete}
               onContextMenu={openRowMenu}
@@ -200,6 +207,7 @@ export function ConversationList({
                   ? formatRelativeAge(dragging.updated_at, nowMs)
                   : ""
               }
+              startedAt={turnStartedAt(runningIds, dragging.id)}
               overlay
             />
           </div>
@@ -238,6 +246,7 @@ const SortableRow = memo(function SortableRow({
   insert,
   insertAfter,
   age,
+  startedAt,
   onOpen,
   onSelect,
   onDelete,
@@ -253,6 +262,7 @@ const SortableRow = memo(function SortableRow({
   insert: boolean;
   insertAfter: boolean;
   age: string;
+  startedAt: number;
   onOpen: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
@@ -288,6 +298,7 @@ const SortableRow = memo(function SortableRow({
         todo={todo}
         placeholder={hidden}
         age={age}
+        startedAt={startedAt}
         rowId={row.id}
         onOpen={onOpen}
         onSelect={onSelect}
@@ -313,6 +324,7 @@ const ConversationCard = memo(function ConversationCard({
   placeholder,
   overlay,
   age,
+  startedAt = 0,
   rowId = "",
   onOpen,
   onSelect,
@@ -327,6 +339,7 @@ const ConversationCard = memo(function ConversationCard({
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
+  startedAt?: number;
   rowId?: string;
   onOpen?: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
@@ -364,7 +377,12 @@ const ConversationCard = memo(function ConversationCard({
         <span className="min-w-0 flex-1">
           <span className="block min-w-0 truncate">{row.title}</span>
           {showPreview ? (
-            <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted">{preview}</span>
+            <span className="mt-0.5 flex h-[14px] min-w-0 items-center gap-1.5 text-[11px] leading-[14px] text-muted">
+              <span className="min-w-0 truncate">{preview}</span>
+              {startedAt ? (
+                <RunningElapsed startedAt={startedAt} className="shrink-0 tabular-nums leading-[14px]" />
+              ) : null}
+            </span>
           ) : todo ? (
             <TodoMark badge={todo} />
           ) : null}

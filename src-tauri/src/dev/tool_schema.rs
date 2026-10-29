@@ -249,6 +249,20 @@ fn base_tools_json() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "load_skill",
+                "description": "Read one enabled skill's instructions. Call this before following a skill named in the system prompt.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Skill name from the system prompt." }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "todo_write",
                 "description": "Create or update the step list shown above the user's input. Use for multi-step work. Call at the start of a turn or mid-turn as you progress. Keep at most one item in_progress.",
                 "parameters": {

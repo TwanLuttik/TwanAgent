@@ -53,6 +53,7 @@ const REGISTERED: &[&str] = &[
         "dev_mcp_clear_auth",
         "dev_mcp_sign_in",
         "dev_list_skill_files",
+        "dev_load_skill",
         "dev_read_user_skill",
         "dev_write_user_skill",
         "dev_resolve_file",

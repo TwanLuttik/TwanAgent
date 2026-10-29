@@ -1,29 +1,31 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AllProjectsList } from "../../components/AllProjectsList";
 import { ConversationList } from "../../components/ConversationList";
+import { RunningElapsed } from "../../components/RunningElapsed";
 import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { archiveTargets, chatSelectionKey, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
+import { archiveTargets, chatSelectionKey, focusedProjectGroups, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { ProjectMark } from "../../components/ProjectMark";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
-import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
+import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, withoutLinkedWorktrees, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import { forgetPaneWorkspace } from "../../lib/pane-sessions";
 import { saveConversation } from "../../lib/prefs";
 import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
 
-import { SIDEBAR_DEFAULT, saveSidebarWidth } from "../../lib/prefs";
+import { SIDEBAR_DEFAULT, loadSidebarFocus, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
 import { installAppUpdate, relaunchAppUpdate, useAppUpdate } from "../../lib/update-store";
 import { updateButtonLabel, updateNote } from "../../lib/update";
 import { SETTINGS_TABS } from "../SettingsView";
 import { NewChatMenu } from "./AppChrome";
+import { ProjectFocusButton } from "./ProjectFocusButton";
 import { useApp } from "../../state/app-state";
 import { useMain, useSidebar } from "./context";
 
@@ -49,6 +51,11 @@ export function AppSidebar() {
   } = useMain();
   const { showSettings } = useSidebar();
   const [usageHover, setUsageHover] = useState(false);
+  const [focusPath, setFocusPath] = useState(loadSidebarFocus);
+  const chooseFocus = useCallback((path: string) => {
+    setFocusPath(path);
+    saveSidebarFocus(path);
+  }, []);
   const [archiveOpen, setArchiveOpen] = useState<Record<string, boolean>>({});
   const [gitByProject, setGitByProject] = useState<Record<string, ProjectGit>>({});
   const [worktreesByRepo, setWorktreesByRepo] = useState<Record<string, GitWorktree[]>>({});
@@ -85,6 +92,9 @@ export function AppSidebar() {
       <div className={`relative z-30 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         {isWindows() ? null : <WindowButtons />}
         <div className="min-w-0 flex-1" data-tauri-drag-region />
+        {!showSettings ? (
+          <ProjectFocusButton focusPath={focusPath} onFocus={chooseFocus} hidden={sidebarCollapsed} />
+        ) : null}
         <PanelToggle
           label="Hide sidebar"
           icon="sidebar.left"
@@ -138,6 +148,7 @@ export function AppSidebar() {
           openUsage={openUsage}
           openDocs={openDocs}
           usageTick={usageTick}
+          focusPath={focusPath}
         />
       </div>
       </div>
@@ -293,6 +304,7 @@ function ProjectsNav({
   openUsage,
   openDocs,
   usageTick,
+  focusPath,
 }: {
   usageHover: boolean;
   setUsageHover: (hover: boolean) => void;
@@ -314,6 +326,7 @@ function ProjectsNav({
   openUsage: () => void;
   openDocs: () => void;
   usageTick: number;
+  focusPath: string;
 }) {
   const { setFlash } = useApp();
   const {
@@ -351,10 +364,8 @@ function ProjectsNav({
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
-  const sidebarGroups = allProjectGroups.filter((group: { path: string }) => {
-    void worktreeTick;
-    return !linkedWorktrees().some((row) => projectKey(row.path) === projectKey(group.path));
-  });
+  void worktreeTick;
+  const sidebarGroups = withoutLinkedWorktrees(allProjectGroups);
   const activity = useMemo(() => {
     void worktreeTick;
     const extra = Object.entries(worktreeChats).map(([key, conversations]) => {
@@ -363,22 +374,32 @@ function ProjectsNav({
     });
     return sidebarActivity(allProjectGroups, runningTurns, unseenFinished, extra);
   }, [allProjectGroups, runningTurns, unseenFinished, worktreeChats, worktreeTick]);
+  const activeFocus = sidebarFocusPath(focusPath, sidebarGroups);
+  const listedGroups = focusedProjectGroups(sidebarGroups, activeFocus);
+  const focusedName = activeFocus
+    ? sidebarGroups.find((group: { path: string; name?: string }) => isSameProject(group.path, activeFocus))?.name ?? ""
+    : "";
   const visibleActivity = useMemo(
-    () => activity.filter((item) => matchesSidebarQuery(query, item.title, item.project)),
-    [activity, query],
+    () =>
+      activity.filter(
+        (item) =>
+          (!activeFocus || isSameProject(item.path, activeFocus)) &&
+          matchesSidebarQuery(query, item.title, item.project),
+      ),
+    [activity, query, activeFocus],
   );
   const shownGroups = useMemo(() => {
-    if (!searching) return sidebarGroups;
+    if (!searching) return listedGroups;
     const open = new Set(
       activity.filter((item) => matchesSidebarQuery(query, item.title)).map((item) => projectKey(item.path)),
     );
-    return sidebarGroups.filter(
+    return listedGroups.filter(
       (group) =>
         matchesSidebarQuery(query, group.name, group.path) ||
         open.has(projectKey(group.path)) ||
         group.conversations.some((row) => !row.archived && matchesSidebarQuery(query, row.title)),
     );
-  }, [searching, sidebarGroups, activity, query]);
+  }, [searching, listedGroups, activity, query]);
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -750,13 +771,19 @@ function ProjectsNav({
         items={visibleActivity}
         activeId={activeId}
         runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
+        runningStartedAt={(id) => runningTurns[id]?.startedAt ?? 0}
         onOpen={(path, id) => void openSidebarChat(path, id)}
       />
       <div className="relative z-20 flex items-center justify-between gap-2 px-4 pt-1.5 pb-1">
-        <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">
-          Projects
+        <span
+          className={`min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted ${focusedName ? "" : "uppercase"}`}
+        >
+          {focusedName || "Projects"}
         </span>
-        <NewChatMenu disabled={!workspace} onPick={(kind) => void startNewChat(kind)} />
+        <NewChatMenu
+          disabled={!activeFocus && !workspace}
+          onPick={(kind) => void startNewChat(kind, activeFocus || undefined)}
+        />
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
         {sidebarReady ? <AllProjectsList
@@ -828,7 +855,7 @@ function ProjectsNav({
           )}
         /> : null}
       </div>
-      <div className="relative z-10 flex flex-col gap-1 px-2.5 pb-3">
+      <div className="sidebar-dock relative z-10 mx-2 mt-1 mb-2 flex flex-col gap-0.5 px-1.5 py-1.5">
         <button
           type="button"
           onClick={openUsage}
@@ -989,11 +1016,13 @@ function SidebarActivity({
   items,
   activeId,
   runningPreview,
+  runningStartedAt,
   onOpen,
 }: {
   items: SidebarActivityItem[];
   activeId: string;
   runningPreview: (id: string) => string;
+  runningStartedAt: (id: string) => number;
   onOpen: (path: string, id: string) => void;
 }) {
   if (!items.length) return null;
@@ -1003,10 +1032,24 @@ function SidebarActivity({
     <div className="relative z-20 flex max-h-[38%] shrink-0 flex-col px-2 pb-1">
       <div className="no-scrollbar min-h-0 overflow-auto">
         {running.length ? (
-          <ActivityGroup label="Running" items={running} activeId={activeId} runningPreview={runningPreview} onOpen={onOpen} />
+          <ActivityGroup
+            label="Running"
+            items={running}
+            activeId={activeId}
+            runningPreview={runningPreview}
+            runningStartedAt={runningStartedAt}
+            onOpen={onOpen}
+          />
         ) : null}
         {finished.length ? (
-          <ActivityGroup label="Finished" items={finished} activeId={activeId} runningPreview={runningPreview} onOpen={onOpen} />
+          <ActivityGroup
+            label="Finished"
+            items={finished}
+            activeId={activeId}
+            runningPreview={runningPreview}
+            runningStartedAt={runningStartedAt}
+            onOpen={onOpen}
+          />
         ) : null}
       </div>
     </div>
@@ -1018,12 +1061,14 @@ function ActivityGroup({
   items,
   activeId,
   runningPreview,
+  runningStartedAt,
   onOpen,
 }: {
   label: string;
   items: SidebarActivityItem[];
   activeId: string;
   runningPreview: (id: string) => string;
+  runningStartedAt: (id: string) => number;
   onOpen: (path: string, id: string) => void;
 }) {
   return (
@@ -1032,6 +1077,7 @@ function ActivityGroup({
       {items.map((item) => {
         const selected = item.id === activeId;
         const preview = item.status === "running" ? runningPreview(item.id) : "";
+        const startedAt = item.status === "running" ? runningStartedAt(item.id) : 0;
         return (
           <button
             key={`${item.path}\t${item.id}`}
@@ -1051,8 +1097,9 @@ function ActivityGroup({
             )}
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[13px] text-ink">{item.title}</span>
-              <span className="block truncate text-[11px] text-muted">
-                {preview ? `${item.project} · ${preview}` : item.project}
+              <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted">
+                <span className="min-w-0 truncate">{preview ? `${item.project} · ${preview}` : item.project}</span>
+                {startedAt > 0 ? <RunningElapsed startedAt={startedAt} className="shrink-0 tabular-nums" /> : null}
               </span>
             </span>
           </button>

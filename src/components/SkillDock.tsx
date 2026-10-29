@@ -29,7 +29,7 @@ export function SkillDock({
       icon="doc"
       summary={skillPillSummary(skills)}
       meta={`${onCount}/${skills.length} on`}
-      hint="Toggle what Grok can use. Edit opens SKILL.md here. TwanAgent does not auto-run these."
+      hint="On means this chat can load that skill. Edit opens SKILL.md. The model reads it with load_skill."
     >
       <div className="space-y-1">
         {skills.map((skill) => {

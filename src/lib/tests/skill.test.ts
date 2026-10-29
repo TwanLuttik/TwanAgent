@@ -160,9 +160,10 @@ describe("skill copy", () => {
     assert.equal(skillPillSummary(skills), "Skills · 1/2");
     assert.equal(skillSystemLine([]), "");
     const line = skillSystemLine(skills);
-    assert.match(line, /not auto-loaded/);
-    assert.match(line, /commit/);
+    assert.match(line, /load_skill/);
+    assert.match(line, /commit \(Commit\.\)/);
     assert.match(line, /1 disabled/);
     assert.doesNotMatch(line, /writing-skills/);
+    assert.doesNotMatch(line, /not auto-loaded/);
   });
 });

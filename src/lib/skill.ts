@@ -100,9 +100,11 @@ export function skillSystemLine(skills: DetectedSkill[]): string {
   if (skills.length === 0) return "";
   const on = skills.filter((row) => row.enabled);
   const off = skills.length - on.length;
-  const list = on.map((row) => row.name).join(", ");
+  const list = on
+    .map((row) => (row.description ? `${row.name} (${row.description})` : row.name))
+    .join(", ");
   const disabled = off ? ` ${off} disabled.` : "";
-  return `This workspace has skills (not auto-loaded): ${list || "none enabled."}${disabled} You cannot invoke them as slash commands here. You may discuss them or help edit their SKILL.md files.`;
+  return `Call load_skill with a skill name to read its instructions before following it. Enabled: ${list || "none"}.${disabled}`;
 }
 
 export function userSkillRel(source: string): string | null {

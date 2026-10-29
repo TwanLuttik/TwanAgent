@@ -137,6 +137,20 @@ pub fn tool_defs() -> Value {
         {
             "type": "function",
             "function": {
+                "name": "load_skill",
+                "description": "Read one enabled skill's instructions. Call this before following a skill named in the system prompt.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Skill name from the system prompt." }
+                    },
+                    "required": ["name"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_command",
                 "description": "Run a shell command in the workspace.",
                 "parameters": {
@@ -166,10 +180,14 @@ pub fn run_round(
         .build()
         .map_err(|err| Error::Other(format!("could not start the model request: {err}")))?;
     let messages = Value::Array(messages.to_vec());
+    let mut tools = tool_defs();
+    if let Some(list) = tools.as_array_mut() {
+        list.extend(crate::capabilities::current_extra_tools());
+    }
     match provider {
-        ProviderId::Xai => xai::round(&client, &token, model, effort, &messages, &tool_defs(), on_delta),
-        ProviderId::Anthropic => anthropic::round(&client, &token, model, effort, &messages, &tool_defs(), on_delta),
-        ProviderId::Minimax => minimax::round(&client, &token, model, &messages, &tool_defs(), on_delta),
+        ProviderId::Xai => xai::round(&client, &token, model, effort, &messages, &tools, on_delta),
+        ProviderId::Anthropic => anthropic::round(&client, &token, model, effort, &messages, &tools, on_delta),
+        ProviderId::Minimax => minimax::round(&client, &token, model, &messages, &tools, on_delta),
     }
 }
 
@@ -193,6 +211,7 @@ pub(super) struct OpenRound {
     /// Anthropic content-block index to the tool slot. A thinking block must not shift the tool.
     block_slots: Vec<Option<usize>>,
     stop: bool,
+    error: Option<String>,
     usage: Option<RoundUsage>,
 }
 
@@ -205,6 +224,7 @@ impl Default for OpenRound {
             calls: Vec::new(),
             block_slots: Vec::new(),
             stop: false,
+            error: None,
             usage: None,
         }
     }
@@ -271,10 +291,25 @@ impl OpenRound {
         Round {
             text: self.text,
             tool_calls: self.calls.into_iter().filter(|call| !call.name.is_empty()).collect(),
-            error: None,
+            error: self.error,
             usage: self.usage,
             reasoning: self.reasoning,
         }
+    }
+
+    fn has_reply(&self) -> bool {
+        !self.text.trim().is_empty()
+            || !self.reasoning.trim().is_empty()
+            || self.calls.iter().any(|call| !call.name.is_empty())
+    }
+
+    /// A provider error with no text or tool call fails the round. One that arrives
+    /// after a real reply just ends the stream.
+    fn note_failure(&mut self, message: String) {
+        if !self.has_reply() {
+            self.error = Some(message);
+        }
+        self.stop = true;
     }
 }
 

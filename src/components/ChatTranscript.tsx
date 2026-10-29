@@ -14,6 +14,7 @@ import {
 } from "../lib/core";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
+import { RunningElapsed } from "./RunningElapsed";
 
 function FinishedLine({ durationMs, finishedAt }: { durationMs?: number; finishedAt?: string }) {
   const time = finishedAt ? formatMessageTime(finishedAt) : "";
@@ -114,14 +115,6 @@ function UserBubble({
 }
 
 export function ActivityStatus({ label, startedAt }: { label: string; startedAt?: number }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!startedAt) return;
-    setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
-  }, [startedAt]);
-  const elapsed = startedAt ? formatElapsed(now - startedAt) : "";
   return (
     <div className="mb-3 flex items-center gap-1.5 text-[11px] text-muted/55" aria-live="polite">
       <span
@@ -129,7 +122,7 @@ export function ActivityStatus({ label, startedAt }: { label: string; startedAt?
         aria-hidden
       />
       <span>{label}</span>
-      {elapsed ? <span className="tabular-nums text-muted/40">{elapsed}</span> : null}
+      <RunningElapsed startedAt={startedAt} />
     </div>
   );
 }
@@ -184,6 +177,7 @@ export function ChatTranscript({
   const [revealed, setRevealed] = useState(0);
   const chatRef = useRef(conversationId);
   if (chatRef.current !== conversationId) {
+    // Coming back should paint calls that finished while this chat was hidden, not stagger them.
     forgetSeenToolSignature(chatRef.current);
     chatRef.current = conversationId;
     if (revealed !== 0) setRevealed(0);

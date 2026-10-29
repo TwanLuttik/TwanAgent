@@ -35,6 +35,10 @@ fn apply_line(data: &str, open: &mut OpenRound) {
     let Ok(json) = serde_json::from_str::<Value>(data) else {
         return;
     };
+    if let Some(message) = xai::stream_error_message(&json) {
+        open.note_failure(message);
+        return;
+    }
     if let Some(usage) = xai::parse_usage(&json) {
         open.note_usage(
             Some(usage.prompt_tokens),
@@ -50,6 +54,27 @@ fn apply_line(data: &str, open: &mut OpenRound) {
     open.push_text(&xai::text_from_content(delta.get("content").unwrap_or(&Value::Null)));
     for fragment in xai::tool_fragments(&delta) {
         apply_fragment(open, fragment);
+    }
+    // The last chunk sometimes carries the reply on `message` and leaves `delta` empty.
+    let finished = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .is_some_and(|reason| !reason.is_empty());
+    if finished {
+        if open.text.trim().is_empty() {
+            open.push_text(&xai::fallback_choice_text(choice));
+        }
+        if open.reasoning.trim().is_empty() {
+            open.push_reasoning(&xai::message_reasoning(choice));
+        }
+        if open.calls.iter().all(|call| call.name.is_empty()) {
+            for fragment in xai::message_tool_calls(choice) {
+                apply_fragment(open, fragment);
+            }
+        }
+    }
+    if let Some(message) = xai::choice_stop_error(choice) {
+        open.note_failure(message.to_string());
     }
 }
 
@@ -85,5 +110,28 @@ mod tests {
         assert_eq!(done.text, "Hi");
         assert_eq!(done.tool_calls[0].name, "read_file");
         assert_eq!(done.tool_calls[0].arguments, r#"{"path":"a.rs"}"#);
+    }
+
+    #[test]
+    fn a_final_message_tool_call_is_not_dropped() {
+        let mut open = OpenRound::default();
+        apply_line(
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"a.ts\"}"}}]}}]}"#,
+            &mut open,
+        );
+        let done = open.finish();
+        assert!(done.error.is_none());
+        assert_eq!(done.tool_calls.len(), 1);
+        assert_eq!(done.tool_calls[0].name, "read_file");
+        assert_eq!(done.tool_calls[0].arguments, r#"{"path":"a.ts"}"#);
+    }
+
+    #[test]
+    fn a_stream_error_fails_an_empty_round() {
+        let mut open = OpenRound::default();
+        apply_line(r#"{"error":{"message":"overloaded"}}"#, &mut open);
+        let done = open.finish();
+        assert_eq!(done.error.as_deref(), Some("xAI request failed: overloaded"));
+        assert!(done.text.is_empty());
     }
 }

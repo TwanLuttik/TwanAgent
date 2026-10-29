@@ -4,6 +4,7 @@
 //! functions for a project that lives on another Mac or a Linux box. A turn is a prompt.
 //! Tools run here, next to the files. The GUI only renders what comes back.
 
+pub mod capabilities;
 mod codec;
 mod compact;
 mod error;

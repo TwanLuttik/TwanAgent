@@ -593,6 +593,10 @@ export function readUserSkill(path: string): Promise<string> {
   return invoke("dev_read_user_skill", { path });
 }
 
+export function loadSkill(workspace: string, name: string): Promise<string> {
+  return invoke("dev_load_skill", { workspace, name });
+}
+
 export function writeUserSkill(path: string, contents: string): Promise<void> {
   return invoke("dev_write_user_skill", { path, contents });
 }

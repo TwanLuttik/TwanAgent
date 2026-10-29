@@ -6,6 +6,8 @@ import {
   isAppProject,
   isProjectCollapsed,
   isSameProject,
+  focusedProjectGroups,
+  sidebarFocusPath,
   projectHasArchived,
   removeProjectGroup,
   patchSidebarConversation,
@@ -117,6 +119,25 @@ describe("isSameProject", () => {
     assert.equal(isSameProject("/app/Demo/", "/app/demo"), true);
     assert.equal(isSameProject("/app/demo", "/app/other"), false);
     assert.equal(isSameProject("", "/app/demo"), false);
+  });
+});
+
+describe("focusedProjectGroups", () => {
+  const groups = [{ path: "/app/alpha" }, { path: "/app/beta" }];
+
+  it("lists every project until one is chosen", () => {
+    assert.equal(focusedProjectGroups(groups, ""), groups);
+    assert.equal(sidebarFocusPath("", groups), "");
+  });
+
+  it("keeps the chosen project when the path only differs by case or a slash", () => {
+    assert.deepEqual(focusedProjectGroups(groups, "/app/Beta/"), [{ path: "/app/beta" }]);
+    assert.equal(sidebarFocusPath("/app/Beta/", groups), "/app/Beta/");
+  });
+
+  it("treats a missing project as every project", () => {
+    assert.equal(focusedProjectGroups(groups, "/gone"), groups);
+    assert.equal(sidebarFocusPath("/gone", groups), "");
   });
 });
 

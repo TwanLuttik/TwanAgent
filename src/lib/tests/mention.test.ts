@@ -75,6 +75,18 @@ describe("displayFileMentions", () => {
       "see @prefs.ts next",
     );
   });
+
+  it("does not throw when the project file list is too big for one regex", () => {
+    const files = Array.from({ length: 40_000 }, (_, i) => ({
+      path: `coatcheck/ios/Pods/Dep${i}/Sources/File${i}.swift`,
+      name: `File${i}.swift`,
+    }));
+    files.push({ path: "coatcheck/src/App.tsx", name: "App.tsx" });
+    assert.equal(
+      displayFileMentions("the bundler failed in coatcheck/src/App.tsx today", files),
+      "the bundler failed in @App.tsx today",
+    );
+  });
 });
 
 describe("draftMentionSpans", () => {

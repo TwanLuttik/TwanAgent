@@ -112,6 +112,7 @@ pub fn run() {
             dev::commands::file_cmds::dev_mcp_clear_auth,
             dev::commands::file_cmds::dev_mcp_sign_in,
             dev::commands::file_cmds::dev_list_skill_files,
+            dev::commands::file_cmds::dev_load_skill,
             dev::commands::file_cmds::dev_read_user_skill,
             dev::commands::file_cmds::dev_write_user_skill,
             dev::commands::file_cmds::dev_resolve_file,

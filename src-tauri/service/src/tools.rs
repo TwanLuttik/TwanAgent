@@ -37,6 +37,13 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
                 format!("Running {description}")
             }
         }
+        "load_skill" => {
+            let name = args.get("name").and_then(Value::as_str).unwrap_or("").trim();
+            if name.is_empty() { "Loading a skill".into() } else { format!("Loading {name}") }
+        }
+        other if other.starts_with("mcp__") => {
+            format!("MCP {}", other.trim_start_matches("mcp__").replace("__", " "))
+        }
         other => format!("Using {other}"),
     }
 }

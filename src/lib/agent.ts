@@ -183,6 +183,8 @@ export async function executeTool(
         );
       case "web_search":
         return runWebSearch(call.arguments || "{}", signal, onProgress);
+      case "load_skill":
+        return await api.loadSkill(workspace, String(args.name ?? ""));
       case "todo_write": {
         const parsed = parseTodoWriteArgs(call.arguments);
         if (parsed.error) return `Error: ${parsed.error}`;

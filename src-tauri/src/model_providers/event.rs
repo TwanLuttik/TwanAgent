@@ -48,6 +48,8 @@ pub enum StreamPiece {
         index: u32,
         signature: String,
     },
+    /// The provider finished this chunk with an error and no usable reply.
+    Failed(String),
     Stop,
 }
 

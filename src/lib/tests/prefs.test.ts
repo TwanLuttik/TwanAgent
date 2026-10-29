@@ -9,6 +9,7 @@ import {
   loadPermission,
   loadSidebarWidth,
   loadSidebarCollapsed,
+  loadSidebarFocus,
   loadPaneCollapsed,
   loadExpandEdits,
   loadWrapLines,
@@ -30,6 +31,7 @@ import {
   savePermission,
   saveSidebarWidth,
   saveSidebarCollapsed,
+  saveSidebarFocus,
   savePaneCollapsed,
   saveGitChangesView,
   pushRecentWorkspace,
@@ -256,6 +258,7 @@ describe("project path migration", () => {
     ]);
     saveActiveTab("/app/projects/demo", "chat:chat-1");
     saveCollapsedProjects(["/app/projects/demo"]);
+    saveSidebarFocus("/app/projects/Demo/");
     rewriteStoredProjectPaths([
       { from: "/app/projects/Demo", to: "/Users/me/twanagent/projects/Demo" },
     ]);
@@ -274,6 +277,7 @@ describe("project path migration", () => {
     assert.equal(loadActiveTab("/Users/me/twanagent/projects/Demo"), "chat:chat-1");
     assert.equal(loadActiveTab("/app/projects/demo"), "");
     assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
+    assert.equal(loadSidebarFocus(), "/Users/me/twanagent/projects/Demo");
   });
 });
 
@@ -350,6 +354,14 @@ describe("all projects sidebar", () => {
     assert.deepEqual(loadCollapsedProjects(), []);
     saveCollapsedProjects(["/app/demo", "/app/other"]);
     assert.deepEqual(loadCollapsedProjects(), ["/app/demo", "/app/other"]);
+  });
+
+  it("starts on all projects and remembers one focus", () => {
+    assert.equal(loadSidebarFocus(), "");
+    saveSidebarFocus("/app/demo/");
+    assert.equal(loadSidebarFocus(), "/app/demo/");
+    saveSidebarFocus("  ");
+    assert.equal(loadSidebarFocus(), "");
   });
 });
 

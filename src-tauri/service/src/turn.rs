@@ -227,6 +227,8 @@ pub fn run_live_turn_gated(
             allow
         }) as Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
     });
+    let home = crate::capabilities::user_home();
+    let _session = crate::capabilities::install(request.conversation_id.trim(), &service.project, &home);
     run_live_turn_with(
         service,
         request,
@@ -299,7 +301,11 @@ fn run_live_turn_with(
             Fit::TooBig => return stop_for_context(service, &mut conversation, &mut on_event),
         }
         let context = crate::compact::messages_for_context(&conversation.messages, compaction.as_ref());
-        let prompt = crate::compact::api_messages(&context);
+        let mut prompt = crate::compact::api_messages(&context);
+        let block = crate::capabilities::prompt_block(request.conversation_id.trim());
+        if !block.is_empty() {
+            prompt.insert(0, json!({ "role": "system", "content": block }));
+        }
         let mut saw_delta = false;
         let round = match complete(&prompt, &mut |text| {
             if !text.is_empty() {
@@ -390,6 +396,14 @@ fn run_live_turn_with(
                 continue;
             }
             on_event(TurnEvent::Status(tool_status(&call.name, &call.arguments)));
+            if let Some(text) = crate::capabilities::call(request.conversation_id.trim(), &call.name, &call.arguments) {
+                conversation.messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": cap_tool_text(&text),
+                }));
+                continue;
+            }
             let result = match dispatch(workspace, &host, &request.permission, &call.name, &call.arguments) {
                 Ok(result) => result,
                 Err(err) => format!("Error: {err}"),
@@ -602,6 +616,7 @@ fn fold_once(
         return FoldStep::Stopped;
     }
     let prompt = crate::compact::compaction_prompt(&plan.older, &plan.previous_summary);
+    let _hide = crate::capabilities::HideTools::new();
     let round = match complete(&prompt, &mut |_| {}) {
         Ok(round) => round,
         Err(_) => return if cancelled(cancel) { FoldStep::Stopped } else { FoldStep::None },

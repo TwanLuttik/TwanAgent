@@ -22,7 +22,7 @@ export function McpDock({
       icon="cable.connector"
       summary={mcpPillSummary(servers)}
       meta={`${onCount}/${servers.length} on`}
-      hint="Toggle what Grok can use. Edit opens the config here. Sign in opens the browser."
+      hint="On means this chat can call that server. Edit opens the config. Sign in opens the browser."
     >
       <div className="space-y-1">
         {servers.map((server) => {

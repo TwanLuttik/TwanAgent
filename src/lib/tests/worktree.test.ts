@@ -10,6 +10,7 @@ import {
   tabTitleFor,
   publishWorktreeChats,
   linkedWorktrees,
+  withoutLinkedWorktrees,
   publishWorktreeLists,
   freshWorktreeName,
   hideOpenWorktreeMarker,
@@ -202,6 +203,14 @@ describe("groupProjectsByWorktree", () => {
     const list = [main, login];
     publishWorktreeLists({ [main.path]: list });
     assert.deepEqual(linkedWorktrees().map((row) => row.path), [login.path]);
+    assert.deepEqual(
+      withoutLinkedWorktrees([
+        { path: main.path },
+        { path: login.path },
+        { path: "/work/other" },
+      ]).map((row) => row.path),
+      [main.path, "/work/other"],
+    );
     assert.equal(tabProjectKey(login.path), tabProjectKey(main.path));
     const folded = sharedRepoTabs(
       {

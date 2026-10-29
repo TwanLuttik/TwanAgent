@@ -278,6 +278,12 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
     }),
   );
   saveCollapsedProjects([...collapsed]);
+
+  const focus = loadSidebarFocus();
+  if (focus) {
+    const next = remap(focus);
+    if (projectKey(next) !== projectKey(focus)) saveSidebarFocus(next);
+  }
 }
 
 export function loadComposerDrafts(): Record<string, string> {
@@ -426,7 +432,19 @@ export function saveSidebarWidth(width: number): void {
 }
 
 const SIDEBAR_COLLAPSED_KEY = "twanagent.sidebarCollapsed";
+const SIDEBAR_FOCUS_KEY = "twanagent.sidebarFocus";
 const PANE_COLLAPSED_KEY = "twanagent.paneCollapsed";
+
+/** Empty means the sidebar lists every project. */
+export function loadSidebarFocus(): string {
+  return localStorage.getItem(SIDEBAR_FOCUS_KEY)?.trim() ?? "";
+}
+
+export function saveSidebarFocus(path: string): void {
+  const next = path.trim();
+  if (next) localStorage.setItem(SIDEBAR_FOCUS_KEY, next);
+  else localStorage.removeItem(SIDEBAR_FOCUS_KEY);
+}
 
 function loadCollapsedFlag(key: string): boolean {
   const raw = localStorage.getItem(key);

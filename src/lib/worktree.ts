@@ -24,6 +24,14 @@ export function publishWorktreeLists(next: Record<string, GitWorktree[]>): void 
   for (const listener of listeners) listener();
 }
 
+/** Drop linked checkouts. They stay nested under the main project, not in the focus list. */
+export function withoutLinkedWorktrees<T extends { path: string }>(groups: T[]): T[] {
+  const linked = linkedWorktrees();
+  if (!linked.length) return groups;
+  const keys = new Set(linked.map((row) => projectKey(row.path)));
+  return groups.filter((group) => !keys.has(projectKey(group.path)));
+}
+
 /** Every linked checkout the sidebar has loaded, whatever repo it belongs to. */
 export function linkedWorktrees(): GitWorktree[] {
   const out: GitWorktree[] = [];

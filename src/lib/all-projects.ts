@@ -56,6 +56,22 @@ export function isSameProject(a: string, b: string): boolean {
   return Boolean(a) && Boolean(b) && projectKey(a) === projectKey(b);
 }
 
+/**
+ * The sidebar lists every project until one is chosen.
+ * A path that is not in the list means every project, so a removed folder
+ * does not leave the sidebar blank.
+ */
+export function focusedProjectGroups<T extends { path: string }>(groups: T[], focusPath: string): T[] {
+  if (!sidebarFocusPath(focusPath, groups)) return groups;
+  return groups.filter((group) => isSameProject(group.path, focusPath));
+}
+
+/** Empty when no project is focused, or the saved path is no longer in the list. */
+export function sidebarFocusPath(focusPath: string, groups: { path: string }[]): string {
+  if (!focusPath) return "";
+  return groups.some((group) => isSameProject(group.path, focusPath)) ? focusPath : "";
+}
+
 /** One sidebar chat. The project is part of the key because ids can repeat across folders. */
 export type ChatSelection = { path: string; id: string };
 

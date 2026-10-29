@@ -21,6 +21,43 @@ pub(crate) fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn extra_tool_slot() -> &'static Mutex<HashMap<String, Vec<serde_json::Value>>> {
+    static EXTRA: OnceLock<Mutex<HashMap<String, Vec<serde_json::Value>>>> = OnceLock::new();
+    EXTRA.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn take_extra_tools(stream_id: &str) -> Vec<serde_json::Value> {
+    extra_tool_slot()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(stream_id))
+        .unwrap_or_default()
+}
+
+fn merge_tools(base: serde_json::Value, extra: &[serde_json::Value]) -> serde_json::Value {
+    let mut tools = base.as_array().cloned().unwrap_or_default();
+    for tool in extra {
+        let name = tool
+            .get("function")
+            .and_then(|row| row.get("name"))
+            .and_then(|name| name.as_str())
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let exists = tools.iter().any(|row| {
+            row.get("function")
+                .and_then(|item| item.get("name"))
+                .and_then(|item| item.as_str())
+                == Some(name)
+        });
+        if !exists {
+            tools.push(tool.clone());
+        }
+    }
+    serde_json::Value::Array(tools)
+}
+
 /// One model round collected inside this process. The local turn loop reads this
 /// instead of the webview, so a reload does not drop the round.
 pub struct CollectedRound {
@@ -91,6 +128,7 @@ pub async fn collect_chat_round(
     context_window: Option<u64>,
     journey_id: Option<String>,
     cancel: Arc<AtomicBool>,
+    extra_tools: Vec<serde_json::Value>,
     on_progress: impl Fn(RoundProgress) + Send + 'static,
 ) -> Result<CollectedRound> {
     let stream_id = {
@@ -109,6 +147,9 @@ pub async fn collect_chat_round(
     if let Ok(mut map) = streams().lock() {
         let flag = map.get(&stream_id).cloned().unwrap_or(cancel);
         map.insert(stream_id.clone(), flag);
+    }
+    if let Ok(mut map) = extra_tool_slot().lock() {
+        map.insert(stream_id.clone(), extra_tools);
     }
     let started = dev_chat_start(
         app,
@@ -287,6 +328,7 @@ pub async fn dev_chat_start(
     context_window: Option<u64>,
     journey_id: Option<String>,
 ) -> Result<()> {
+    let extra_tools = take_extra_tools(&stream_id);
     let model = model
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "grok-4.6".into());
@@ -351,6 +393,7 @@ pub async fn dev_chat_start(
                 effort,
                 include_journey,
                 cancel,
+                extra_tools.clone(),
             )
             .await
         } else if provider == crate::model_providers::registry::ProviderId::Minimax {
@@ -362,6 +405,7 @@ pub async fn dev_chat_start(
                 model,
                 include_journey,
                 cancel,
+                extra_tools.clone(),
             )
             .await
         } else {
@@ -375,6 +419,7 @@ pub async fn dev_chat_start(
                 context_window,
                 include_journey,
                 cancel,
+                extra_tools,
             )
             .await
         };
@@ -407,12 +452,19 @@ async fn stream_anthropic(
     effort: Option<String>,
     include_journey: bool,
     cancel: Arc<AtomicBool>,
+    extra_tools: Vec<serde_json::Value>,
 ) -> Result<()> {
     let body = crate::anthropic::to_messages_body(
         &messages,
         &model,
         effort.as_deref(),
-        &super::tool_schema::tools_json_for(include_journey, crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Anthropic)),
+        &merge_tools(
+            super::tool_schema::tools_json_for(
+                include_journey,
+                crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Anthropic),
+            ),
+            &extra_tools,
+        ),
     );
     let mut req = http_client()
         .post(crate::anthropic::MESSAGES_URL)
@@ -457,13 +509,17 @@ async fn stream_minimax(
     model: String,
     include_journey: bool,
     cancel: Arc<AtomicBool>,
+    extra_tools: Vec<serde_json::Value>,
 ) -> Result<()> {
     let body = crate::minimax::to_minimax_body(
         &messages,
         &model,
-        &super::tool_schema::tools_json_for(
-            include_journey,
-            crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Minimax),
+        &merge_tools(
+            super::tool_schema::tools_json_for(
+                include_journey,
+                crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Minimax),
+            ),
+            &extra_tools,
         ),
     );
     let resp = http_client()
@@ -505,8 +561,14 @@ async fn stream_chat(
     context_window: Option<u64>,
     include_journey: bool,
     cancel: Arc<AtomicBool>,
+    extra_tools: Vec<serde_json::Value>,
 ) -> Result<()> {
-    let body = twanagent_service::xai::chat_body(&model, effort.as_deref(), &messages, &super::tool_schema::tools_json(include_journey));
+    let body = twanagent_service::xai::chat_body(
+        &model,
+        effort.as_deref(),
+        &messages,
+        &merge_tools(super::tool_schema::tools_json(include_journey), &extra_tools),
+    );
     // SSE breaks when the body is gzip-decoded mid-stream: reqwest then reports
     // "error decoding response body" and the turn stops after the last tool.
     let mut req = http_client()
@@ -542,25 +604,27 @@ async fn stream_chat(
         };
         return Err(Error::Other(msg));
     }
-    let fallback_text = Arc::new(Mutex::new(String::new()));
-    let fallback_reasoning = Arc::new(Mutex::new(String::new()));
-    let text_slot = fallback_text.clone();
-    let thought_slot = fallback_reasoning.clone();
+    let fallback = Arc::new(Mutex::new(XaiFallback::default()));
+    let parse_slot = fallback.clone();
+    let stop_slot = fallback.clone();
     crate::model_providers::runner::consume_sse(
         app,
         stream_id,
         resp,
         cancel,
-        move |data| parse_xai_data(data, &text_slot, &thought_slot),
+        move |data| parse_xai_data(data, &parse_slot),
         move |session| {
-            let reasoning = fallback_reasoning.lock().ok().map(|s| s.clone()).unwrap_or_default();
-            if !session.saw_reasoning() && !reasoning.is_empty() {
+            let held = stop_slot.lock().ok().map(|slot| slot.clone()).unwrap_or_default();
+            // The local turn reads the round channel, not `dev-chat`. Emitting only
+            // there dropped final-message reasoning and the turn looked empty.
+            if !session.saw_reasoning() && !held.reasoning.is_empty() {
+                note_round_piece(stream_id, "reasoning", &held.reasoning);
                 let _ = app.emit(
                     "dev-chat",
                     DevChatEvent {
                         stream_id: stream_id.into(),
                         kind: "reasoning".into(),
-                        text: Some(reasoning),
+                        text: Some(held.reasoning),
                         tool_calls: None,
                         usage: None,
                         thinking: None,
@@ -568,22 +632,50 @@ async fn stream_chat(
                     },
                 );
             }
-            let text = fallback_text.lock().ok().map(|s| s.clone()).unwrap_or_default();
-            fallback_done_text(session.saw_text(), &text)
+            if !session.has_tools() {
+                push_message_tools(session, &held.message_tools);
+            }
+            fallback_done_text(session.saw_text(), &held.text)
         },
     )
     .await
 }
 
-fn parse_xai_data(
-    data: &str,
-    fallback_text: &Mutex<String>,
-    fallback_reasoning: &Mutex<String>,
-) -> Vec<crate::model_providers::event::StreamPiece> {
+#[derive(Clone, Default)]
+struct XaiFallback {
+    text: String,
+    reasoning: String,
+    message_tools: Vec<twanagent_service::xai::ToolFragment>,
+}
+
+fn push_message_tools(session: &mut crate::model_providers::runner::StreamSession, calls: &[twanagent_service::xai::ToolFragment]) {
+    use crate::model_providers::event::StreamPiece;
+    for call in calls {
+        if call.name.is_empty() {
+            continue;
+        }
+        session.push(StreamPiece::ToolStart {
+            index: call.index,
+            id: call.id.clone(),
+            name: call.name.clone(),
+        });
+        if !call.arguments.is_empty() {
+            session.push(StreamPiece::ToolDelta {
+                index: call.index,
+                partial: call.arguments.clone(),
+            });
+        }
+    }
+}
+
+fn parse_xai_data(data: &str, fallback: &Mutex<XaiFallback>) -> Vec<crate::model_providers::event::StreamPiece> {
     use crate::model_providers::event::StreamPiece;
     let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
         return Vec::new();
     };
+    if let Some(message) = twanagent_service::xai::stream_error_message(&json) {
+        return vec![StreamPiece::Failed(message)];
+    }
     let mut pieces = Vec::new();
     if let Some(usage) = parse_usage(&json) {
         pieces.push(StreamPiece::Usage {
@@ -608,16 +700,20 @@ fn parse_xai_data(
     if !thought.is_empty() {
         pieces.push(StreamPiece::Reasoning(thought));
     }
-    let fallback = twanagent_service::xai::fallback_choice_text(choice);
-    if !fallback.is_empty() {
-        if let Ok(mut slot) = fallback_text.lock() {
-            *slot = fallback;
-        }
-    }
-    let thought_fallback = twanagent_service::xai::message_reasoning(choice);
-    if !thought_fallback.is_empty() {
-        if let Ok(mut slot) = fallback_reasoning.lock() {
-            *slot = thought_fallback;
+    let message_text = twanagent_service::xai::fallback_choice_text(choice);
+    let message_thought = twanagent_service::xai::message_reasoning(choice);
+    let message_tools = twanagent_service::xai::message_tool_calls(choice);
+    if !message_text.is_empty() || !message_thought.is_empty() || !message_tools.is_empty() {
+        if let Ok(mut slot) = fallback.lock() {
+            if !message_text.is_empty() {
+                slot.text = message_text;
+            }
+            if !message_thought.is_empty() {
+                slot.reasoning = message_thought;
+            }
+            if !message_tools.is_empty() {
+                slot.message_tools = message_tools;
+            }
         }
     }
     for call in twanagent_service::xai::tool_fragments(&delta) {
@@ -634,6 +730,9 @@ fn parse_xai_data(
                 partial: call.arguments,
             });
         }
+    }
+    if let Some(message) = twanagent_service::xai::choice_stop_error(choice) {
+        pieces.push(StreamPiece::Failed(message.to_string()));
     }
     pieces
 }
@@ -831,6 +930,30 @@ mod tests {
         let props = &read["function"]["parameters"]["properties"];
         assert!(props.get("offset").is_some());
         assert!(props.get("limit").is_some());
+    }
+
+    #[test]
+    fn a_final_message_tool_call_is_kept_when_the_delta_is_empty() {
+        let fallback = std::sync::Mutex::new(XaiFallback::default());
+        let data = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"src/lib/tool-reveal.ts\"}"}}]}}]}"#;
+        let pieces = parse_xai_data(data, &fallback);
+        assert!(pieces.iter().all(|piece| !matches!(piece, crate::model_providers::event::StreamPiece::ToolStart { .. })));
+        let held = fallback.lock().unwrap();
+        assert_eq!(held.message_tools.len(), 1);
+        assert_eq!(held.message_tools[0].name, "read_file");
+        assert!(held.message_tools[0].arguments.contains("tool-reveal.ts"));
+    }
+
+    #[test]
+    fn a_provider_error_event_is_not_an_empty_completion() {
+        let fallback = std::sync::Mutex::new(XaiFallback::default());
+        let pieces = parse_xai_data(r#"{"error":{"message":"overloaded"}}"#, &fallback);
+        assert_eq!(
+            pieces,
+            vec![crate::model_providers::event::StreamPiece::Failed(
+                "xAI request failed: overloaded".into()
+            )]
+        );
     }
 
     #[test]

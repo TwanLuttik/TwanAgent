@@ -1509,7 +1509,10 @@ describe("withSystem", () => {
         authed: false,
       },
     ];
-    assert.match(String(systemPrompt("/tmp/app", "ask", undefined, mcp).content), /github \(\.cursor\/mcp\.json\)/);
+    assert.match(
+      String(systemPrompt("/tmp/app", "ask", undefined, mcp).content),
+      /mcp__server__tool names\. Enabled: github\./,
+    );
     assert.doesNotMatch(String(systemPrompt("/tmp/app", "ask").content), /MCP servers/);
     const custom = withSystem(
       "/tmp/app",
@@ -1520,7 +1523,7 @@ describe("withSystem", () => {
       mcp,
     );
     assert.match(String(custom[0].content), /custom/);
-    assert.match(String(custom[0].content), /github \(\.cursor\/mcp\.json\)/);
+    assert.match(String(custom[0].content), /Enabled: github\./);
   });
 
   it("mentions detected skills", () => {
@@ -1543,6 +1546,7 @@ describe("withSystem", () => {
       undefined,
       skills,
     );
-    assert.match(String(custom[0].content), /not auto-loaded/);
+    assert.match(String(custom[0].content), /load_skill/);
+    assert.match(String(custom[0].content), /commit \(Commit\.\)/);
   });
 });

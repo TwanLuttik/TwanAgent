@@ -136,8 +136,14 @@ export function mcpPillSummary(servers: DetectedMcpServer[]): string {
 
 export function mcpSystemLine(servers: DetectedMcpServer[]): string {
   if (servers.length === 0) return "";
-  const list = servers.map((row) => `${row.name} (${row.source})`).join(", ");
-  return `This workspace declares MCP servers (not connected): ${list}. You cannot call their tools. You may discuss them or help edit the config files.`;
+  const on = servers.filter((row) => row.enabled);
+  const off = servers.length - on.length;
+  const names = on.map((row) => row.name).join(", ");
+  const disabled = off ? ` ${off} disabled.` : "";
+  if (on.length === 0) {
+    return `MCP servers are configured but disabled.${disabled} They are not called.`;
+  }
+  return `Enabled MCP servers are connected for this chat. Call their tools by the mcp__server__tool names. Enabled: ${names}.${disabled}`;
 }
 
 function parseMcpJson(source: string, contents: string): DetectedMcpServer[] {
