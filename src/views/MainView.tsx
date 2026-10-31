@@ -38,7 +38,7 @@ import {
   subscribeLiveStream,
 } from "../lib/live-stream";
 import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFileStructure, subscribeFileStructure } from "../lib/file-structure";
-import { imagePathsFromDrop, imagesForChat } from "../lib/image";
+import { attachmentPathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
 
 import { parseConversationKind } from "../lib/terminal-chat";
@@ -1404,7 +1404,7 @@ export function MainView() {
           return;
         }
         if (event.payload.type === "enter" || event.payload.type === "over") {
-          const images = event.payload.type === "enter" ? imagePathsFromDrop(event.payload.paths) : null;
+          const images = event.payload.type === "enter" ? attachmentPathsFromDrop(event.payload.paths) : null;
           if (images && images.length === 0) {
             setFileDrag(false);
             return;

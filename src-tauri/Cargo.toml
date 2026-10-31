@@ -30,6 +30,7 @@ tar = "0.4"
 tokio-tungstenite = "0.26"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
+pdf-extract = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

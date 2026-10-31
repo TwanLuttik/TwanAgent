@@ -15,6 +15,7 @@ import {
   loadPermission,
   saveConversation,
 } from "../lib/prefs";
+import { rememberTurnClock } from "../lib/turn-clock";
 import { clearUnseenFinished, composerSettingsForChat, hostedChatToOpen, liveTurnMessages, localTurnsToRejoin, patchRunningTurn, type RunningTurn } from "../lib/turn";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Runtime } from "../lib/tauri";
@@ -319,9 +320,16 @@ export function useChatSession({
           chatId: found.id,
           turns: rejoinedRef.current,
           liveTurns: turnsRef?.current,
-          onRunning: (running) => {
+          onRunning: (running, startedAt) => {
             setRunningTurns?.((prev) =>
-              running ? patchRunningTurn(prev, found.id, { startedAt: Date.now() }) : clearRejoinedTurn(prev, found.id),
+              running
+                ? patchRunningTurn(prev, found.id, {
+                    startedAt: rememberTurnClock(
+                      found.id,
+                      prev[found.id]?.startedAt || startedAt || Date.now(),
+                    ),
+                  })
+                : clearRejoinedTurn(prev, found.id),
             );
             if (running) setBusy?.(true);
           },
@@ -452,9 +460,13 @@ export async function markLiveLocalTurns(
         chatId: id,
         turns: input.turns,
         liveTurns: input.liveTurns,
-        onRunning: (running) => {
+        onRunning: (running, startedAt) => {
           input.setRunningTurns?.((prev) =>
-            running ? patchRunningTurn(prev, id, { startedAt: Date.now() }) : clearRejoinedTurn(prev, id),
+            running
+              ? patchRunningTurn(prev, id, {
+                  startedAt: rememberTurnClock(id, prev[id]?.startedAt || startedAt || Date.now()),
+                })
+              : clearRejoinedTurn(prev, id),
           );
           if (running) input.setBusy?.(true);
           if (!running) input.known.delete(id);
@@ -474,7 +486,7 @@ export async function rejoinLocalTurn(input: {
   turns: Map<string, AbortController>;
   /** The map Stop reads. A reload has no controller from the turn that started. */
   liveTurns?: Map<string, AbortController>;
-  onRunning?: (running: boolean) => void;
+  onRunning?: (running: boolean, startedAt?: number) => void;
   onMessages: (messages: ChatMessage[]) => void;
   onStream: (text: string) => void;
   onReasoning: (text: string) => void;
@@ -483,11 +495,12 @@ export async function rejoinLocalTurn(input: {
 }): Promise<void> {
   if (!input.workspace || !input.chatId || input.turns.has(input.chatId)) return;
   const running = await api.localTurns();
-  if (!running.some((row) => row.conversation_id === input.chatId)) return;
+  const row = running.find((item) => item.conversation_id === input.chatId);
+  if (!row) return;
   const ac = new AbortController();
   input.turns.set(input.chatId, ac);
   input.liveTurns?.set(input.chatId, ac);
-  input.onRunning?.(true);
+  input.onRunning?.(true, row.started_at);
   try {
     const done = await resumeLocalTurn({
       workspace: input.workspace,

@@ -1279,7 +1279,7 @@ async function writePersisted(id: string, payload: PersistPayload) {
   const chipModel = (modelRef.current || model || loadModel()).trim();
   const storedModel = (existing?.model ?? "").trim();
   const modelId = (unanswered ? chipModel || storedModel : storedModel || chipModel) || null;
-  await api.saveConversation(ws, {
+  const saved = await api.saveConversation(ws, {
     id,
     title,
     created_at: existing?.created_at ?? now,
@@ -1296,6 +1296,9 @@ async function writePersisted(id: string, payload: PersistPayload) {
     context_usage: usageToPersist(usage, usageByChat[id]),
     compaction: persistableCompaction(compaction ?? compactionByChat[id]),
   });
+  const sortOrder = typeof saved.sort_order === "number" ? saved.sort_order : (existing?.sort_order ?? 0);
+  const journeyId = saved.journey_id ?? existing?.journey_id ?? null;
+  const archivedFlag = saved.archived ?? existing?.archived ?? false;
   if (persistGen.current.get(id) !== payload.generation) return;
   const summary = {
     title,
@@ -1314,9 +1317,9 @@ async function writePersisted(id: string, payload: PersistPayload) {
         id,
         ...summary,
         created_at: prev?.created_at ?? summary.created_at,
-        journey_id: prev?.journey_id ?? existing?.journey_id ?? null,
-        sort_order: prev?.sort_order ?? existing?.sort_order ?? 0,
-        archived: prev?.archived ?? existing?.archived ?? false,
+        journey_id: prev?.journey_id ?? journeyId,
+        sort_order: sortOrder,
+        archived: prev?.archived ?? archivedFlag,
       };
       const idx = rows.findIndex((r) => r.id === id);
       if (idx < 0) return [nextRow, ...rows];
@@ -1328,9 +1331,9 @@ async function writePersisted(id: string, payload: PersistPayload) {
   setAllProjectGroups((groups) =>
     renameConversationInGroups(groups, id, {
       ...summary,
-      journey_id: existing?.journey_id ?? null,
-      sort_order: existing?.sort_order ?? 0,
-      archived: existing?.archived ?? false,
+      journey_id: journeyId,
+      sort_order: sortOrder,
+      archived: archivedFlag,
     }).groups,
   );
 }

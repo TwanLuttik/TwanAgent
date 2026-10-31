@@ -48,6 +48,7 @@ export function ConversationList({
   onDelete,
   onArchive,
   archivedView,
+  reorderable = true,
   selectedIds,
   onReorder,
 }: {
@@ -65,6 +66,8 @@ export function ConversationList({
   onDelete: (id: string) => void;
   onArchive?: (id: string, archived: boolean) => void;
   archivedView?: boolean;
+  /** Off while the list is sorted by finish time. Dragging would fight that view. */
+  reorderable?: boolean;
   /** Chat ids in this list that are part of the multi-selection. */
   selectedIds?: ReadonlySet<string>;
   onReorder: (fromId: string, toId: string) => void;
@@ -148,7 +151,7 @@ export function ConversationList({
     const { active, over } = ev;
     setDraggingId(null);
     setOverId(null);
-    if (!over || active.id === over.id) return;
+    if (!reorderable || !over || active.id === over.id) return;
     onReorder(String(active.id), String(over.id));
   }
 
@@ -186,6 +189,7 @@ export function ConversationList({
                 !(row.id in runningIds) && loadingId !== row.id ? formatRelativeAge(row.updated_at, nowMs) : ""
               }
               startedAt={turnStartedAt(runningIds, row.id)}
+              reorderable={reorderable}
               onOpen={onOpen}
               onDelete={onDelete}
               onContextMenu={openRowMenu}
@@ -247,6 +251,7 @@ const SortableRow = memo(function SortableRow({
   insertAfter,
   age,
   startedAt,
+  reorderable,
   onOpen,
   onSelect,
   onDelete,
@@ -263,6 +268,7 @@ const SortableRow = memo(function SortableRow({
   insertAfter: boolean;
   age: string;
   startedAt: number;
+  reorderable: boolean;
   onOpen: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
@@ -270,6 +276,7 @@ const SortableRow = memo(function SortableRow({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: row.id,
+    disabled: !reorderable,
   });
   const hidden = isDragging || dragging;
 

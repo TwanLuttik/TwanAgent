@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -48,6 +48,8 @@ pub struct LocalTurnStart {
 pub struct LocalTurnInfo {
     pub conversation_id: String,
     pub workspace: String,
+    /// Epoch ms when this turn started. A reloaded page keeps this instead of stamping now.
+    pub started_at: u64,
 }
 
 struct ShellWait {
@@ -66,6 +68,7 @@ struct PlanAnswer {
 
 struct LiveTurn {
     workspace: PathBuf,
+    started_at: u64,
     cancel: Arc<AtomicBool>,
     shell: Mutex<Vec<ShellWait>>,
     plan: Mutex<Vec<PlanWait>>,
@@ -75,6 +78,13 @@ struct LiveTurn {
     child_streams: Mutex<Vec<String>>,
     /// Shell processes this chat started. Stop kills them instead of waiting out the command.
     commands: Mutex<Vec<String>>,
+}
+
+fn epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn turns() -> &'static Mutex<HashMap<String, Arc<LiveTurn>>> {
@@ -107,6 +117,7 @@ pub fn dev_local_turns() -> Vec<LocalTurnInfo> {
         .map(|(id, turn)| LocalTurnInfo {
             conversation_id: id.clone(),
             workspace: turn.workspace.to_string_lossy().into_owned(),
+            started_at: turn.started_at,
         })
         .collect()
 }
@@ -200,6 +211,7 @@ pub async fn dev_local_turn_start(
     }
     let live_turn = Arc::new(LiveTurn {
         workspace: workspace.clone(),
+        started_at: epoch_ms(),
         cancel: Arc::new(AtomicBool::new(false)),
         shell: Mutex::new(Vec::new()),
         plan: Mutex::new(Vec::new()),

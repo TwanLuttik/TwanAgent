@@ -316,7 +316,7 @@ fn user_blocks(value: Option<&Value>, images: Option<&Value>) -> Vec<Value> {
                     .and_then(|item| item.get("url"))
                     .and_then(|item| item.as_str())
                     .unwrap_or("");
-                if let Some(image) = image_block(url) {
+                if let Some(image) = media_block(url, None) {
                     out.push(image);
                 }
             }
@@ -399,7 +399,8 @@ fn image_field_blocks(images: Option<&Value>, already: &[Value]) -> Vec<Value> {
     let mut out = Vec::new();
     for row in rows {
         let url = row.get("dataUrl").and_then(|item| item.as_str()).unwrap_or("");
-        let Some(image) = image_block(url) else {
+        let title = row.get("name").and_then(|item| item.as_str());
+        let Some(image) = media_block(url, title) else {
             continue;
         };
         let data = image
@@ -416,14 +417,24 @@ fn image_field_blocks(images: Option<&Value>, already: &[Value]) -> Vec<Value> {
     out
 }
 
-fn image_block(url: &str) -> Option<Value> {
+fn media_block(url: &str, title: Option<&str>) -> Option<Value> {
     let rest = url.strip_prefix("data:")?;
     let (meta, data) = rest.split_once(',')?;
     if !meta.contains(";base64") || data.is_empty() {
         return None;
     }
     let media_type = meta.split(';').next().unwrap_or("").trim();
-    if media_type.is_empty() {
+    if media_type == "application/pdf" {
+        let mut block = serde_json::json!({
+            "type": "document",
+            "source": { "type": "base64", "media_type": "application/pdf", "data": data }
+        });
+        if let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) {
+            block["title"] = Value::String(title.to_string());
+        }
+        return Some(block);
+    }
+    if media_type.is_empty() || !media_type.starts_with("image/") || media_type.contains("svg") {
         return None;
     }
     Some(serde_json::json!({
@@ -625,6 +636,29 @@ mod tests {
         );
         assert_eq!(minimax["messages"][0]["content"][1]["source"]["media_type"], "image/png");
         assert_eq!(minimax["messages"][0]["content"][1]["source"]["data"], "iVBORw0KGgo");
+    }
+
+    #[test]
+    fn a_pdf_sidecar_becomes_a_document_block() {
+        let body = to_messages_body(
+            &serde_json::json!([{
+                "role": "user",
+                "content": "summarize [doc.pdf]",
+                "images": [{
+                    "name": "doc.pdf",
+                    "dataUrl": "data:application/pdf;base64,JVBERg"
+                }]
+            }]),
+            "claude-sonnet-4-6",
+            None,
+            &serde_json::json!([]),
+        );
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0]["text"], "summarize");
+        assert_eq!(content[1]["type"], "document");
+        assert_eq!(content[1]["title"], "doc.pdf");
+        assert_eq!(content[1]["source"]["media_type"], "application/pdf");
+        assert_eq!(content[1]["source"]["data"], "JVBERg");
     }
 
     #[test]

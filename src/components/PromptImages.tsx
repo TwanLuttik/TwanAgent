@@ -2,6 +2,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChatImage } from "../lib/core";
+import { isFileAttachment } from "../lib/image";
+import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
 
 const MIN_ZOOM = 1;
@@ -20,23 +22,21 @@ export function PromptImages({
     <div className={`flex flex-wrap ${onRemove ? "gap-2.5 pt-1 pr-1" : "gap-1.5"}`}>
       {images.map((img) => (
         <div key={img.id} className="relative">
-          <button
-            type="button"
-            aria-label={`Enlarge ${img.name || "image"}`}
-            title={img.name || "Enlarge"}
-            onClick={() => setOpen(img)}
-            className="block overflow-hidden rounded-md border border-line/50"
-          >
-            <img
-              src={convertFileSrc(img.path)}
-              alt={img.name || "Image"}
-              className="h-14 w-14 object-cover"
-            />
-          </button>
+          {isFileAttachment(img) ? (
+            <div
+              title={img.name || "File"}
+              className="flex h-14 max-w-56 items-center gap-2 overflow-hidden rounded-md border border-line/50 bg-wash px-2.5"
+            >
+              <FileIcon name={img.name || "file"} className="size-7" />
+              <span className="min-w-0 truncate text-[12px] text-ink">{img.name || "File"}</span>
+            </div>
+          ) : (
+            <ImageThumb image={img} onOpen={() => setOpen(img)} />
+          )}
           {onRemove ? (
             <button
               type="button"
-              aria-label={`Remove ${img.name || "image"}`}
+              aria-label={`Remove ${img.name || (isFileAttachment(img) ? "file" : "image")}`}
               title="Remove"
               onClick={() => onRemove(img.id)}
               className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full border border-line/70 bg-canvas text-ink shadow-[0_1px_3px_rgba(0,0,0,0.16)] hover:bg-wash"
@@ -48,6 +48,29 @@ export function PromptImages({
       ))}
       {open ? <ImageLightbox image={open} onClose={() => setOpen(null)} /> : null}
     </div>
+  );
+}
+
+function ImageThumb({ image, onOpen }: { image: ChatImage; onOpen: () => void }) {
+  const src = image.previewUrl || (image.path ? convertFileSrc(image.path) : "");
+  if (!src) {
+    return (
+      <div
+        aria-label={image.name || "Image"}
+        className="h-14 w-14 animate-pulse rounded-md border border-line/50 bg-wash"
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-label={`Enlarge ${image.name || "image"}`}
+      title={image.name || "Enlarge"}
+      onClick={onOpen}
+      className="block overflow-hidden rounded-md border border-line/50"
+    >
+      <img src={src} alt={image.name || "Image"} className="h-14 w-14 object-cover" />
+    </button>
   );
 }
 
@@ -110,7 +133,7 @@ function ImageLightbox({ image, onClose }: { image: ChatImage; onClose: () => vo
         </div>
       ) : null}
       <img
-        src={convertFileSrc(image.path)}
+        src={image.previewUrl || convertFileSrc(image.path)}
         alt={image.name || "Image"}
         draggable={false}
         onWheel={(event) => {

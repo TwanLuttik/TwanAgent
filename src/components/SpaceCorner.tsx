@@ -11,8 +11,10 @@ import {
   type SpaceCornerImage,
 } from "../lib/prefs";
 
+/* Solid only in the window corner. It has to be gone before the main
+   container's top-left stroke, or that curve disappears into the picture. */
 const SPACE_FADE =
-  "radial-gradient(ellipse 120% 115% at 0% 0%, #000 0%, #000 16%, transparent 70%)";
+  "radial-gradient(ellipse 95% 90% at 0% 0%, #000 0%, #000 4%, transparent 32%)";
 
 /** Pixel width. The scene player sets the canvas to 100% of its box, so a percent here would follow the sidebar. */
 const SCENE_WIDTH = 500;

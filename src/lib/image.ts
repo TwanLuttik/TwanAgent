@@ -61,29 +61,48 @@ export function isImageFile(file: FileLike): boolean {
   return IMAGE_EXT.test(file.name ?? "");
 }
 
-export function imageFilesFromDrop(files: Iterable<FileLike>): FileLike[] {
-  return [...files].filter(isImageFile);
+export function isFileAttachment(image: { kind?: string }): boolean {
+  return image.kind === "file";
 }
 
-export function imagePathsFromDrop(paths: string[]): string[] {
-  return paths.filter((path) => isImageFile({ name: path }));
+/** Every dropped file, not only pictures. The model still receives images as images. */
+export function attachmentFilesFromDrop(files: Iterable<FileLike>): FileLike[] {
+  return [...files].filter((file) => file.name || file.type);
+}
+
+export function attachmentPathsFromDrop(paths: string[]): string[] {
+  return paths.map((path) => path.trim()).filter((path) => path.length > 0);
 }
 
 export function imageFilesFromClipboard(data: ClipboardLike | null | undefined): FileLike[] {
+  return attachmentFilesFromClipboard(data).filter(isImageFile);
+}
+
+export function imageFilesFromDrop(files: Iterable<FileLike>): FileLike[] {
+  return attachmentFilesFromDrop(files).filter(isImageFile);
+}
+
+export function imagePathsFromDrop(paths: string[]): string[] {
+  return attachmentPathsFromDrop(paths).filter((path) => isImageFile({ name: path }));
+}
+
+export function attachmentFilesFromClipboard(data: ClipboardLike | null | undefined): FileLike[] {
   if (!data) return [];
   const out: FileLike[] = [];
   const seen = new Set<FileLike>();
   const items = data.items;
   for (let i = 0; i < (items?.length ?? 0); i++) {
     const item = items![i];
-    if (item.kind !== "file" || !isImageMime(item.type)) continue;
+    if (item.kind !== "file") continue;
     const file = item.getAsFile?.();
-    if (!file || !isImageFile(file) || seen.has(file)) continue;
+    if (!file || seen.has(file)) continue;
+    if (!file.name && !file.type && !isImageFile(file)) continue;
     seen.add(file);
     out.push(file);
   }
   for (const file of data.files ?? []) {
-    if (seen.has(file) || !isImageFile(file)) continue;
+    if (seen.has(file)) continue;
+    if (!file.name && !file.type) continue;
     seen.add(file);
     out.push(file);
   }
@@ -276,7 +295,7 @@ export function setImagesForChat(
 }
 
 export function persistableImages(images: ChatImage[]): ChatImage[] {
-  return images.map(({ dataUrl: _dataUrl, ...img }) => img);
+  return images.map(({ dataUrl: _dataUrl, previewUrl: _previewUrl, ...img }) => img);
 }
 
 export function persistableCompaction(
@@ -305,6 +324,7 @@ export async function withImageDataUrls(
       let changed = false;
       const images = await Promise.all(
         msg.images.map(async (img) => {
+          if (isFileAttachment(img)) return img;
           if (img.dataUrl) return img;
           const cached = cache?.get(img.path);
           if (cached) {

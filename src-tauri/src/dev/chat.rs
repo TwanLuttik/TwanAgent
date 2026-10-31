@@ -365,6 +365,12 @@ pub async fn dev_chat_start(
     };
     let effort = effort.filter(|s| !s.trim().is_empty());
     let context_window = context_window.filter(|n| *n > 0);
+    let pdf_documents = provider == crate::model_providers::registry::ProviderId::Anthropic;
+    let data_dir = state.data_dir.clone();
+    let messages = crate::state::run_blocking(move || {
+        Ok(crate::attachment::expand_messages(&data_dir, messages, pdf_documents))
+    })
+    .await?;
     // A local turn already registered this stream's cancel flag. Keep that one so Stop
     // reaches the request. A page-started chat has no flag yet.
     let cancel = streams()

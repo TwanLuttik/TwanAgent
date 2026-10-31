@@ -256,6 +256,22 @@ describe("tool helpers", () => {
       "seriouseats.com",
     );
     assert.equal(toolSummary("todo_write", { todos: [{ id: "a", content: "Read", status: "pending" }] }), "Updated todos");
+    assert.equal(toolSummary("load_skill", { name: "brainstorming" }), "Skill brainstorming");
+    assert.equal(toolSummary("load_skill", { name: "  use-railway  " }), "Skill use-railway");
+    assert.equal(toolSummary("load_skill", {}), "Skill");
+    assert.equal(toolSummary("mcp__linear__list_issues", { team: "App" }), "MCP linear list_issues");
+    assert.equal(
+      toolDetail({ id: "sk", name: "load_skill", arguments: '{"name":"brainstorming"}' }),
+      "brainstorming",
+    );
+    assert.equal(
+      toolDetail({
+        id: "m",
+        name: "mcp__linear__list_issues",
+        arguments: JSON.stringify({ team: "App", limit: 5 }),
+      }),
+      "team: App\nlimit: 5",
+    );
   });
 
   it("keeps todo_write out of the tool trail", () => {
@@ -490,6 +506,56 @@ describe("tool helpers", () => {
     assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
       { label: "Web search: donuts", change: null, detail: "seriouseats.com\nkingarthur.com" },
     ]);
+  });
+
+  it("names a loaded skill and opens onto the instructions", () => {
+    const body = "---\nname: brainstorming\n---\n\nThink before coding.";
+    const items = transcriptItems([
+      { role: "user", content: "plan this" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "sk1", name: "load_skill", arguments: '{"name":"brainstorming"}' }],
+      },
+      { role: "tool", tool_call_id: "sk1", content: body },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Skill brainstorming"]);
+    assert.deepEqual(tools.commands, [body]);
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands), [
+      { label: "Skill brainstorming", change: null, detail: body },
+    ]);
+    assert.equal(toolTrailTypeIcon(toolTrailKind("Skill brainstorming")), "book");
+    assert.deepEqual(toolTrailParts("Skill brainstorming"), { verb: "Skill", detail: "brainstorming" });
+  });
+
+  it("names an MCP call and keeps its arguments so the row can open", () => {
+    const items = transcriptItems([
+      { role: "user", content: "issues" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "m1",
+            name: "mcp__linear__list_issues",
+            arguments: JSON.stringify({ team: "App" }),
+          },
+        ],
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["MCP linear list_issues"]);
+    assert.deepEqual(tools.commands, ["team: App"]);
+    assert.equal(toolTrailTypeIcon("MCP"), "cable.connector");
+    assert.deepEqual(toolTrailParts("MCP linear list_issues"), {
+      verb: "MCP",
+      detail: "linear list_issues",
+    });
   });
 
   it("keeps the shell command so a row can expand to it", () => {
@@ -1147,6 +1213,8 @@ describe("tool trail collapse", () => {
     assert.equal(toolTrailTypeIcon("List"), "folder");
     assert.equal(toolTrailTypeIcon("Subagent"), "person.2");
     assert.equal(toolTrailTypeIcon("Web"), "globe");
+    assert.equal(toolTrailTypeIcon("Skill"), "book");
+    assert.equal(toolTrailTypeIcon("MCP"), "cable.connector");
   });
 
   it("keeps special tool types intact when grouping", () => {
@@ -1425,6 +1493,31 @@ describe("toApiMessages", () => {
       { type: "text", text: "what is wrong in here" },
       { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
     ]);
+  });
+
+  it("keeps a non-image file on the sidecar instead of sending it as a picture", () => {
+    const out = toApiMessages([
+      {
+        role: "user",
+        content: "read [notes.md]",
+        images: [
+          {
+            id: "file-1",
+            path: "/tmp/attachments/inbox/file-1.md",
+            name: "notes.md",
+            mime: "text/plain",
+            width: 0,
+            height: 0,
+            resized: false,
+            kind: "file",
+            bytes: 12,
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(out[0]?.content, [{ type: "text", text: "read" }]);
+    assert.equal(out[0]?.images?.[0]?.kind, "file");
+    assert.equal(JSON.stringify(out[0]?.content).includes("image_url"), false);
   });
 });
 

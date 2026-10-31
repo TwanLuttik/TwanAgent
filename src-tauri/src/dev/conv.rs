@@ -107,36 +107,44 @@ fn remember_sidebar(state: &AppState, workspace: &str) {
 /// After one chat is saved, touch only that sidebar row when the project is already indexed.
 /// An uncached project still gets one full replace, so a single upsert cannot hide the other chats.
 fn remember_saved_conversation(state: &AppState, workspace: &str, conversation: &Conversation) {
-    let Ok(conn) = crate::appdb::open(&state.data_dir) else {
-        return;
-    };
-    let cached = crate::appdb::sidebar_cached(&conn, workspace).unwrap_or(false);
-    if !cached {
-        remember_sidebar(state, workspace);
-        return;
+    let _ = index_saved_conversation(&state.data_dir, workspace, &conversation.id);
+}
+
+/// Copy one saved chat into the sidebar index.
+///
+/// Order comes from the project database. A new chat is inserted above the list, and a later
+/// save leaves that place alone. The client often sends `sort_order: 0` because it never learned
+/// the stored place. Writing that zero into the index is what makes the chat jump on the next read.
+pub(crate) fn index_saved_conversation(data_dir: &Path, workspace: &str, id: &str) -> Result<()> {
+    let app = crate::appdb::open(data_dir)?;
+    let cloud = crate::appdb::sidebar_is_cloud(&app, workspace)?;
+    let cached = crate::appdb::sidebar_cached(&app, workspace)?;
+    if !cached && !cloud {
+        let conversations = load_summaries(data_dir, workspace)?;
+        let journeys =
+            store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys).unwrap_or_default();
+        return crate::appdb::replace_sidebar(&app, workspace, &conversations, &journeys);
     }
-    let summary = ConversationSummary {
-        id: conversation.id.clone(),
-        title: conversation.title.clone(),
-        created_at: conversation.created_at.clone(),
-        updated_at: conversation.updated_at.clone(),
-        kind: if conversation.kind.is_empty() {
-            "chat".into()
-        } else {
-            conversation.kind.clone()
-        },
-        journey_id: conversation.journey_id.clone(),
-        sort_order: conversation.sort_order,
-        effort: conversation.effort.clone().filter(|value| !value.trim().is_empty()),
-        model: conversation.model.clone().filter(|value| !value.trim().is_empty()),
-        context_window: conversation.context_window.filter(|value| *value > 0),
-        permission: conversation
-            .permission
-            .clone()
-            .filter(|value| !value.trim().is_empty()),
-        archived: conversation.archived,
+    let summary = store::with_conn(&conv_store_dir(data_dir, workspace), |conn| {
+        store::conversation_summary(conn, id)
+    })?;
+    let summary = if cloud {
+        // The cached rows are the server list. A local save may refresh the title, but it must
+        // not reorder a chat the server already placed.
+        let (rows, _) = crate::appdb::sidebar_for(&app, workspace)?;
+        match rows.into_iter().find(|row| row.id == id) {
+            Some(existing) => ConversationSummary {
+                sort_order: existing.sort_order,
+                journey_id: existing.journey_id,
+                archived: existing.archived,
+                ..summary
+            },
+            None => summary,
+        }
+    } else {
+        summary
     };
-    let _ = crate::appdb::upsert_sidebar_conversation(&conn, workspace, &summary);
+    crate::appdb::upsert_sidebar_conversation(&app, workspace, &summary)
 }
 
 fn load_summaries(data_dir: &Path, workspace: &str) -> Result<Vec<ConversationSummary>> {
@@ -286,6 +294,13 @@ pub fn dev_save_conversation(
     let dir = conv_store_dir(&state.data_dir, &workspace);
     store::with_conn(&dir, |conn| store::save_conversation(conn, &conversation))?;
     remember_saved_conversation(&state, &workspace, &conversation);
+    // Hand back the place the database kept. The payload's sort_order is often the default zero.
+    let mut conversation = conversation;
+    if let Ok(summary) = store::with_conn(&dir, |conn| store::conversation_summary(conn, &conversation.id)) {
+        conversation.sort_order = summary.sort_order;
+        conversation.journey_id = summary.journey_id;
+        conversation.archived = summary.archived;
+    }
     Ok(conversation)
 }
 
@@ -625,5 +640,109 @@ mod tests {
         assert_eq!(loaded[0].kind, "chat");
         let summary = super::summary_from(loaded.into_iter().next().unwrap());
         assert_eq!(summary.kind, "chat");
+    }
+
+    fn plain(id: &str) -> Conversation {
+        Conversation {
+            id: id.into(),
+            title: id.into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            kind: "chat".into(),
+            messages: vec![],
+            context_usage: None,
+            compaction: None,
+            journey_id: None,
+            sort_order: 0,
+            effort: None,
+            model: None,
+            context_window: None,
+            permission: None,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn a_new_chat_does_not_move_the_others_when_the_client_sends_sort_zero() {
+        let dir = temp_ws();
+        let data = dir.path();
+        let ws = data.join("proj").to_string_lossy().into_owned();
+        let store_dir = super::conv_store_dir(data, &ws);
+        store::with_conn(&store_dir, |conn| {
+            store::save_conversation(conn, &plain("older"))?;
+            store::save_conversation(conn, &plain("newer"))?;
+            Ok(())
+        })
+        .unwrap();
+        super::index_saved_conversation(data, &ws, "older").unwrap();
+        let before = crate::appdb::sidebar_for(&crate::appdb::open(data).unwrap(), &ws)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        assert_eq!(before, ["newer", "older"]);
+
+        let mut fresh = plain("fresh");
+        fresh.updated_at = "2026-06-01T00:00:00Z".into();
+        store::with_conn(&store_dir, |conn| store::save_conversation(conn, &fresh)).unwrap();
+        super::index_saved_conversation(data, &ws, "fresh").unwrap();
+        let created = crate::appdb::sidebar_for(&crate::appdb::open(data).unwrap(), &ws)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        assert_eq!(created, ["fresh", "newer", "older"]);
+
+        fresh.title = "Renamed".into();
+        fresh.sort_order = 0;
+        fresh.updated_at = "2026-07-01T00:00:00Z".into();
+        store::with_conn(&store_dir, |conn| store::save_conversation(conn, &fresh)).unwrap();
+        super::index_saved_conversation(data, &ws, "fresh").unwrap();
+        let rows = crate::appdb::sidebar_for(&crate::appdb::open(data).unwrap(), &ws)
+            .unwrap()
+            .0;
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["fresh", "newer", "older"]
+        );
+        assert_eq!(rows[0].title, "Renamed");
+        assert!(rows[0].sort_order < rows[1].sort_order);
+    }
+
+    #[test]
+    fn a_local_save_does_not_reorder_a_cloud_sidebar() {
+        let dir = temp_ws();
+        let data = dir.path();
+        let ws = "/mounts/cloud";
+        let mut kept = plain("kept");
+        kept.sort_order = 4;
+        let mut other = plain("other");
+        other.sort_order = 1;
+        crate::appdb::replace_sidebar_source(
+            &crate::appdb::open(data).unwrap(),
+            ws,
+            &[super::summary_from(other), super::summary_from(kept.clone())],
+            &[],
+            true,
+        )
+        .unwrap();
+        let store_dir = super::conv_store_dir(data, ws);
+        kept.sort_order = 0;
+        kept.title = "Kept".into();
+        kept.updated_at = "2026-08-01T00:00:00Z".into();
+        store::with_conn(&store_dir, |conn| store::save_conversation(conn, &kept)).unwrap();
+        super::index_saved_conversation(data, ws, "kept").unwrap();
+        let rows = crate::appdb::sidebar_for(&crate::appdb::open(data).unwrap(), ws)
+            .unwrap()
+            .0;
+        let kept_row = rows.iter().find(|row| row.id == "kept").unwrap();
+        assert_eq!(kept_row.sort_order, 4);
+        assert_eq!(kept_row.title, "Kept");
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["other", "kept"]
+        );
     }
 }

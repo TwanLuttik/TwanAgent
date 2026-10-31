@@ -1307,6 +1307,8 @@ export type PreparedImage = {
   width: number;
   height: number;
   resized: boolean;
+  kind?: "file";
+  bytes?: number;
 };
 
 export function prepareImage(
@@ -1332,6 +1334,43 @@ export function prepareImagePath(
     conversationId: conversationId ?? null,
     conversation_id: conversationId ?? null,
   });
+}
+
+export function prepareFile(
+  bytesBase64: string,
+  name: string,
+  conversationId?: string,
+): Promise<PreparedImage> {
+  return invoke("dev_prepare_file", {
+    bytesBase64,
+    bytes_base64: bytesBase64,
+    name,
+    conversationId: conversationId ?? null,
+    conversation_id: conversationId ?? null,
+  });
+}
+
+export function prepareFilePath(
+  path: string,
+  conversationId?: string,
+): Promise<PreparedImage> {
+  return invoke("dev_prepare_file_path", {
+    path,
+    conversationId: conversationId ?? null,
+    conversation_id: conversationId ?? null,
+  });
+}
+
+export function stageDropPath(path: string, conversationId?: string): Promise<PreparedImage> {
+  return invoke("dev_stage_drop_path", {
+    path,
+    conversationId: conversationId ?? null,
+    conversation_id: conversationId ?? null,
+  });
+}
+
+export function finalizeImage(path: string): Promise<PreparedImage> {
+  return invoke("dev_finalize_image", { path });
 }
 
 export function imageDataUrl(path: string): Promise<string> {
@@ -1493,6 +1532,8 @@ export function chatCancel(streamId: string): Promise<void> {
 export type LocalTurnInfo = {
   conversation_id: string;
   workspace: string;
+  /** Epoch ms when the process started this turn. Missing on an older build. */
+  started_at?: number;
 };
 
 /** Turns still running in the app process. A reloaded window uses this to rejoin them. */

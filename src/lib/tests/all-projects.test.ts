@@ -30,6 +30,7 @@ import {
   sidebarActivity,
   visibleConversations,
   nextTopSort,
+  orderSidebarChats,
   archiveTargets,
   chatSelectionKey,
   nextChatSelection,
@@ -56,6 +57,32 @@ function journey(id: string, title = id): JourneySummary {
     collapsed: false,
   };
 }
+
+describe("orderSidebarChats", () => {
+  it("keeps the stored place until finished order is on", () => {
+    const rows = [
+      { ...chat("old", "Older"), updated_at: "2026-04-01T10:00:00Z" },
+      { ...chat("new", "Newer"), updated_at: "2026-04-03T10:00:00Z" },
+    ];
+    assert.equal(orderSidebarChats(rows, "manual"), rows);
+    assert.deepEqual(
+      orderSidebarChats(rows, "finished").map((row) => row.id),
+      ["new", "old"],
+    );
+  });
+
+  it("keeps a tied finish in the order it already had", () => {
+    const rows = [
+      { ...chat("a", "A"), updated_at: "2026-04-02T10:00:00Z" },
+      { ...chat("b", "B"), updated_at: "not-a-date" },
+      { ...chat("c", "C"), updated_at: "2026-04-02T10:00:00Z" },
+    ];
+    assert.deepEqual(
+      orderSidebarChats(rows, "finished").map((row) => row.id),
+      ["a", "c", "b"],
+    );
+  });
+});
 
 describe("sidebarActivity", () => {
   const groups = [

@@ -9,6 +9,7 @@ mod error;
 pub use model_providers::anthropic;
 pub use model_providers::grok_cli;
 pub use model_providers::minimax;
+mod attachment;
 mod heic;
 mod image;
 mod paths;
@@ -249,6 +250,10 @@ pub fn run() {
             usage::dev_usage_db_open,
             image::dev_prepare_image,
             image::dev_prepare_image_path,
+            image::dev_prepare_file,
+            image::dev_prepare_file_path,
+            image::dev_stage_drop_path,
+            image::dev_finalize_image,
             image::dev_image_data_url,
             image::dev_set_space_corner_image,
             image::dev_space_corner_image,

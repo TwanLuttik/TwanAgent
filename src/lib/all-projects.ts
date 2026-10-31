@@ -9,6 +9,32 @@ export type ProjectSidebarData = {
 
 export type ProjectChatGroup = ProjectRow & ProjectSidebarData;
 
+/** Manual keeps the stored place. Finished sorts by the last update, newest first. */
+export type SidebarChatOrder = "manual" | "finished";
+
+/**
+ * Order the sidebar already has, or by when each chat was last updated.
+ * Finished order is a view. It does not rewrite the stored place, so turning it off
+ * puts every chat back where it was.
+ */
+export function orderSidebarChats<T extends { id: string; updated_at?: string }>(
+  rows: T[],
+  mode: SidebarChatOrder,
+): T[] {
+  if (mode !== "finished" || rows.length < 2) return rows;
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const left = Date.parse(a.row.updated_at ?? "");
+      const right = Date.parse(b.row.updated_at ?? "");
+      const aTime = Number.isFinite(left) ? left : 0;
+      const bTime = Number.isFinite(right) ? right : 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return a.index - b.index;
+    })
+    .map((item) => item.row);
+}
+
 /** One less than the current top, so a new row sorts above the existing list. */
 export function nextTopSort(orders: Array<number | undefined>): number {
   let min = 0;

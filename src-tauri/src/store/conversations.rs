@@ -70,6 +70,17 @@ fn summary_from_head(head: ConvHead) -> ConversationSummary {
     }
 }
 
+/// One sidebar row. Messages stay in the database.
+pub fn conversation_summary(conn: &Connection, id: &str) -> Result<ConversationSummary> {
+    let head = conn
+        .query_row(&format!("{HEAD_SQL} WHERE id = ?1"), [id], map_head)
+        .optional()?;
+    let Some(head) = head else {
+        return Err(Error::NotFound("conversation not found".into()));
+    };
+    Ok(summary_from_head(head))
+}
+
 /// Sidebar rows. Messages stay in the database until a chat is opened.
 pub fn list_conversation_summaries(conn: &Connection) -> Result<Vec<ConversationSummary>> {
     let mut stmt = conn.prepare(&format!("{HEAD_SQL} ORDER BY sort_order ASC, id ASC"))?;

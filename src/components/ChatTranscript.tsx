@@ -130,7 +130,7 @@ export function ActivityStatus({ label, startedAt }: { label: string; startedAt?
 export function DropImagesHint() {
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-[inherit] bg-canvas/80 text-[14px] text-ink">
-      Drop images
+      Drop files
     </div>
   );
 }

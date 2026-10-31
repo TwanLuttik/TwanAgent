@@ -23,6 +23,7 @@ import {
   setDraftForChat,
   skipToolIfAborted,
   chatHasRunningTurn,
+  keepTurnStartedAt,
   patchRunningTurn,
   composerRowForOpen,
   composerSettingsForChat,
@@ -400,6 +401,24 @@ describe("per-conversation pending queue", () => {
     assert.equal(shouldQueueForChat("chat-a", "chat-a"), true);
     assert.equal(shouldQueueForChat("chat-a", "chat-b"), false);
     assert.equal(shouldQueueForChat("", "chat-b"), false);
+  });
+
+  it("does not restart the turn clock when a message lands between tool calls", () => {
+    let running = patchRunningTurn({}, "chat-a", { activity: null, startedAt: 1_000 });
+    running = patchRunningTurn(running, "chat-a", { activity: { kind: "tool", label: "Read a.ts" } });
+    // The model writes between tool batches. That used to stamp the clock again.
+    running = patchRunningTurn(running, "chat-a", { activity: null });
+    running = patchRunningTurn(running, "chat-a", {
+      activity: { kind: "tool", label: "Run tests" },
+      startedAt: 9_000,
+    });
+    assert.equal(running["chat-a"]?.startedAt, 1_000);
+    assert.equal(runningTurnStartedAt(running, "chat-a"), 1_000);
+    // A reload can still put the original, earlier start back.
+    const restored = patchRunningTurn(running, "chat-a", { startedAt: 400 });
+    assert.equal(restored["chat-a"]?.startedAt, 400);
+    assert.equal(keepTurnStartedAt(0, 1_000), 1_000);
+    assert.equal(patchRunningTurn({}, "chat-b", { startedAt: 50 })["chat-b"]?.startedAt, 50);
   });
 
   it("keeps the running map when a tool tick repeats the same label", () => {

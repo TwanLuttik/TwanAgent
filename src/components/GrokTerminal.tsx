@@ -7,7 +7,7 @@ import { attachTerminalLinks, attachXtermInput } from "../lib/term-io";
 import { terminalSessions } from "../lib/terminal-sessions";
 import type { TerminalSession } from "../lib/terminal-chat";
 import * as api from "../lib/tauri";
-import { applyXtermTheme, paneIsShown, xtermTheme } from "./Terminal";
+import { applyXtermTheme, paneIsShown, watchTerminalBox, xtermTheme } from "./Terminal";
 import { PlanPreview } from "./PlanPreview";
 
 /** @deprecated Terminal chats are not the product. Plan mode lives in the normal Grok chat. */
@@ -126,21 +126,11 @@ export function GrokTerminal({
       }
     })();
 
-    let frame = 0;
-    const ro = new ResizeObserver(() => {
-      if (frame || !paneIsShown(el)) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (!paneIsShown(el) || el.closest("[data-pane-resizing]")) return;
-        fit.fit();
-      });
-    });
-    ro.observe(el);
+    const stopWatch = watchTerminalBox(el, () => fit.fit());
 
     return () => {
       cancelled = true;
-      if (frame) cancelAnimationFrame(frame);
-      ro.disconnect();
+      stopWatch();
       unsub();
       detachLinks();
       terminalSessions.detach(conversationId);
@@ -186,7 +176,7 @@ export function GrokTerminal({
       : "Grok exited.";
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col bg-panel">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-panel">
       {planIsVisible(plan) ? (
         <PlanPreview
           plan={plan}

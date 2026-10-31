@@ -7,7 +7,7 @@ import { attachTerminalLinks } from "../lib/term-io";
 import { openUrl, stopCommand } from "../lib/tauri";
 import { formatElapsed } from "../lib/relative-time";
 import { Symbol } from "./Symbol";
-import { paneIsShown, xtermTheme } from "./Terminal";
+import { paneIsShown, watchTerminalBox, xtermTheme } from "./Terminal";
 
 export function CommandRunPill({ run }: { run: CommandRun }) {
   // A new command arrives closed. The bar is enough until the user asks for the output.
@@ -96,20 +96,10 @@ function CommandTerminal({ run, open }: { run: CommandRun; open: boolean }) {
     const initial = outputRef.current;
     written.current = { id: initial.id, length: initial.output.length };
     if (initial.output) term.write(initial.output);
-    let frame = 0;
-    const fitSoon = () => {
-      if (frame || !paneIsShown(el)) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (paneIsShown(el)) fit.fit();
-      });
-    };
-    const ro = new ResizeObserver(fitSoon);
-    ro.observe(el);
-    fitSoon();
+    const stopWatch = watchTerminalBox(el, () => fit.fit());
+    if (paneIsShown(el)) fit.fit();
     return () => {
-      if (frame) cancelAnimationFrame(frame);
-      ro.disconnect();
+      stopWatch();
       detachLinks();
       term.dispose();
       termRef.current = null;

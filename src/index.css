@@ -595,6 +595,9 @@ html[data-theme-mode="light"] .model-tip {
    Clip to the host so that row stays inside the pane. */
 .term {
   overflow: hidden;
+  width: 100%;
+  /* The grid's own width must not keep the host from tracking the pane. */
+  min-width: 0;
 }
 
 .term .xterm {
@@ -627,9 +630,10 @@ html[data-theme-mode="light"] .model-tip {
   opacity: 0.55;
 }
 
-/* The grid stays put while the pane edge moves. Stretch the canvas to the new
-   box, then the real fit runs once the drag ends. */
-[data-pane-resizing] .xterm-screen canvas {
+/* Canvas layers follow the pane while it moves. The character grid is not
+   rebuilt until the drag or slide ends. */
+[data-pane-resizing] .xterm-screen canvas,
+[data-pane-sliding] .xterm-screen canvas {
   width: 100% !important;
   height: 100% !important;
 }

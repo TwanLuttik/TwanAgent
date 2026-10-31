@@ -23,6 +23,16 @@ pub struct PreparedImage {
     pub width: u32,
     pub height: u32,
     pub resized: bool,
+    /// `"file"` for anything that is not a picture. Empty on images.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Byte size of a stored file. Zero on images.
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub bytes: u64,
+}
+
+fn u64_is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 pub fn attachments_dir(data_dir: &Path) -> PathBuf {
@@ -107,6 +117,8 @@ pub fn copy_space_corner_image(data_dir: &Path, source: &str) -> Result<Prepared
         width,
         height,
         resized: false,
+        kind: String::new(),
+        bytes: 0,
     })
 }
 
@@ -160,6 +172,8 @@ pub fn space_corner_image(data_dir: &Path) -> Result<Option<PreparedImage>> {
         width,
         height,
         resized: false,
+        kind: String::new(),
+        bytes: 0,
     }))
 }
 
@@ -202,13 +216,194 @@ fn folder_name(conversation_id: Option<&str>) -> String {
 }
 
 fn display_name(name: &str) -> String {
+    display_name_or(name, "image")
+}
+
+fn display_name_or(name: &str, fallback: &str) -> String {
     Path::new(name)
         .file_name()
         .and_then(|s| s.to_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("image")
+        .unwrap_or(fallback)
         .to_string()
+}
+
+fn safe_extension(name: &str) -> String {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let cleaned: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(16)
+        .collect();
+    if cleaned.is_empty() {
+        "bin".into()
+    } else {
+        cleaned.to_ascii_lowercase()
+    }
+}
+
+fn file_mime(name: &str) -> &'static str {
+    match safe_extension(name).as_str() {
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "zip" => "application/zip",
+        "gz" => "application/gzip",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "heic" | "heif" => {
+            "application/octet-stream"
+        }
+        "txt" | "md" | "csv" | "log" | "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go"
+        | "toml" | "yaml" | "yml" | "html" | "css" | "xml" | "sh" | "sql" | "c" | "h" | "cpp"
+        | "hpp" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Copy a dropped file that is not a picture. Bytes are stored as-is.
+pub fn prepare_file(
+    data_dir: &Path,
+    bytes: &[u8],
+    name: &str,
+    conversation_id: Option<&str>,
+) -> Result<PreparedImage> {
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(Error::Other("file is too large".into()));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = attachments_dir(data_dir).join(folder_name(conversation_id));
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{id}.{}", safe_extension(name)));
+    fs::write(&path, bytes)?;
+    let shown = display_name_or(name, "file");
+    Ok(PreparedImage {
+        id,
+        path: path.to_string_lossy().replace('\\', "/"),
+        name: shown,
+        mime: file_mime(name).into(),
+        width: 0,
+        height: 0,
+        resized: false,
+        kind: "file".into(),
+        bytes: bytes.len() as u64,
+    })
+}
+
+pub fn prepare_file_from_path(
+    data_dir: &Path,
+    source: &str,
+    conversation_id: Option<&str>,
+) -> Result<PreparedImage> {
+    let path = PathBuf::from(source.trim());
+    let name = display_name_or(source, "file");
+    let meta = fs::metadata(&path).map_err(|_| Error::Other("file not found".into()))?;
+    if meta.is_dir() {
+        return Err(Error::Other("Drop a file, not a folder.".into()));
+    }
+    if !meta.is_file() {
+        return Err(Error::Other("file not found".into()));
+    }
+    if meta.len() > MAX_SOURCE_BYTES {
+        return Err(Error::Other("file is too large".into()));
+    }
+    let bytes = fs::read(&path)?;
+    prepare_file(data_dir, &bytes, &name, conversation_id)
+}
+
+/// Copy a drop into attachments without decoding it, so the chip can paint
+/// before a large screenshot is resized.
+pub fn stage_dropped_path(
+    data_dir: &Path,
+    source: &str,
+    conversation_id: Option<&str>,
+) -> Result<PreparedImage> {
+    let path = PathBuf::from(source.trim());
+    let name = display_name_or(source, "file");
+    let meta = fs::metadata(&path).map_err(|_| Error::Other("file not found".into()))?;
+    if meta.is_dir() {
+        return Err(Error::Other("Drop a file, not a folder.".into()));
+    }
+    if !meta.is_file() {
+        return Err(Error::Other("file not found".into()));
+    }
+    if meta.len() > MAX_SOURCE_BYTES {
+        return Err(Error::Other("file is too large".into()));
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let dir = attachments_dir(data_dir).join(folder_name(conversation_id));
+    fs::create_dir_all(&dir)?;
+    let stored = dir.join(format!("{id}.{}", safe_extension(&name)));
+    fs::copy(&path, &stored)?;
+    let image = is_image_name(&name);
+    Ok(PreparedImage {
+        id,
+        path: stored.to_string_lossy().replace('\\', "/"),
+        mime: if image {
+            image_mime_from_name(&name).to_string()
+        } else {
+            file_mime(&name).to_string()
+        },
+        name,
+        width: 0,
+        height: 0,
+        resized: false,
+        kind: if image { String::new() } else { "file".into() },
+        bytes: if image { 0 } else { meta.len() },
+    })
+}
+
+/// Finish a staged picture. A file that already fits keeps its path. A large
+/// one is resized and the staged original is removed.
+pub fn finalize_staged_image(data_dir: &Path, path: &str) -> Result<PreparedImage> {
+    let file = resolve_attachment(data_dir, path)?;
+    let bytes = fs::read(&file)?;
+    // Keep the caller's path. Canonicalizing adds a `/private` prefix on macOS
+    // and would reload the thumbnail for the same file.
+    let staged = path.trim().replace('\\', "/");
+    if let Some((width, height, format)) = header_size(&bytes) {
+        if !needs_resize(width, height) {
+            if let Some((_, mime)) = passthrough_format(Some(format)) {
+                return Ok(PreparedImage {
+                    id: file
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("image")
+                        .to_string(),
+                    path: staged.clone(),
+                    name: display_name(&staged),
+                    mime: mime.to_string(),
+                    width,
+                    height,
+                    resized: false,
+                    kind: String::new(),
+                    bytes: 0,
+                });
+            }
+        }
+    }
+    let conv = file
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|s| s.to_str());
+    let prepared = prepare_image(data_dir, &bytes, &display_name(&staged), conv)?;
+    if prepared.path != staged {
+        let _ = fs::remove_file(&file);
+    }
+    Ok(prepared)
+}
+
+fn image_mime_from_name(name: &str) -> &'static str {
+    match safe_extension(name).as_str() {
+        "jpg" | "jpeg" | "jfif" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "heic" | "heif" => "image/heic",
+        _ => "image/png",
+    }
 }
 
 fn mime_from_path(path: &Path) -> &'static str {
@@ -311,6 +506,25 @@ pub fn prepare_image(
     if bytes.is_empty() {
         return Err(Error::Other("image is empty".into()));
     }
+    // A picture that already fits is stored as-is. Reading the header avoids
+    // decoding every pixel, which is what made a drop feel late.
+    if let Some((width, height, format)) = header_size(bytes) {
+        if !needs_resize(width, height) {
+            if let Some((ext, mime)) = passthrough_format(Some(format)) {
+                return store_prepared(
+                    data_dir,
+                    conversation_id,
+                    name,
+                    ext,
+                    mime,
+                    bytes,
+                    width,
+                    height,
+                    false,
+                );
+            }
+        }
+    }
     let raster = open_raster(bytes, name, MAX_EDGE)?;
     if raster.source_width == 0 || raster.source_height == 0 {
         return Err(Error::Other("image has no pixels".into()));
@@ -334,19 +548,57 @@ pub fn prepare_image(
             encode_resized(&out)?
         };
 
+    store_prepared(
+        data_dir,
+        conversation_id,
+        name,
+        &ext,
+        &mime,
+        &encoded,
+        width,
+        height,
+        resized,
+    )
+}
+
+fn header_size(bytes: &[u8]) -> Option<(u32, u32, ImageFormat)> {
+    let reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    let (width, height) = reader.into_dimensions().ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((width, height, format))
+}
+
+fn store_prepared(
+    data_dir: &Path,
+    conversation_id: Option<&str>,
+    name: &str,
+    ext: &str,
+    mime: &str,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    resized: bool,
+) -> Result<PreparedImage> {
     let id = uuid::Uuid::new_v4().to_string();
     let dir = attachments_dir(data_dir).join(folder_name(conversation_id));
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{id}.{ext}"));
-    fs::write(&path, encoded)?;
+    fs::write(&path, bytes)?;
     Ok(PreparedImage {
         id,
         path: path.to_string_lossy().replace('\\', "/"),
         name: display_name(name),
-        mime,
+        mime: mime.to_string(),
         width,
         height,
         resized,
+        kind: String::new(),
+        bytes: 0,
     })
 }
 
@@ -433,6 +685,55 @@ pub async fn dev_prepare_image_path(
         prepare_image_from_path(&data_dir, &path, conversation_id.as_deref())
     })
     .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_prepare_file(
+    state: State<'_, AppState>,
+    bytes_base64: String,
+    name: String,
+    conversation_id: Option<String>,
+) -> Result<PreparedImage> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        let bytes = BASE64
+            .decode(bytes_base64.trim())
+            .map_err(|_| Error::Other("Couldn’t read file data.".into()))?;
+        prepare_file(&data_dir, &bytes, &name, conversation_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_prepare_file_path(
+    state: State<'_, AppState>,
+    path: String,
+    conversation_id: Option<String>,
+) -> Result<PreparedImage> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        prepare_file_from_path(&data_dir, &path, conversation_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_stage_drop_path(
+    state: State<'_, AppState>,
+    path: String,
+    conversation_id: Option<String>,
+) -> Result<PreparedImage> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        stage_dropped_path(&data_dir, &path, conversation_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_finalize_image(state: State<'_, AppState>, path: String) -> Result<PreparedImage> {
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || finalize_staged_image(&data_dir, &path)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -573,6 +874,67 @@ mod tests {
         assert!(!dir.path().join("space-corner/image.png").exists());
         clear_space_corner_image(dir.path()).unwrap();
         assert!(space_corner_image(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn stages_a_picture_before_it_is_decoded() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("shot.png");
+        let bytes = png_bytes(80, 40, 255);
+        fs::write(&src, &bytes).unwrap();
+        let staged = stage_dropped_path(dir.path(), src.to_str().unwrap(), Some("c")).unwrap();
+        assert!(staged.kind.is_empty());
+        assert_eq!(staged.width, 0);
+        assert_eq!(fs::read(&staged.path).unwrap(), bytes);
+        let done = finalize_staged_image(dir.path(), &staged.path).unwrap();
+        assert_eq!(done.path, staged.path);
+        assert_eq!(done.width, 80);
+        assert_eq!(done.height, 40);
+        assert!(!done.resized);
+    }
+
+    #[test]
+    fn a_wide_staged_picture_is_resized_and_the_staged_copy_is_removed() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("wide.png");
+        fs::write(&src, png_bytes(3000, 1000, 255)).unwrap();
+        let staged = stage_dropped_path(dir.path(), src.to_str().unwrap(), None).unwrap();
+        let done = finalize_staged_image(dir.path(), &staged.path).unwrap();
+        assert_ne!(done.path, staged.path);
+        assert_eq!(done.width, 2048);
+        assert_eq!(done.height, 683);
+        assert!(done.resized);
+        assert!(!Path::new(&staged.path).exists());
+    }
+
+    #[test]
+    fn copies_a_text_file_without_decoding_it_as_an_image() {
+        let dir = tempdir().unwrap();
+        let out = prepare_file(dir.path(), b"hello\n", "notes.md", Some("chat")).unwrap();
+        assert_eq!(out.kind, "file");
+        assert_eq!(out.name, "notes.md");
+        assert_eq!(out.mime, "text/plain");
+        assert_eq!(out.bytes, 6);
+        assert_eq!(out.width, 0);
+        assert!(out.path.ends_with(".md"), "{}", out.path);
+        assert_eq!(fs::read(out.path).unwrap(), b"hello\n");
+    }
+
+    #[test]
+    fn copies_a_dropped_file_and_refuses_a_folder() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("plan.pdf");
+        fs::write(&src, b"%PDF-1.1\n").unwrap();
+        let out = prepare_file_from_path(dir.path(), src.to_str().unwrap(), None).unwrap();
+        assert_eq!(out.name, "plan.pdf");
+        assert_eq!(out.mime, "application/pdf");
+        assert_eq!(out.kind, "file");
+        let folder = dir.path().join("folder");
+        fs::create_dir(&folder).unwrap();
+        let err = prepare_file_from_path(dir.path(), folder.to_str().unwrap(), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("folder"), "{err}");
     }
 
     #[test]

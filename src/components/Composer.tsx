@@ -27,8 +27,8 @@ import {
 import {
   canSendPrompt,
   imageBeforeCursor,
-  imageFilesFromClipboard,
-  imageFilesFromDrop,
+  attachmentFilesFromClipboard,
+  attachmentFilesFromDrop,
   imageSpans,
   removeImageSpan,
   removeImageTokens,
@@ -378,7 +378,7 @@ export function Composer({
   function onDrop(ev: DragEvent<HTMLDivElement>) {
     ev.preventDefault();
     setDragOver(false);
-    takeImageFiles(imageFilesFromDrop(ev.dataTransfer.files) as File[]);
+    takeImageFiles(attachmentFilesFromDrop(ev.dataTransfer.files) as File[]);
   }
 
   const draftLenRef = useRef(draft.length);
@@ -558,7 +558,7 @@ export function Composer({
         ) : null}
         {dragOver ? (
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[inherit] bg-panel/80 text-[13px] text-ink">
-            Drop images
+            Drop files
           </div>
         ) : null}
         <MentionMenu
@@ -1270,7 +1270,7 @@ function MentionField({
   }
 
   function onPasteText(event: ClipboardEvent<HTMLTextAreaElement>) {
-    const images = imageFilesFromClipboard(event.clipboardData) as File[];
+    const images = attachmentFilesFromClipboard(event.clipboardData) as File[];
     if (images.length) {
       event.preventDefault();
       onPasteFiles(images);

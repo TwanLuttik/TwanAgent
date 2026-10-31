@@ -4,6 +4,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { shellSessionId } from "../lib/shell-sessions";
 import { shellSessions } from "../lib/shell-terminal";
+import { browserFitClock, createPaneFitGate, onPaneFit, paneLayoutMoving } from "../lib/terminal-fit";
 import { attachTerminalLinks, attachXtermInput } from "../lib/term-io";
 import { openUrl } from "../lib/tauri";
 
@@ -77,25 +78,11 @@ export function Terminal({
       }
     })();
 
-    let frame = 0;
-    const ro = new ResizeObserver(() => {
-      if (frame || !paneIsShown(el)) return;
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        // Fitting rebuilds the grid and tells the shell. While the pane edge is
-        // moving, stretch the canvas instead and fit once when the drag ends.
-        // Opening and closing only changes the slot width. Fitting then would
-        // rebuild the grid on every frame of the slide.
-        if (!paneIsShown(el) || el.closest("[data-pane-resizing], [data-pane-sliding]")) return;
-        fit.fit();
-      });
-    });
-    ro.observe(el);
+    const stopWatch = watchTerminalBox(el, () => fit.fit());
 
     return () => {
       cancelled = true;
-      if (frame) cancelAnimationFrame(frame);
-      ro.disconnect();
+      stopWatch();
       unsub();
       detachLinks();
       term.dispose();
@@ -117,7 +104,7 @@ export function Terminal({
   }, [active]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-panel">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-panel">
       {error ? <p className="px-3 py-2 text-[12px] text-err">{error}</p> : null}
       <div
         ref={host}
@@ -130,6 +117,24 @@ export function Terminal({
 
 export function paneIsShown(el: HTMLElement): boolean {
   return el.clientWidth > 0 && el.clientHeight > 0 && !el.closest("[inert]");
+}
+
+/** Fit on a real size change, and once more when a pane drag or slide ends. */
+export function watchTerminalBox(el: HTMLElement, fit: () => void): () => void {
+  const gate = createPaneFitGate({
+    clock: browserFitClock(),
+    moving: () => paneLayoutMoving(el),
+    shown: () => paneIsShown(el),
+    fit,
+  });
+  const ro = new ResizeObserver(() => gate.noteResize());
+  ro.observe(el);
+  const stopFit = onPaneFit(() => gate.settle());
+  return () => {
+    gate.dispose();
+    ro.disconnect();
+    stopFit();
+  };
 }
 
 function cssVar(name: string): string {

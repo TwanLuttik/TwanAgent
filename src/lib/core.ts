@@ -1,5 +1,5 @@
 import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
-import { stripImageTokens } from "./image.ts";
+import { isFileAttachment, stripImageTokens } from "./image.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { fileBaseName } from "./file-icon.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
@@ -21,6 +21,12 @@ export type ChatImage = {
   height: number;
   resized: boolean;
   dataUrl?: string;
+  /** Local preview while a dropped picture is still being copied. Not saved. */
+  previewUrl?: string;
+  /** Missing on pictures saved before other files could be attached. */
+  kind?: "image" | "file";
+  /** Size of a non-image file, in bytes. Pictures leave this unset. */
+  bytes?: number;
 };
 
 /** One Anthropic thinking block, replayed unmodified on the next request. */
@@ -347,10 +353,21 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
     const label = String(args.description ?? "").trim();
     return label ? `Subagent: ${label}` : "Subagent";
   }
+  if (name === "load_skill") {
+    const skill = String(args.name ?? "").trim();
+    return skill ? `Skill ${skill}` : "Skill";
+  }
+  if (name.startsWith("mcp__")) return mcpToolLabel(name);
   if (name === "todo_write") return "Updated todos";
   if (name === "enter_plan_mode") return "Enter plan mode";
   if (name === "exit_plan_mode") return "Exit plan mode";
   return name;
+}
+
+/** `mcp__server__tool` becomes `MCP server tool`, matching the status line. */
+export function mcpToolLabel(name: string): string {
+  const rest = name.replace(/^mcp__/, "").split("__").join(" ").trim();
+  return rest ? `MCP ${rest}` : "MCP";
 }
 
 export function toolActivityLabel(call: ChatToolCall): string {
@@ -458,7 +475,41 @@ export function toolDetail(call: ChatToolCall): string {
     const where = String(args.path ?? "").trim();
     return [pattern, where].filter(Boolean).join(" ");
   }
+  if (call.name === "load_skill") return String(args.name ?? "").trim();
+  if (call.name.startsWith("mcp__")) return mcpArgsDetail(args);
   return "";
+}
+
+const MCP_ARG_CAP = 180;
+
+/** One line per argument, so an MCP row can open onto what it was called with. */
+export function mcpArgsDetail(args: Record<string, unknown>): string {
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    const text = mcpArgText(value);
+    if (!text) continue;
+    lines.push(`${key}: ${text}`);
+  }
+  return lines.join("\n");
+}
+
+function mcpArgText(value: unknown): string {
+  if (value == null || value === "") return "";
+  const raw = typeof value === "string" ? value : JSON.stringify(value);
+  if (!raw) return "";
+  const one = raw.replace(/\s+/g, " ").trim();
+  return one.length > MCP_ARG_CAP ? `${one.slice(0, MCP_ARG_CAP - 1)}…` : one;
+}
+
+const SKILL_TRAIL_LINES = 80;
+
+/** Skill file shown under the row. Long files keep the start and mark the cut. */
+export function skillTrailPreview(content: string): string {
+  const text = content.replace(/\r\n/g, "\n").trim();
+  if (!text) return "";
+  const lines = text.split("\n");
+  if (lines.length <= SKILL_TRAIL_LINES) return text;
+  return `${lines.slice(0, SKILL_TRAIL_LINES).join("\n")}\n…`;
 }
 
 const SNIPPET_CAP = 40;
@@ -909,6 +960,8 @@ export function toolTrailTypeIcon(type: string): string {
   if (type === "Write") return "square.and.arrow.down";
   if (type === "Edit") return "pencil";
   if (type === "List") return "folder";
+  if (type === "Skill") return "book";
+  if (type === "MCP") return "cable.connector";
   return "ellipsis";
 }
 
@@ -925,6 +978,7 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     }
     if (msg.role === "tool") {
       fillWebSearchSites(out, msg);
+      fillLoadedSkill(out, msg);
       continue;
     }
     if (msg.role === "system") continue;
@@ -1007,6 +1061,24 @@ function fillWebSearchSites(items: TranscriptItem[], toolMessage: ChatMessage): 
     const index = item.callIds.indexOf(id);
     if (index < 0 || !item.labels[index]?.startsWith("Web search")) continue;
     item.commands[index] = webSearchSitesLabel(sites);
+    return;
+  }
+}
+
+/** Replace a skill row's name with the instructions that were actually loaded. */
+function fillLoadedSkill(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  if (toolMessage.role !== "tool") return;
+  const id = toolMessage.tool_call_id ?? "";
+  if (!id) return;
+  const text = skillTrailPreview(String(toolMessage.content ?? ""));
+  if (!text) return;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (!item || item.kind === "user") return;
+    if (item.kind !== "tools") continue;
+    const index = item.callIds.indexOf(id);
+    if (index < 0 || !item.labels[index]?.startsWith("Skill")) continue;
+    item.commands[index] = text;
     return;
   }
 }
@@ -1251,6 +1323,11 @@ export type ApiChatMessage = {
   tool_call_id?: string;
   /** Signed Claude thinking blocks. Absent for Grok. */
   thinking?: ThinkingBlock[];
+  /**
+   * Kept so the app can inline non-image files before the provider call.
+   * Picture bytes are already content parts. The provider drops this field.
+   */
+  images?: ChatImage[];
 };
 
 function messageTextWithoutImageTokens(msg: ChatMessage): string {
@@ -1296,10 +1373,16 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
       const text = messageTextWithoutImageTokens(msg).trim();
       if (text) parts.push({ type: "text", text });
       for (const img of msg.images) {
-        if (!img.dataUrl) continue;
+        if (isFileAttachment(img) || !img.dataUrl) continue;
         parts.push({ type: "image_url", image_url: { url: img.dataUrl } });
       }
-      return { role: "user", content: parts };
+      const hasFile = msg.images.some(isFileAttachment);
+      if (!parts.length) {
+        return hasFile
+          ? { role: "user", content: "", images: msg.images }
+          : { role: "user", content: "" };
+      }
+      return hasFile ? { role: "user", content: parts, images: msg.images } : { role: "user", content: parts };
     }
     return {
       role: msg.role,

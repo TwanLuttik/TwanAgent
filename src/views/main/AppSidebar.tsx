@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AllProjectsList } from "../../components/AllProjectsList";
+import { AnchoredMenu } from "../../components/ContextMenu";
 import { ConversationList } from "../../components/ConversationList";
 import { RunningElapsed } from "../../components/RunningElapsed";
 import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { archiveTargets, chatSelectionKey, focusedProjectGroups, isSameProject, matchesSidebarQuery, nextChatSelection, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem } from "../../lib/all-projects";
+import { archiveTargets, chatSelectionKey, focusedProjectGroups, isSameProject, matchesSidebarQuery, nextChatSelection, orderSidebarChats, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem, type SidebarChatOrder } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { ProjectMark } from "../../components/ProjectMark";
@@ -19,7 +20,7 @@ import type { GitWorktree } from "../../lib/tauri.ts";
 import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
 
-import { SIDEBAR_DEFAULT, loadSidebarFocus, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
+import { SIDEBAR_DEFAULT, loadSidebarChatOrder, loadSidebarFocus, saveSidebarChatOrder, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
 import { installAppUpdate, relaunchAppUpdate, useAppUpdate } from "../../lib/update-store";
 import { updateButtonLabel, updateNote } from "../../lib/update";
@@ -51,6 +52,11 @@ export function AppSidebar() {
   } = useMain();
   const { showSettings } = useSidebar();
   const [usageHover, setUsageHover] = useState(false);
+  const [chatOrder, setChatOrder] = useState<SidebarChatOrder>(loadSidebarChatOrder);
+  const chooseChatOrder = useCallback((next: SidebarChatOrder) => {
+    setChatOrder(next);
+    saveSidebarChatOrder(next);
+  }, []);
   const [focusPath, setFocusPath] = useState(loadSidebarFocus);
   const chooseFocus = useCallback((path: string) => {
     setFocusPath(path);
@@ -91,6 +97,7 @@ export function AppSidebar() {
       <div className={sidebarCollapsed ? "hidden" : "contents"}>
       <div className={`relative z-30 flex shrink-0 items-center ${headerBarClass()}`} data-tauri-drag-region>
         {isWindows() ? null : <WindowButtons />}
+        <SidebarOrderButton order={chatOrder} onChange={chooseChatOrder} />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         {!showSettings ? (
           <ProjectFocusButton focusPath={focusPath} onFocus={chooseFocus} hidden={sidebarCollapsed} />
@@ -149,6 +156,7 @@ export function AppSidebar() {
           openDocs={openDocs}
           usageTick={usageTick}
           focusPath={focusPath}
+          chatOrder={chatOrder}
         />
       </div>
       </div>
@@ -206,6 +214,82 @@ function CollapsedRail() {
           )
         : null}
     </div>
+  );
+}
+
+function SidebarOrderButton({
+  order,
+  onChange,
+}: {
+  order: SidebarChatOrder;
+  onChange: (next: SidebarChatOrder) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(ev: MouseEvent) {
+      if (buttonRef.current?.contains(ev.target as Node)) return;
+      setOpen(false);
+    }
+    function onKey(ev: KeyboardEvent) {
+      if (ev.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const finished = order === "finished";
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label="Chat order"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Chat order"
+        onClick={() => {
+          const box = buttonRef.current?.getBoundingClientRect();
+          if (box) setPos({ x: box.left, y: box.bottom + 4 });
+          setOpen((value) => !value);
+        }}
+        className={`flex size-7 items-center justify-center rounded-[6px] hover:bg-wash ${
+          finished ? "text-accent" : "text-ink"
+        }`}
+      >
+        <Symbol name="ellipsis" className="size-3.5" />
+      </button>
+      {open && pos ? (
+        <AnchoredMenu x={pos.x} y={pos.y} label="Chat order">
+          {(
+            [
+              ["manual", "Manual order"],
+              ["finished", "Newest finished"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={order === value}
+              onClick={() => {
+                onChange(value);
+                setOpen(false);
+              }}
+              className="flex w-full items-center justify-between gap-4 px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+            >
+              <span>{label}</span>
+              {order === value ? <Symbol name="checkmark" className="size-3.5 text-accent" /> : null}
+            </button>
+          ))}
+        </AnchoredMenu>
+      ) : null}
+    </>
   );
 }
 
@@ -305,6 +389,7 @@ function ProjectsNav({
   openDocs,
   usageTick,
   focusPath,
+  chatOrder,
 }: {
   usageHover: boolean;
   setUsageHover: (hover: boolean) => void;
@@ -327,6 +412,7 @@ function ProjectsNav({
   openDocs: () => void;
   usageTick: number;
   focusPath: string;
+  chatOrder: SidebarChatOrder;
 }) {
   const { setFlash } = useApp();
   const {
@@ -825,9 +911,13 @@ function ProjectsNav({
           renderWorktree={(child) => (
             <div className="pl-4">
               <ProjectConversations
-                conversations={visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false)}
+                conversations={orderSidebarChats(
+                  visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false),
+                  chatOrder,
+                )}
                 path={child.path}
                 dimmed={fullPage}
+                reorderable={chatOrder !== "finished"}
                 todoByChat={todoByChat}
                 loadingId={isSameProject(child.path, workspace) ? openingId : ""}
                 selectedKeys={selectedKeys}
@@ -840,10 +930,11 @@ function ProjectsNav({
           )}
           renderList={(group, { showArchived }) => (
             <ProjectConversations
-              conversations={visibleConversations(group.conversations, showArchived)}
+              conversations={orderSidebarChats(visibleConversations(group.conversations, showArchived), chatOrder)}
               path={group.path}
               dimmed={fullPage}
               archivedView={showArchived}
+              reorderable={chatOrder !== "finished"}
               todoByChat={todoByChat}
               loadingId={isSameProject(group.path, workspace) ? openingId : ""}
               selectedKeys={selectedKeys}
@@ -1126,6 +1217,7 @@ function ProjectConversations({
   path,
   dimmed,
   archivedView,
+  reorderable = true,
   todoByChat,
   loadingId = "",
   selectedKeys,
@@ -1136,6 +1228,8 @@ function ProjectConversations({
   path?: string;
   dimmed: boolean;
   archivedView?: boolean;
+  /** Finished order is a view, so dragging would fight it. */
+  reorderable?: boolean;
   todoByChat: Record<string, TodoBadge>;
   loadingId?: string;
   selectedKeys?: ReadonlySet<string>;
@@ -1207,6 +1301,7 @@ function ProjectConversations({
       todoFor={todoFor}
       showSettings={dimmed}
       archivedView={archivedView}
+      reorderable={reorderable}
       selectedIds={
         path && selectedKeys
           ? new Set(

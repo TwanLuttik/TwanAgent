@@ -31,6 +31,7 @@ import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, pendingForChat, setDraftForChat, type PendingMessage } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
 import { PANE_DEFAULT, PANE_MAX, PANE_MIN, loadMarkdownOpenMode, loadPaneWidth, saveComposerDraft, savePaneWidth } from "../../lib/prefs";
+import { markPaneResizing, markPaneSliding, requestPaneFit } from "../../lib/terminal-fit";
 import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
 import { SettingsView } from "../SettingsView";
@@ -141,6 +142,14 @@ export function ChatStage() {
   useEffect(() => {
     if (activeId) setPaneChat(activeId);
   }, [activeId]);
+  const wasPaneSliding = useRef(false);
+  useLayoutEffect(() => {
+    markPaneSliding(paneSliding);
+    if (wasPaneSliding.current && !paneSliding) requestPaneFit();
+    wasPaneSliding.current = paneSliding;
+    return () => markPaneSliding(false);
+  }, [paneSliding]);
+  useEffect(() => () => markPaneResizing(false), []);
 
   return (
     <div className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-transparent">
@@ -189,7 +198,9 @@ export function ChatStage() {
         )}
         {isWindows() ? <WindowButtons /> : null}
       </div>
-      <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden rounded-tl-[12px] border border-r-0 border-b-0 border-line/35 bg-canvas">
+      <div className="relative z-10 flex min-h-0 flex-1 rounded-tl-[12px] border border-line/35 bg-canvas">
+        {/* Clip sits inside the stroke so the top-left curve is not cut off. */}
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-tl-[11px]">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Settings stays mounted after the first open. Escape only hides it,
               so closing does not tear the page down or restart its checks. */}
@@ -305,8 +316,8 @@ export function ChatStage() {
               if (event.target !== event.currentTarget || event.propertyName !== "width") return;
               setPaneSliding(false);
             }}
-            className={`relative flex min-h-0 shrink-0 self-stretch overflow-hidden bg-canvas ${
-              paneCollapsed && !paneSliding ? "" : "border-l border-line/35"
+            className={`relative mb-3 min-h-0 shrink-0 self-stretch rounded-l-[12px] bg-canvas ${
+              paneCollapsed && !paneSliding ? "" : "border border-r-0 border-line/35"
             } ${
               paneMotion && !paneResizing
                 ? "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
@@ -314,6 +325,9 @@ export function ChatStage() {
             } ${paneSliding ? "will-change-[width]" : ""}`}
             style={{ width: paneCollapsed ? 0 : paneWidth }}
           >
+            {/* Clip sits inside the border. Overflow on the bordered box itself
+                eats the top and bottom curves in WebKit. */}
+            <div className="absolute inset-0 flex overflow-hidden rounded-l-[11px]">
             <div
               role="separator"
               aria-orientation="vertical"
@@ -327,6 +341,7 @@ export function ChatStage() {
                 if (!slot || !body) return;
                 handle.setPointerCapture(event.pointerId);
                 setPaneResizing(true);
+                markPaneResizing(true);
                 slot.setAttribute("data-pane-resizing", "");
                 const right = slot.getBoundingClientRect().right;
                 let latest = paneWidthRef.current;
@@ -341,10 +356,12 @@ export function ChatStage() {
                   handle.removeEventListener("pointerup", up);
                   handle.removeEventListener("pointercancel", up);
                   slot.removeAttribute("data-pane-resizing");
+                  markPaneResizing(false);
                   setPaneResizing(false);
                   paneWidthRef.current = latest;
                   setPaneWidth(latest);
                   savePaneWidth(latest);
+                  requestPaneFit();
                 };
                 handle.addEventListener("pointermove", move);
                 handle.addEventListener("pointerup", up);
@@ -353,6 +370,7 @@ export function ChatStage() {
               onDoubleClick={() => {
                 setPaneWidth(PANE_DEFAULT);
                 savePaneWidth(PANE_DEFAULT);
+                requestPaneFit();
               }}
               className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize touch-none"
             >
@@ -375,8 +393,10 @@ export function ChatStage() {
                 pending={paneWorkspace !== workspace}
               />
             </div>
+            </div>
           </div>
         ) : null}
+        </div>
       </div>
     </div>
   );
@@ -649,7 +669,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
         </div>
       </div>
       <div ref={dockRef} className={`pointer-events-none absolute inset-x-0 z-10 ${centered ? "top-[42%] -translate-y-1/2" : "bottom-0"}`}>
-        <ComposerDockChrome centered={centered}>
+        <ComposerDockChrome>
           <SessionComposer placement="chat" chatId={chatId} />
         </ComposerDockChrome>
       </div>
@@ -870,25 +890,16 @@ function StreamComposerDock({
       }}
       className="pointer-events-none absolute inset-x-0 z-10"
     >
-      <ComposerDockChrome centered={composerCentered}>{children}</ComposerDockChrome>
+      <ComposerDockChrome>{children}</ComposerDockChrome>
     </motion.div>
   );
 }
 
-const ComposerDockChrome = memo(function ComposerDockChrome({
-  centered,
-  children,
-}: {
-  centered: boolean;
-  children: ReactNode;
-}) {
+const ComposerDockChrome = memo(function ComposerDockChrome({ children }: { children: ReactNode }) {
   return (
-    <>
-      {centered ? null : <div className="h-16 bg-gradient-to-t from-canvas from-15% to-transparent" aria-hidden />}
-      <div className="pointer-events-auto bg-canvas px-6 pb-3">
-        <div className="mx-auto w-full min-w-0 max-w-[720px]">{children}</div>
-      </div>
-    </>
+    <div className="pointer-events-auto px-6 pb-3">
+      <div className="mx-auto w-full min-w-0 max-w-[720px]">{children}</div>
+    </div>
   );
 });
 

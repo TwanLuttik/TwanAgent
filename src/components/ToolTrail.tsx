@@ -317,12 +317,15 @@ function LineChangeCounts({ change }: { change: ToolFileChange }) {
 }
 
 function ToolDetail({ text }: { text: string }) {
-  const lines = text.split("\n").filter((line) => line.trim());
+  const lines = text.replace(/^\n+|\n+$/g, "").split("\n");
+  const long = lines.length > 12;
   return (
-    <div className="font-mono text-[11px] leading-[1.35] text-muted">
+    <div
+      className={`font-mono text-[11px] leading-[1.35] text-muted ${long ? "max-h-52 overflow-y-auto pr-1" : ""}`}
+    >
       {lines.map((line, i) => (
         <div key={i} className="whitespace-pre-wrap break-all [overflow-wrap:anywhere]">
-          {line}
+          {line || " "}
         </div>
       ))}
     </div>

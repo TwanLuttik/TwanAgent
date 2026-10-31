@@ -283,7 +283,7 @@ fn attach_images(message: &mut Value) {
     let urls: Vec<&str> = images
         .iter()
         .filter_map(|image| image.get("dataUrl").and_then(Value::as_str))
-        .filter(|url| url.starts_with("data:") && url.contains(";base64,"))
+        .filter(|url| is_image_data_url(url))
         .collect();
     // No bytes means there is nothing to show. Keep the stored text, token and all.
     if urls.is_empty() {
@@ -325,6 +325,18 @@ fn attach_images(message: &mut Value) {
         return;
     }
     message["content"] = Value::Array(parts);
+}
+
+/// Chat completions can show `image/*` bytes. A PDF or other file is not an image.
+fn is_image_data_url(url: &str) -> bool {
+    let mime = url
+        .strip_prefix("data:")
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim();
+    mime.starts_with("image/") && !mime.contains("svg") && url.contains(";base64,")
 }
 
 /// `[filename]` is where the composer drew the chip. The bytes travel as a part.
@@ -519,6 +531,21 @@ mod tests {
         }]);
         let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
         assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
+        assert!(body["messages"][0].get("images").is_none());
+    }
+
+    #[test]
+    fn a_pdf_data_url_is_not_sent_as_an_image() {
+        let messages = serde_json::json!([{
+            "role": "user",
+            "content": "see [doc.pdf]",
+            "images": [{
+                "name": "doc.pdf",
+                "dataUrl": "data:application/pdf;base64,JVBERg=="
+            }]
+        }]);
+        let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
+        assert_eq!(body["messages"][0]["content"], "see [doc.pdf]");
         assert!(body["messages"][0].get("images").is_none());
     }
 

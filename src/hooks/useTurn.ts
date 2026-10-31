@@ -1,4 +1,5 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
+import { nextTopSort } from "../lib/all-projects";
 import { completeTurn, resumeLocalTurn } from "../lib/agent";
 import { keepCompaction } from "../lib/compact";
 import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
@@ -24,11 +25,13 @@ import {
   MAX_PROMPT_IMAGES,
   appendPromptImages,
   canSendPrompt,
+  attachmentPathsFromDrop,
   fileToBase64,
-  imagePathsFromDrop,
   imagesForChat,
+  isImageFile,
   insertImageToken,
   persistableImages,
+  removeImageTokens,
   stripImageTokens,
   setImagesForChat,
   uniqueImageTokenLabel,
@@ -65,6 +68,7 @@ import {
   type SubagentDockState,
   type SubagentRecord,
 } from "../lib/subagent";
+import { beginTurnClock, endTurnClock } from "../lib/turn-clock";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
 import { setSecondaryLiveStream } from "../lib/live-stream";
 import { rememberSplitPane } from "../lib/split-pane";
@@ -220,7 +224,7 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, promptImages, mentionFiles, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, mentionFiles, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles, adoptWorktreeName,
@@ -588,6 +592,66 @@ function composerField(chatId: string): HTMLTextAreaElement | null {
   return document.querySelector<HTMLTextAreaElement>("[data-composer-input]");
 }
 
+const preparesByChat = new Map<string, Set<Promise<void>>>();
+
+function trackPrepare(chatId: string, work: Promise<void>) {
+  let set = preparesByChat.get(chatId);
+  if (!set) {
+    set = new Set();
+    preparesByChat.set(chatId, set);
+  }
+  set.add(work);
+  void work.finally(() => {
+    set?.delete(work);
+    if (set && set.size === 0) preparesByChat.delete(chatId);
+  });
+}
+
+async function waitPrepares(chatId: string) {
+  for (;;) {
+    const set = preparesByChat.get(chatId);
+    if (!set || set.size === 0) return;
+    await Promise.all([...set]);
+  }
+}
+
+function commitImages(chatId: string, images: ChatImage[]) {
+  const stored = setImagesForChat(draftImagesRef.current, chatId, images);
+  draftImagesRef.current = stored;
+  setDraftImages(stored);
+}
+
+function commitDraft(chatId: string, text: string) {
+  const stored = setDraftForChat(draftsRef.current, chatId, text);
+  draftsRef.current = stored;
+  setDrafts(stored);
+  saveComposerDraft(chatId, text);
+}
+
+/** Swap a dropped file for the copy on disk. Keeps the label already in the draft. */
+function replaceDraftImage(chatId: string, id: string, next: ChatImage) {
+  const current = imagesForChat(draftImagesRef.current, chatId);
+  const prev = current.find((img) => img.id === id);
+  if (!prev) return;
+  if (prev.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+  commitImages(
+    chatId,
+    current.map((img) => (img.id === id ? { ...next, id, name: img.name, previewUrl: undefined } : img)),
+  );
+}
+
+function dropFailedAttachment(chatId: string, id: string) {
+  const current = imagesForChat(draftImagesRef.current, chatId);
+  const image = current.find((img) => img.id === id);
+  if (!image) return;
+  if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+  commitDraft(chatId, removeImageTokens(draftForChat(draftsRef.current, chatId), image));
+  commitImages(
+    chatId,
+    current.filter((img) => img.id !== id),
+  );
+}
+
 /** Insert `[name]` into the draft that was open when the drop started. */
 function attachPreparedImages(
   prepared: ChatImage[],
@@ -595,50 +659,55 @@ function attachPreparedImages(
   chatId = activeId,
 ) {
   const existing = imagesForChat(draftImagesRef.current, chatId);
-  let named: ChatImage[] = [];
-  let cursor = 0;
-  let nextDraft = "";
-  setDrafts((prev) => {
-    const current = draftForChat(prev, chatId);
-    const unchanged = selection.value === current;
-    const start = unchanged ? selection.start : current.length;
-    const end = unchanged ? selection.end : current.length;
-    const labels = new Set<string>();
-    const token = /\[([^\[\]\r\n]+)]/g;
-    let match: RegExpExecArray | null;
-    while ((match = token.exec(current))) {
-      const label = match[1]?.trim();
-      if (label) labels.add(label);
-    }
-    for (const image of existing) {
-      if (image.name.trim()) labels.add(image.name.trim());
-    }
-    let text = current;
-    let caret = start;
-    const rows: ChatImage[] = [];
-    for (const image of prepared) {
-      const label = uniqueImageTokenLabel(image.name || "image.png", labels);
-      labels.add(label);
-      const inserted = insertImageToken(text, caret, caret === start ? end : caret, label);
-      text = inserted.draft;
-      caret = inserted.cursor;
-      rows.push({ ...image, name: label });
-    }
-    named = rows;
-    cursor = caret;
-    nextDraft = text;
-    saveComposerDraft(chatId, text);
-    return setDraftForChat(prev, chatId, text);
-  });
-  setDraftImages((prev) =>
-    setImagesForChat(prev, chatId, appendPromptImages(imagesForChat(prev, chatId), named)),
-  );
+  const current = draftForChat(draftsRef.current, chatId);
+  const unchanged = selection.value === current;
+  const start = unchanged ? selection.start : current.length;
+  const end = unchanged ? selection.end : current.length;
+  const labels = new Set<string>();
+  const token = /\[([^\[\]\r\n]+)]/g;
+  let match: RegExpExecArray | null;
+  while ((match = token.exec(current))) {
+    const label = match[1]?.trim();
+    if (label) labels.add(label);
+  }
+  for (const image of existing) {
+    if (image.name.trim()) labels.add(image.name.trim());
+  }
+  let text = current;
+  let caret = start;
+  const named: ChatImage[] = [];
+  for (const image of prepared) {
+    const label = uniqueImageTokenLabel(image.name || (image.kind === "file" ? "file" : "image.png"), labels);
+    labels.add(label);
+    const inserted = insertImageToken(text, caret, caret === start ? end : caret, label);
+    text = inserted.draft;
+    caret = inserted.cursor;
+    named.push({ ...image, name: label });
+  }
+  commitDraft(chatId, text);
+  commitImages(chatId, appendPromptImages(existing, named));
+  const cursor = caret;
   requestAnimationFrame(() => {
     const node = composerField(chatId);
-    if (!node || node.value !== nextDraft) return;
+    if (!node || node.value !== text) return;
     node.focus();
     node.setSelectionRange(cursor, cursor);
   });
+}
+
+function placeholderAttachment(file: { name?: string; type?: string }, previewUrl?: string): ChatImage {
+  const image = isImageFile(file);
+  return {
+    id: crypto.randomUUID(),
+    path: "",
+    name: file.name || (image ? "image.png" : "file"),
+    mime: file.type || (image ? "image/png" : "application/octet-stream"),
+    width: 0,
+    height: 0,
+    resized: false,
+    ...(previewUrl ? { previewUrl } : {}),
+    ...(image ? {} : { kind: "file" as const }),
+  };
 }
 
 async function addPromptImages(files: File[], chatId = activeId) {
@@ -646,45 +715,75 @@ async function addPromptImages(files: File[], chatId = activeId) {
   const held = imagesForChat(draftImagesRef.current, chatId);
   const room = MAX_PROMPT_IMAGES - held.length;
   if (room <= 0) {
-    setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} images.` });
+    setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} files.` });
     return;
   }
   const take = files.slice(0, room);
   const selection = imageSelection(chatId);
-  try {
-    const prepared: ChatImage[] = [];
-    for (const file of take) {
-      const bytes = await fileToBase64(file);
-      const next = await api.prepareImage(bytes, file.name || "image.png", chatId || undefined);
-      prepared.push(next);
-    }
-    attachPreparedImages(prepared, selection, chatId);
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-  }
+  // Show the chip before decoding. A screenshot is large, and waiting for the
+  // resized copy is what made the drop look like it missed.
+  const pending = take.map((file) =>
+    placeholderAttachment(file, isImageFile(file) ? URL.createObjectURL(file) : undefined),
+  );
+  attachPreparedImages(pending, selection, chatId);
+  const work = Promise.all(
+    pending.map(async (row, index) => {
+      const file = take[index];
+      if (!file) return;
+      try {
+        const name = file.name || (row.kind === "file" ? "file" : "image.png");
+        const bytes = await fileToBase64(file);
+        const next = row.kind === "file"
+          ? await api.prepareFile(bytes, name, chatId || undefined)
+          : await api.prepareImage(bytes, name, chatId || undefined);
+        replaceDraftImage(chatId, row.id, next);
+      } catch (e) {
+        dropFailedAttachment(chatId, row.id);
+        setFlash({ kind: "err", text: String(e) });
+      }
+    }),
+  ).then(() => undefined);
+  trackPrepare(chatId, work);
+  await work;
 }
 
 async function addPromptImagePaths(paths: string[], chatId = activeId) {
-  const images = imagePathsFromDrop(paths);
+  const images = attachmentPathsFromDrop(paths);
   if (!images.length) return;
   const held = imagesForChat(draftImagesRef.current, chatId);
   const room = MAX_PROMPT_IMAGES - held.length;
   if (room <= 0) {
-    setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} images.` });
+    setFlash({ kind: "err", text: `You can attach up to ${MAX_PROMPT_IMAGES} files.` });
     return;
   }
   const take = images.slice(0, room);
   const selection = imageSelection(chatId);
-  try {
-    const prepared: ChatImage[] = [];
-    for (const path of take) {
-      const next = await api.prepareImagePath(path, chatId || undefined);
-      prepared.push({ ...next, name: next.name || fileBaseName(path) });
-    }
-    attachPreparedImages(prepared, selection, chatId);
-  } catch (e) {
-    setFlash({ kind: "err", text: String(e) });
-  }
+  const pending = take.map((path) => placeholderAttachment({ name: fileBaseName(path) || path }));
+  attachPreparedImages(pending, selection, chatId);
+  const work = Promise.all(
+    pending.map(async (row, index) => {
+      const path = take[index];
+      if (!path) return;
+      try {
+        const staged = await api.stageDropPath(path, chatId || undefined);
+        replaceDraftImage(chatId, row.id, staged);
+        if (row.kind !== "file") {
+          try {
+            const finished = await api.finalizeImage(staged.path);
+            replaceDraftImage(chatId, row.id, finished);
+          } catch (e) {
+            // The copy is already on screen. Resizing is only for the model.
+            setFlash({ kind: "err", text: String(e) });
+          }
+        }
+      } catch (e) {
+        dropFailedAttachment(chatId, row.id);
+        setFlash({ kind: "err", text: String(e) });
+      }
+    }),
+  ).then(() => undefined);
+  trackPrepare(chatId, work);
+  await work;
 }
 
 function setPending(next: Record<string, PendingMessage[]>) {
@@ -761,7 +860,18 @@ function markRunning(id: string, patch: Partial<RunningTurn> = {}) {
   setRunningTurns((prev) => patchRunningTurn(prev, id, patch));
 }
 
+/** A prompt is starting. Drop the previous stamp so this turn does not inherit it. */
+function startRunningTurn(id: string, startedAt: number) {
+  const stamp = beginTurnClock(id, startedAt);
+  setRunningTurns((prev) => {
+    const cleared = { ...prev };
+    delete cleared[id];
+    return patchRunningTurn(cleared, id, { activity: null, startedAt: stamp });
+  });
+}
+
 function clearRunning(id: string) {
+  endTurnClock(id);
   setRunningTurns((prev) => {
     if (!(id in prev)) return prev;
     const next = { ...prev };
@@ -871,7 +981,11 @@ function clearPrompt(id: string) {
     delete next[id];
     return next;
   });
-  setDraftImages((prev) => setImagesForChat(prev, id, []));
+  const images = imagesForChat(draftImagesRef.current, id);
+  for (const image of images) {
+    if (image.previewUrl) URL.revokeObjectURL(image.previewUrl);
+  }
+  commitImages(id, []);
 }
 
 /**
@@ -925,14 +1039,16 @@ function partialReply(id: string): { text: string; reasoning: string } {
 
 async function send(targetId = activeIdRef.current) {
   const sendingSide = Boolean(targetId) && targetId !== activeIdRef.current;
-  const sideImages = sendingSide ? imagesForChat(draftImagesRef.current, targetId) : [];
+  const imageKey = sendingSide ? targetId : activeIdRef.current;
+  await waitPrepares(imageKey);
+  const heldImages = imagesForChat(draftImagesRef.current, imageKey);
   const text = sendingSide
     ? expandFileMentions(
-        stripImageTokens(draftForChat(draftsRef.current, targetId), sideImages),
+        stripImageTokens(draftForChat(draftsRef.current, targetId), heldImages),
         mentionFiles,
       ).trim()
-    : expandFileMentions(expandPasteTokens(draft, draftPastes), mentionFiles).trim();
-  const images = persistableImages(sendingSide ? sideImages : promptImages);
+    : expandFileMentions(expandPasteTokens(draftForChat(draftsRef.current, imageKey) || draft, draftPastes), mentionFiles).trim();
+  const images = persistableImages(heldImages);
   if (!canSendPrompt(text, images)) return;
   if (cloudSendWaiting(Boolean(workspace), remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
     setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
@@ -983,12 +1099,14 @@ async function send(targetId = activeIdRef.current) {
     const chosenEffort = effortRef.current;
     const chosenWindow = contextWindowRef.current;
     const title = conversationTitleFrom([userMessage(text, images)]);
-    const created: ConversationSummary = {
+    const sortOrder = nextTopSort(conversationsRef.current.map((row) => row.sort_order));
+    let created: ConversationSummary = {
       id,
       title,
       created_at: now,
       updated_at: now,
       kind: "chat",
+      sort_order: sortOrder,
       model: chosenModel || null,
       effort: chosenEffort || null,
       context_window: chosenWindow || null,
@@ -997,7 +1115,9 @@ async function send(targetId = activeIdRef.current) {
     // A paired cloud project creates the chat on the server from the prompt.
     // Writing the empty row locally is what shows a second "New chat".
     if (!hostedTurnStaysOnServer(remoteRef.current)) {
-      await api.saveConversation(ws, { ...created, messages: [] });
+      const saved = await api.saveConversation(ws, { ...created, messages: [] });
+      // The database places a new chat above the list. The payload's zero is not that place.
+      if (typeof saved.sort_order === "number") created = { ...created, sort_order: saved.sort_order };
     }
     conversationsRef.current = [created, ...conversationsRef.current.filter((row) => row.id !== id)];
     setConversations(conversationsRef.current);
@@ -1048,7 +1168,7 @@ async function runTurn(
   busyRef.current = true;
   setBusy(true);
   const startedAt = Date.now();
-  markRunning(id, { activity: null, startedAt });
+  startRunningTurn(id, startedAt);
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
   const foreground = turnAppliesToChat(id, activeIdRef.current);
   if (foreground) {

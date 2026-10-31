@@ -16,6 +16,9 @@ import {
   stripImageTokens,
   uniqueImageTokenLabel,
   fileToBase64,
+  attachmentFilesFromClipboard,
+  attachmentFilesFromDrop,
+  attachmentPathsFromDrop,
   imageFilesFromClipboard,
   imageFilesFromDrop,
   imagePathsFromDrop,
@@ -79,14 +82,48 @@ describe("imageFilesFromClipboard", () => {
     assert.deepEqual(found, []);
   });
 
-  it("takes dropped image files and skips others", () => {
+  it("keeps a pasted text file and still finds a screenshot", () => {
+    const notes = { type: "text/plain", name: "notes.md" };
+    const found = attachmentFilesFromClipboard({
+      items: [{ kind: "file", type: "text/plain", getAsFile: () => notes }],
+      files: [notes],
+    });
+    assert.deepEqual(found, [notes]);
+    assert.deepEqual(imageFilesFromClipboard({
+      items: [{ kind: "file", type: "text/plain", getAsFile: () => notes }],
+      files: [notes],
+    }), []);
+  });
+
+  it("takes every dropped file, and the image helper still skips text", () => {
     const png = { type: "image/png", name: "a.png" };
     const txt = { type: "text/plain", name: "a.txt" };
+    assert.deepEqual(attachmentFilesFromDrop([png, txt]), [png, txt]);
     assert.deepEqual(imageFilesFromDrop([png, txt]), [png]);
   });
 });
 
-describe("imagePathsFromDrop", () => {
+describe("attachmentPathsFromDrop", () => {
+  it("keeps every path from a native file drop", () => {
+    assert.deepEqual(
+      attachmentPathsFromDrop([
+        "/Users/me/Desktop/shot.PNG",
+        "/Users/me/notes.md",
+        "  ",
+        "C:\\tmp\\photo.jpeg",
+        "/tmp/icon.svg",
+        "/Users/me/Pictures/IMG_0001.HEIC",
+      ]),
+      [
+        "/Users/me/Desktop/shot.PNG",
+        "/Users/me/notes.md",
+        "C:\\tmp\\photo.jpeg",
+        "/tmp/icon.svg",
+        "/Users/me/Pictures/IMG_0001.HEIC",
+      ],
+    );
+  });
+
   it("keeps raster image paths from a native file drop", () => {
     assert.deepEqual(
       imagePathsFromDrop([
@@ -140,6 +177,7 @@ describe("prompt images", () => {
   });
 
   it("strips send-only data URLs before persist", () => {
+    assert.equal(persistableImages([{ ...shot, previewUrl: "blob:preview" }])[0]?.previewUrl, undefined);
     assert.equal(persistableImages([shot])[0]?.dataUrl, undefined);
     const msgs = persistableMessages([
       { role: "user", content: "see", images: [shot] },
@@ -174,6 +212,19 @@ describe("withImageDataUrls", () => {
     );
     assert.equal(reads, 0);
     assert.equal(loaded[0]?.images?.[0]?.dataUrl, "data:image/jpeg;base64,cached");
+  });
+
+  it("does not read a non-image file into a data URL", async () => {
+    let reads = 0;
+    const loaded = await withImageDataUrls(
+      [{ role: "user", content: "see", images: [{ ...shot, kind: "file", mime: "text/plain", dataUrl: undefined }] }],
+      async () => {
+        reads += 1;
+        return "data:text/plain;base64,zz";
+      },
+    );
+    assert.equal(reads, 0);
+    assert.equal(loaded[0]?.images?.[0]?.dataUrl, undefined);
   });
 });
 

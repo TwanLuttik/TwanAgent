@@ -296,6 +296,20 @@ function sameTodo(a: RunningTurn["todo"], b: RunningTurn["todo"]): boolean {
 }
 
 /**
+ * The turn clock starts once.
+ * A tool step, an assistant message between tool calls, or a rejoin that stamps
+ * `Date.now()` again must not move it forward. An earlier stamp still wins, so a
+ * reload can put the original start back.
+ */
+export function keepTurnStartedAt(current: number | undefined, next: number | undefined): number {
+  const have = current ?? 0;
+  const want = next ?? 0;
+  if (have > 0 && want > 0) return Math.min(have, want);
+  if (have > 0) return have;
+  return want > 0 ? want : 0;
+}
+
+/**
  * Sidebar label for one live turn.
  * A tool tick that repeats the same label must keep the previous object so the conversation list does not reconcile.
  */
@@ -305,10 +319,12 @@ export function patchRunningTurn(
   patch: Partial<RunningTurn>,
 ): Record<string, RunningTurn> {
   if (!id) return running;
-  const current = running[id] ?? { activity: null, startedAt: patch.startedAt ?? 0 };
+  const current = running[id] ?? { activity: null, startedAt: 0 };
+  const held = running[id]?.startedAt ?? 0;
+  const requested = patch.startedAt !== undefined ? patch.startedAt : held;
   const next: RunningTurn = {
     activity: patch.activity !== undefined ? patch.activity : current.activity,
-    startedAt: patch.startedAt !== undefined ? patch.startedAt : current.startedAt,
+    startedAt: keepTurnStartedAt(held, requested),
     todo: patch.todo !== undefined ? patch.todo : current.todo,
   };
   if (

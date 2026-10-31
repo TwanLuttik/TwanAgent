@@ -1,3 +1,4 @@
+import type { SidebarChatOrder } from "./all-projects.ts";
 import { projectKey } from "./core.ts";
 import type { MarkdownOpenMode } from "./editor";
 
@@ -433,6 +434,16 @@ export function saveSidebarWidth(width: number): void {
 
 const SIDEBAR_COLLAPSED_KEY = "twanagent.sidebarCollapsed";
 const SIDEBAR_FOCUS_KEY = "twanagent.sidebarFocus";
+const SIDEBAR_CHAT_ORDER_KEY = "twanagent.sidebarChatOrder";
+
+/** Manual is the stored place. Finished is newest update first. */
+export function loadSidebarChatOrder(): SidebarChatOrder {
+  return localStorage.getItem(SIDEBAR_CHAT_ORDER_KEY) === "finished" ? "finished" : "manual";
+}
+
+export function saveSidebarChatOrder(order: SidebarChatOrder): void {
+  localStorage.setItem(SIDEBAR_CHAT_ORDER_KEY, order === "finished" ? "finished" : "manual");
+}
 const PANE_COLLAPSED_KEY = "twanagent.paneCollapsed";
 
 /** Empty means the sidebar lists every project. */
