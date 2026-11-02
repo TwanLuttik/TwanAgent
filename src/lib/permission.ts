@@ -35,7 +35,7 @@ export function permissionEffect(mode: PermissionMode, action: PermissionAction)
 
 export type PermissionMode = (typeof PERMISSION_MODES)[number]["id"];
 
-const WRITE_TOOLS = new Set(["write_file", "edit_file", "run_command", "git_commit"]);
+const WRITE_TOOLS = new Set(["write_file", "edit_file", "run_command", "git_commit", "create_chat"]);
 
 export function parsePermissionMode(raw: unknown): PermissionMode {
   if (raw === "ask" || raw === "approve-all" || raw === "read-only") return raw;

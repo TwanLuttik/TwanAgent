@@ -209,8 +209,22 @@ pub async fn dev_local_turn_start(
     if let Some(old) = live(&id) {
         old.cancel.store(true, Ordering::Relaxed);
     }
+    let data_dir = state.data_dir.clone();
+    spawn_local_turn(&app, &data_dir, &workspace, request);
+    Ok(())
+}
+
+/// Register the turn, then run it off this thread. Safe to call from a turn that is already running.
+fn spawn_local_turn(app: &AppHandle, data_dir: &Path, workspace: &Path, request: LocalTurnStart) {
+    let id = request.conversation_id.trim().to_string();
+    if id.is_empty() {
+        return;
+    }
+    if let Some(old) = live(&id) {
+        old.cancel.store(true, Ordering::Relaxed);
+    }
     let live_turn = Arc::new(LiveTurn {
-        workspace: workspace.clone(),
+        workspace: workspace.to_path_buf(),
         started_at: epoch_ms(),
         cancel: Arc::new(AtomicBool::new(false)),
         shell: Mutex::new(Vec::new()),
@@ -222,8 +236,9 @@ pub async fn dev_local_turn_start(
     if let Ok(mut map) = turns().lock() {
         map.insert(id.clone(), live_turn.clone());
     }
-    let data_dir = state.data_dir.clone();
     let app_for_turn = app.clone();
+    let data_dir = data_dir.to_path_buf();
+    let workspace = workspace.to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             drive(&app_for_turn, &data_dir, &workspace, &request, &live_turn)
@@ -243,13 +258,13 @@ pub async fn dev_local_turn_start(
             }
         }
     });
-    Ok(())
 }
 
 fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurnStart, live: &Arc<LiveTurn>) {
     let id = request.conversation_id.trim();
     let home = crate::dev::paths::home_dir().unwrap_or_default();
-    let _capabilities = twanagent_service::capabilities::install(id, workspace, &home);
+    let roots = capability_roots(workspace);
+    let _capabilities = twanagent_service::capabilities::install_roots(id, &roots, &home);
     let model = if request.model.trim().is_empty() {
         "grok-4.6".to_string()
     } else {
@@ -300,7 +315,7 @@ fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurn
             }
         }
         let prompt = build_prompt(workspace, &transcript, compaction.as_ref(), &request.system, &permission, &model, plan, id);
-        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false, twanagent_service::capabilities::tool_defs(id)).await_round() {
+        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false, turn_tools(workspace, id)).await_round() {
             Ok(round) => round,
             Err(err) => {
                 let message = err.to_string();
@@ -678,7 +693,7 @@ fn run_tool(
     if let Some(text) = twanagent_service::capabilities::call(capability_id, &call.name, &call.arguments) {
         return text;
     }
-    if permission == "read-only" && matches!(call.name.as_str(), "write_file" | "edit_file" | "run_command" | "git_commit") {
+    if permission == "read-only" && matches!(call.name.as_str(), "write_file" | "edit_file" | "run_command" | "git_commit" | "create_chat") {
         return format!("Error: {} is blocked in read-only mode.", call.name);
     }
     let args = parse_args(&call.arguments);
@@ -704,26 +719,54 @@ fn run_tool(
             str_arg(&args, "new_string"),
         )
         .map(|_| format!("Edited {}", str_arg(&args, "path"))),
-        "git_status" => git_target(workspace, data_dir).and_then(|target| {
-            super::git::git_status_with(&target, true)
+        "git_status" => group_or_repo(workspace, |layout| {
+            super::group_git::status(layout, true)
                 .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+        }, || {
+            git_target(workspace, data_dir).and_then(|target| {
+                super::git::git_status_with(&target, true)
+                    .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+            })
         }),
-        "git_diff" => git_target(workspace, data_dir).and_then(|target| {
+        "git_diff" => group_or_repo(workspace, |layout| {
             let commit = str_arg(&args, "commit");
             if commit.is_empty() {
-                super::git::git_diff(&target, str_arg(&args, "path"))
+                super::group_git::diff(layout, str_arg(&args, "path"))
             } else {
-                super::git::git_show(&target, commit)
+                Err(Error::Other(super::group_git::OPEN_REPO.into()))
             }
+        }, || {
+            git_target(workspace, data_dir).and_then(|target| {
+                let commit = str_arg(&args, "commit");
+                if commit.is_empty() {
+                    super::git::git_diff(&target, str_arg(&args, "path"))
+                } else {
+                    super::git::git_show(&target, commit)
+                }
+            })
         }),
-        "git_log" => git_target(workspace, data_dir).and_then(|target| {
-            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 80) as u32;
-            super::git::git_log(&target, limit)
-                .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+        "git_log" => group_or_repo(workspace, |_| Err(Error::Other(super::group_git::OPEN_REPO.into())), || {
+            git_target(workspace, data_dir).and_then(|target| {
+                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 80) as u32;
+                super::git::git_log(&target, limit)
+                    .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+            })
         }),
         "git_commit" => commit_files(workspace, data_dir, &args),
         "run_command" => run_shell(app, conversation_id, workspace, str_arg(&args, "command"), permission, live),
         "web_search" => search(app, data_dir, &call.arguments),
+        "list_chats" => list_group_chats(data_dir, workspace, &args),
+        "read_chat" => read_group_chat(data_dir, workspace, &args),
+        "create_chat" => create_group_chat(
+            app,
+            data_dir,
+            workspace,
+            &args,
+            model,
+            effort,
+            context_window,
+            permission,
+        ),
         "todo_write" => Ok(todo_text(&call.arguments)),
         "update_journey_knowledge" => update_journey(data_dir, workspace_key, journey_id, &args),
         "enter_plan_mode" | "exit_plan_mode" => {
@@ -942,7 +985,7 @@ fn drive_subagent(
             }
         }
         let prompt = build_child_prompt(&transcript, compaction.as_ref(), &request.system);
-        let extra_tools = twanagent_service::capabilities::tool_defs(parent_id);
+        let extra_tools = turn_tools(workspace, parent_id);
         let stream_id = format!("subagent:{child_id}");
         if let Some(turn) = live(parent_id) {
             if let Ok(mut streams) = turn.child_streams.lock() {
@@ -1316,6 +1359,15 @@ fn tool_activity_label(call: &DevToolCall) -> String {
             let description = str_arg(&args, "description").trim().trim_start_matches("Run ").trim_start_matches("run ");
             if description.is_empty() { "Run command".into() } else { format!("Run {description}") }
         }
+        "list_chats" => "List chats".into(),
+        "read_chat" => {
+            let alias = str_arg(&args, "alias").trim();
+            if alias.is_empty() { "Read chat".into() } else { format!("Read {alias} chat") }
+        }
+        "create_chat" => {
+            let alias = str_arg(&args, "alias").trim();
+            if alias.is_empty() { "Create chat".into() } else { format!("Create {alias} chat") }
+        }
         "todo_write" => "Updated todos".into(),
         "load_skill" => {
             let name = str_arg(&args, "name").trim();
@@ -1428,13 +1480,134 @@ fn ask_plan(app: &AppHandle, conversation_id: &str, name: &str, live: &LiveTurn)
     }
 }
 
+fn group_or_repo(
+    workspace: &Path,
+    group: impl FnOnce(&super::group::GroupLayout) -> Result<String>,
+    repo: impl FnOnce() -> Result<String>,
+) -> Result<String> {
+    if let Some(layout) = super::group::layout(workspace) {
+        group(&layout)
+    } else {
+        repo()
+    }
+}
+
+fn turn_tools(workspace: &Path, conversation_id: &str) -> Vec<Value> {
+    let mut tools = twanagent_service::capabilities::tool_defs(conversation_id);
+    if super::group::layout(workspace).is_some() {
+        tools.extend(super::group_chats::tool_defs());
+    }
+    tools
+}
+
+fn list_group_chats(data_dir: &Path, workspace: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
+    let Some(layout) = super::group::layout(workspace) else {
+        return Err(Error::Other("list_chats is only available in a grouped project".into()));
+    };
+    let archived = args.get("archived").and_then(Value::as_bool).unwrap_or(false);
+    super::group_chats::list_member_chats(data_dir, &layout, str_arg(args, "alias"), archived)
+}
+
+fn read_group_chat(data_dir: &Path, workspace: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
+    let Some(layout) = super::group::layout(workspace) else {
+        return Err(Error::Other("read_chat is only available in a grouped project".into()));
+    };
+    super::group_chats::read_member_chat(data_dir, &layout, str_arg(args, "alias"), str_arg(args, "id"))
+}
+
+fn create_group_chat(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace: &Path,
+    args: &serde_json::Map<String, Value>,
+    model: &str,
+    effort: &str,
+    context_window: Option<u64>,
+    permission: &str,
+) -> Result<String> {
+    let Some(layout) = super::group::layout(workspace) else {
+        return Err(Error::Other("create_chat is only available in a grouped project".into()));
+    };
+    let message = str_arg(args, "message");
+    let created = super::group_chats::create_member_chat(
+        data_dir,
+        &layout,
+        str_arg(args, "alias"),
+        str_arg(args, "title"),
+        message,
+        model,
+        effort,
+        context_window,
+        permission,
+    )?;
+    let member = PathBuf::from(&created.workspace);
+    spawn_local_turn(
+        app,
+        data_dir,
+        &member,
+        LocalTurnStart {
+            workspace: created.workspace.clone(),
+            conversation_id: created.summary.id.clone(),
+            messages: vec![json!({ "role": "user", "content": message.trim() })],
+            model: model.to_string(),
+            effort: effort.to_string(),
+            context_window,
+            permission: permission.to_string(),
+            system: String::new(),
+            journey_id: None,
+            allow_spawn: true,
+        },
+    );
+    let _ = app.emit(
+        "dev-conversation-created",
+        serde_json::json!({
+            "workspace": created.workspace,
+            "conversation": created.summary,
+            "running": true,
+        }),
+    );
+    Ok(format!(
+        "{}\t{}\t{}",
+        created.alias, created.summary.id, created.summary.title
+    ))
+}
+
+fn group_prompt(workspace: &Path) -> String {
+    let Some(layout) = super::group::layout(workspace) else {
+        return String::new();
+    };
+    let aliases = layout
+        .members
+        .iter()
+        .map(|member| member.alias.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\nThis workspace is several repositories: {aliases}.\nPaths look like alias/file. Each repository has its own git history. A commit must name files in one repository.\n{}",
+        super::group_chats::PROMPT_LINE
+    )
+}
+
+fn capability_roots(workspace: &Path) -> Vec<std::path::PathBuf> {
+    if let Some(layout) = super::group::layout(workspace) {
+        let mut roots = vec![workspace.to_path_buf()];
+        roots.extend(layout.members.into_iter().map(|member| member.path));
+        roots
+    } else {
+        vec![workspace.to_path_buf()]
+    }
+}
+
 fn commit_files(workspace: &Path, data_dir: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
-    let target = git_target(workspace, data_dir)?;
     let paths: Vec<String> = args
         .get("paths")
         .and_then(Value::as_array)
         .map(|rows| rows.iter().filter_map(Value::as_str).map(str::to_string).collect())
         .unwrap_or_default();
+    if let Some(layout) = super::group::layout(workspace) {
+        return super::group_git::commit_one(&layout, str_arg(args, "message"), &paths);
+    }
+    let target = git_target(workspace, data_dir)?;
     if paths.is_empty() {
         let pending: Vec<String> = super::git::git_status_with(&target, false)?
             .into_iter()
@@ -1555,6 +1728,7 @@ fn build_prompt(
     } else {
         system.trim().to_string()
     };
+    let base = format!("{base}{}", group_prompt(workspace));
     let base = strip_capability_lines(&base);
     let block = twanagent_service::capabilities::prompt_block(conversation_id);
     let base = if block.is_empty() {

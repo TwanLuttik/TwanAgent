@@ -316,8 +316,8 @@ export function ChatStage() {
               if (event.target !== event.currentTarget || event.propertyName !== "width") return;
               setPaneSliding(false);
             }}
-            className={`relative mb-3 min-h-0 shrink-0 self-stretch rounded-l-[12px] bg-canvas ${
-              paneCollapsed && !paneSliding ? "" : "border border-r-0 border-line/35"
+            className={`relative min-h-0 shrink-0 self-stretch bg-canvas ${
+              paneCollapsed && !paneSliding ? "" : "border-l border-line/35"
             } ${
               paneMotion && !paneResizing
                 ? "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
@@ -325,9 +325,7 @@ export function ChatStage() {
             } ${paneSliding ? "will-change-[width]" : ""}`}
             style={{ width: paneCollapsed ? 0 : paneWidth }}
           >
-            {/* Clip sits inside the border. Overflow on the bordered box itself
-                eats the top and bottom curves in WebKit. */}
-            <div className="absolute inset-0 flex overflow-hidden rounded-l-[11px]">
+            <div className="absolute inset-0 flex overflow-hidden">
             <div
               role="separator"
               aria-orientation="vertical"
@@ -734,7 +732,15 @@ function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
-      <div className="relative flex min-h-0 min-w-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {activeRunning ? (
+          <SubagentDock
+            agents={subagents}
+            expanded={expandedAgents}
+            onToggle={(id) => toggleSubagent(id)}
+          />
+        ) : null}
+        <div className="relative min-h-0 flex-1">
         <ConversationDocks align="end" insetEnd={paneClosed}>
           <McpDock
             servers={mcpServers}
@@ -750,15 +756,6 @@ function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
             onEdit={(skill) => void editSkill(skill)}
           />
         </ConversationDocks>
-        {activeRunning ? (
-          <ConversationDocks>
-            <SubagentDock
-              agents={subagents}
-              expanded={expandedAgents}
-              onToggle={(id) => toggleSubagent(id)}
-            />
-          </ConversationDocks>
-        ) : null}
         {fileDrag === activeId ? <DropImagesHint /> : null}
         <div
           ref={scroller}
@@ -839,6 +836,7 @@ function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
         >
           <SessionComposer placement="chat" />
         </StreamComposerDock>
+        </div>
       </div>
     );
 }
@@ -909,6 +907,11 @@ function useComposerCentered(centeredWithoutStream: boolean): boolean {
   return centeredWithoutStream && streamEmpty;
 }
 
+function catalogModelName(models: { id?: string; name?: string }[] | null | undefined, id: string): string {
+  const name = models?.find((row) => row.id === id)?.name;
+  return typeof name === "string" ? name.trim() : "";
+}
+
 function LiveTranscript({
   messages,
   model,
@@ -944,6 +947,8 @@ function LiveTranscript({
   liveTools?: Parameters<typeof ChatTranscript>[0]["liveTools"];
   runningActivity?: Parameters<typeof conversationActivityLabel>[0];
 }) {
+  const { models } = useMain();
+  const modelName = catalogModelName(models, model);
   const live = useLiveStream();
   const streamText = givenText ?? live.streamText;
   const streamReasoning = givenReasoning ?? live.streamReasoning;
@@ -965,6 +970,8 @@ function LiveTranscript({
         busy={activeRunning}
         conversationId={conversationId}
         mentionFiles={mentionFiles}
+        model={model}
+        modelName={modelName}
         onLoadOlder={onLoadOlder}
       />
       {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}

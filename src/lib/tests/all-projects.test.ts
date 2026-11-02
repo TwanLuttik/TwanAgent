@@ -25,6 +25,8 @@ import {
   placeProjectChats,
   sidebarTodoKey,
   stampProjectServer,
+  prependChatInGroups,
+  prependProjectChat,
   upsertProjectGroup,
   matchesSidebarQuery,
   sidebarActivity,
@@ -34,7 +36,11 @@ import {
   archiveTargets,
   chatSelectionKey,
   nextChatSelection,
+  nestGroupedProjects,
+  toggleProjectSelection,
+  oneGroupRepo,
   type ChatSelection,
+  type ProjectGroupRow,
 } from "../all-projects.ts";
 import type { ConversationSummary, Journey as JourneySummary } from "../tauri.ts";
 
@@ -643,6 +649,37 @@ describe("removeProjectGroup", () => {
   });
 });
 
+describe("prependChatInGroups", () => {
+  it("puts a new chat above that project and leaves the others alone", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "api", path: "/app/api" },
+        { name: "web", path: "/app/web" },
+      ],
+      [],
+      {
+        "/app/api": {
+          conversations: [{ id: "old", title: "Old", created_at: "t", updated_at: "t" }],
+          journeys: [],
+        },
+      },
+    );
+    const created = { id: "new", title: "Handoff", created_at: "t2", updated_at: "t2" };
+    const next = prependChatInGroups(groups, "/app/api/", created);
+    assert.deepEqual(
+      next[0].conversations.map((row) => row.id),
+      ["new", "old"],
+    );
+    assert.deepEqual(next[1].conversations, []);
+    assert.equal(prependChatInGroups(next, "/app/api", created), next);
+    assert.equal(prependChatInGroups(groups, "/missing", created), groups);
+    assert.deepEqual(
+      prependProjectChat([{ id: "old", title: "Old", created_at: "t", updated_at: "t" }], created).map((row) => row.id),
+      ["new", "old"],
+    );
+  });
+});
+
 describe("sidebarProjects", () => {
   it("keeps saved projects, including folders outside the default directory, and drops duplicate paths", () => {
     const rows = sidebarProjects(
@@ -753,5 +790,56 @@ describe("collapsed projects", () => {
     assert.deepEqual(expandCollapsedProject(["/app/demo", "/app/other"], "/app/Demo/"), [
       "/app/other",
     ]);
+  });
+});
+
+describe("nestGroupedProjects", () => {
+  const projects = [
+    { path: "/work/api", name: "api" },
+    { path: "/work/web", name: "web" },
+    { path: "/work/notes", name: "notes" },
+    { path: "/work/apps", name: "apps" },
+  ];
+  const groups: ProjectGroupRow[] = [
+    {
+      path: "/work/apps",
+      name: "apps",
+      members: [
+        { path: "/work/web", alias: "web", name: "web" },
+        { path: "/work/api", alias: "api", name: "api" },
+        { path: "/work/missing", alias: "missing", name: "missing" },
+      ],
+    },
+  ];
+
+  it("hides members from the top and keeps their stored order", () => {
+    const nested = nestGroupedProjects(projects, groups);
+    assert.deepEqual(
+      nested.top.map((row) => row.path),
+      ["/work/notes", "/work/apps"],
+    );
+    assert.deepEqual(
+      nested.byGroup.get("/work/apps")?.map((row) => row.path),
+      ["/work/web", "/work/api"],
+    );
+  });
+
+  it("toggles a project only while cmd is held", () => {
+    const one = toggleProjectSelection([], "/work/api", true);
+    assert.deepEqual(one, ["/work/api"]);
+    const both = toggleProjectSelection(one, "/work/web", true);
+    assert.deepEqual(both, ["/work/api", "/work/web"]);
+    assert.deepEqual(toggleProjectSelection(both, "/work/API/", true), ["/work/web"]);
+    assert.deepEqual(toggleProjectSelection(both, "/work/notes", false), []);
+  });
+
+  it("refuses a change that spans two repositories", () => {
+    const members = groups[0].members;
+    assert.deepEqual(oneGroupRepo(members, ["api/src/a.rs"]), {
+      path: "/work/api",
+      paths: ["src/a.rs"],
+    });
+    const mixed = oneGroupRepo(members, ["api/a.rs", "web/b.rs"]);
+    assert.equal("error" in mixed, true);
   });
 });

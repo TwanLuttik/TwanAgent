@@ -40,6 +40,9 @@ impl AppState {
                 .iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect();
+            if let Err(err) = crate::dev::group::load(&data_dir) {
+                eprintln!("project groups were not loaded: {err}");
+            }
             if let Err(err) = appdb::import_legacy_projects(
                 &conn,
                 &[location.root.as_path(), location.legacy.as_path()],

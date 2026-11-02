@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { ProjectMark } from "../../components/ProjectMark";
 import { Symbol } from "../../components/Symbol";
-import { isProjectCollapsed, isSameProject, sidebarFocusPath } from "../../lib/all-projects";
+import { isProjectCollapsed, isSameProject, nestGroupedProjects, sidebarFocusPath } from "../../lib/all-projects";
+import { useProjectGroups } from "../../lib/project-groups";
 import { projectKey } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { subscribeWorktreeLists, withoutLinkedWorktrees, worktreeNameRevision } from "../../lib/worktree.ts";
@@ -29,7 +30,8 @@ export function ProjectFocusButton({
   const { allProjectGroups, sidebarReady, collapsedProjects, toggleProjectCollapsed } = useSidebar();
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
   const logoRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
-  const groups = sidebarProjects(allProjectGroups, worktreeTick);
+  const projectGroups = useProjectGroups();
+  const groups = nestGroupedProjects(sidebarProjects(allProjectGroups, worktreeTick), projectGroups).top;
   const active = sidebarFocusPath(focusPath, groups);
   const current = groups.find((group) => isSameProject(group.path, active));
   const groupKey = groups.map((group) => projectKey(group.path)).join("\n");

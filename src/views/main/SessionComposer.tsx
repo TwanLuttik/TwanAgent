@@ -18,6 +18,7 @@ import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
 import { chatHasRunningTurn, composerSettingsForChat, draftForChat } from "../../lib/turn";
+import { useGroupMembers } from "../../lib/project-groups";
 import { useApp } from "../../state/app-state";
 import { useMain } from "./context";
 
@@ -68,6 +69,7 @@ export const SessionComposer = memo(function SessionComposer({
     dictate,
   } = useMain();
   const { setFlash } = useApp();
+  const groupMembers = useGroupMembers(workspace);
   const [creatingWorktree, setCreatingWorktree] = useState(false);
   const [checkingOut, setCheckingOut] = useState(0);
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -172,14 +174,18 @@ export const SessionComposer = memo(function SessionComposer({
         if (!boundId) assignDraftProject(path);
         else applyWorkspace(path);
       }}
-      onOpenWorktree={(path) => {
-        // A new chat only picks where the first prompt lands. Opening the folder
-        // would load a conversation that checkout already has.
-        if (!boundId) assignDraftProject(path);
-        else applyWorkspace(path);
-      }}
-      onCreateWorktree={(branch) => void createWorktree(branch)}
-      onOpenPullRequest={(number) => void openPullRequest(number)}
+      onOpenWorktree={
+        groupMembers
+          ? undefined
+          : (path) => {
+              // A new chat only picks where the first prompt lands. Opening the folder
+              // would load a conversation that checkout already has.
+              if (!boundId) assignDraftProject(path);
+              else applyWorkspace(path);
+            }
+      }
+      onCreateWorktree={groupMembers ? undefined : (branch) => void createWorktree(branch)}
+      onOpenPullRequest={groupMembers ? undefined : (number) => void openPullRequest(number)}
       checkingOutPullRequest={checkingOut}
       suggestedWorktree={suggestedWorktree}
       onOpenFolder={openFolder}

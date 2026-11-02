@@ -8,11 +8,12 @@ import { Symbol } from "../../components/Symbol";
 import { AccountUsageRow } from "../../components/AccountUsageRow";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { headerBarClass, isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { archiveTargets, chatSelectionKey, focusedProjectGroups, isSameProject, matchesSidebarQuery, nextChatSelection, orderSidebarChats, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type SidebarActivityItem, type SidebarChatOrder } from "../../lib/all-projects";
+import { archiveTargets, chatSelectionKey, focusedProjectGroups, groupOwningPath, isSameProject, matchesSidebarQuery, nestGroupedProjects, nextChatSelection, orderSidebarChats, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type ProjectGroupRow, type SidebarActivityItem, type SidebarChatOrder } from "../../lib/all-projects";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { ProjectMark } from "../../components/ProjectMark";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
+import { publishProjectGroups, useProjectGroups } from "../../lib/project-groups";
 import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, withoutLinkedWorktrees, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import { forgetPaneWorkspace } from "../../lib/pane-sessions";
 import { saveConversation } from "../../lib/prefs";
@@ -166,13 +167,15 @@ export function AppSidebar() {
 
 function CollapsedRail() {
   const { allProjectGroups, openProjectFromSidebar, workspace } = useSidebar();
+  const projectGroups = useProjectGroups();
+  const railGroups = nestGroupedProjects(allProjectGroups, projectGroups).top;
   const logoRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
   const [tip, setTip] = useState<{ name: string; top: number; left: number } | null>(null);
   return (
     <div className="absolute inset-0 z-30 flex flex-col">
       <div className="h-11 shrink-0" />
       <div className="no-scrollbar flex min-h-0 flex-1 flex-col items-center gap-0.5 overflow-auto px-1 pb-2">
-        {allProjectGroups.map((group) => {
+        {railGroups.map((group) => {
           const current = isSameProject(group.path, workspace);
           return (
             <button
@@ -426,6 +429,7 @@ function ProjectsNav({
     messages,
     openingId,
     openProjectFromSidebar,
+    rememberOpenedProject,
     openSidebarChat,
     switchToProject,
     openProjectSettings,
@@ -452,6 +456,20 @@ function ProjectsNav({
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
   void worktreeTick;
   const sidebarGroups = withoutLinkedWorktrees(allProjectGroups);
+  const [projectGroups, setProjectGroups] = useState<ProjectGroupRow[]>([]);
+  const projectPaths = sidebarGroups.map((group) => group.path).join("\n");
+  useEffect(() => {
+    let cancelled = false;
+    void api.listProjectGroups().then((rows) => {
+      if (cancelled) return;
+      setProjectGroups(rows);
+      publishProjectGroups(rows);
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPaths]);
+  const nested = useMemo(() => nestGroupedProjects(sidebarGroups, projectGroups), [sidebarGroups, projectGroups]);
   const activity = useMemo(() => {
     void worktreeTick;
     const extra = Object.entries(worktreeChats).map(([key, conversations]) => {
@@ -461,7 +479,8 @@ function ProjectsNav({
     return sidebarActivity(allProjectGroups, runningTurns, unseenFinished, extra);
   }, [allProjectGroups, runningTurns, unseenFinished, worktreeChats, worktreeTick]);
   const activeFocus = sidebarFocusPath(focusPath, sidebarGroups);
-  const listedGroups = focusedProjectGroups(sidebarGroups, activeFocus);
+  const focusOwner = groupOwningPath(activeFocus, projectGroups);
+  const listedGroups = focusedProjectGroups(nested.top, focusOwner || activeFocus);
   const focusedName = activeFocus
     ? sidebarGroups.find((group: { path: string; name?: string }) => isSameProject(group.path, activeFocus))?.name ?? ""
     : "";
@@ -479,13 +498,20 @@ function ProjectsNav({
     const open = new Set(
       activity.filter((item) => matchesSidebarQuery(query, item.title)).map((item) => projectKey(item.path)),
     );
-    return listedGroups.filter(
-      (group) =>
+    return listedGroups.filter((group) => {
+      const members = nested.byGroup.get(projectKey(group.path)) ?? [];
+      return (
         matchesSidebarQuery(query, group.name, group.path) ||
         open.has(projectKey(group.path)) ||
-        group.conversations.some((row) => !row.archived && matchesSidebarQuery(query, row.title)),
-    );
-  }, [searching, listedGroups, activity, query]);
+        group.conversations.some((row) => !row.archived && matchesSidebarQuery(query, row.title)) ||
+        members.some(
+          (member) =>
+            matchesSidebarQuery(query, member.name, member.path) ||
+            member.conversations.some((row) => !row.archived && matchesSidebarQuery(query, row.title)),
+        )
+      );
+    });
+  }, [searching, listedGroups, activity, query, nested]);
   const gitRows = allProjectGroups
     .map((group: { path: string; remote?: boolean }) => `${group.remote ? "1" : "0"}\t${group.path}`)
     .join("\n");
@@ -850,6 +876,55 @@ function ProjectsNav({
     });
   }
 
+  async function refreshGroups() {
+    const next = await api.listProjectGroups();
+    setProjectGroups(next);
+    publishProjectGroups(next);
+  }
+
+  async function createGroup(name: string, paths: string[]) {
+    try {
+      const row = await api.createProjectGroup(name, paths);
+      rememberOpenedProject(row.path, row.name);
+      await refreshGroups();
+      openProjectFromSidebar(row.path);
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function addToGroup(group: string, path: string) {
+    try {
+      await api.addGroupMember(group, path);
+      await refreshGroups();
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function removeMember(group: string, path: string) {
+    try {
+      await api.removeGroupMember(group, path);
+      await refreshGroups();
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
+  async function deleteGroup(path: string) {
+    try {
+      await api.deleteProjectGroup(path);
+      await forgetProjectRow(path);
+      await refreshGroups();
+      if (isSameProject(path, workspace)) {
+        const next = sidebarGroups.find((group) => !isSameProject(group.path, path));
+        if (next) openProjectFromSidebar(next.path);
+      }
+    } catch (e) {
+      setFlash({ kind: "err", text: String(e) });
+    }
+  }
+
   return (
     <>
       <SidebarSearch query={query} onQuery={setQuery} />
@@ -906,6 +981,12 @@ function ProjectsNav({
           gitByProject={gitByProject}
           chatQuery={searching ? query : ""}
           logoRefresh={logoRefresh}
+          membersFor={(path) => nested.byGroup.get(projectKey(path)) ?? []}
+          projectGroups={projectGroups}
+          onCreateGroup={(name, paths) => void createGroup(name, paths)}
+          onAddToGroup={(group, path) => void addToGroup(group, path)}
+          onRemoveMember={(group, path) => void removeMember(group, path)}
+          onDeleteGroup={(path) => void deleteGroup(path)}
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
           renderWorktree={(child) => (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
@@ -7,6 +7,8 @@ import { subagentTypeLabel, type SubagentRecord } from "../lib/subagent";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const DURATION = 0.32;
+/** Resting height of the horizontal strip. Two chip rows fit; the rest wait behind expand. */
+const STRIP_MAX_PX = 80;
 
 export function ConversationDocks({
   children,
@@ -45,18 +47,65 @@ export function SubagentDock({
   expanded: Record<string, boolean>;
   onToggle: (id: string) => void;
 }) {
+  const list = useRef<HTMLDivElement>(null);
+  const [stripOpen, setStripOpen] = useState(false);
+  const [hidden, setHidden] = useState(0);
+  const anyOpen = agents.some((agent) => expanded[agent.id]);
+  const clipped = !stripOpen && !anyOpen;
+
+  useLayoutEffect(() => {
+    const el = list.current;
+    if (!el) return;
+    const measure = () => {
+      let count = 0;
+      for (const child of Array.from(el.children)) {
+        if ((child as HTMLElement).offsetTop >= STRIP_MAX_PX - 4) count += 1;
+      }
+      setHidden(count);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [agents, stripOpen, anyOpen, expanded]);
+
   if (agents.length === 0) return null;
+  const showToggle = !anyOpen && (hidden > 0 || stripOpen);
   return (
-    <AnimatePresence initial={false}>
-      {agents.map((agent) => (
-        <SubagentPill
-          key={agent.id}
-          agent={agent}
-          open={Boolean(expanded[agent.id])}
-          onToggle={() => onToggle(agent.id)}
-        />
-      ))}
-    </AnimatePresence>
+    <div className="shrink-0 px-6 pt-2">
+      <div className="mx-auto flex w-full max-w-[720px] items-start gap-1.5">
+        <div
+          ref={list}
+          style={clipped ? { maxHeight: STRIP_MAX_PX } : anyOpen ? undefined : { maxHeight: STRIP_MAX_PX * 4 }}
+          className={`relative flex min-w-0 flex-1 flex-wrap content-start gap-1.5 ${
+            clipped ? "overflow-hidden" : anyOpen ? "" : "overflow-y-auto"
+          }`}
+        >
+          <AnimatePresence initial={false}>
+            {agents.map((agent) => (
+              <SubagentPill
+                key={agent.id}
+                agent={agent}
+                open={Boolean(expanded[agent.id])}
+                onToggle={() => onToggle(agent.id)}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
+        {showToggle ? (
+          <button
+            type="button"
+            aria-expanded={stripOpen}
+            onClick={() => setStripOpen((value) => !value)}
+            className="mt-0.5 flex h-8 shrink-0 items-center gap-1 rounded-full border border-line/55 bg-panel px-2.5 text-[12px] text-muted shadow-card hover:text-ink"
+          >
+            {stripOpen ? "Less" : `+${hidden}`}
+            <Symbol name={stripOpen ? "chevron.up" : "chevron.down"} className="size-3" />
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -70,8 +119,6 @@ function SubagentPill({
   onToggle: () => void;
 }) {
   const live = agent.status === "running";
-  const foldedTools = foldToolTrailRows(agent.tools);
-  const latestTool = foldedTools[foldedTools.length - 1]?.label ?? "";
   const items = liveTranscriptItems(
     agent.messages.filter((message) => message.role !== "user"),
     agent.streamText,
@@ -79,47 +126,43 @@ function SubagentPill({
     agent.streamReasoning,
   );
   const body = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
 
   useEffect(() => {
     const el = body.current;
-    if (!el || !open) return;
+    if (!el || !open || !stick.current) return;
+    const max = el.scrollHeight - el.clientHeight;
+    if (max - el.scrollTop < 1) return;
     el.scrollTop = el.scrollHeight;
-  }, [open, items, agent.tools.length]);
+  }, [open, items, agent.tools.length, agent.streamText, agent.streamReasoning]);
 
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: -8, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -6, scale: 0.98 }}
       transition={{ duration: DURATION, ease: EASE }}
-      className="pointer-events-auto w-max max-w-full min-w-0"
+      className={`pointer-events-auto min-w-0 ${open ? "w-full basis-full" : "w-max max-w-[15rem] shrink-0"}`}
     >
       <motion.div
-        layout
         initial={false}
         animate={{ scale: 1 }}
         whileHover={open ? undefined : { scale: 1.03 }}
         transition={{ duration: DURATION, ease: EASE }}
         className={`origin-top overflow-hidden border border-line/55 bg-panel shadow-card ${
-          open ? "rounded-2xl" : "rounded-full"
+          open ? "w-full max-w-[32rem] rounded-2xl" : "rounded-full"
         }`}
       >
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={open}
-          className="flex w-full items-center gap-2.5 px-4 py-2 text-left"
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
         >
           <StatusMark status={agent.status} />
           <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
             {agent.description}
           </span>
-          {live && latestTool && !open ? (
-            <span className="hidden max-w-[11rem] truncate text-[12px] text-muted sm:inline">
-              {latestTool}
-            </span>
-          ) : null}
           <span className="shrink-0 text-[12px] text-muted">{subagentTypeLabel(agent.type)}</span>
           <motion.span
             animate={{ rotate: open ? 180 : 0 }}
@@ -139,7 +182,15 @@ function SubagentPill({
               transition={{ duration: DURATION, ease: EASE }}
               className="overflow-hidden"
             >
-              <div ref={body} className="max-h-56 min-w-[22rem] overflow-auto border-t border-line/55 bg-canvas px-4 py-2.5">
+              <div
+                ref={body}
+                onScroll={() => {
+                  const el = body.current;
+                  if (!el) return;
+                  stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+                }}
+                className="max-h-56 w-full min-w-0 overflow-auto border-t border-line/55 bg-canvas px-4 py-2.5"
+              >
                 {items.length ? (
                   <div className="space-y-2">
                     {items.map((item, i) => {
@@ -200,8 +251,8 @@ function SubagentToolRow({ row, nested = false }: { row: ToolTrailRow; nested?: 
         onClick={() => {
           if (nestedRows.length) setOpen((value) => !value);
         }}
-        className={`flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 text-muted ${
-          nestedRows.length ? "w-full hover:text-ink" : "cursor-default"
+        className={`flex w-full min-w-0 items-center gap-2 text-left text-[13px] leading-5 text-muted ${
+          nestedRows.length ? "hover:text-ink" : "cursor-default"
         }`}
       >
         <Symbol name={toolTrailTypeIcon(toolTrailKind(row.label))} className="size-3 shrink-0" />
@@ -222,16 +273,18 @@ function SubagentToolRow({ row, nested = false }: { row: ToolTrailRow; nested?: 
 }
 
 function StatusMark({ status }: { status: SubagentRecord["status"] }) {
-  if (status === "running") {
-    return (
-      <span
-        className="size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-        aria-label="Running"
-      />
-    );
-  }
-  if (status === "done") {
-    return <Symbol name="checkmark" className="size-3.5 shrink-0 text-ok" />;
-  }
-  return <Symbol name="xmark" className="size-3.5 shrink-0 text-err" />;
+  return (
+    <span className="flex size-3.5 shrink-0 items-center justify-center">
+      {status === "running" ? (
+        <span
+          className="size-3 animate-spin rounded-full border border-ink/35 border-t-transparent"
+          aria-label="Running"
+        />
+      ) : status === "done" ? (
+        <Symbol name="checkmark" className="size-3.5 text-ok" />
+      ) : (
+        <Symbol name="xmark" className="size-3.5 text-err" />
+      )}
+    </span>
+  );
 }

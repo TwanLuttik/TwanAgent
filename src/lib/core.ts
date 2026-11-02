@@ -326,6 +326,20 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
   if (name === "write_file") return `Write ${fileBaseName(path) || path || "file"}`;
   if (name === "edit_file") return `Edit ${fileBaseName(path) || path || "file"}`;
   if (name === "list_dir") return `List ${path || "."}`;
+  if (name === "list_chats") {
+    const alias = String(args.alias ?? "").trim();
+    return alias ? `Chats in ${alias}` : "Chats";
+  }
+  if (name === "read_chat") {
+    const alias = String(args.alias ?? "").trim();
+    const id = String(args.id ?? "").trim();
+    if (alias && id) return `Chat ${alias} ${id}`;
+    return alias ? `Chat ${alias}` : "Chat";
+  }
+  if (name === "create_chat") {
+    const alias = String(args.alias ?? "").trim();
+    return alias ? `Create chat ${alias}` : "Create chat";
+  }
   if (name === "git_status") return "Git status";
   if (name === "git_diff") {
     const commit = String(args.commit ?? args.hash ?? "").trim();
@@ -476,6 +490,12 @@ export function toolDetail(call: ChatToolCall): string {
     return [pattern, where].filter(Boolean).join(" ");
   }
   if (call.name === "load_skill") return String(args.name ?? "").trim();
+  if (call.name === "list_chats") return String(args.alias ?? "").trim();
+  if (call.name === "read_chat") return String(args.id ?? "").trim();
+  if (call.name === "create_chat") {
+    const message = String(args.message ?? "").trim();
+    return message.length > 2_000 ? `${message.slice(0, 2_000)}…` : message;
+  }
   if (call.name.startsWith("mcp__")) return mcpArgsDetail(args);
   return "";
 }
@@ -960,6 +980,8 @@ export function toolTrailTypeIcon(type: string): string {
   if (type === "Write") return "square.and.arrow.down";
   if (type === "Edit") return "pencil";
   if (type === "List") return "folder";
+  if (type === "Chats" || type === "Chat") return "messages";
+  if (type === "Create") return "plus";
   if (type === "Skill") return "book";
   if (type === "MCP") return "cable.connector";
   return "ellipsis";
@@ -979,6 +1001,9 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
     if (msg.role === "tool") {
       fillWebSearchSites(out, msg);
       fillLoadedSkill(out, msg);
+      fillListedChats(out, msg);
+      fillReadChat(out, msg);
+      fillCreatedChat(out, msg);
       continue;
     }
     if (msg.role === "system") continue;
@@ -1063,6 +1088,114 @@ function fillWebSearchSites(items: TranscriptItem[], toolMessage: ChatMessage): 
     item.commands[index] = webSearchSitesLabel(sites);
     return;
   }
+}
+
+export type ListedChatRow = { alias: string; id: string; title: string };
+
+/** One chat per line from `list_chats`: alias, id, title, time. */
+export function listedChatRows(content: string): ListedChatRow[] {
+  const text = content.replace(/\r\n/g, "\n").trim();
+  if (!text || text === "No chats." || text.startsWith("Error:")) return [];
+  const rows: ListedChatRow[] = [];
+  for (const line of text.split("\n")) {
+    const [alias, id, title] = line.split("\t");
+    const name = alias?.trim() ?? "";
+    const chatId = id?.trim() ?? "";
+    if (!name || !chatId) continue;
+    rows.push({ alias: name, id: chatId, title: (title ?? "").trim() || chatId });
+  }
+  return rows;
+}
+
+/** Titles on the row. One project keeps the alias once. */
+export function listedChatsLabel(rows: ListedChatRow[]): string {
+  if (!rows.length) return "Chats";
+  const aliases = [...new Set(rows.map((row) => row.alias))];
+  const shown = rows.slice(0, 4);
+  const extra = rows.length > shown.length ? ` +${rows.length - shown.length}` : "";
+  if (aliases.length === 1) {
+    return `Chats in ${aliases[0]}: ${shown.map((row) => row.title).join(", ")}${extra}`;
+  }
+  return `Chats ${shown.map((row) => `${row.alias} ${row.title}`).join(", ")}${extra}`;
+}
+
+export function listedChatsDetail(rows: ListedChatRow[]): string {
+  return rows.map((row) => `${row.alias}  ${row.id}  ${row.title}`).join("\n");
+}
+
+/** `read_chat` starts with the alias and id, then the title. */
+export function readChatHeading(content: string): { alias: string; id: string; title: string } | null {
+  const text = content.replace(/\r\n/g, "\n").trim();
+  if (!text || text.startsWith("Error:")) return null;
+  const lines = text.split("\n");
+  const head = lines[0]?.trim() ?? "";
+  const space = head.indexOf(" ");
+  if (space <= 0) return null;
+  const alias = head.slice(0, space).trim();
+  const id = head.slice(space + 1).trim();
+  const title = (lines[1] ?? "").trim();
+  if (!alias || !id || !title || title === "archived" || title.startsWith("updated ")) return null;
+  return { alias, id, title };
+}
+
+function chatToolIndex(
+  items: TranscriptItem[],
+  toolMessage: ChatMessage,
+  labelMatches: (label: string) => boolean,
+): { item: Extract<TranscriptItem, { kind: "tools" }>; index: number } | null {
+  if (toolMessage.role !== "tool") return null;
+  const id = toolMessage.tool_call_id ?? "";
+  if (!id) return null;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (!item || item.kind === "user") return null;
+    if (item.kind !== "tools") continue;
+    const index = item.callIds.indexOf(id);
+    if (index < 0 || !labelMatches(item.labels[index] ?? "")) continue;
+    return { item, index };
+  }
+  return null;
+}
+
+/** Put the chats a list actually returned onto that row. */
+function fillListedChats(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  const found = chatToolIndex(items, toolMessage, (label) => label === "Chats" || label.startsWith("Chats "));
+  if (!found) return;
+  const text = String(toolMessage.content ?? "").trim();
+  if (!text) return;
+  const rows = listedChatRows(text);
+  if (!rows.length) {
+    found.item.commands[found.index] = text;
+    return;
+  }
+  found.item.labels[found.index] = listedChatsLabel(rows);
+  found.item.commands[found.index] = listedChatsDetail(rows);
+}
+
+/** Put the created chat's title on the row once the tool returns. */
+function fillCreatedChat(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  const found = chatToolIndex(items, toolMessage, (label) => label === "Create chat" || label.startsWith("Create "));
+  if (!found) return;
+  const text = String(toolMessage.content ?? "").trim();
+  if (!text || text.startsWith("Error:")) {
+    if (text) found.item.commands[found.index] = text;
+    return;
+  }
+  const [alias, , title] = text.split("\t");
+  const name = alias?.trim() ?? "";
+  const label = title?.trim() ?? "";
+  if (name && label) found.item.labels[found.index] = `Create ${name} ${label}`;
+}
+
+/** Name the chat that was read, and keep the transcript under the row. */
+function fillReadChat(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  const found = chatToolIndex(items, toolMessage, (label) => label === "Chat" || label.startsWith("Chat "));
+  if (!found) return;
+  const text = String(toolMessage.content ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return;
+  const heading = readChatHeading(text);
+  if (heading) found.item.labels[found.index] = `Chat ${heading.alias} ${heading.title}`;
+  found.item.commands[found.index] = skillTrailPreview(text);
 }
 
 /** Replace a skill row's name with the instructions that were actually loaded. */

@@ -140,8 +140,13 @@ impl Drop for StdioSession {
 
 /// Read configs, connect enabled MCP servers, and keep the sessions for this conversation.
 pub fn install(id: &str, workspace: &Path, home: &Path) -> Guard {
+    install_roots(id, &[workspace.to_path_buf()], home)
+}
+
+/// `workspaces` is the group folder first, then each member. A normal project passes one path.
+pub fn install_roots(id: &str, workspaces: &[PathBuf], home: &Path) -> Guard {
     let id = id.trim();
-    let slot = Arc::new(Mutex::new(prepare(workspace, home)));
+    let slot = Arc::new(Mutex::new(prepare_roots(workspaces, home)));
     if let Ok(mut map) = slots().lock() {
         map.insert(id.to_string(), slot.clone());
     }
@@ -198,14 +203,24 @@ where
 }
 
 fn discover(workspace: &Path, home: &Path) -> Capabilities {
+    discover_roots(&[workspace.to_path_buf()], home)
+}
+
+fn discover_roots(workspaces: &[PathBuf], home: &Path) -> Capabilities {
     let grok = home.join(".grok");
     let disabled_skills = disabled_names(&grok.join("config.toml"), "skills", "disabled");
     let mut disabled_mcp = disabled_names(&grok.join("config.toml"), "", "disabled_mcp_servers");
-    disabled_mcp.extend(disabled_names(&workspace.join(".grok/config.toml"), "", "disabled_mcp_servers"));
+    for workspace in workspaces {
+        disabled_mcp.extend(disabled_names(
+            &workspace.join(".grok/config.toml"),
+            "",
+            "disabled_mcp_servers",
+        ));
+    }
     let disabled_mcp_set: HashSet<String> = disabled_mcp.iter().cloned().collect();
     let mut skills = Vec::new();
     let mut seen = HashSet::new();
-    for (path, _) in skill_files(workspace, home, &grok) {
+    for (path, _) in skill_files(workspaces, home, &grok) {
         let Some(skill) = read_skill(&path) else {
             continue;
         };
@@ -218,7 +233,7 @@ fn discover(workspace: &Path, home: &Path) -> Capabilities {
         skills.push(skill);
     }
     let disabled_skill_count = disabled_skills.len();
-    let mut servers = read_servers(workspace, home);
+    let mut servers = read_servers(workspaces, home);
     for server in &mut servers {
         if disabled_mcp_set.contains(&server.name) {
             server.enabled = false;
@@ -246,27 +261,28 @@ fn discover(workspace: &Path, home: &Path) -> Capabilities {
     }
 }
 
-fn prepare_full(workspace: &Path, home: &Path) -> Capabilities {
+fn prepare_full(workspaces: &[PathBuf], home: &Path) -> Capabilities {
+    let workspace = workspaces.first().cloned().unwrap_or_default();
     let grok = home.join(".grok");
-    let disabled_skill_names = disabled_names(&grok.join("config.toml"), "skills", "disabled");
+    let mut disabled_skill_names = disabled_names(&grok.join("config.toml"), "skills", "disabled");
     let mut disabled_mcp = disabled_names(&grok.join("config.toml"), "", "disabled_mcp_servers");
-    disabled_mcp.extend(disabled_names(
-        &workspace.join(".grok/config.toml"),
-        "",
-        "disabled_mcp_servers",
-    ));
-    let workspace_skills = disabled_names(&workspace.join(".grok/config.toml"), "skills", "disabled");
-    let mut disabled_skill_names = disabled_skill_names;
-    for name in workspace_skills {
-        if !disabled_skill_names.iter().any(|row| row == &name) {
-            disabled_skill_names.push(name);
+    for root in workspaces {
+        disabled_mcp.extend(disabled_names(
+            &root.join(".grok/config.toml"),
+            "",
+            "disabled_mcp_servers",
+        ));
+        for name in disabled_names(&root.join(".grok/config.toml"), "skills", "disabled") {
+            if !disabled_skill_names.iter().any(|row| row == &name) {
+                disabled_skill_names.push(name);
+            }
         }
     }
     let disabled_set: HashSet<String> = disabled_mcp.iter().cloned().collect();
     let mut skills = Vec::new();
     let mut seen = HashSet::new();
     let mut disabled_skills = 0usize;
-    for (path, _) in skill_files(workspace, home, &grok) {
+    for (path, _) in skill_files(workspaces, home, &grok) {
         let Some(skill) = read_skill(&path) else {
             continue;
         };
@@ -282,7 +298,7 @@ fn prepare_full(workspace: &Path, home: &Path) -> Capabilities {
     let mut servers = Vec::new();
     let mut disabled_mcp_names = Vec::new();
     let mut seen_servers = HashSet::new();
-    for server in read_servers(workspace, home) {
+    for server in read_servers(workspaces, home) {
         if !seen_servers.insert(server.name.clone()) {
             continue;
         }
@@ -371,8 +387,8 @@ fn prepare_full(workspace: &Path, home: &Path) -> Capabilities {
     caps
 }
 
-fn prepare(workspace: &Path, home: &Path) -> Capabilities {
-    prepare_full(workspace, home)
+fn prepare_roots(workspaces: &[PathBuf], home: &Path) -> Capabilities {
+    prepare_full(workspaces, home)
 }
 
 impl Capabilities {
@@ -831,15 +847,17 @@ fn server_of(exposed: &str) -> &str {
         .unwrap_or(exposed)
 }
 
-fn skill_files(workspace: &Path, home: &Path, grok: &Path) -> Vec<(PathBuf, &'static str)> {
+fn skill_files(workspaces: &[PathBuf], home: &Path, grok: &Path) -> Vec<(PathBuf, &'static str)> {
     let mut out = Vec::new();
-    push_skill_dir(&mut out, &workspace.join(".grok/skills"), "project");
-    push_command_dir(&mut out, &workspace.join(".grok/commands"), "project");
-    push_skill_dir(&mut out, &workspace.join(".agents/skills"), "project");
-    push_command_dir(&mut out, &workspace.join(".agents/commands"), "project");
-    push_skill_dir(&mut out, &workspace.join(".claude/skills"), "claude");
-    push_command_dir(&mut out, &workspace.join(".claude/commands"), "claude");
-    push_skill_dir(&mut out, &workspace.join(".cursor/skills"), "cursor");
+    for workspace in workspaces {
+        push_skill_dir(&mut out, &workspace.join(".grok/skills"), "project");
+        push_command_dir(&mut out, &workspace.join(".grok/commands"), "project");
+        push_skill_dir(&mut out, &workspace.join(".agents/skills"), "project");
+        push_command_dir(&mut out, &workspace.join(".agents/commands"), "project");
+        push_skill_dir(&mut out, &workspace.join(".claude/skills"), "claude");
+        push_command_dir(&mut out, &workspace.join(".claude/commands"), "claude");
+        push_skill_dir(&mut out, &workspace.join(".cursor/skills"), "cursor");
+    }
     push_skill_dir(&mut out, &grok.join("skills"), "user");
     push_command_dir(&mut out, &grok.join("commands"), "user");
     push_skill_dir(&mut out, &home.join(".agents/skills"), "user");
@@ -1011,18 +1029,21 @@ fn strip_quotes(value: &str) -> String {
     value.to_string()
 }
 
-fn read_servers(workspace: &Path, home: &Path) -> Vec<ServerSpec> {
+fn read_servers(workspaces: &[PathBuf], home: &Path) -> Vec<ServerSpec> {
     let mut out = Vec::new();
-    for path in [
+    let mut paths = vec![
         home.join(".grok/config.toml"),
         home.join(".cursor/mcp.json"),
         home.join(".claude.json"),
-        workspace.join(".mcp.json"),
-        workspace.join("mcp.json"),
-        workspace.join(".cursor/mcp.json"),
-        workspace.join(".vscode/mcp.json"),
-        workspace.join(".grok/config.toml"),
-    ] {
+    ];
+    for workspace in workspaces {
+        paths.push(workspace.join(".mcp.json"));
+        paths.push(workspace.join("mcp.json"));
+        paths.push(workspace.join(".cursor/mcp.json"));
+        paths.push(workspace.join(".vscode/mcp.json"));
+        paths.push(workspace.join(".grok/config.toml"));
+    }
+    for path in paths {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
@@ -1365,7 +1386,7 @@ mod tests {
             "disabled_mcp_servers = [\"railway\"]\n\n[mcp_servers.notion]\nurl = \"https://mcp.notion.com/mcp\"\n",
         )
         .unwrap();
-        let servers = read_servers(root.path(), home.path());
+        let servers = read_servers(&[root.path().to_path_buf()], home.path());
         assert!(servers.iter().any(|server| server.name == "railway" && server.args == ["-y", "srv"] && server.env == [("A".into(), "b".into())]));
         assert!(servers.iter().any(|server| server.name == "notion" && server.url.contains("notion")));
         let caps = discover(root.path(), home.path());
@@ -1417,5 +1438,51 @@ for line in sys.stdin:
             .request("tools/call", json!({ "name": "ping", "arguments": {} }), CALL_TIMEOUT)
             .unwrap();
         assert_eq!(tool_result_text(&result), "pong");
+    }
+
+    #[test]
+    fn two_projects_keep_the_first_shared_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let api = tempfile::tempdir().unwrap();
+        let web = tempfile::tempdir().unwrap();
+        fs::create_dir_all(api.path().join(".grok/skills/shared")).unwrap();
+        fs::write(
+            api.path().join(".grok/skills/shared/SKILL.md"),
+            "---\nname: shared\ndescription: from api\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(web.path().join(".grok/skills/shared")).unwrap();
+        fs::write(
+            web.path().join(".grok/skills/shared/SKILL.md"),
+            "---\nname: shared\ndescription: from web\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(web.path().join(".grok/skills/only-web")).unwrap();
+        fs::write(
+            web.path().join(".grok/skills/only-web/SKILL.md"),
+            "---\nname: only-web\ndescription: web\n---\n",
+        )
+        .unwrap();
+        let grok = home.path().join(".grok");
+        let files = skill_files(
+            &[api.path().to_path_buf(), web.path().to_path_buf()],
+            home.path(),
+            &grok,
+        );
+        let mut names = Vec::new();
+        let mut seen = HashSet::new();
+        let mut shared_from_api = false;
+        for (path, _) in files {
+            let Some(skill) = read_skill(&path) else { continue };
+            if skill.name == "shared" && path.starts_with(api.path()) {
+                shared_from_api = true;
+            }
+            if seen.insert(skill.name.clone()) {
+                names.push(skill.name);
+            }
+        }
+        assert!(shared_from_api);
+        assert_eq!(names.iter().filter(|name| *name == "shared").count(), 1);
+        assert!(names.iter().any(|name| name == "only-web"));
     }
 }

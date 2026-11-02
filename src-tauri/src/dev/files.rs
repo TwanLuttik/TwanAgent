@@ -61,6 +61,9 @@ fn dirs_unchanged(dirs: &[(PathBuf, SystemTime)]) -> bool {
 
 /// Stable fingerprint of file and folder paths. Content edits do not change it.
 pub fn tree_snapshot(workspace: &Path) -> Result<TreeSnapshot> {
+    if let Some(layout) = super::group::layout(workspace) {
+        return group_tree(&layout);
+    }
     let root = resolve_in_workspace(workspace, "")?;
     let generation = TREE_GENERATION.load(Ordering::Relaxed);
     if let Ok(cache) = tree_cache().lock() {
@@ -150,6 +153,9 @@ fn walk_tree(
 }
 
 pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<DevEntry>> {
+    if let Some(hit) = super::group::hit(workspace, rel)? {
+        return list_group_dir(hit);
+    }
     let root = resolve_in_workspace(workspace, "")?;
     let dir = resolve_in_workspace(workspace, rel)?;
     // A remembered folder can be deleted or renamed between sessions. That is an
@@ -199,6 +205,9 @@ pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<DevEntry>> {
 }
 
 pub fn read_file(workspace: &Path, rel: &str) -> Result<String> {
+    if let Some((root, rel, _)) = group_file(workspace, rel)? {
+        return read_file(&root, &rel);
+    }
     let path = resolve_in_workspace(workspace, rel)?;
     if !path.is_file() {
         return Err(Error::Other("not a file".into()));
@@ -221,6 +230,9 @@ pub fn read_file(workspace: &Path, rel: &str) -> Result<String> {
 
 /// A PDF as base64. The webview cannot fetch `asset://` itself, so the bytes come from here.
 pub fn read_pdf_base64(workspace: &Path, rel: &str) -> Result<String> {
+    if let Some((root, rel, _)) = group_file(workspace, rel)? {
+        return read_pdf_base64(&root, &rel);
+    }
     let path = resolve_in_workspace(workspace, rel)?;
     if !path.is_file() {
         return Err(Error::Other("not a file".into()));
@@ -245,6 +257,9 @@ pub fn read_pdf_base64(workspace: &Path, rel: &str) -> Result<String> {
 }
 
 pub fn resolve_file(workspace: &Path, rel: &str) -> Result<String> {
+    if let Some((root, rel, _)) = group_file(workspace, rel)? {
+        return resolve_file(&root, &rel);
+    }
     let path = resolve_in_workspace(workspace, rel)?;
     if !path.is_file() {
         return Err(Error::Other("not a file".into()));
@@ -253,6 +268,11 @@ pub fn resolve_file(workspace: &Path, rel: &str) -> Result<String> {
 }
 
 pub fn file_preview(workspace: &Path, rel: &str) -> Result<FilePreview> {
+    if let Some((root, rel, alias)) = group_file(workspace, rel)? {
+        let mut preview = file_preview(&root, &rel)?;
+        preview.path = format!("{alias}/{}", preview.path.trim_start_matches('/'));
+        return Ok(preview);
+    }
     let path = resolve_in_workspace(workspace, rel)?;
     if !path.is_file() {
         return Err(Error::Other("not a file".into()));
@@ -332,6 +352,18 @@ fn preview_excerpt(text: &str) -> String {
 }
 
 pub fn existing_files(workspace: &Path, rels: &[String]) -> Vec<String> {
+    if super::group::layout(workspace).is_some() {
+        return rels
+            .iter()
+            .filter(|rel| {
+                group_file(workspace, rel)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(root, inner, _)| existing_files(&root, &[inner]).len() == 1)
+            })
+            .cloned()
+            .collect();
+    }
     rels.iter()
         .filter(|rel| {
             resolve_in_workspace(workspace, rel)
@@ -382,6 +414,11 @@ fn is_within(path: &str, dir: &str) -> bool {
 
 /// Move or rename one file or folder. `to` is the destination path, including the new name.
 pub fn move_path(workspace: &Path, from: &str, to: &str) -> Result<String> {
+    if let Some(layout) = super::group::layout(workspace) {
+        let (root, from_rel, to_rel, alias) = super::group::same_member(&layout, from, to)?;
+        let moved = move_path(&root, &from_rel, &to_rel)?;
+        return Ok(format!("{alias}/{moved}"));
+    }
     let from_rel = from.trim().trim_matches('/');
     let to_rel = to.trim().trim_matches('/');
     if from_rel.is_empty() {
@@ -423,6 +460,9 @@ pub fn rename_path(workspace: &Path, rel: &str, name: &str) -> Result<String> {
 }
 
 pub fn delete_paths(workspace: &Path, rels: &[String]) -> Result<()> {
+    if super::group::layout(workspace).is_some() {
+        return delete_group_paths(workspace, rels);
+    }
     let mut paths: Vec<String> = rels
         .iter()
         .map(|rel| rel.trim().trim_matches('/').to_string())
@@ -459,6 +499,21 @@ pub fn delete_paths(workspace: &Path, rels: &[String]) -> Result<()> {
 
 pub fn create_dir(workspace: &Path, parent: &str, name: &str) -> Result<String> {
     let name = file_name_of(name)?;
+    if super::group::layout(workspace).is_some() {
+        let rel = join_rel(parent.trim().trim_matches('/'), &name);
+        let Some(super::group::GroupHit::Member { root, rel, alias }) = super::group::hit(workspace, &rel)? else {
+            return Err(Error::Other(
+                "path must be inside a repository in the group".into(),
+            ));
+        };
+        if rel.is_empty() {
+            return Err(Error::Other(
+                "path must be inside a repository in the group".into(),
+            ));
+        }
+        let created = create_dir(&root, &parent_rel(&rel), &file_name_of(&rel)?)?;
+        return Ok(format!("{alias}/{created}"));
+    }
     let rel = join_rel(parent.trim().trim_matches('/'), &name);
     let path = resolve_in_workspace(workspace, &rel)?;
     if path.exists() {
@@ -470,6 +525,9 @@ pub fn create_dir(workspace: &Path, parent: &str, name: &str) -> Result<String> 
 }
 
 pub fn write_file(workspace: &Path, rel: &str, contents: &str) -> Result<()> {
+    if let Some((root, rel, _)) = group_file(workspace, rel)? {
+        return write_file(&root, &rel, contents);
+    }
     if contents.len() > WRITE_LIMIT {
         return Err(Error::Other(format!(
             "write is larger than {} bytes",
@@ -502,6 +560,9 @@ pub fn grep(workspace: &Path, pattern: &str, rel: &str, glob_pattern: &str) -> R
     }
     let needle = pattern.to_ascii_lowercase();
     let glob_pattern = glob_pattern.trim();
+    if let Some(hit) = super::group::hit(workspace, rel)? {
+        return grep_group(pattern, glob_pattern, hit);
+    }
     let root = resolve_in_workspace(workspace, "")?;
     let start = resolve_in_workspace(workspace, rel)?;
     if !start.exists() {
@@ -528,6 +589,9 @@ pub fn glob(workspace: &Path, pattern: &str, rel: &str) -> Result<String> {
     let pattern = pattern.trim();
     if pattern.is_empty() {
         return Err(Error::Other("pattern is empty".into()));
+    }
+    if let Some(hit) = super::group::hit(workspace, rel)? {
+        return glob_group(pattern, hit);
     }
     let root = resolve_in_workspace(workspace, "")?;
     let start = resolve_in_workspace(workspace, rel)?;
@@ -698,6 +762,192 @@ pub fn edit_file(workspace: &Path, rel: &str, old: &str, new: &str) -> Result<()
         )));
     }
     write_file(workspace, rel, &current.replacen(old, new, 1))
+}
+
+fn group_file(workspace: &Path, rel: &str) -> Result<Option<(PathBuf, String, String)>> {
+    match super::group::hit(workspace, rel)? {
+        None => Ok(None),
+        Some(super::group::GroupHit::Root(_)) => Err(Error::Other("not a file".into())),
+        Some(super::group::GroupHit::Member { root, rel, alias }) => {
+            if rel.is_empty() {
+                Err(Error::Other("not a file".into()))
+            } else {
+                Ok(Some((root, rel, alias)))
+            }
+        }
+    }
+}
+
+fn list_group_dir(hit: super::group::GroupHit) -> Result<Vec<DevEntry>> {
+    match hit {
+        super::group::GroupHit::Root(layout) => {
+            let mut rows: Vec<DevEntry> = layout
+                .members
+                .iter()
+                .map(|member| DevEntry {
+                    name: member.alias.clone(),
+                    path: member.alias.clone(),
+                    kind: "dir".into(),
+                    size: None,
+                    modified: None,
+                })
+                .collect();
+            rows.sort_by(|a, b| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            });
+            Ok(rows)
+        }
+        super::group::GroupHit::Member { root, rel, alias } => {
+            let rows = list_dir(&root, &rel)?;
+            Ok(rows
+                .into_iter()
+                .map(|mut row| {
+                    row.path = format!("{alias}/{}", row.path.trim_start_matches('/'));
+                    row
+                })
+                .collect())
+        }
+    }
+}
+
+fn group_tree(layout: &super::group::GroupLayout) -> Result<TreeSnapshot> {
+    let mut rows = Vec::new();
+    for member in &layout.members {
+        rows.push(format!("d\t{}", member.alias));
+        let snap = tree_snapshot(&member.path)?;
+        for dir in snap.dirs {
+            rows.push(format!("d\t{}/{}", member.alias, dir));
+        }
+        for file in snap.files {
+            rows.push(format!("f\t{}/{}", member.alias, file));
+        }
+    }
+    rows.sort();
+    Ok(TreeSnapshot {
+        signature: hash_rows(&rows),
+        dirs: rows
+            .iter()
+            .filter_map(|row| row.strip_prefix("d\t").map(str::to_string))
+            .collect(),
+        files: rows
+            .iter()
+            .filter_map(|row| row.strip_prefix("f\t").map(str::to_string))
+            .collect(),
+    })
+}
+
+fn delete_group_paths(workspace: &Path, rels: &[String]) -> Result<()> {
+    let mut paths: Vec<String> = rels
+        .iter()
+        .map(|rel| rel.trim().trim_matches('/').to_string())
+        .filter(|rel| !rel.is_empty())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    let tops: Vec<String> = paths
+        .iter()
+        .filter(|rel| !paths.iter().any(|other| *other != **rel && is_within(rel, other)))
+        .cloned()
+        .collect();
+    if tops.is_empty() {
+        return Err(Error::Other("nothing to delete".into()));
+    }
+    for rel in &tops {
+        match super::group::hit(workspace, rel)? {
+            Some(super::group::GroupHit::Member { root, rel, .. }) if !rel.is_empty() => {
+                delete_paths(&root, &[rel])?;
+            }
+            _ => {
+                return Err(Error::Other(
+                    "path must be inside a repository in the group".into(),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn grep_group(pattern: &str, glob_pattern: &str, hit: super::group::GroupHit) -> Result<String> {
+    match hit {
+        super::group::GroupHit::Root(layout) => {
+            let mut hits = Vec::new();
+            let mut truncated = false;
+            for member in &layout.members {
+                if hits.len() >= SEARCH_MATCHES {
+                    truncated = true;
+                    break;
+                }
+                let text = grep(&member.path, pattern, "", glob_pattern)?;
+                push_prefixed_hits(&mut hits, &mut truncated, &text, &format!("{}/", member.alias));
+            }
+            Ok(search_text(
+                &hits,
+                truncated,
+                &grep_empty(pattern, "", glob_pattern),
+            ))
+        }
+        super::group::GroupHit::Member { root, rel, alias } => {
+            let text = grep(&root, pattern, &rel, glob_pattern)?;
+            Ok(prefix_search_text(&text, &format!("{alias}/")))
+        }
+    }
+}
+
+fn glob_group(pattern: &str, hit: super::group::GroupHit) -> Result<String> {
+    match hit {
+        super::group::GroupHit::Root(layout) => {
+            let mut hits = Vec::new();
+            let mut truncated = false;
+            for member in &layout.members {
+                if hits.len() >= SEARCH_FILES {
+                    truncated = true;
+                    break;
+                }
+                let text = glob(&member.path, pattern, "")?;
+                push_prefixed_hits(&mut hits, &mut truncated, &text, &format!("{}/", member.alias));
+            }
+            hits.sort();
+            Ok(search_text(&hits, truncated, "No files."))
+        }
+        super::group::GroupHit::Member { root, rel, alias } => {
+            let text = glob(&root, pattern, &rel)?;
+            Ok(prefix_search_text(&text, &format!("{alias}/")))
+        }
+    }
+}
+
+fn push_prefixed_hits(hits: &mut Vec<String>, truncated: &mut bool, text: &str, prefix: &str) {
+    for line in text.lines() {
+        if line.starts_with('…') {
+            *truncated = true;
+            continue;
+        }
+        if line.starts_with("No ") {
+            continue;
+        }
+        if hits.len() >= SEARCH_MATCHES.max(SEARCH_FILES) {
+            *truncated = true;
+            break;
+        }
+        hits.push(format!("{prefix}{line}"));
+    }
+}
+
+fn prefix_search_text(text: &str, prefix: &str) -> String {
+    if prefix.is_empty() || text.starts_with("No ") {
+        return text.to_string();
+    }
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('…') || line.starts_with("No ") {
+            lines.push(line.to_string());
+        } else {
+            lines.push(format!("{prefix}{line}"));
+        }
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -915,5 +1165,56 @@ mod tests {
         assert!(list_dir(dir.path(), "src/gone").unwrap().is_empty());
         let err = list_dir(dir.path(), "readme.txt").unwrap_err();
         assert!(err.to_string().contains("not a folder"));
+    }
+
+    #[test]
+    fn group_paths_stay_inside_each_member() {
+        let data = tempfile::tempdir().unwrap();
+        let projects = tempfile::tempdir().unwrap();
+        let api_root = tempfile::tempdir().unwrap();
+        let web_root = tempfile::tempdir().unwrap();
+        let api = api_root.path().join("api");
+        let web = web_root.path().join("web");
+        fs::create_dir_all(api.join("src")).unwrap();
+        fs::write(api.join("src/lib.rs"), "fn api_only() {}\n").unwrap();
+        fs::create_dir_all(web.join("src")).unwrap();
+        fs::write(web.join("src/lib.rs"), "fn web_only() {}\n").unwrap();
+        let created = super::super::group::create_group(
+            data.path(),
+            projects.path(),
+            "apps",
+            &[api.clone(), web.clone()],
+        )
+        .unwrap();
+        let group = Path::new(&created.path);
+        assert_eq!(read_file(group, "api/src/lib.rs").unwrap(), "fn api_only() {}\n");
+        assert!(read_file(group, "../secret").is_err());
+        assert!(write_file(group, "notes.txt", "nope").is_err());
+        assert!(!group.join("notes.txt").exists());
+        write_file(group, "web/src/new.txt", "hi").unwrap();
+        assert_eq!(fs::read_to_string(web.join("src/new.txt")).unwrap(), "hi");
+        assert!(group.join("web").symlink_metadata().unwrap().file_type().is_symlink());
+        let found = grep(group, "api_only", "", "").unwrap();
+        assert!(found.contains("api/src/lib.rs:"), "{found}");
+        assert!(!found.contains("web/src"));
+        let paths = glob(group, "**/*.rs", "").unwrap();
+        assert!(paths.contains("api/src/lib.rs"), "{paths}");
+        assert!(paths.contains("web/src/lib.rs"), "{paths}");
+        let listed = list_dir(group, "").unwrap();
+        assert_eq!(
+            listed.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["api", "web"]
+        );
+        fs::write(group.join("stray.txt"), "hidden").unwrap();
+        let listed = list_dir(group, "").unwrap();
+        assert!(listed.iter().all(|row| row.name != "stray.txt"));
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            fs::write(outside.path().join("secret.txt"), "nope").unwrap();
+            std::os::unix::fs::symlink(outside.path(), api.join("out")).unwrap();
+            assert!(read_file(group, "api/out/secret.txt").is_err());
+        }
+        assert!(move_path(group, "api/src/lib.rs", "web/src/lib.rs").is_err());
     }
 }

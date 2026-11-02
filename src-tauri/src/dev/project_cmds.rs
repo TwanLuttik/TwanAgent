@@ -196,6 +196,18 @@ pub async fn dev_delete_project_worktrees(state: State<'_, AppState>, path: Stri
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()> {
+    if crate::dev::group::is_group(&state.data_dir, &path) {
+        crate::dev::group::delete_group(&state.data_dir, Path::new(&path))?;
+        if let Ok(root) = expand_folder_path(&path) {
+            let _ = state.forget_workspace(&root);
+        }
+        return Ok(());
+    }
+    if crate::dev::group::member_of(&state.data_dir, &path).is_some() {
+        return Err(crate::error::Error::Other(
+            "remove this project from its group first".into(),
+        ));
+    }
     if let Ok(conn) = crate::appdb::open(&state.data_dir) {
         let _ = crate::appdb::remove_project(&conn, &path);
     }
@@ -222,6 +234,96 @@ pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()
     for item in wipe {
         let _ = std::fs::remove_dir_all(crate::dev::conv::conv_dir(&state.data_dir, &item));
     }
+    Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_list_project_groups(state: State<'_, AppState>) -> Result<Vec<crate::dev::group::GroupRow>> {
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        crate::dev::group::load(&data_dir)?;
+        crate::dev::group::list_groups(&data_dir)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_create_project_group(
+    app: AppHandle,
+    name: String,
+    paths: Vec<String>,
+) -> Result<crate::dev::group::GroupRow> {
+    off_main(move || {
+        let state = app.state::<AppState>();
+        let mut folders = Vec::new();
+        for path in &paths {
+            let root = expand_folder_path(path)?;
+            if crate::remote::project_for_workspace(&state, &root)?.is_some() {
+                return Err(crate::error::Error::Other(
+                    "a server project cannot join a group".into(),
+                ));
+            }
+            folders.push(root);
+        }
+        let mut row = crate::dev::group::create_group(
+            &state.data_dir,
+            &state.projects_root,
+            &name,
+            &folders,
+        )?;
+        let root = expand_folder_path(&row.path)?;
+        let canon = state.register_workspace(&app, &root)?;
+        row.path = path_string(&canon);
+        Ok(row)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_add_group_member(
+    state: State<'_, AppState>,
+    group: String,
+    path: String,
+) -> Result<crate::dev::group::GroupMemberRow> {
+    let folder = expand_folder_path(&path)?;
+    if crate::remote::project_for_workspace(&state, &folder)?.is_some() {
+        return Err(crate::error::Error::Other(
+            "a server project cannot join a group".into(),
+        ));
+    }
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        let group = expand_folder_path(&group)?;
+        crate::dev::group::add_member(&data_dir, &group, &folder)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_remove_group_member(
+    state: State<'_, AppState>,
+    group: String,
+    path: String,
+) -> Result<()> {
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        let group = expand_folder_path(&group)?;
+        let folder = expand_folder_path(&path)?;
+        crate::dev::group::remove_member(&data_dir, &group, &folder)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_delete_project_group(state: State<'_, AppState>, path: String) -> Result<()> {
+    let data_dir = state.data_dir.clone();
+    let removed = off_main(move || {
+        let root = expand_folder_path(&path)?;
+        crate::dev::group::delete_group(&data_dir, &root)?;
+        Ok(root)
+    })
+    .await?;
+    let _ = state.forget_workspace(&removed);
     Ok(())
 }
 

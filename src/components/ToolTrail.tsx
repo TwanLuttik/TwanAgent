@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { motion } from "motion/react";
 import {
   foldToolTrailRows,
   toolTrailKind,
@@ -250,7 +250,7 @@ function ToolCallBlock({
     setOpen(expandEdits);
   }, [expandEdits, hasDiff, nested, searching, command]);
   return (
-    <div className={show ? "py-0.5" : undefined}>
+    <div>
       <button
         type="button"
         disabled={!canOpen}
@@ -268,26 +268,58 @@ function ToolCallBlock({
         <span className="min-w-0 flex-1" />
         {spinning ? <LiveSpinner /> : null}
       </button>
-      <AnimatePresence initial={false}>
-        {show ? (
-          <motion.div
-            key="detail"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={REVEAL}
-            className="overflow-hidden"
-          >
-            {nested ? (
+      {canOpen ? (
+        <ToolCallBody show={show}>
+          {() =>
+            nested ? (
               <ToolCallTree rows={children} />
             ) : (
               <div className="mt-0.5 mb-1 ml-5 min-w-0">
                 {hasDiff && change ? <InlineEditDiff change={change} /> : <ToolDetail text={command} />}
               </div>
-            )}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+            )
+          }
+        </ToolCallBody>
+      ) : null}
+    </div>
+  );
+}
+
+const TOOL_BODY_MS = 220;
+
+/**
+ * The detail stays unmounted while the row is closed. A chat that writes a project
+ * otherwise keeps every file's diff in the hidden panel, and the window stops keeping up.
+ * Grid rows grow it without padding the header, so the title does not jump.
+ */
+function ToolCallBody({ show, children }: { show: boolean; children: () => ReactNode }) {
+  const [held, setHeld] = useState(show);
+  const [grown, setGrown] = useState(show);
+  useEffect(() => {
+    if (show) {
+      setHeld(true);
+      const frame = requestAnimationFrame(() => setGrown(true));
+      return () => cancelAnimationFrame(frame);
+    }
+    setGrown(false);
+    if (!held) return;
+    const timer = window.setTimeout(() => setHeld(false), TOOL_BODY_MS);
+    return () => window.clearTimeout(timer);
+  }, [show, held]);
+  if (!held) return null;
+  return (
+    <div
+      className={`grid transition-[grid-template-rows,opacity] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+        grown ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+      }`}
+      inert={!show}
+      aria-hidden={!show}
+      onTransitionEnd={(event) => {
+        if (event.target !== event.currentTarget || event.propertyName !== "grid-template-rows") return;
+        if (!show) setHeld(false);
+      }}
+    >
+      <div className="min-h-0 overflow-hidden">{children()}</div>
     </div>
   );
 }

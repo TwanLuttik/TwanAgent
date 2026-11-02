@@ -598,6 +598,7 @@ html[data-theme-mode="light"] .model-tip {
   width: 100%;
   /* The grid's own width must not keep the host from tracking the pane. */
   min-width: 0;
+  background: var(--color-panel);
 }
 
 .term .xterm {
@@ -606,8 +607,10 @@ html[data-theme-mode="light"] .model-tip {
 }
 
 /* Viewport is a full-size overlay; let clicks and the wheel reach the screen.
-   The screen scrolls the buffer itself, since the viewport ignores pointers. */
+   The screen scrolls the buffer itself, since the viewport ignores pointers.
+   xterm paints this layer black. A short last row would leave that strip. */
 .term .xterm-viewport {
+  background-color: var(--color-panel) !important;
   pointer-events: none;
 }
 

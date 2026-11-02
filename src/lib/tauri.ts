@@ -453,6 +453,30 @@ export function createProject(name: string): Promise<string> {
   return invoke("dev_create_project", { name });
 }
 
+export type ProjectGroupMember = { path: string; alias: string; name: string };
+
+export type ProjectGroup = { path: string; name: string; members: ProjectGroupMember[] };
+
+export function listProjectGroups(): Promise<ProjectGroup[]> {
+  return invoke("dev_list_project_groups");
+}
+
+export function createProjectGroup(name: string, paths: string[]): Promise<ProjectGroup> {
+  return invoke("dev_create_project_group", { name, paths });
+}
+
+export function addGroupMember(group: string, path: string): Promise<ProjectGroupMember> {
+  return invoke("dev_add_group_member", { group, path });
+}
+
+export function removeGroupMember(group: string, path: string): Promise<void> {
+  return invoke("dev_remove_group_member", { group, path });
+}
+
+export function deleteProjectGroup(path: string): Promise<void> {
+  return invoke("dev_delete_project_group", { path });
+}
+
 export function deleteProject(path: string): Promise<void> {
   return invoke("dev_delete_project", { path });
 }
@@ -1594,6 +1618,16 @@ export function localTurnPlan(conversationId: string, decision: string, note = "
 
 export function onLocalTurn(fn: (ev: ChatEvent) => void): Promise<UnlistenFn> {
   return listen<ChatEvent>("dev-local-turn", (ev) => fn(ev.payload));
+}
+
+export type ConversationCreated = {
+  workspace: string;
+  conversation: ConversationSummary;
+};
+
+/** A group chat created a conversation in one of its projects. */
+export function onConversationCreated(fn: (ev: ConversationCreated) => void): Promise<UnlistenFn> {
+  return listen<ConversationCreated>("dev-conversation-created", (ev) => fn(ev.payload));
 }
 
 export function webSearch(streamId: string, argumentsJson: string): Promise<string> {

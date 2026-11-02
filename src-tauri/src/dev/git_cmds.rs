@@ -21,8 +21,11 @@ pub async fn dev_git_status(
     workspace: String,
     stats: Option<bool>,
 ) -> Result<Vec<GitChange>> {
-    let target = git_target(&state, &workspace)?;
     let with_stats = stats.unwrap_or(true);
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        return off_main(move || crate::dev::group_git::status(&layout, with_stats)).await;
+    }
+    let target = git_target(&state, &workspace)?;
     off_main(move || git_status_with(&target, with_stats)).await
 }
 
@@ -32,6 +35,10 @@ pub async fn dev_git_diff(
     workspace: String,
     path: Option<String>,
 ) -> Result<String> {
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        let rel = path.unwrap_or_default();
+        return off_main(move || crate::dev::group_git::diff(&layout, &rel)).await;
+    }
     let target = git_target(&state, &workspace)?;
     let rel = path.unwrap_or_default();
     off_main(move || git_diff(&target, &rel)).await
@@ -79,6 +86,9 @@ pub async fn dev_git_stage(
     workspace: String,
     paths: Vec<String>,
 ) -> Result<Vec<GitChange>> {
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        return off_main(move || crate::dev::group_git::stage(&layout, &paths)).await;
+    }
     let target = git_target(&state, &workspace)?;
     off_main(move || git_stage(&target, &paths)).await
 }
@@ -89,6 +99,9 @@ pub async fn dev_git_unstage(
     workspace: String,
     paths: Vec<String>,
 ) -> Result<Vec<GitChange>> {
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        return off_main(move || crate::dev::group_git::unstage(&layout, &paths)).await;
+    }
     let target = git_target(&state, &workspace)?;
     off_main(move || git_unstage(&target, &paths)).await
 }
@@ -99,6 +112,9 @@ pub async fn dev_git_discard(
     workspace: String,
     paths: Vec<String>,
 ) -> Result<Vec<GitChange>> {
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        return off_main(move || crate::dev::group_git::discard(&layout, &paths)).await;
+    }
     let target = git_target(&state, &workspace)?;
     off_main(move || git_discard(&target, &paths)).await
 }
@@ -109,6 +125,9 @@ pub async fn dev_git_commit(
     workspace: String,
     message: String,
 ) -> Result<String> {
+    if group_layout(&state, &workspace)?.is_some() {
+        return Err(Error::Other(crate::dev::group_git::OPEN_REPO.into()));
+    }
     let target = git_target(&state, &workspace)?;
     off_main(move || git_commit(&target, &message)).await
 }
@@ -343,6 +362,10 @@ pub async fn dev_git_file_at(
     path: String,
     revision: Option<String>,
 ) -> Result<String> {
+    if let Some(layout) = group_layout(&state, &workspace)? {
+        let revision = revision.unwrap_or_else(|| "HEAD".into());
+        return off_main(move || crate::dev::group_git::file_at(&layout, &path, &revision)).await;
+    }
     let target = git_target(&state, &workspace)?;
     let revision = revision.unwrap_or_else(|| "HEAD".into());
     off_main(move || git_file_at(&target, &path, &revision)).await
@@ -374,8 +397,16 @@ pub async fn dev_git_project_summary(state: State<'_, AppState>, path: String) -
     off_main(move || git_label(&target)).await
 }
 
+fn group_layout(state: &AppState, workspace: &str) -> Result<Option<crate::dev::group::GroupLayout>> {
+    let root = state.require_workspace(workspace)?;
+    Ok(crate::dev::group::layout(&root))
+}
+
 fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
     let root = state.require_workspace(workspace)?;
+    if crate::dev::group::layout(&root).is_some() {
+        return Err(crate::dev::group_git::open_member_error());
+    }
     let Some(project) = crate::remote::project_for_workspace(state, &root)? else {
         return GitTarget::local_in(
             &root,

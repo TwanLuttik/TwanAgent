@@ -1,4 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type HTMLAttributes, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
+import { oneGroupRepo } from "../lib/all-projects";
+import { useGroupMembers } from "../lib/project-groups";
 import { AnimatePresence, motion } from "motion/react";
 import {
   DndContext,
@@ -112,6 +114,7 @@ export const Workspace = memo(function Workspace({
   const [creating, setCreating] = useState<string | null>(null);
   const [newFileParent, setNewFileParent] = useState<string | null>(null);
   const [changes, setChanges] = useState<GitChange[]>([]);
+  const groupMembers = useGroupMembers(workspace);
   const [branches, setBranches] = useState<GitBranches>({ current: null, branches: [] });
   const [summary, setSummary] = useState<GitRepoSummary | null>(null);
   const [identity, setIdentity] = useState<GitIdentity | null>(null);
@@ -242,6 +245,15 @@ export const Workspace = memo(function Workspace({
 
   const refreshBranches = useCallback(async () => {
     if (!workspace) return;
+    if (groupMembers) {
+      setBranches({ current: null, branches: [], repo: false });
+      setSummary(null);
+      setIdentity(null);
+      setHistory([]);
+      setWorktrees([]);
+      setBranchError(null);
+      return;
+    }
     try {
       const [next, repo, who, log] = await Promise.all([
         api.gitBranches(workspace),
@@ -256,9 +268,14 @@ export const Workspace = memo(function Workspace({
       setWorktrees(await api.gitWorktrees(workspace).catch(() => [] as GitWorktree[]));
       setBranchError(null);
     } catch (e) {
-      setBranchError(String(e));
+      const text = String(e);
+      if (text.includes("open that repository")) {
+        setBranchError(null);
+        return;
+      }
+      setBranchError(text);
     }
-  }, [workspace]);
+  }, [workspace, groupMembers]);
 
   const treeProjectRef = useRef(workspace);
   useEffect(() => {
@@ -503,6 +520,13 @@ export const Workspace = memo(function Workspace({
     }
   }
 
+  async function inMember(paths: string[], run: (root: string, paths: string[]) => Promise<unknown>) {
+    if (!groupMembers) return run(workspace, paths);
+    const split = oneGroupRepo(groupMembers, paths);
+    if ("error" in split) throw new Error(split.error);
+    return run(split.path, split.paths);
+  }
+
   async function runGit(work: () => Promise<unknown>) {
     if (!workspace || gitBusy) return;
     setGitBusy(true);
@@ -582,10 +606,17 @@ export const Workspace = memo(function Workspace({
                   busy={gitBusy}
                   onSwitch={(name) => void switchBranch(name)}
                   onCreate={(name) => void runGit(() => api.gitCreateBranch(workspace, name, true))}
-                  onStage={(paths) => void runGit(() => api.gitStage(workspace, paths))}
-                  onUnstage={(paths) => void runGit(() => api.gitUnstage(workspace, paths))}
-                  onDiscard={(paths) => void runGit(() => api.gitDiscard(workspace, paths))}
-                  onCommit={(message) => void runGit(() => api.gitCommit(workspace, message))}
+                  grouped={Boolean(groupMembers)}
+                  onStage={(paths) => void runGit(() => inMember(paths, api.gitStage))}
+                  onUnstage={(paths) => void runGit(() => inMember(paths, api.gitUnstage))}
+                  onDiscard={(paths) => void runGit(() => inMember(paths, api.gitDiscard))}
+                  onCommit={(message) => void runGit(async () => {
+                    if (!groupMembers) return api.gitCommit(workspace, message);
+                    const staged = changes.filter((row) => row.staged).map((row) => row.path);
+                    const split = oneGroupRepo(groupMembers, staged);
+                    if ("error" in split) throw new Error(split.error);
+                    return api.gitCommit(split.path, message);
+                  })}
                   onIdentity={(name, email) => void runGit(() => api.gitSetIdentity(workspace, name, email))}
                   onSync={(action) => void runGit(() => api.gitSync(workspace, action))}
                   onStash={(action) => void runGit(() => api.gitStash(workspace, action))}
@@ -1327,6 +1358,7 @@ function GitPane({
   selected,
   onOpen,
   onOpenAll,
+  grouped = false,
 }: {
   branches: GitBranches;
   summary: GitRepoSummary | null;
@@ -1354,6 +1386,7 @@ function GitPane({
   selected: string | null;
   onOpen: (row: GitChange, mode?: "preview" | "pin") => void;
   onOpenAll: () => void;
+  grouped?: boolean;
 }) {
   const [view, setView] = useState<GitChangesView>(loadGitChangesView);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -1402,7 +1435,7 @@ function GitPane({
   return (
     <>
       <div className="shrink-0 px-1.5 pt-1">
-        <BranchSwitch
+        {grouped ? null : <BranchSwitch
           current={summary?.detached ? summary.commit : branches.current}
           names={branches.branches}
           switching={switching}
@@ -1416,9 +1449,9 @@ function GitPane({
           onOpenWorktree={(path) => onOpenWorkspace?.(path)}
           onCreateWorktree={onCreateWorktree}
           onRemoveWorktree={onRemoveWorktree}
-        />
+        />}
         {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
-        {repo ? (
+        {repo && !grouped ? (
           <div className="mt-0.5 flex items-center gap-0.5 rounded-[8px] bg-wash/70 px-0.5 py-0.5">
             <GitIconButton label="Fetch" icon="arrow.2.circlepath" disabled={busy} onClick={() => onSync("fetch")} />
             <GitIconButton label="Pull" icon="square.and.arrow.down" disabled={busy} onClick={() => onSync("pull")} />

@@ -17,6 +17,8 @@ import {
   moveProjectGroup,
   nextTopSort,
   patchSidebarConversations,
+  prependChatInGroups,
+  prependProjectChat,
   removeProjectGroup,
   renameConversationInGroups,
   toggleCollapsedProject,
@@ -246,6 +248,40 @@ function expandProject(path: string) {
     return next;
   });
 }
+
+const expandProjectRef = useRef(expandProject);
+expandProjectRef.current = expandProject;
+useEffect(() => {
+  let gone = false;
+  let unlisten: (() => void) | undefined;
+  void api.onConversationCreated((event) => {
+    if (gone) return;
+    try {
+      const path = event.workspace;
+      const chat = event.conversation;
+      if (!path || !chat?.id) return;
+      expandProjectRef.current(path);
+      if (isSameProject(path, workspaceRef.current)) {
+        setConversations((current) => {
+          const next = prependProjectChat(current, chat);
+          conversationsRef.current = next;
+          return next;
+        });
+        return;
+      }
+      setAllProjectGroups((prev) => prependChatInGroups(prev, path, chat));
+    } catch {
+      /* a bad payload should not take the window down */
+    }
+  }).then((stop) => {
+    if (gone) stop();
+    else unlisten = stop;
+  });
+  return () => {
+    gone = true;
+    unlisten?.();
+  };
+}, [conversationsRef, setAllProjectGroups, setConversations, workspaceRef]);
 
 function projectConversations(path: string): ConversationSummary[] {
   if (isSameProject(path, workspace)) return conversations;

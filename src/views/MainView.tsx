@@ -80,7 +80,7 @@ import type { SubagentDockState, SubagentRecord } from "../lib/subagent";
 import { bindTurn } from "../hooks/useTurn";
 import { useLibrary, type RunTurn } from "../hooks/useLibrary";
 import { useCapabilities } from "../hooks/useCapabilities";
-import { useChatSession, useLiveRef } from "../hooks/useChatSession";
+import { markLiveLocalTurns, useChatSession, useLiveRef } from "../hooks/useChatSession";
 import { useProjectIndex } from "../hooks/useProjectIndex";
 import type { MainModel, SidebarSlice } from "./main/context";
 import { MainProvider } from "./main/context";
@@ -431,6 +431,23 @@ export function MainView() {
     setFlash,
   });
   projectsRootRef.current = projectsRoot;
+  const joinedLiveRef = useRef(new Set<string>());
+  const sidebarChatIds = allProjectGroups
+    .flatMap((group) => group.conversations.map((row) => row.id))
+    .filter(Boolean)
+    .join("\n");
+  useEffect(() => {
+    const ids = sidebarChatIds.split("\n").filter(Boolean);
+    if (!ids.length) return;
+    // A chat started in another project keeps running after this window reloads.
+    void markLiveLocalTurns(ids, {
+      known: joinedLiveRef.current,
+      turns: turnsRef.current,
+      liveTurns: turnsRef.current,
+      setRunningTurns,
+      setBusy,
+    });
+  }, [sidebarChatIds, setBusy, setRunningTurns]);
 
   useEffect(() => {
     function onDoc(ev: MouseEvent) {

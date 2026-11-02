@@ -17,7 +17,9 @@ import {
   isSameProject,
   matchesSidebarQuery,
   projectHasArchived,
+  toggleProjectSelection,
   type ProjectChatGroup,
+  type ProjectGroupRow,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
 import { projectGitKey, type ProjectGit } from "../lib/project-git";
@@ -26,6 +28,7 @@ import * as api from "../lib/tauri";
 import type { ProjectRemoval } from "../lib/tauri";
 import { formatBytes } from "../lib/usage";
 import { AnchoredMenu } from "./ContextMenu";
+import { GroupProjectsDialog, RemoveGroupDialog } from "./GroupProjectsDialog";
 import { ProjectMark } from "./ProjectMark";
 import { Symbol } from "./Symbol";
 
@@ -50,6 +53,12 @@ export function AllProjectsList({
   gitByProject,
   chatQuery = "",
   logoRefresh = 0,
+  membersFor,
+  projectGroups = [],
+  onCreateGroup,
+  onAddToGroup,
+  onRemoveMember,
+  onDeleteGroup,
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -73,6 +82,12 @@ export function AllProjectsList({
   chatQuery?: string;
   /** Bumps when a project file changes, so a new favicon replaces the folder. */
   logoRefresh?: number;
+  membersFor?: (path: string) => ProjectChatGroup[];
+  projectGroups?: ProjectGroupRow[];
+  onCreateGroup?: (name: string, paths: string[]) => void;
+  onAddToGroup?: (groupPath: string, path: string) => void;
+  onRemoveMember?: (groupPath: string, path: string) => void;
+  onDeleteGroup?: (path: string) => void;
 }) {
   const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
@@ -80,6 +95,10 @@ export function AllProjectsList({
   const [worktreeMenu, setWorktreeMenu] = useState<{ x: number; y: number; child: WorktreeChild } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
   const [pendingWorktree, setPendingWorktree] = useState<WorktreeChild | null>(null);
+  const [pickedProjects, setPickedProjects] = useState<string[]>([]);
+  const [groupDraft, setGroupDraft] = useState<string[] | null>(null);
+  const [pendingGroup, setPendingGroup] = useState<ProjectChatGroup | null>(null);
+  const [memberMenu, setMemberMenu] = useState<{ x: number; y: number; groupPath: string; member: ProjectChatGroup } | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   useEffect(() => {
@@ -89,12 +108,14 @@ export function AllProjectsList({
       setMenu(null);
       setGitMenu(null);
       setWorktreeMenu(null);
+      setMemberMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
       if (ev.key === "Escape") {
         setMenu(null);
         setGitMenu(null);
         setWorktreeMenu(null);
+        setMemberMenu(null);
         setPendingDelete(null);
         setPendingWorktree(null);
       }
@@ -129,6 +150,15 @@ export function AllProjectsList({
     >
     <SortableContext items={groups.map((group) => projectKey(group.path))} strategy={verticalListSortingStrategy}>
     <div className="flex flex-col gap-2">
+      {pickedProjects.length >= 2 && onCreateGroup ? (
+        <button
+          type="button"
+          onClick={() => setGroupDraft(pickedProjects)}
+          className="mx-1 rounded-[6px] bg-accent/15 px-2 py-1 text-left text-[12px] font-medium text-accent hover:bg-accent/25"
+        >
+          Group {pickedProjects.length} projects
+        </button>
+      ) : null}
       {groups.map((group) => {
         const current = isSameProject(group.path, activeWorkspace);
         const closed = isProjectCollapsed(collapsed, group.path);
@@ -136,6 +166,10 @@ export function AllProjectsList({
         const hasArchived = projectHasArchived(group.conversations);
         const git = gitByProject?.[projectGitKey(group.path)] ?? null;
         const worktrees = worktreesFor?.(group.path) ?? [];
+        const members = membersFor?.(group.path) ?? [];
+        const grouped = projectGroups.some((row) => isSameProject(row.path, group.path));
+        const picked = pickedProjects.some((path) => isSameProject(path, group.path));
+        const selectable = !group.remote && !group.server && !grouped;
         const listed = chatQuery.trim()
           ? {
               ...group,
@@ -157,7 +191,9 @@ export function AllProjectsList({
             header={(drag) => (
             <div className="contents">
             <div
-              className="group flex cursor-grab items-center rounded-[6px] select-none hover:bg-wash active:cursor-grabbing"
+              className={`group flex cursor-grab items-center rounded-[6px] select-none hover:bg-wash active:cursor-grabbing ${
+                picked ? "bg-accent/10" : ""
+              }`}
               {...drag}
               onContextMenu={(ev) => {
                 ev.preventDefault();
@@ -175,7 +211,15 @@ export function AllProjectsList({
               </button>
               <button
                 type="button"
-                onClick={() => onOpenProject(group.path)}
+                onClick={(ev) => {
+                  if ((ev.metaKey || ev.ctrlKey) && selectable) {
+                    ev.preventDefault();
+                    setPickedProjects((current) => toggleProjectSelection(current, group.path, true));
+                    return;
+                  }
+                  setPickedProjects([]);
+                  onOpenProject(group.path);
+                }}
                 className={`flex min-w-0 flex-1 items-center gap-1.5 py-[7px] pr-1 text-left text-[13px] font-medium ${
                   current ? "text-ink" : "text-ink/75"
                 }`}
@@ -259,7 +303,39 @@ export function AllProjectsList({
                 })}
               </div>
             )}
-            {closed ? null : visibleEmpty ? (
+            {closed || showArchived || members.length === 0 ? null : (
+              <div className="mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5">
+                {members.map((member) => {
+                  const memberGit = gitByProject?.[projectGitKey(member.path)] ?? null;
+                  return (
+                    <div key={projectKey(member.path)}>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onOpenProject(member.path)}
+                        onKeyDown={(ev) => {
+                          if (ev.key === "Enter") onOpenProject(member.path);
+                        }}
+                        onContextMenu={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          setMemberMenu({ x: ev.clientX, y: ev.clientY, groupPath: group.path, member });
+                        }}
+                        className={`flex w-full items-center gap-1.5 rounded-[6px] px-1.5 py-[5px] text-left text-[12px] hover:bg-wash ${
+                          isSameProject(member.path, activeWorkspace) ? "text-ink" : "text-ink/75"
+                        }`}
+                      >
+                        <ProjectMark path={member.path} remote={Boolean(member.remote)} refresh={logoRefresh} className="size-3" />
+                        <span className="min-w-0 flex-1 truncate">{member.name}</span>
+                        {memberGit ? <ProjectGitRow git={memberGit} onMenu={() => undefined} /> : null}
+                      </div>
+                      {renderList(member, { showArchived: false })}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {closed ? null : visibleEmpty && members.length === 0 ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}
               </p>
@@ -286,10 +362,33 @@ export function AllProjectsList({
             setMenu(null);
           }}
           onDelete={() => {
+            if (projectGroups.some((row) => isSameProject(row.path, menu.group.path))) {
+              setPendingGroup(menu.group);
+              setMenu(null);
+              return;
+            }
             setPendingDelete(menu.group);
             setMenu(null);
           }}
+          onGroup={
+            onCreateGroup && pickedProjects.length >= 2 && pickedProjects.some((path) => isSameProject(path, menu.group.path))
+              ? () => {
+                  setGroupDraft(pickedProjects);
+                  setMenu(null);
+                }
+              : undefined
+          }
+          addTargets={
+            onAddToGroup && !menu.group.remote && !menu.group.server && !projectGroups.some((row) => isSameProject(row.path, menu.group.path))
+              ? projectGroups.map((row) => ({ path: row.path, name: row.name }))
+              : undefined
+          }
+          onAddTo={(groupPath) => {
+            onAddToGroup?.(groupPath, menu.group.path);
+            setMenu(null);
+          }}
           onCopied={() => setMenu(null)}
+          removeLabel={projectGroups.some((row) => isSameProject(row.path, menu.group.path)) ? "Remove group" : "Remove project"}
         />
       ) : null}
       {gitMenu ? (
@@ -330,6 +429,54 @@ export function AllProjectsList({
           onConfirm={() => {
             onRemoveWorktree?.(pendingWorktree.path);
             setPendingWorktree(null);
+          }}
+        />
+      ) : null}
+      {memberMenu ? (
+        <AnchoredMenu x={memberMenu.x} y={memberMenu.y} label={memberMenu.member.name}>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onNewChat(memberMenu.member.path);
+              setMemberMenu(null);
+            }}
+            className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+          >
+            New chat
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onRemoveMember?.(memberMenu.groupPath, memberMenu.member.path);
+              setMemberMenu(null);
+            }}
+            className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+          >
+            Remove from group
+          </button>
+        </AnchoredMenu>
+      ) : null}
+      {groupDraft ? (
+        <GroupProjectsDialog
+          count={groupDraft.length}
+          onCancel={() => setGroupDraft(null)}
+          onConfirm={(name) => {
+            onCreateGroup?.(name, groupDraft);
+            setPickedProjects([]);
+            setGroupDraft(null);
+          }}
+        />
+      ) : null}
+      {pendingGroup ? (
+        <RemoveGroupDialog
+          name={pendingGroup.name}
+          chats={pendingGroup.conversations.filter((row) => !row.archived).length}
+          onCancel={() => setPendingGroup(null)}
+          onConfirm={() => {
+            onDeleteGroup?.(pendingGroup.path);
+            setPendingGroup(null);
           }}
         />
       ) : null}
@@ -668,6 +815,10 @@ export function ProjectContextMenu({
   onSettings,
   onDelete,
   onCopied,
+  onGroup,
+  addTargets,
+  onAddTo,
+  removeLabel = "Remove project",
 }: {
   x: number;
   y: number;
@@ -677,6 +828,10 @@ export function ProjectContextMenu({
   onSettings?: () => void;
   onDelete: () => void;
   onCopied?: () => void;
+  onGroup?: () => void;
+  addTargets?: { path: string; name: string }[];
+  onAddTo?: (groupPath: string) => void;
+  removeLabel?: string;
 }) {
   return (
     <AnchoredMenu x={x} y={y} label={name}>
@@ -713,13 +868,34 @@ export function ProjectContextMenu({
           Copy ID
         </button>
       ) : null}
+      {onGroup ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onGroup}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          Group projects
+        </button>
+      ) : null}
+      {addTargets?.map((target) => (
+        <button
+          key={target.path}
+          type="button"
+          role="menuitem"
+          onClick={() => onAddTo?.(target.path)}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          Add to {target.name}
+        </button>
+      ))}
       <button
         type="button"
         role="menuitem"
         onClick={onDelete}
         className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-err hover:bg-inset"
       >
-        Remove project
+        {removeLabel}
       </button>
     </AnchoredMenu>
   );

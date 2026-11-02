@@ -259,6 +259,10 @@ describe("tool helpers", () => {
     assert.equal(toolSummary("load_skill", { name: "brainstorming" }), "Skill brainstorming");
     assert.equal(toolSummary("load_skill", { name: "  use-railway  " }), "Skill use-railway");
     assert.equal(toolSummary("load_skill", {}), "Skill");
+    assert.equal(toolSummary("list_chats", {}), "Chats");
+    assert.equal(toolSummary("list_chats", { alias: "api" }), "Chats in api");
+    assert.equal(toolSummary("read_chat", { alias: "api", id: "c1" }), "Chat api c1");
+    assert.equal(toolSummary("create_chat", { alias: "api" }), "Create chat api");
     assert.equal(toolSummary("mcp__linear__list_issues", { team: "App" }), "MCP linear list_issues");
     assert.equal(
       toolDetail({ id: "sk", name: "load_skill", arguments: '{"name":"brainstorming"}' }),
@@ -529,6 +533,72 @@ describe("tool helpers", () => {
     ]);
     assert.equal(toolTrailTypeIcon(toolTrailKind("Skill brainstorming")), "book");
     assert.deepEqual(toolTrailParts("Skill brainstorming"), { verb: "Skill", detail: "brainstorming" });
+  });
+
+  it("shows the chats a group list returned, and the title of a chat that was read", () => {
+    const listed = "test2\tc1\tLogin fix\t2026-02-02T00:00:00Z\ntest3\tc2\tHome page\t2026-03-03T00:00:00Z";
+    const read = "test2 c1\nLogin fix\nupdated 2026-02-02T00:00:00Z\n\nuser:\nthe token check failed\n";
+    const items = transcriptItems([
+      { role: "user", content: "what did we decide" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "lc", name: "list_chats", arguments: "{}" },
+          { id: "rc", name: "read_chat", arguments: '{"alias":"test2","id":"c1"}' },
+        ],
+      },
+      { role: "tool", tool_call_id: "lc", content: listed },
+      { role: "tool", tool_call_id: "rc", content: read },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Chats test2 Login fix, test3 Home page", "Chat test2 Login fix"]);
+    assert.deepEqual(tools.commands[0], "test2  c1  Login fix\ntest3  c2  Home page");
+    assert.match(tools.commands[1] ?? "", /the token check failed/);
+    assert.deepEqual(foldToolTrailRows(tools.labels, tools.details, tools.commands).map((row) => row.label), [
+      "Chats test2 Login fix, test3 Home page",
+      "Chat test2 Login fix",
+    ]);
+    assert.deepEqual(toolTrailParts("Chats test2 Login fix, test3 Home page"), {
+      verb: "Chats",
+      detail: "test2 Login fix, test3 Home page",
+    });
+    const empty = transcriptItems([
+      { role: "user", content: "any chats" },
+      { role: "assistant", content: "", tool_calls: [{ id: "none", name: "list_chats", arguments: "{}" }] },
+      { role: "tool", tool_call_id: "none", content: "No chats." },
+    ]);
+    const none = empty.find((item) => item.kind === "tools");
+    assert.equal(none?.kind, "tools");
+    if (none?.kind !== "tools") return;
+    assert.deepEqual(none.labels, ["Chats"]);
+    assert.deepEqual(none.commands, ["No chats."]);
+  });
+
+  it("names a chat created in a member project", () => {
+    const items = transcriptItems([
+      { role: "user", content: "hand this off" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "cc",
+            name: "create_chat",
+            arguments: JSON.stringify({ alias: "test3", title: "Handoff", message: "Continue the rally game." }),
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "cc", content: "test3\tabc\tHandoff" },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.deepEqual(tools.labels, ["Create test3 Handoff"]);
+    assert.equal(tools.commands[0], "Continue the rally game.");
+    assert.equal(toolTrailTypeIcon(toolTrailKind("Create test3 Handoff")), "plus");
   });
 
   it("names an MCP call and keeps its arguments so the row can open", () => {
@@ -1214,6 +1284,8 @@ describe("tool trail collapse", () => {
     assert.equal(toolTrailTypeIcon("Subagent"), "person.2");
     assert.equal(toolTrailTypeIcon("Web"), "globe");
     assert.equal(toolTrailTypeIcon("Skill"), "book");
+    assert.equal(toolTrailTypeIcon("Chat"), "messages");
+    assert.equal(toolTrailTypeIcon("Chats"), "messages");
     assert.equal(toolTrailTypeIcon("MCP"), "cable.connector");
   });
 

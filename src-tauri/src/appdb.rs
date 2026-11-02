@@ -117,6 +117,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
             name TEXT NOT NULL,
             previous_paths TEXT NOT NULL DEFAULT '[]'
         );
+        CREATE TABLE IF NOT EXISTS project_groups (
+            path TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_group_members (
+            group_path TEXT NOT NULL REFERENCES project_groups(path) ON DELETE CASCADE,
+            project_path TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (group_path, project_path)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS project_group_members_alias
+            ON project_group_members (group_path, alias);
+        CREATE UNIQUE INDEX IF NOT EXISTS project_group_members_project
+            ON project_group_members (project_path);
         ",
     )?;
     ensure_compat(conn)?;
@@ -140,6 +156,33 @@ fn init_schema(conn: &Connection) -> Result<()> {
 fn ensure_compat(conn: &Connection) -> Result<()> {
     migrate_remote_tables(conn)?;
     migrate_sidebar_cache(conn)?;
+    migrate_project_groups(conn)?;
+    Ok(())
+}
+
+/// A group project points at folders that stay where they are.
+/// `CREATE TABLE IF NOT EXISTS` is enough for a database already stamped at version 3.
+fn migrate_project_groups(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS project_groups (
+            path TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_group_members (
+            group_path TEXT NOT NULL REFERENCES project_groups(path) ON DELETE CASCADE,
+            project_path TEXT NOT NULL,
+            alias TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            PRIMARY KEY (group_path, project_path)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS project_group_members_alias
+            ON project_group_members (group_path, alias);
+        CREATE UNIQUE INDEX IF NOT EXISTS project_group_members_project
+            ON project_group_members (project_path);
+        ",
+    )?;
     Ok(())
 }
 

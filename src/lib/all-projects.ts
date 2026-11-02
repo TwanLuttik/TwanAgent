@@ -82,6 +82,82 @@ export function isSameProject(a: string, b: string): boolean {
   return Boolean(a) && Boolean(b) && projectKey(a) === projectKey(b);
 }
 
+export type ProjectGroupMember = { path: string; alias: string; name: string };
+
+export type ProjectGroupRow = {
+  path: string;
+  name: string;
+  members: ProjectGroupMember[];
+};
+
+/**
+ * Members leave the top-level list and sit under their group, in stored order.
+ * A member path the project list does not have is skipped.
+ */
+export function nestGroupedProjects<T extends { path: string }>(
+  projects: T[],
+  groups: ProjectGroupRow[],
+): { top: T[]; byGroup: Map<string, T[]> } {
+  const memberKeys = new Set<string>();
+  for (const group of groups) {
+    for (const member of group.members) memberKeys.add(projectKey(member.path));
+  }
+  const top = projects.filter((row) => !memberKeys.has(projectKey(row.path)));
+  const byGroup = new Map<string, T[]>();
+  for (const group of groups) {
+    const rows: T[] = [];
+    for (const member of group.members) {
+      const found = projects.find((row) => isSameProject(row.path, member.path));
+      if (found) rows.push(found);
+    }
+    byGroup.set(projectKey(group.path), rows);
+  }
+  return { top, byGroup };
+}
+
+/** Cmd/Ctrl toggles a project into the set. A plain click clears it. */
+export function toggleProjectSelection(current: string[], path: string, cmdKey: boolean): string[] {
+  if (!cmdKey) return [];
+  const hit = current.some((row) => isSameProject(row, path));
+  return hit ? current.filter((row) => !isSameProject(row, path)) : [...current, path];
+}
+
+/** The group that owns this path, or empty when the path is a normal project. */
+export function groupOwningPath(path: string, groups: ProjectGroupRow[]): string {
+  const direct = groups.find((group) => isSameProject(group.path, path));
+  if (direct) return direct.path;
+  return groups.find((group) => group.members.some((member) => isSameProject(member.path, path)))?.path ?? "";
+}
+
+/** `alias/file` inside a group. Empty when the path has no alias. */
+export function splitGroupPath(path: string): { alias: string; rest: string } | null {
+  const clean = path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const slash = clean.indexOf("/");
+  if (slash <= 0) return null;
+  return { alias: clean.slice(0, slash), rest: clean.slice(slash + 1) };
+}
+
+export function oneGroupRepo(
+  members: ProjectGroupMember[],
+  paths: string[],
+): { path: string; paths: string[] } | { error: string } {
+  if (!paths.length) return { error: "Stage a file in one repository first." };
+  let workspace = "";
+  const stripped: string[] = [];
+  for (const path of paths) {
+    const split = splitGroupPath(path);
+    if (!split?.rest) return { error: "That path is not inside a repository." };
+    const member = members.find((row) => row.alias.toLowerCase() === split.alias.toLowerCase());
+    if (!member) return { error: "That repository is not in this group." };
+    if (workspace && !isSameProject(workspace, member.path)) {
+      return { error: "A change cannot span two repositories." };
+    }
+    workspace = member.path;
+    stripped.push(split.rest);
+  }
+  return { path: workspace, paths: stripped };
+}
+
 /**
  * The sidebar lists every project until one is chosen.
  * A path that is not in the list means every project, so a removed folder
@@ -524,6 +600,27 @@ function sameProjectServer(
 /** Two projects can reuse a chat id. The sidebar chip is keyed by both. */
 export function sidebarTodoKey(path: string, id: string): string {
   return `${projectKey(path)}\t${id}`;
+}
+
+/** A chat created elsewhere, placed above that project's list. An existing id stays put. */
+export function prependProjectChat(rows: ConversationSummary[], chat: ConversationSummary): ConversationSummary[] {
+  if (!chat.id || rows.some((row) => row.id === chat.id)) return rows;
+  return [chat, ...rows];
+}
+
+export function prependChatInGroups(
+  groups: ProjectChatGroup[],
+  path: string,
+  chat: ConversationSummary,
+): ProjectChatGroup[] {
+  const key = projectKey(path);
+  const idx = groups.findIndex((group) => projectKey(group.path) === key);
+  if (idx < 0) return groups;
+  const conversations = prependProjectChat(groups[idx].conversations ?? [], chat);
+  if (conversations === groups[idx].conversations) return groups;
+  const next = groups.slice();
+  next[idx] = { ...next[idx], conversations };
+  return next;
 }
 
 export function upsertProjectGroup(

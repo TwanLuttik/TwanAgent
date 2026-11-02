@@ -14,6 +14,7 @@ import {
 } from "../lib/core";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
+import { providerProfile } from "../lib/provider";
 import { RunningElapsed } from "./RunningElapsed";
 
 function FinishedLine({ durationMs, finishedAt }: { durationMs?: number; finishedAt?: string }) {
@@ -34,19 +35,39 @@ function FinishedLine({ durationMs, finishedAt }: { durationMs?: number; finishe
   );
 }
 
-function RoleBadge({ role }: { role: "user" | "assistant" }) {
-  const user = role === "user";
+function RoleBadge() {
   return (
-    <span
-      className={`inline-flex items-center justify-center ${
-        user ? "text-accent" : "text-[#7c5cff]"
-      }`}
-      title={user ? "You" : "Grok"}
-      aria-label={user ? "You" : "Grok"}
-    >
-      <Symbol name={user ? "person.fill" : "sparkles"} className="size-3.5" />
+    <span className="inline-flex items-center justify-center text-accent" title="You" aria-label="You">
+      <Symbol name="person.fill" className="size-3.5" />
     </span>
   );
+}
+
+/** Provider mark and name for the model that wrote this turn. Same colors as the composer chip. */
+function ModelMark({ model, name }: { model: string; name?: string }) {
+  const profile = providerProfile(model);
+  const color =
+    profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "text-[#e21680]" : "text-ink/80";
+  const label = (name ?? "").trim() || profile.agentName || model.trim() || "Assistant";
+  return (
+    <span className="inline-flex items-center gap-1.5 text-muted" title={label} aria-label={label}>
+      <Symbol name={profile.symbol} colored className={`size-3.5 ${color}`} />
+      <span className="text-[12px]">{label}</span>
+    </span>
+  );
+}
+
+/** The concluding reply. Narration that is still followed by tool calls is not it. */
+function finalAssistantIndex(rest: TranscriptTurn["rest"]): number {
+  let last = -1;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i]?.kind === "assistant") last = i;
+  }
+  if (last < 0) return -1;
+  for (let i = last + 1; i < rest.length; i++) {
+    if (rest[i]?.kind === "tools") return -1;
+  }
+  return last;
 }
 
 const USER_MESSAGE_MAX = "max-h-32";
@@ -155,6 +176,8 @@ export function ChatTranscript({
   busy,
   conversationId = "",
   mentionFiles = [],
+  model = "",
+  modelName = "",
   onLoadOlder,
 }: {
   messages: ChatMessage[];
@@ -164,6 +187,10 @@ export function ChatTranscript({
   busy: boolean;
   conversationId?: string;
   mentionFiles?: MentionFile[];
+  /** Model id for this chat. Its mark sits on each turn's final reply. */
+  model?: string;
+  /** Catalog name, such as "Grok 4.6". The id is used when this is empty. */
+  modelName?: string;
   /** Called before older turns mount so the scroller can keep its place. */
   onLoadOlder?: () => void;
 }) {
@@ -204,10 +231,24 @@ export function ChatTranscript({
         </div>
       ) : null}
       {visibleSettled.map((turn, i) => (
-        <SettledTurn key={settledFrom + i} turn={turn} mentionFiles={mentionFiles} conversationId={conversationId} />
+        <SettledTurn
+          key={settledFrom + i}
+          turn={turn}
+          mentionFiles={mentionFiles}
+          conversationId={conversationId}
+          model={model}
+          modelName={modelName}
+        />
       ))}
       {showTail ? (
-        <LiveTail items={split.tail} busy={busy} mentionFiles={mentionFiles} conversationId={conversationId} />
+        <LiveTail
+          items={split.tail}
+          busy={busy}
+          mentionFiles={mentionFiles}
+          conversationId={conversationId}
+          model={model}
+          modelName={modelName}
+        />
       ) : null}
     </>
   );
@@ -217,12 +258,24 @@ const SettledTurn = memo(function SettledTurn({
   turn,
   mentionFiles,
   conversationId,
+  model,
+  modelName,
 }: {
   turn: TranscriptTurn;
   mentionFiles?: MentionFile[];
   conversationId?: string;
+  model?: string;
+  modelName?: string;
 }) {
-  return <TranscriptTurn turn={turn} mentionFiles={mentionFiles} conversationId={conversationId} />;
+  return (
+    <TranscriptTurn
+      turn={turn}
+      mentionFiles={mentionFiles}
+      conversationId={conversationId}
+      model={model}
+      modelName={modelName}
+    />
+  );
 });
 
 function LiveTail({
@@ -230,11 +283,15 @@ function LiveTail({
   busy,
   mentionFiles,
   conversationId,
+  model,
+  modelName,
 }: {
   items: TranscriptItem[];
   busy: boolean;
   mentionFiles?: MentionFile[];
   conversationId?: string;
+  model?: string;
+  modelName?: string;
 }) {
   const head = items[0];
   const hasUser = head?.kind === "user";
@@ -245,7 +302,14 @@ function LiveTail({
   const last = items[items.length - 1];
   const liveIndex = busy && last?.kind === "tools" ? items.length - 1 : -1;
   return (
-    <TranscriptTurn turn={turn} liveIndex={liveIndex} mentionFiles={mentionFiles} conversationId={conversationId} />
+    <TranscriptTurn
+      turn={turn}
+      liveIndex={liveIndex}
+      mentionFiles={mentionFiles}
+      conversationId={conversationId}
+      model={model}
+      modelName={modelName}
+    />
   );
 }
 
@@ -280,7 +344,7 @@ export function PendingUserMessage({
   return (
     <div className={`mb-4 ${editing ? "" : "opacity-60"}`}>
       <div className="mb-1 flex items-center gap-2">
-        <RoleBadge role="user" />
+        <RoleBadge />
         <span className="text-[11px] font-medium text-muted/70">{editing ? "Editing" : "Pending"}</span>
         <div className="ml-auto flex items-center gap-0.5">
           {editing ? null : (
@@ -354,25 +418,104 @@ export function PendingUserMessage({
   );
 }
 
+const THINKING_FOLLOW_PX = 16;
+
+function thinkingCap(el: HTMLElement): number {
+  const max = Number.parseFloat(getComputedStyle(el).maxHeight);
+  return Number.isFinite(max) && max > 0 ? max : 256;
+}
+
+/**
+ * A long trace scrolls inside itself instead of stretching the chat.
+ * While it is still streaming, the box eases open up to that cap and keeps the latest lines in view.
+ */
+function ThinkingTrace({ text, live = false }: { text: string; live?: boolean }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState<number | null>(live ? 0 : null);
+  const stick = useRef(true);
+  const fromUs = useRef(false);
+
+  useLayoutEffect(() => {
+    const outer = scroller.current;
+    if (!outer || !live) return;
+    const previous = outer.style.height;
+    outer.style.height = "auto";
+    const content = outer.scrollHeight;
+    outer.style.height = previous;
+    const next = Math.min(content, thinkingCap(outer));
+    setHeight((prev) => (prev === next ? prev : next));
+  }, [text, live]);
+
+  useEffect(() => {
+    if (!live) return;
+    let frame = 0;
+    const tick = () => {
+      const outer = scroller.current;
+      if (outer && stick.current) {
+        const max = Math.max(0, outer.scrollHeight - outer.clientHeight);
+        if (Math.abs(outer.scrollTop - max) > 1) {
+          fromUs.current = true;
+          outer.scrollTop = max;
+          fromUs.current = false;
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [live]);
+
+  return (
+    <div
+      ref={scroller}
+      onWheel={(event) => {
+        if (live && event.deltaY < 0) stick.current = false;
+      }}
+      onPointerDown={() => {
+        if (live) stick.current = false;
+      }}
+      onScroll={() => {
+        const outer = scroller.current;
+        if (!outer || !live || fromUs.current) return;
+        const gap = outer.scrollHeight - outer.scrollTop - outer.clientHeight;
+        if (gap <= THINKING_FOLLOW_PX) stick.current = true;
+      }}
+      style={live && height != null ? { height } : undefined}
+      className={`mb-3 max-h-64 overflow-y-auto overscroll-contain whitespace-pre-wrap border-l border-line pl-2.5 text-[13px] leading-relaxed text-muted [overflow-wrap:anywhere] ${
+        live
+          ? "transition-[height] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+          : ""
+      }`}
+    >
+      {text}
+    </div>
+  );
+}
+
 function TranscriptTurn({
   turn,
   liveIndex = -1,
   mentionFiles,
   conversationId,
+  model = "",
+  modelName = "",
 }: {
   turn: TranscriptTurn;
   /** Index of the streaming tool row, or -1 when nothing in this turn is live. */
   liveIndex?: number;
   mentionFiles?: MentionFile[];
   conversationId?: string;
+  model?: string;
+  modelName?: string;
 }) {
   const userOffset = turn.user ? 1 : 0;
+  const finalReply = finalAssistantIndex(turn.rest);
   return (
     <div className="mb-4">
       {turn.user ? (
         <StickyTurnHeader>
           <div className="mb-1">
-            <RoleBadge role="user" />
+            <RoleBadge />
           </div>
           <UserBubble text={turn.user.content} images={turn.user.images} mentionFiles={mentionFiles} />
         </StickyTurnHeader>
@@ -381,14 +524,7 @@ function TranscriptTurn({
         const index = userOffset + i;
         const last = i === turn.rest.length - 1;
         if (item.kind === "thinking") {
-          return (
-            <div
-              key={index}
-              className="mb-3 whitespace-pre-wrap border-l border-line pl-2.5 text-[13px] leading-relaxed text-muted [overflow-wrap:anywhere]"
-            >
-              {item.content}
-            </div>
-          );
+          return <ThinkingTrace key={index} text={item.content} live={item.live} />;
         }
         if (item.kind === "tools") {
           return (
@@ -422,15 +558,14 @@ function TranscriptTurn({
             </p>
           );
         }
-        const badge = (
-          <div className="mb-1">
-            <RoleBadge role="assistant" />
-          </div>
-        );
         const streaming = liveIndex >= 0 && last && item.kind === "assistant" && typeof item.durationMs !== "number";
         return (
           <div key={index} className={last ? undefined : "mb-4"}>
-            {!turn.user && i === 0 ? <StickyTurnHeader>{badge}</StickyTurnHeader> : badge}
+            {i === finalReply ? (
+              <div className="mb-1">
+                <ModelMark model={model} name={modelName} />
+              </div>
+            ) : null}
             <ChatMarkdown text={item.content} live={streaming} />
             {typeof item.durationMs === "number" || item.finishedAt ? (
               <FinishedLine durationMs={item.durationMs} finishedAt={item.finishedAt} />
