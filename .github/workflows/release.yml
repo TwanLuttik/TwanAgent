@@ -1,7 +1,7 @@
 name: Release
 
 # Push a v* tag, or run this by hand, to publish one GitHub release.
-# The tag is the desktop version (`v1.0.0-beta.5`). The same release also
+# The tag is the desktop version (`v1.0.0-beta.6`). The same release also
 # carries `twanagent-server` binaries. Their version is the service crate
 # version, which can move without the desktop version moving.
 #
