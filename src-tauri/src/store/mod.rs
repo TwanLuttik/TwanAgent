@@ -761,6 +761,8 @@ fn max_sort(conn: &Connection, journey_id: Option<&str>) -> Result<i64> {
 }
 
 mod conversations;
+#[cfg(test)]
+pub(crate) use conversations::clip_sidebar_line;
 mod journeys;
 
 pub use conversations::{

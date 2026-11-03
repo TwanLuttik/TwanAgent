@@ -1,5 +1,5 @@
 import { isCompactionEvent, isCompactionSummary } from "./compact.ts";
-import { isFileAttachment, stripImageTokens } from "./image.ts";
+import { expandImageTokens, isFileAttachment } from "./image.ts";
 import { permissionSystemLine, remoteWorkspaceLine, type PermissionMode, type RemoteWorkspace } from "./permission.ts";
 import { mcpSystemLine, type DetectedMcpServer } from "./mcp.ts";
 import { agentIdentityLine } from "./provider.ts";
@@ -124,9 +124,10 @@ export type ApiChatMessage = {
   images?: ChatImage[];
 };
 
-function messageTextWithoutImageTokens(msg: ChatMessage): string {
+/** Text the model reads. Short `[name]` chips become the file's full path. */
+function messageTextForModel(msg: ChatMessage): string {
   const text = String(msg.content ?? "");
-  return msg.images?.length ? stripImageTokens(text, msg.images) : text;
+  return msg.images?.length ? expandImageTokens(text, msg.images) : text;
 }
 
 export function toApiToolCall(call: ChatToolCall): ApiToolCall {
@@ -164,7 +165,7 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
     }
     if (msg.role === "user" && msg.images?.length) {
       const parts: ApiContentPart[] = [];
-      const text = messageTextWithoutImageTokens(msg).trim();
+      const text = messageTextForModel(msg).trim();
       if (text) parts.push({ type: "text", text });
       for (const img of msg.images) {
         if (isFileAttachment(img) || !img.dataUrl) continue;

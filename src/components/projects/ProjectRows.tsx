@@ -35,42 +35,17 @@ export function ProjectSection({
   );
 }
 
-export function ProjectGitRow({
-  git,
-  onMenu,
-}: {
-  git: ProjectGit;
-  onMenu: (x: number, y: number) => void;
-}) {
-  const tracking = [
-    git.ahead ? `↑${git.ahead}` : "",
-    git.behind ? `↓${git.behind}` : "",
-    git.dirty ? `${git.dirty}` : "",
-  ].filter(Boolean);
+export function ProjectGitRow({ git }: { git: ProjectGit }) {
+  const tracking = [git.ahead ? `↑${git.ahead}` : "", git.behind ? `↓${git.behind}` : ""].filter(Boolean);
   return (
-    <div className="group/git mr-0.5 flex h-6 max-w-[46%] shrink-0 items-center gap-1 rounded-[6px] pr-0.5 pl-1 text-[11px] text-muted select-none">
-      <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-muted/70" />
+    <div className="mr-1 flex h-6 max-w-[46%] shrink-0 items-center gap-1 text-[11px] text-muted select-none">
+      <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-ok" />
       <span className="min-w-0 truncate" title={git.branch}>
         {git.branch}
       </span>
       {tracking.length ? (
         <span className="shrink-0 font-mono text-[10px] text-muted/80 tabular-nums">{tracking.join(" ")}</span>
       ) : null}
-      <button
-        type="button"
-        aria-label="Project actions"
-        aria-haspopup="menu"
-        title="Project actions"
-        onClick={(ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const box = ev.currentTarget.getBoundingClientRect();
-          onMenu(box.right, box.bottom + 4);
-        }}
-        className="flex size-6 shrink-0 items-center justify-center rounded text-muted opacity-0 hover:bg-wash-strong hover:text-ink group-hover/git:opacity-100 focus-visible:opacity-100"
-      >
-        <Symbol name="ellipsis" className="size-3.5" />
-      </button>
     </div>
   );
 }
@@ -107,7 +82,12 @@ export function WorktreeRow({
         onClick={onToggle}
         className="flex size-5 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
       >
-        <Symbol name={closed ? "chevron.right" : "chevron.down"} className="size-2.5" />
+        <Symbol
+          name="chevron.down"
+          className={`size-2.5 transition-transform duration-200 ease-out motion-reduce:transition-none ${
+            closed ? "-rotate-90" : ""
+          }`}
+        />
       </button>
       <button type="button" onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
         <Symbol name="arrow.triangle.branch" className={`size-3 shrink-0 ${current ? "text-ok" : "text-ok/70"}`} />
@@ -194,32 +174,6 @@ export function DeleteWorktreeDialog({
       </div>
     </div>,
     document.body,
-  );
-}
-
-export function ProjectGitMenu({
-  x,
-  y,
-  remote,
-  onOpenFinder,
-}: {
-  x: number;
-  y: number;
-  remote: boolean;
-  onOpenFinder: () => void;
-}) {
-  return (
-    <AnchoredMenu x={x} y={y} label="Project">
-      <button
-        type="button"
-        role="menuitem"
-        disabled={remote}
-        onClick={onOpenFinder}
-        className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset disabled:cursor-default disabled:opacity-40"
-      >
-        Open in Finder
-      </button>
-    </AnchoredMenu>
   );
 }
 

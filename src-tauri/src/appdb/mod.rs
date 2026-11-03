@@ -97,6 +97,7 @@ mod tests {
             context_window: None,
             permission: None,
             archived: false,
+            preview: String::new(),
         };
         replace_sidebar(&conn, &added.path, &[chat], &[]).unwrap();
         let next = path_string(to.path());
@@ -192,6 +193,7 @@ mod tests {
             context_window: Some(256_000),
             permission: None,
             archived: false,
+            preview: String::new(),
         };
         let journey = crate::dev::Journey {
             id: "j1".into(),
@@ -256,6 +258,7 @@ mod tests {
             context_window: None,
             permission: None,
             archived: false,
+            preview: String::new(),
         }
     }
 

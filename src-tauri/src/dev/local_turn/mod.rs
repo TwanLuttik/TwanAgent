@@ -428,6 +428,60 @@ fn stopped_flag(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed)
 }
 
+enum ProviderHold {
+    Retry,
+    Stopped,
+    Pass,
+}
+
+/// A Grok outage ("service temporarily unavailable", "the model did not respond")
+/// and the same class of provider failure. The turn keeps asking until it answers.
+fn provider_outage(error: &str) -> bool {
+    retryable_model_error(error) && twanagent_service::transient_provider_error(error)
+}
+
+fn wait_for_provider(cancel: &AtomicBool, attempt: u32) -> bool {
+    let slice = std::time::Duration::from_millis(200);
+    let mut left = twanagent_service::provider_retry_pause(attempt);
+    while !left.is_zero() {
+        if stopped_flag(cancel) {
+            return false;
+        }
+        let step = if left < slice { left } else { slice };
+        std::thread::sleep(step);
+        left = left.saturating_sub(step);
+    }
+    !stopped_flag(cancel)
+}
+
+/// Pause and ask again. `Pass` means this error is not an outage.
+fn hold_provider_outage(
+    app: &AppHandle,
+    id: &str,
+    cancel: &AtomicBool,
+    tries: &mut u32,
+    error: &str,
+) -> ProviderHold {
+    if !provider_outage(error) {
+        return ProviderHold::Pass;
+    }
+    emit(
+        app,
+        id,
+        "status",
+        Some(twanagent_service::PROVIDER_RETRY_STATUS.to_string()),
+        None,
+        None,
+    );
+    let attempt = *tries;
+    *tries = tries.saturating_add(1);
+    if !wait_for_provider(cancel, attempt) {
+        return ProviderHold::Stopped;
+    }
+    emit(app, id, "status", None, None, None);
+    ProviderHold::Retry
+}
+
 fn normalize_permission(raw: &str) -> String {
     match raw.trim() {
         "approve-all" => "approve-all".into(),
@@ -458,7 +512,8 @@ fn round_is_empty(round: &Round) -> bool {
         && round.reasoning.trim().is_empty()
 }
 
-/// Transport and provider failures the webview loop already tries once more.
+/// Transport and provider failures.
+/// An outage keeps the turn alive until the provider answers. Anything else here is tried once.
 /// Context-length errors are not included: those fold the transcript instead.
 fn retryable_model_error(error: &str) -> bool {
     if super::compact::is_context_length_error(error) {
@@ -581,6 +636,21 @@ mod tests {
         assert!(!retryable_model_error(
             "This model's maximum context length was exceeded"
         ));
+    }
+
+    #[test]
+    fn a_grok_outage_holds_the_turn_and_a_decode_error_does_not() {
+        let grok = "xAI request failed: Service temporarily unavailable. The model did not respond to this request.";
+        assert!(provider_outage(grok));
+        assert!(provider_outage("xAI error 503: unavailable"));
+        assert!(provider_outage("xAI request failed: error sending request"));
+        assert!(!provider_outage("error decoding response body"));
+        assert!(!provider_outage("Stopped."));
+        assert!(!provider_outage("Grok CLI login expired. Run grok login."));
+        assert!(!provider_outage("xAI rejected the API key."));
+        assert_eq!(twanagent_service::provider_retry_pause(0).as_secs(), 2);
+        assert_eq!(twanagent_service::provider_retry_pause(3).as_secs(), 16);
+        assert_eq!(twanagent_service::provider_retry_pause(9).as_secs(), 30);
     }
 
     #[test]

@@ -14,7 +14,10 @@ import {
   forgetUnsavedDraft,
   enqueuePending,
   isEmptyCompletion,
+  activityFromTurnStatus,
   isRetryableChatError,
+  isTransientProviderError,
+  providerRetryPauseMs,
   markUnseenFinished,
   pendingEditBlocksSend,
   pendingForChat,
@@ -230,6 +233,28 @@ describe("isRetryableChatError", () => {
     assert.equal(isRetryableChatError("Stopped."), false);
     assert.equal(isRetryableChatError("Grok CLI login expired. Run grok login."), false);
     assert.equal(isRetryableChatError("xAI rejected the API key."), false);
+  });
+});
+
+describe("isTransientProviderError", () => {
+  it("holds a grok outage so the turn can wait for the provider", () => {
+    const grok =
+      "xAI request failed: Service temporarily unavailable. The model did not respond to this request.";
+    assert.equal(isTransientProviderError(grok), true);
+    assert.equal(isTransientProviderError("xAI error 503: unavailable"), true);
+    assert.equal(isTransientProviderError("xAI request failed: error sending request"), true);
+    assert.equal(isTransientProviderError("error decoding response body"), false);
+    assert.equal(isTransientProviderError("Stopped."), false);
+    assert.equal(isTransientProviderError("xAI rejected the API key."), false);
+    assert.equal(providerRetryPauseMs(0), 2000);
+    assert.equal(providerRetryPauseMs(3), 16000);
+    assert.equal(providerRetryPauseMs(9), 30000);
+    assert.equal(activityFromTurnStatus(null), null);
+    assert.equal(activityFromTurnStatus("  "), null);
+    assert.deepEqual(activityFromTurnStatus("The model is unavailable. Retrying…"), {
+      kind: "tool",
+      label: "The model is unavailable. Retrying…",
+    });
   });
 });
 

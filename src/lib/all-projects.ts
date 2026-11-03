@@ -174,6 +174,32 @@ export function sidebarFocusPath(focusPath: string, groups: { path: string }[]):
   return groups.some((group) => isSameProject(group.path, focusPath)) ? focusPath : "";
 }
 
+/** True when this folder is in the saved favorite list. */
+export function isProjectFavorite(paths: readonly string[], path: string): boolean {
+  if (!path.trim()) return false;
+  return paths.some((item) => isSameProject(item, path));
+}
+
+/** Add the project, or remove it when it is already a favorite. */
+export function toggleProjectFavorite(paths: readonly string[], path: string): string[] {
+  const next = path.trim();
+  if (!next) return [...paths];
+  if (isProjectFavorite(paths, next)) return paths.filter((item) => !isSameProject(item, next));
+  return [...paths, next];
+}
+
+/** Favorites stay at the top. Everything else keeps its order. */
+export function favoriteProjectsFirst<T extends { path: string }>(groups: T[], paths: readonly string[]): T[] {
+  if (!paths.length || groups.length < 2) return groups;
+  const favorites: T[] = [];
+  const rest: T[] = [];
+  for (const group of groups) {
+    if (isProjectFavorite(paths, group.path)) favorites.push(group);
+    else rest.push(group);
+  }
+  return favorites.length ? [...favorites, ...rest] : groups;
+}
+
 /** One sidebar chat. The project is part of the key because ids can repeat across folders. */
 export type ChatSelection = { path: string; id: string };
 

@@ -657,6 +657,7 @@ fn summary_from_hosted(row: &twanagent_service::ConversationSummary) -> crate::d
         context_window: row.context_window,
         permission: row.permission.clone(),
         archived: row.archived,
+        preview: String::new(),
     }
 }
 

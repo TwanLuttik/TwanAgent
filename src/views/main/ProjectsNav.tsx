@@ -11,7 +11,7 @@ import { forgetPaneWorkspace } from "../../lib/pane-sessions";
 import { saveConversation } from "../../lib/prefs";
 import { projectGitKey, projectGitLabel, sameGitLabels, type ProjectGit } from "../../lib/project-git";
 import { publishProjectGroups } from "../../lib/project-groups";
-import { todoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
+import { sidebarTodoBadge, todosInLatestTurn, type TodoBadge } from "../../lib/todo";
 import * as api from "../../lib/tauri";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { GitWorktree } from "../../lib/tauri.ts";
@@ -43,6 +43,8 @@ export function ProjectsNav({
   usageTick,
   focusPath,
   chatOrder,
+  favoritePaths = [],
+  onToggleFavorite,
 }: {
   usageHover: boolean;
   setUsageHover: (hover: boolean) => void;
@@ -66,6 +68,8 @@ export function ProjectsNav({
   usageTick: number;
   focusPath: string;
   chatOrder: SidebarChatOrder;
+  favoritePaths?: readonly string[];
+  onToggleFavorite?: (path: string) => void;
 }) {
   const { setFlash } = useApp();
   const {
@@ -422,7 +426,7 @@ export function ProjectsNav({
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
           const badgeKey = sidebarTodoKey(row.path, row.id);
           if (isOpen) {
-            const badge = todoBadge(todosInLatestTurn(messagesRef.current as ChatMessage[]));
+            const badge = sidebarTodoBadge(todosInLatestTurn(messagesRef.current as ChatMessage[]));
             if (badge) found[badgeKey] = badge;
             return;
           }
@@ -430,7 +434,7 @@ export function ProjectsNav({
           if (previous.get(key) === row.updated) return;
           try {
             const full = row.remote ? await api.getConversationById(row.id) : await api.getConversation(row.path, row.id);
-            const badge = todoBadge(todosInLatestTurn((full.messages as ChatMessage[]) ?? []));
+            const badge = sidebarTodoBadge(todosInLatestTurn((full.messages as ChatMessage[]) ?? []));
             if (badge) found[badgeKey] = badge;
           } catch {
             /* a chat that cannot be read just has no todo chip */
@@ -445,7 +449,13 @@ export function ProjectsNav({
           const badgeKey = sidebarTodoKey(row.path, row.id);
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
           if (badgeKey in found) next[badgeKey] = found[badgeKey];
-          else if (prev[badgeKey] && !isOpen && previous.get(key) === row.updated && !(row.id in runningRef.current)) {
+          else if (
+            prev[badgeKey] &&
+            !prev[badgeKey].finished &&
+            !isOpen &&
+            previous.get(key) === row.updated &&
+            !(row.id in runningRef.current)
+          ) {
             next[badgeKey] = prev[badgeKey];
           }
         }
@@ -599,6 +609,9 @@ export function ProjectsNav({
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
         {sidebarReady ? <AllProjectsList
           groups={shownGroups}
+          focusPath={activeFocus}
+          favoritePaths={favoritePaths}
+          onToggleFavorite={onToggleFavorite}
           activeWorkspace={workspace}
           projectsRoot={projectsRoot}
           legacyProjectsRoot={legacyProjectsRoot}
@@ -647,6 +660,14 @@ export function ProjectsNav({
                   chatOrder,
                 )}
                 path={child.path}
+                place={{
+                  branch: child.branch,
+                  worktree: true,
+                  server: false,
+                  ahead: gitByProject[projectGitKey(child.path)]?.ahead,
+                  behind: gitByProject[projectGitKey(child.path)]?.behind,
+                  dirty: gitByProject[projectGitKey(child.path)]?.dirty,
+                }}
                 dimmed={fullPage}
                 reorderable={chatOrder !== "finished"}
                 todoByChat={todoByChat}
@@ -659,10 +680,11 @@ export function ProjectsNav({
               />
             </div>
           )}
-          renderList={(group, { showArchived }) => (
+          renderList={(group, { showArchived, place }) => (
             <ProjectConversations
               conversations={orderSidebarChats(visibleConversations(group.conversations, showArchived), chatOrder)}
               path={group.path}
+              place={place}
               dimmed={fullPage}
               archivedView={showArchived}
               reorderable={chatOrder !== "finished"}

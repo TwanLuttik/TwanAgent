@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { AnchoredMenu } from "../../components/ContextMenu";
 import { Symbol } from "../../components/Symbol";
 import { headerBarClass, isWindows, WindowButtons } from "../../components/WindowButtons";
-import { isSameProject, nestGroupedProjects, type SidebarChatOrder } from "../../lib/all-projects";
+import { isSameProject, nestGroupedProjects, toggleProjectFavorite, type SidebarChatOrder } from "../../lib/all-projects";
 import { projectKey } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { ProjectMark } from "../../components/ProjectMark";
@@ -11,7 +11,7 @@ import type { ProjectGit } from "../../lib/project-git";
 import { useProjectGroups } from "../../lib/project-groups";
 import type { GitWorktree } from "../../lib/tauri.ts";
 import type { TodoBadge } from "../../lib/todo";
-import { SIDEBAR_DEFAULT, loadSidebarChatOrder, loadSidebarFocus, saveSidebarChatOrder, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
+import { SIDEBAR_DEFAULT, loadProjectFavorites, loadSidebarChatOrder, loadSidebarFocus, saveProjectFavorites, saveSidebarChatOrder, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
 import { SETTINGS_TABS } from "../SettingsView";
 import { ProjectFocusButton } from "./ProjectFocusButton";
@@ -49,6 +49,14 @@ export function AppSidebar() {
   const chooseFocus = useCallback((path: string) => {
     setFocusPath(path);
     saveSidebarFocus(path);
+  }, []);
+  const [favoritePaths, setFavoritePaths] = useState(loadProjectFavorites);
+  const toggleFavorite = useCallback((path: string) => {
+    setFavoritePaths((prev) => {
+      const next = toggleProjectFavorite(prev, path);
+      saveProjectFavorites(next);
+      return next;
+    });
   }, []);
   const [archiveOpen, setArchiveOpen] = useState<Record<string, boolean>>({});
   const [gitByProject, setGitByProject] = useState<Record<string, ProjectGit>>({});
@@ -88,7 +96,13 @@ export function AppSidebar() {
         <SidebarOrderButton order={chatOrder} onChange={chooseChatOrder} />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
         {!showSettings ? (
-          <ProjectFocusButton focusPath={focusPath} onFocus={chooseFocus} hidden={sidebarCollapsed} />
+          <ProjectFocusButton
+          focusPath={focusPath}
+          onFocus={chooseFocus}
+          hidden={sidebarCollapsed}
+          favoritePaths={favoritePaths}
+          onToggleFavorite={toggleFavorite}
+        />
         ) : null}
         <PanelToggle
           label="Hide sidebar"
@@ -145,6 +159,8 @@ export function AppSidebar() {
           usageTick={usageTick}
           focusPath={focusPath}
           chatOrder={chatOrder}
+          favoritePaths={favoritePaths}
+          onToggleFavorite={toggleFavorite}
         />
       </div>
       </div>

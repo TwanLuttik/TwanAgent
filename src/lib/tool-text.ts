@@ -23,6 +23,17 @@ export function moveById<T extends { id: string }>(rows: T[], fromId: string, to
   return next;
 }
 
+/** Latest user or assistant text, as one short sidebar line. */
+export function lastChatLine(messages: { role?: string; content?: unknown }[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "user" && message?.role !== "assistant") continue;
+    const line = clipPreview(String(message.content ?? ""), 96);
+    if (line) return line;
+  }
+  return "";
+}
+
 export function clipPreview(text: string, max = 72): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (!flat) return "";

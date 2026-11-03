@@ -5,6 +5,7 @@ import {
   formatTodoWriteResult,
   isTodoTool,
   parseTodoWriteArgs,
+  sidebarTodoBadge,
   todoBadge,
   todosAreOpen,
   todosFromMessages,
@@ -206,6 +207,30 @@ describe("todoBadge", () => {
         { id: "b", content: "Skip", status: "cancelled" },
       ]),
       { done: 2, total: 2, finished: true },
+    );
+  });
+});
+
+describe("sidebarTodoBadge", () => {
+  it("hides a finished list the conversation window does not show", () => {
+    assert.equal(
+      sidebarTodoBadge([
+        { id: "a", content: "Read", status: "completed" },
+        { id: "b", content: "Skip", status: "cancelled" },
+      ]),
+      null,
+    );
+    assert.equal(sidebarTodoBadge([]), null);
+  });
+
+  it("keeps a list that still has work", () => {
+    assert.deepEqual(
+      sidebarTodoBadge([
+        { id: "a", content: "Read", status: "completed" },
+        { id: "b", content: "Patch", status: "in_progress" },
+        { id: "c", content: "Test", status: "pending" },
+      ]),
+      { done: 1, total: 3, finished: false },
     );
   });
 });

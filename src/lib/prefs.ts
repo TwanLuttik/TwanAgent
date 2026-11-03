@@ -457,6 +457,23 @@ export function saveSidebarFocus(path: string): void {
   else localStorage.removeItem(SIDEBAR_FOCUS_KEY);
 }
 
+const SIDEBAR_FAVORITES_KEY = "twanagent.sidebarFavorites";
+
+/** Project paths the sidebar keeps at the top. */
+export function loadProjectFavorites(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SIDEBAR_FAVORITES_KEY) ?? "");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveProjectFavorites(paths: readonly string[]): void {
+  localStorage.setItem(SIDEBAR_FAVORITES_KEY, JSON.stringify(paths));
+}
+
 function loadCollapsedFlag(key: string): boolean {
   const raw = localStorage.getItem(key);
   return raw === "on" || raw === "1" || raw === "true";

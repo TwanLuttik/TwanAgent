@@ -32,7 +32,7 @@ pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use search::{glob_match, matches_glob, glob as search_glob, grep as search_grep, GlobQuery, GrepQuery};
 pub use session::serve;
 pub use store::{Conversation, ConversationSummary};
-pub use turn::{ModelStep, ScriptedModel, TurnRequest};
+pub use turn::{provider_retry_pause, transient_provider_error, ModelStep, ScriptedModel, TurnRequest, PROVIDER_RETRY_STATUS};
 
 /// `twanagent-server --version` prints this. It is the service crate version, not the app version.
 /// Server binary updates can ship without a new GUI build, so the two numbers move separately.

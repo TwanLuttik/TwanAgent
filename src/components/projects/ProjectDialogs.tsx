@@ -11,9 +11,12 @@ export function ProjectContextMenu({
   name,
   path,
   onNewChat,
+  onFavorite,
+  favorite = false,
   onSettings,
   onDelete,
   onCopied,
+  onReveal,
   onGroup,
   addTargets,
   onAddTo,
@@ -24,9 +27,12 @@ export function ProjectContextMenu({
   name: string;
   path?: string;
   onNewChat?: () => void;
+  onFavorite?: () => void;
+  favorite?: boolean;
   onSettings?: () => void;
   onDelete: () => void;
   onCopied?: () => void;
+  onReveal?: () => void;
   onGroup?: () => void;
   addTargets?: { path: string; name: string }[];
   onAddTo?: (groupPath: string) => void;
@@ -42,6 +48,16 @@ export function ProjectContextMenu({
           className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
         >
           New chat
+        </button>
+      ) : null}
+      {onFavorite ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onFavorite}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          {favorite ? "Unfavorite" : "Favorite"}
         </button>
       ) : null}
       {onSettings ? (
@@ -65,6 +81,16 @@ export function ProjectContextMenu({
           className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
         >
           Copy ID
+        </button>
+      ) : null}
+      {onReveal ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onReveal}
+          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
+        >
+          Open in Finder
         </button>
       ) : null}
       {onGroup ? (

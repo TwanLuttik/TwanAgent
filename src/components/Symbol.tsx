@@ -13,6 +13,18 @@ const thick = {
 };
 
 const ICONS: Record<string, ReactNode> = {
+  desktop: (
+    <>
+      <rect x="3.4" y="4.2" width="17.2" height="11" rx="1.6" {...stroke} />
+      <path d="M8.6 19.4h6.8M12 15.2v4.2" {...stroke} />
+    </>
+  ),
+  star: (
+    <path d="m12 3.6 2.1 4.7 5.1.5-3.8 3.4 1.1 5.1L12 14.8 7.5 17.3l1.1-5.1L4.8 8.8l5.1-.5Z" {...stroke} />
+  ),
+  "star.fill": (
+    <path d="m12 3.2 2.3 5.1 5.6.5-4.2 3.7 1.3 5.6L12 15.4 7 18.1l1.3-5.6L4.1 8.8l5.6-.5Z" fill="currentColor" />
+  ),
   externaldrive: (
     <>
       <rect x="2.6" y="7.4" width="18.8" height="8.4" rx="2.1" {...stroke} />

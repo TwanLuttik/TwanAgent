@@ -14,6 +14,8 @@ export type ConversationSummary = {
   context_window?: number | null;
   permission?: string | null;
   archived?: boolean;
+  /** Latest user or assistant line, flattened. Empty when the chat has none. */
+  preview?: string;
 };
 export type Compaction = {
   summary: string;

@@ -4,6 +4,7 @@ import { scrollChatToEnd } from "../lib/chat-scroll";
 import {
   backfillFinishedAt,
   conversationTitleFrom,
+  lastChatLine,
   moveById,
   newConversationId,
   nowIso,
@@ -1345,6 +1346,7 @@ async function writePersisted(id: string, payload: PersistPayload) {
     model: modelId,
     context_window: existing?.context_window ?? null,
     permission: existing?.permission ?? null,
+    preview: lastChatLine(next),
   };
   if (isSameProject(ws, workspaceRef.current)) {
     setConversations((rows) => {

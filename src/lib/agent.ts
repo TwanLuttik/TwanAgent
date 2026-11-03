@@ -39,6 +39,9 @@ import {
   closeDanglingToolCalls,
   isEmptyCompletion,
   isRetryableChatError,
+  isTransientProviderError,
+  providerRetryPauseMs,
+  PROVIDER_RETRY_STATUS,
   skipToolIfAborted,
   turnFailureMessage,
 } from "./turn.ts";
@@ -307,6 +310,8 @@ export type TurnOpts = {
   /** Full reasoning text for the current model round. Empty clears the live block. */
   onReasoning?: (text: string) => void;
   onError: (text: string) => void;
+  /** Waiting on a provider outage. Empty text clears the label. */
+  onStatus?: (text: string) => void;
   confirmShell: ConfirmShell;
   getPermission?: () => PermissionMode;
   /** Grok chats only. Claude never receives plan-mode tools. */
@@ -525,11 +530,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       planLine,
       checkout,
     );
-    let result = await streamCompletion(prompt, opts, imageCache);
-    if (opts.signal.aborted) return transcript;
-    if (result.error && isRetryableChatError(result.error)) {
-      result = await streamCompletion(prompt, opts, imageCache);
-    }
+    let result = await streamUntilUp(prompt, opts, imageCache);
     if (opts.signal.aborted) return transcript;
     if (result.error && !compactedAfterOverflow && isContextLengthError(result.error)) {
       const next = await compactContext(transcript, compaction, opts);
@@ -553,7 +554,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
     }
     const empty = isEmptyCompletion(result.text, result.toolCalls) && !result.reasoning.trim();
     if (empty) {
-      result = await streamCompletion(prompt, opts, imageCache);
+      result = await streamUntilUp(prompt, opts, imageCache);
       if (opts.signal.aborted) return transcript;
       if (result.error) {
         opts.onError(result.error);
@@ -754,6 +755,69 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
     opts.onSubagent?.({ type: "done", id, status: "error", summary: error, messages: [] });
     return `Error: ${error}`;
   }
+}
+
+type StreamedRound = {
+  text: string;
+  reasoning: string;
+  toolCalls: ToolCall[];
+  thinking: ThinkingBlock[];
+  error?: string;
+  usage?: ChatUsage;
+};
+
+function pauseForProvider(signal: AbortSignal, attempt: number): Promise<void> {
+  const ms = providerRetryPauseMs(attempt);
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Ask again through a provider outage. Other retryable failures get one more try. */
+async function streamUntilUp(
+  messages: ChatMessage[],
+  opts: {
+    model?: string;
+    effort?: string;
+    contextWindow?: number;
+    onDelta: (text: string) => void;
+    onReasoning?: (text: string) => void;
+    onError: (text: string) => void;
+    onStatus?: (text: string) => void;
+    onUsage?: (usage: ChatUsage) => void;
+    signal: AbortSignal;
+    journeyId?: string;
+  },
+  imageCache: Map<string, string>,
+): Promise<StreamedRound> {
+  let attempt = 0;
+  let result = await streamCompletion(messages, opts, imageCache);
+  while (result.error && isTransientProviderError(result.error)) {
+    if (opts.signal.aborted) return { ...result, error: "Stopped." };
+    opts.onStatus?.(PROVIDER_RETRY_STATUS);
+    await pauseForProvider(opts.signal, attempt);
+    attempt += 1;
+    if (opts.signal.aborted) return { ...result, error: "Stopped." };
+    opts.onStatus?.("");
+    result = await streamCompletion(messages, opts, imageCache);
+  }
+  if (opts.signal.aborted) return result.error ? { ...result, error: "Stopped." } : result;
+  if (result.error && isRetryableChatError(result.error)) {
+    result = await streamCompletion(messages, opts, imageCache);
+  }
+  return result;
 }
 
 async function streamCompletion(

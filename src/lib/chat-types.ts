@@ -15,6 +15,11 @@ export type ChatImage = {
   dataUrl?: string;
   /** Local preview while a dropped picture is still being copied. Not saved. */
   previewUrl?: string;
+  /**
+   * Where a dropped file lived before it was copied. The model sees this.
+   * A paste has no original path, so the stored copy in `path` is used instead.
+   */
+  sourcePath?: string;
   /** Missing on pictures saved before other files could be attached. */
   kind?: "image" | "file";
   /** Size of a non-image file, in bytes. Pictures leave this unset. */

@@ -6,8 +6,11 @@ import {
   isAppProject,
   isProjectCollapsed,
   isSameProject,
+  favoriteProjectsFirst,
   focusedProjectGroups,
+  isProjectFavorite,
   sidebarFocusPath,
+  toggleProjectFavorite,
   projectHasArchived,
   removeProjectGroup,
   patchSidebarConversation,
@@ -171,6 +174,25 @@ describe("focusedProjectGroups", () => {
   it("treats a missing project as every project", () => {
     assert.equal(focusedProjectGroups(groups, "/gone"), groups);
     assert.equal(sidebarFocusPath("/gone", groups), "");
+  });
+});
+
+describe("project favorites", () => {
+  const groups = [{ path: "/app/alpha" }, { path: "/app/beta" }, { path: "/app/gamma" }];
+
+  it("toggles a project without duplicating a different slash or case", () => {
+    assert.equal(isProjectFavorite([], "/app/alpha"), false);
+    const added = toggleProjectFavorite([], "/app/Alpha/");
+    assert.equal(isProjectFavorite(added, "/app/alpha"), true);
+    assert.deepEqual(toggleProjectFavorite(added, "/app/alpha"), []);
+  });
+
+  it("keeps favorites above the other projects", () => {
+    assert.deepEqual(
+      favoriteProjectsFirst(groups, ["/app/gamma", "/missing"]).map((group) => group.path),
+      ["/app/gamma", "/app/alpha", "/app/beta"],
+    );
+    assert.equal(favoriteProjectsFirst(groups, []), groups);
   });
 });
 

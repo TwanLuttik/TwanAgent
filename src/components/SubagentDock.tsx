@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
@@ -7,8 +7,6 @@ import { subagentTypeLabel, type SubagentRecord } from "../lib/subagent";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const DURATION = 0.32;
-/** Resting height of the horizontal strip. Two chip rows fit; the rest wait behind expand. */
-const STRIP_MAX_PX = 80;
 
 export function ConversationDocks({
   children,
@@ -47,44 +45,15 @@ export function SubagentDock({
   expanded: Record<string, boolean>;
   onToggle: (id: string) => void;
 }) {
-  const list = useRef<HTMLDivElement>(null);
-  const [stripOpen, setStripOpen] = useState(false);
-  const [hidden, setHidden] = useState(0);
-  const anyOpen = agents.some((agent) => expanded[agent.id]);
-  const clipped = !stripOpen && !anyOpen;
-
-  useLayoutEffect(() => {
-    const el = list.current;
-    if (!el) return;
-    const measure = () => {
-      let count = 0;
-      for (const child of Array.from(el.children)) {
-        if ((child as HTMLElement).offsetTop >= STRIP_MAX_PX - 4) count += 1;
-      }
-      setHidden(count);
-    };
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [agents, stripOpen, anyOpen, expanded]);
-
   if (agents.length === 0) return null;
-  const showToggle = !anyOpen && (hidden > 0 || stripOpen);
+  const openAgents = agents.filter((agent) => expanded[agent.id]);
   return (
-    <div className="shrink-0 px-6 pt-2">
-      <div className="mx-auto flex w-full max-w-[720px] items-start gap-1.5">
-        <div
-          ref={list}
-          style={clipped ? { maxHeight: STRIP_MAX_PX } : anyOpen ? undefined : { maxHeight: STRIP_MAX_PX * 4 }}
-          className={`relative flex min-w-0 flex-1 flex-wrap content-start gap-1.5 ${
-            clipped ? "overflow-hidden" : anyOpen ? "" : "overflow-y-auto"
-          }`}
-        >
+    <div className="relative z-20 h-11 shrink-0 overflow-visible px-6 pt-2">
+      <div className="no-scrollbar mx-auto h-9 w-full max-w-[720px] overflow-x-auto overflow-y-hidden">
+        <div className="flex h-9 w-max min-w-full items-center gap-1.5">
           <AnimatePresence initial={false}>
             {agents.map((agent) => (
-              <SubagentPill
+              <SubagentChip
                 key={agent.id}
                 agent={agent}
                 open={Boolean(expanded[agent.id])}
@@ -93,23 +62,21 @@ export function SubagentDock({
             ))}
           </AnimatePresence>
         </div>
-        {showToggle ? (
-          <button
-            type="button"
-            aria-expanded={stripOpen}
-            onClick={() => setStripOpen((value) => !value)}
-            className="mt-0.5 flex h-8 shrink-0 items-center gap-1 rounded-full border border-line/55 bg-panel px-2.5 text-[12px] text-muted shadow-card hover:text-ink"
-          >
-            {stripOpen ? "Less" : `+${hidden}`}
-            <Symbol name={stripOpen ? "chevron.up" : "chevron.down"} className="size-3" />
-          </button>
-        ) : null}
+      </div>
+      <div className="pointer-events-none absolute inset-x-6 top-full z-30">
+        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-1.5 pt-1.5">
+          <AnimatePresence initial={false}>
+            {openAgents.map((agent) => (
+              <SubagentWindow key={agent.id} agent={agent} />
+            ))}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );
 }
 
-function SubagentPill({
+function SubagentChip({
   agent,
   open,
   onToggle,
@@ -118,6 +85,42 @@ function SubagentPill({
   open: boolean;
   onToggle: () => void;
 }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      transition={{ duration: DURATION, ease: EASE }}
+      className="pointer-events-auto w-max max-w-[15rem] shrink-0"
+    >
+      <motion.button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        initial={false}
+        animate={{ scale: 1 }}
+        whileHover={{ scale: 1.03 }}
+        transition={{ duration: DURATION, ease: EASE }}
+        className={`flex h-8 w-full origin-top items-center gap-2 rounded-full border px-3 text-left shadow-card ${
+          open ? "border-ink/25 bg-wash" : "border-line/55 bg-panel"
+        }`}
+      >
+        <StatusMark status={agent.status} />
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{agent.description}</span>
+        <span className="shrink-0 text-[12px] text-muted">{subagentTypeLabel(agent.type)}</span>
+        <motion.span
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ duration: DURATION, ease: EASE }}
+          className="flex size-3.5 shrink-0 items-center justify-center text-muted"
+        >
+          <Symbol name="chevron.down" className="size-3.5" />
+        </motion.span>
+      </motion.button>
+    </motion.div>
+  );
+}
+
+function SubagentWindow({ agent }: { agent: SubagentRecord }) {
   const live = agent.status === "running";
   const items = liveTranscriptItems(
     agent.messages.filter((message) => message.role !== "user"),
@@ -130,111 +133,69 @@ function SubagentPill({
 
   useEffect(() => {
     const el = body.current;
-    if (!el || !open || !stick.current) return;
+    if (!el || !stick.current) return;
     const max = el.scrollHeight - el.clientHeight;
     if (max - el.scrollTop < 1) return;
     el.scrollTop = el.scrollHeight;
-  }, [open, items, agent.tools.length, agent.streamText, agent.streamReasoning]);
+  }, [items, agent.tools.length, agent.streamText, agent.streamReasoning]);
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -8, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
       transition={{ duration: DURATION, ease: EASE }}
-      className={`pointer-events-auto min-w-0 ${open ? "w-full basis-full" : "w-max max-w-[15rem] shrink-0"}`}
+      className="pointer-events-auto w-full max-w-[32rem] overflow-hidden rounded-2xl border border-line/55 bg-panel shadow-card"
     >
-      <motion.div
-        initial={false}
-        animate={{ scale: 1 }}
-        whileHover={open ? undefined : { scale: 1.03 }}
-        transition={{ duration: DURATION, ease: EASE }}
-        className={`origin-top overflow-hidden border border-line/55 bg-panel shadow-card ${
-          open ? "w-full max-w-[32rem] rounded-2xl" : "rounded-full"
-        }`}
+      <div
+        ref={body}
+        onScroll={() => {
+          const el = body.current;
+          if (!el) return;
+          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+        className="max-h-56 w-full min-w-0 overflow-auto bg-canvas px-4 py-2.5"
       >
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={open}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-        >
-          <StatusMark status={agent.status} />
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
-            {agent.description}
-          </span>
-          <span className="shrink-0 text-[12px] text-muted">{subagentTypeLabel(agent.type)}</span>
-          <motion.span
-            animate={{ rotate: open ? 180 : 0 }}
-            transition={{ duration: DURATION, ease: EASE }}
-            className="flex size-3.5 shrink-0 items-center justify-center text-muted"
-          >
-            <Symbol name="chevron.down" className="size-3.5" />
-          </motion.span>
-        </button>
-        <AnimatePresence initial={false}>
-          {open ? (
-            <motion.div
-              key="body"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: DURATION, ease: EASE }}
-              className="overflow-hidden"
-            >
-              <div
-                ref={body}
-                onScroll={() => {
-                  const el = body.current;
-                  if (!el) return;
-                  stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-                }}
-                className="max-h-56 w-full min-w-0 overflow-auto border-t border-line/55 bg-canvas px-4 py-2.5"
-              >
-                {items.length ? (
-                  <div className="space-y-2">
-                    {items.map((item, i) => {
-                      if (item.kind === "thinking") {
-                        return (
-                          <div
-                            key={i}
-                            className="whitespace-pre-wrap border-l border-line pl-2 text-[12px] leading-relaxed text-muted [overflow-wrap:anywhere]"
-                          >
-                            {item.content}
-                          </div>
-                        );
-                      }
-                      if (item.kind === "tools") {
-                        return (
-                          <div key={i} className="space-y-0.5">
-                            {foldToolTrailRows(item.labels, item.details, item.commands).map((row, rowIndex) => (
-                              <SubagentToolRow key={rowIndex} row={row} />
-                            ))}
-                          </div>
-                        );
-                      }
-                      if (item.kind === "error") {
-                        return (
-                          <div key={i} className="text-[12px] text-err">
-                            {item.content}
-                          </div>
-                        );
-                      }
-                      if (item.kind !== "assistant") return null;
-                      return <ChatMarkdown key={i} text={item.content} />;
-                    })}
+        {items.length ? (
+          <div className="space-y-2">
+            {items.map((item, i) => {
+              if (item.kind === "thinking") {
+                return (
+                  <div
+                    key={i}
+                    className="whitespace-pre-wrap border-l border-line pl-2 text-[12px] leading-relaxed text-muted [overflow-wrap:anywhere]"
+                  >
+                    {item.content}
                   </div>
-                ) : (
-                  <div className="text-[12px] text-muted">{live ? "Working…" : "No output yet."}</div>
-                )}
-                {agent.error && agent.status !== "done" ? (
-                  <div className="mt-1 text-[12px] text-err">{agent.error}</div>
-                ) : null}
-              </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
-      </motion.div>
+                );
+              }
+              if (item.kind === "tools") {
+                return (
+                  <div key={i} className="space-y-0.5">
+                    {foldToolTrailRows(item.labels, item.details, item.commands).map((row, rowIndex) => (
+                      <SubagentToolRow key={rowIndex} row={row} />
+                    ))}
+                  </div>
+                );
+              }
+              if (item.kind === "error") {
+                return (
+                  <div key={i} className="text-[12px] text-err">
+                    {item.content}
+                  </div>
+                );
+              }
+              if (item.kind !== "assistant") return null;
+              return <ChatMarkdown key={i} text={item.content} />;
+            })}
+          </div>
+        ) : (
+          <div className="text-[12px] text-muted">{live ? "Working…" : "No output yet."}</div>
+        )}
+        {agent.error && agent.status !== "done" ? (
+          <div className="mt-1 text-[12px] text-err">{agent.error}</div>
+        ) : null}
+      </div>
     </motion.div>
   );
 }

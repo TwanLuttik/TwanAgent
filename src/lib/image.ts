@@ -229,7 +229,59 @@ export function insertImageToken(
   return { draft: text, cursor: from + lead.length + token.length, token };
 }
 
-/** Drop image tokens from the text the model reads. The image bytes are sent separately. */
+function tidyTokenGaps(text: string): string {
+  return text.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+$/gm, "").trim();
+}
+
+/** The path the model should read. A drop keeps the original file. A paste uses the stored copy. */
+export function attachmentPromptPath(image: ChatImage): string {
+  const source = image.sourcePath?.trim();
+  if (source) return source.replace(/\\/g, "/");
+  return image.path.replace(/\\/g, "/").trim();
+}
+
+/**
+ * Replace each `[name]` with that file's full path. The transcript keeps the
+ * short token so the bubble can highlight it. An attachment that has no path
+ * yet is removed, so the truncated label is never what the model reads.
+ */
+export function expandImageTokens(text: string, images: ChatImage[]): string {
+  if (!text.includes("[") || images.length === 0) return text;
+  const spans = imageSpans(text, images);
+  if (!spans.length) return text;
+  const byId = new Map(images.map((image) => [image.id, image]));
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    out += text.slice(cursor, span.start);
+    const image = byId.get(span.id);
+    if (image) out += attachmentPromptPath(image);
+    cursor = span.end;
+  }
+  out += text.slice(cursor);
+  return tidyTokenGaps(out);
+}
+
+export type ImageTextPart = { text: string; image: boolean };
+
+/** Pieces of a sent message. `image` parts are the `[name]` chips. */
+export function imageTextParts(text: string, images: ChatImage[]): ImageTextPart[] {
+  if (!text) return [];
+  const spans = imageSpans(text, images);
+  if (!spans.length) return [{ text, image: false }];
+  const parts: ImageTextPart[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) parts.push({ text: text.slice(cursor, span.start), image: false });
+    const token = text.slice(span.start, span.end);
+    if (token) parts.push({ text: token, image: true });
+    cursor = span.end;
+  }
+  if (cursor < text.length) parts.push({ text: text.slice(cursor), image: false });
+  return parts;
+}
+
+/** Drop image tokens. Prefer `expandImageTokens` for text the model reads. */
 export function stripImageTokens(text: string, images: ChatImage[]): string {
   if (!text.includes("[") || images.length === 0) return text;
   const spans = imageSpans(text, images);
@@ -241,7 +293,7 @@ export function stripImageTokens(text: string, images: ChatImage[]): string {
     cursor = span.end;
   }
   out += text.slice(cursor);
-  return out.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+$/gm, "").trim();
+  return tidyTokenGaps(out);
 }
 
 /**

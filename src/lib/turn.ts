@@ -25,6 +25,51 @@ export function isRetryableChatError(error: string): boolean {
   );
 }
 
+/**
+ * The provider is down. The turn keeps asking until it answers.
+ * A one-off decode error stays on the single retry in `isRetryableChatError`.
+ */
+export function isTransientProviderError(error: string): boolean {
+  if (!isRetryableChatError(error)) return false;
+  const text = error.toLowerCase();
+  return (
+    text.includes("temporarily unavailable") ||
+    text.includes("did not respond") ||
+    text.includes("overloaded") ||
+    text.includes("rate limit") ||
+    text.includes("too many requests") ||
+    text.includes("service unavailable") ||
+    text.includes("unavailable") ||
+    text.includes("error 429") ||
+    text.includes("error 500") ||
+    text.includes("error 502") ||
+    text.includes("error 503") ||
+    text.includes("error 504") ||
+    text.includes("timed out") ||
+    text.includes("timeout") ||
+    text.includes("connection reset") ||
+    text.includes("broken pipe") ||
+    text.includes("error sending request") ||
+    text.includes("connection refused") ||
+    text.includes("model stream closed")
+  );
+}
+
+/** 2s, 4s, 8s, 16s, then 30s. Matches the Rust pause. */
+export function providerRetryPauseMs(attempt: number): number {
+  const seconds = attempt <= 0 ? 2 : attempt === 1 ? 4 : attempt === 2 ? 8 : attempt === 3 ? 16 : 30;
+  return seconds * 1000;
+}
+
+export const PROVIDER_RETRY_STATUS = "The model is unavailable. Retrying…";
+
+/** Blank clears the wait label and the chat goes back to Thinking. */
+export function activityFromTurnStatus(text: string | null | undefined): ConversationActivity | null {
+  const label = (text ?? "").trim();
+  if (!label) return null;
+  return { kind: "tool", label };
+}
+
 export function turnFailureMessage(error: string): ChatMessage {
   const text = error.trim() || "xAI request failed.";
   return {

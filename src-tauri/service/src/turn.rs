@@ -274,6 +274,7 @@ fn run_live_turn_with(
     let mut prompt_tokens = stored_prompt_tokens(&conversation.context_usage);
     let mut compaction = stored_compaction(&conversation.compaction);
     let mut overflow_retries = 0u8;
+    let mut outage_tries = 0u32;
     remember_compaction(&mut conversation, &compaction);
     crate::files::set_command_cancel(cancel.clone());
     let host = PermissionHost {
@@ -332,6 +333,11 @@ fn run_live_turn_with(
                 if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
                     return finish_cancelled(service, &mut conversation, &mut on_event);
                 }
+                match hold_transient_provider(&cancel, &mut on_event, &mut outage_tries, &message) {
+                    ProviderHold::Retry => continue,
+                    ProviderHold::Stopped => return finish_cancelled(service, &mut conversation, &mut on_event),
+                    ProviderHold::Pass => {}
+                }
                 return stop_with_message(service, &mut conversation, &mut on_event, &context_failure_text(&message));
             }
         };
@@ -352,8 +358,14 @@ fn run_live_turn_with(
             if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
                 return finish_cancelled(service, &mut conversation, &mut on_event);
             }
+            match hold_transient_provider(&cancel, &mut on_event, &mut outage_tries, &message) {
+                ProviderHold::Retry => continue,
+                ProviderHold::Stopped => return finish_cancelled(service, &mut conversation, &mut on_event),
+                ProviderHold::Pass => {}
+            }
             return stop_with_message(service, &mut conversation, &mut on_event, &context_failure_text(&message));
         }
+        outage_tries = 0;
         record_round_usage(service, &conversation, &model_name, round.usage);
         if let Some(usage) = round.usage {
             prompt_tokens = usage.prompt_tokens;
@@ -426,6 +438,8 @@ fn run_live_turn_with(
 const CONTEXT_LIMIT_MESSAGE: &str =
     "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
 const FAILURE_PREFIX: &str = "Couldn't continue: ";
+/// Shown while a Grok (or other provider) outage is retried. The turn stays running.
+pub const PROVIDER_RETRY_STATUS: &str = "The model is unavailable. Retrying…";
 const TOOL_TEXT_CAP: usize = 24_000;
 const TOOL_TEXT_HEAD: usize = 20_000;
 const TOOL_TEXT_TAIL: usize = 2_000;
@@ -473,6 +487,92 @@ fn usage_value(usage: crate::model::RoundUsage) -> serde_json::Value {
         "total_tokens": usage.prompt_tokens.saturating_add(usage.completion_tokens),
         "cache_read_tokens": usage.cache_read_tokens,
     })
+}
+
+enum ProviderHold {
+    Retry,
+    Stopped,
+    Pass,
+}
+
+/// The provider did not answer, and trying again later can succeed.
+/// Auth, stop, and context-length errors are not outages: those end or fold the turn.
+pub fn transient_provider_error(error: &str) -> bool {
+    let text = error.to_lowercase();
+    if text.is_empty()
+        || text.contains("stopped")
+        || text.contains("signed in")
+        || text.contains("401")
+        || text.contains("api key")
+        || text.contains("login expired")
+        || crate::compact::is_context_length_error(error)
+    {
+        return false;
+    }
+    text.contains("temporarily unavailable")
+        || text.contains("did not respond")
+        || text.contains("overloaded")
+        || text.contains("rate limit")
+        || text.contains("too many requests")
+        || text.contains("service unavailable")
+        || text.contains("unavailable")
+        || text.contains("error 429")
+        || text.contains("error 500")
+        || text.contains("error 502")
+        || text.contains("error 503")
+        || text.contains("error 504")
+        || text.contains("timed out")
+        || text.contains("timeout")
+        || text.contains("connection reset")
+        || text.contains("broken pipe")
+        || text.contains("error sending request")
+        || text.contains("connection refused")
+        || text.contains("model stream closed")
+}
+
+/// 2s, 4s, 8s, 16s, then 30s. The turn stays up until the provider answers or the user stops.
+pub fn provider_retry_pause(attempt: u32) -> Duration {
+    let seconds = match attempt {
+        0 => 2,
+        1 => 4,
+        2 => 8,
+        3 => 16,
+        _ => 30,
+    };
+    Duration::from_secs(seconds)
+}
+
+fn wait_for_provider(cancel: &Option<Arc<AtomicBool>>, attempt: u32) -> bool {
+    let slice = Duration::from_millis(200);
+    let mut left = provider_retry_pause(attempt);
+    while !left.is_zero() {
+        if cancelled(cancel) {
+            return false;
+        }
+        let step = if left < slice { left } else { slice };
+        std::thread::sleep(step);
+        left = left.saturating_sub(step);
+    }
+    !cancelled(cancel)
+}
+
+fn hold_transient_provider(
+    cancel: &Option<Arc<AtomicBool>>,
+    on_event: &mut impl FnMut(TurnEvent),
+    tries: &mut u32,
+    message: &str,
+) -> ProviderHold {
+    if !transient_provider_error(message) {
+        return ProviderHold::Pass;
+    }
+    on_event(TurnEvent::Status(PROVIDER_RETRY_STATUS.to_string()));
+    let attempt = *tries;
+    *tries = tries.saturating_add(1);
+    if !wait_for_provider(cancel, attempt) {
+        return ProviderHold::Stopped;
+    }
+    on_event(TurnEvent::Status(String::new()));
+    ProviderHold::Retry
 }
 
 fn context_failure_text(message: &str) -> String {
@@ -1157,5 +1257,22 @@ mod tests {
         .unwrap_err();
         assert_eq!(calls, 0);
         assert!(err.to_string().contains("context size you chose"));
+    }
+
+    #[test]
+    fn a_grok_outage_is_retried_and_auth_is_not() {
+        let grok = "xAI request failed: Service temporarily unavailable. The model did not respond to this request.";
+        assert!(transient_provider_error(grok));
+        assert!(transient_provider_error("xAI error 503: unavailable"));
+        assert!(transient_provider_error("xAI request failed: overloaded"));
+        assert!(!transient_provider_error("error decoding response body"));
+        assert!(!transient_provider_error("Stopped."));
+        assert!(!transient_provider_error("Grok CLI login expired. Run grok login."));
+        assert!(!transient_provider_error("xAI rejected the API key."));
+        assert!(!transient_provider_error(
+            "This model's maximum context length was exceeded (500000 tokens)"
+        ));
+        assert_eq!(provider_retry_pause(0).as_secs(), 2);
+        assert_eq!(provider_retry_pause(4).as_secs(), 30);
     }
 }

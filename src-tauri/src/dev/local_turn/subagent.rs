@@ -10,9 +10,9 @@ use super::context::{context_failure_text, fit_prompt, recover_overflow, Fit};
 use super::tools::{cap_tool_text, turn_tools};
 use super::drive::{run_tool, stream_round};
 use super::{
-    assistant_value, close_dangling, emit, live, normalize_permission, parse_args, record_round_usage,
-    retryable_model_error, round_is_empty, stopped, stopped_flag, str_arg, LiveTurn, LocalTurnStart,
-    CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
+    assistant_value, close_dangling, emit, hold_provider_outage, live, normalize_permission, parse_args,
+    record_round_usage, retryable_model_error, round_is_empty, stopped, stopped_flag, str_arg, LiveTurn,
+    LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
 };
 
 /// A child has its own transcript and its own model rounds. The parent waits for the summary.
@@ -142,6 +142,7 @@ fn drive_subagent(
     let mut prompt_tokens = 0u64;
     let mut overflow_retries = 0u8;
     let mut model_tries = 0u8;
+    let mut outage_tries = 0u32;
     let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
     let mut failed = String::new();
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
@@ -256,6 +257,24 @@ fn drive_subagent(
                     );
                     return format!("Subagent stopped: {description}");
                 }
+                match hold_provider_outage(app, parent_id, cancel, &mut outage_tries, &error) {
+                    ProviderHold::Retry => continue,
+                    ProviderHold::Stopped => {
+                        emit_subagent(
+                            app,
+                            parent_id,
+                            "done",
+                            child_id,
+                            json!({ "status": "stopped", "summary": "Stopped.", "messages": transcript }),
+                        );
+                        return format!("Subagent stopped: {description}");
+                    }
+                    ProviderHold::Pass => {}
+                }
+                if model_tries < 1 && retryable_model_error(&error) {
+                    model_tries = 1;
+                    continue;
+                }
                 let text = context_failure_text(&error).to_string();
                 emit_subagent(app, parent_id, "error", child_id, json!({ "error": text }));
                 emit_subagent(
@@ -311,6 +330,20 @@ fn drive_subagent(
                 );
                 return format!("Subagent stopped: {description}");
             }
+            match hold_provider_outage(app, parent_id, cancel, &mut outage_tries, &error) {
+                ProviderHold::Retry => continue,
+                ProviderHold::Stopped => {
+                    emit_subagent(
+                        app,
+                        parent_id,
+                        "done",
+                        child_id,
+                        json!({ "status": "stopped", "summary": "Stopped.", "messages": transcript }),
+                    );
+                    return format!("Subagent stopped: {description}");
+                }
+                ProviderHold::Pass => {}
+            }
             if model_tries < 1 && retryable_model_error(&error) {
                 model_tries = 1;
                 continue;
@@ -330,6 +363,7 @@ fn drive_subagent(
             prompt_tokens = usage.prompt_tokens;
         }
         overflow_retries = 0;
+        outage_tries = 0;
         if round_is_empty(&round) && model_tries < 1 && !stopped_flag(cancel) && !stopped(parent) {
             model_tries = 1;
             continue;

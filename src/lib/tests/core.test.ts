@@ -5,6 +5,7 @@ import {
   activityFromToolCall,
   conversationActivityLabel,
   conversationTitleFrom,
+  lastChatLine,
   latestAssistantPreview,
   moveById,
   filterProjectRows,
@@ -177,6 +178,20 @@ describe("conversation activity", () => {
       { kind: "tool", label: "Read src/app.ts (10 - 60)" },
     );
     assert.equal(conversationActivityLabel({ kind: "tool", label: "Read src/main.tsx" }), "Read src/main.tsx");
+  });
+});
+
+describe("lastChatLine", () => {
+  it("uses the latest user or assistant text and skips a blank tool row", () => {
+    assert.equal(
+      lastChatLine([
+        { role: "user", content: "What can you see in this folder?" },
+        { role: "assistant", content: "I can see a README\nand a src directory." },
+        { role: "tool", content: "ok" },
+      ]),
+      "I can see a README and a src directory.",
+    );
+    assert.equal(lastChatLine([{ role: "user", content: "   " }]), "");
   });
 });
 
@@ -1542,7 +1557,7 @@ describe("toApiMessages", () => {
     });
   });
 
-  it("drops an inline image token because the picture is sent beside the text", () => {
+  it("replaces an inline image token with the full path and still sends the picture", () => {
     const out = toApiMessages([
       {
         role: "user",
@@ -1562,7 +1577,7 @@ describe("toApiMessages", () => {
       },
     ]);
     assert.deepEqual(out[0]?.content, [
-      { type: "text", text: "what is wrong in here" },
+      { type: "text", text: "what is wrong in /tmp/a.jpg here" },
       { type: "image_url", image_url: { url: "data:image/jpeg;base64,abc" } },
     ]);
   });
@@ -1587,7 +1602,9 @@ describe("toApiMessages", () => {
         ],
       },
     ]);
-    assert.deepEqual(out[0]?.content, [{ type: "text", text: "read" }]);
+    assert.deepEqual(out[0]?.content, [
+      { type: "text", text: "read /tmp/attachments/inbox/file-1.md" },
+    ]);
     assert.equal(out[0]?.images?.[0]?.kind, "file");
     assert.equal(JSON.stringify(out[0]?.content).includes("image_url"), false);
   });

@@ -641,6 +641,7 @@ mod tests {
             context_window: None,
             permission: None,
             archived: false,
+            preview: String::new(),
         };
         crate::appdb::replace_sidebar(&conn, &path, &[chat.clone()], &[]).unwrap();
         // The sidebar reads a second copy stored under the lowercased path, with no project row.

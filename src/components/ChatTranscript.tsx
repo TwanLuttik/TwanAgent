@@ -12,6 +12,7 @@ import {
   type TranscriptItem,
   type TranscriptTurn,
 } from "../lib/core";
+import { imageTextParts } from "../lib/image";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
@@ -82,6 +83,7 @@ function UserBubble({
   mentionFiles?: MentionFile[];
 }) {
   const shown = displayFileMentions(text, mentionFiles ?? []);
+  const parts = imageTextParts(shown, images ?? []);
   const body = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [overflow, setOverflow] = useState(false);
@@ -115,7 +117,15 @@ function UserBubble({
               open ? "" : `${USER_MESSAGE_MAX} overflow-hidden`
             }`}
           >
-            {shown}
+            {parts.map((part, index) =>
+              part.image ? (
+                <span key={index} className="rounded-[3px] bg-accent/15 text-accent">
+                  {part.text}
+                </span>
+              ) : (
+                part.text
+              ),
+            )}
           </div>
           {clipped ? (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-inset to-transparent" />
@@ -156,14 +166,15 @@ export function DropImagesHint() {
   );
 }
 
+/**
+ * Sticks the user message while the rest of the turn scrolls under it.
+ * The fade is in flow. Hanging it past the header painted a shadow across the first tool row.
+ */
 function StickyTurnHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="relative sticky top-0 z-10 -mx-1 bg-canvas/95 px-1 pt-1 pb-2 backdrop-blur-[2px]">
-      {children}
-      <div
-        className="pointer-events-none absolute inset-x-0 top-full h-3 bg-gradient-to-b from-canvas/95 to-transparent"
-        aria-hidden
-      />
+    <div className="sticky top-0 z-10 -mx-1">
+      <div className="bg-canvas/95 px-1 pt-1 pb-2 backdrop-blur-[2px]">{children}</div>
+      <div className="pointer-events-none h-3 bg-gradient-to-b from-canvas/95 to-transparent" aria-hidden />
     </div>
   );
 }

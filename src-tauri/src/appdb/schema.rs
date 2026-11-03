@@ -97,6 +97,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             context_window INTEGER,
             permission TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
+            preview TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (project_path, id)
         );
         CREATE TABLE IF NOT EXISTS sidebar_journeys (
@@ -191,6 +192,15 @@ fn migrate_sidebar_cache(conn: &Connection) -> Result<()> {
             "ALTER TABLE sidebar_projects ADD COLUMN cloud INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
+    }
+    if !column_exists(conn, "sidebar_conversations", "preview")? {
+        conn.execute(
+            "ALTER TABLE sidebar_conversations ADD COLUMN preview TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+        // Local copies have no last line yet. Dropping the marker makes the next list
+        // read each project store once and write the preview back.
+        conn.execute("DELETE FROM sidebar_projects WHERE cloud = 0", [])?;
     }
     conn.execute_batch(
         "

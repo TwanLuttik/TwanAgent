@@ -16,9 +16,9 @@ use super::tools::{
     turn_tools, update_journey,
 };
 use super::{
-    assistant_value, close_dangling, emit, emit_saved, fail, int_arg, keep_partial,
+    assistant_value, close_dangling, emit, emit_saved, fail, hold_provider_outage, int_arg, keep_partial,
     normalize_permission, parse_args, record_round_usage, retryable_model_error, round_is_empty,
-    save, stopped, str_arg, LiveTurn, LocalTurnStart, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
+    save, stopped, str_arg, LiveTurn, LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
 };
 use crate::error::{Error, Result};
 use crate::state::AppState;
@@ -42,6 +42,7 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
     let (mut prompt_tokens, mut compaction) = load_budget(data_dir, &request.workspace, id);
     let mut overflow_retries = 0u8;
     let mut model_tries = 0u8;
+    let mut outage_tries = 0u32;
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
         if stopped(live) {
@@ -108,6 +109,20 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                     emit(app, id, "stopped", None, None, None);
                     return;
                 }
+                match hold_provider_outage(app, id, &live.cancel, &mut outage_tries, &message) {
+                    ProviderHold::Retry => continue,
+                    ProviderHold::Stopped => {
+                        save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                        emit_saved(app, id, &transcript, None, compaction.as_ref());
+                        emit(app, id, "stopped", None, None, None);
+                        return;
+                    }
+                    ProviderHold::Pass => {}
+                }
+                if model_tries < 1 && retryable_model_error(&message) {
+                    model_tries = 1;
+                    continue;
+                }
                 let text = context_failure_text(&message);
                 fail(app, id, &mut transcript, text);
                 save(data_dir, &request.workspace, id, &transcript, saved_len, None);
@@ -150,6 +165,16 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 emit(app, id, "stopped", None, None, None);
                 return;
             }
+            match hold_provider_outage(app, id, &live.cancel, &mut outage_tries, &error) {
+                ProviderHold::Retry => continue,
+                ProviderHold::Stopped => {
+                    save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
+                    emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+                    emit(app, id, "stopped", None, None, None);
+                    return;
+                }
+                ProviderHold::Pass => {}
+            }
             if model_tries < 1 && retryable_model_error(&error) {
                 model_tries = 1;
                 continue;
@@ -164,6 +189,7 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
             prompt_tokens = usage.prompt_tokens;
         }
         overflow_retries = 0;
+        outage_tries = 0;
         // A blank round is usually a dropped final message or a one-off empty completion.
         // Ask once more before ending the turn. The webview loop already did this.
         if round_is_empty(&round) && model_tries < 1 && !stopped(live) {

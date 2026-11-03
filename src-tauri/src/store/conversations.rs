@@ -67,7 +67,55 @@ fn summary_from_head(head: ConvHead) -> ConversationSummary {
             .filter(|value| *value > 0),
         permission: head.permission.filter(|value| !value.trim().is_empty()),
         archived: head.archived,
+        preview: String::new(),
     }
+}
+
+/// One sidebar line. Newlines and extra spaces collapse, and a long line is cut.
+pub(crate) fn clip_sidebar_line(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX: usize = 96;
+    let mut chars = flat.chars();
+    let head: String = chars.by_ref().take(MAX).collect();
+    if chars.next().is_none() {
+        head
+    } else {
+        let mut cut: String = head.chars().take(MAX - 1).collect();
+        cut.push('…');
+        cut
+    }
+}
+
+fn last_message_line(conn: &Connection, id: &str) -> Result<String> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT content FROM messages
+             WHERE conversation_id = ?1 AND role IN ('user', 'assistant')
+               AND content IS NOT NULL AND length(trim(content)) > 0
+             ORDER BY sort_order DESC, id DESC LIMIT 1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(text.map(|value| clip_sidebar_line(&value)).unwrap_or_default())
+}
+
+fn last_message_lines(conn: &Connection) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT conversation_id, content FROM (
+            SELECT conversation_id, content,
+                   ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY sort_order DESC, id DESC) AS n
+            FROM messages
+            WHERE role IN ('user', 'assistant') AND content IS NOT NULL AND length(trim(content)) > 0
+         ) WHERE n = 1",
+    )?;
+    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (id, content) = row?;
+        out.insert(id, clip_sidebar_line(&content));
+    }
+    Ok(out)
 }
 
 /// One sidebar row. Messages stay in the database.
@@ -78,16 +126,23 @@ pub fn conversation_summary(conn: &Connection, id: &str) -> Result<ConversationS
     let Some(head) = head else {
         return Err(Error::NotFound("conversation not found".into()));
     };
-    Ok(summary_from_head(head))
+    let mut summary = summary_from_head(head);
+    summary.preview = last_message_line(conn, id)?;
+    Ok(summary)
 }
 
 /// Sidebar rows. Messages stay in the database until a chat is opened.
 pub fn list_conversation_summaries(conn: &Connection) -> Result<Vec<ConversationSummary>> {
+    let previews = last_message_lines(conn)?;
     let mut stmt = conn.prepare(&format!("{HEAD_SQL} ORDER BY sort_order ASC, id ASC"))?;
     let rows = stmt.query_map([], map_head)?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(summary_from_head(row?));
+        let mut summary = summary_from_head(row?);
+        if let Some(line) = previews.get(&summary.id) {
+            summary.preview = line.clone();
+        }
+        out.push(summary);
     }
     Ok(out)
 }

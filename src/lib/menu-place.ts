@@ -19,3 +19,17 @@ export function placeMenu(
     top: Math.min(Math.max(margin, top), maxTop),
   };
 }
+
+/** Corner that stays on the cursor, so a context menu can scale out from the click. */
+export function menuMotionOrigin(
+  cursorX: number,
+  cursorY: number,
+  placed: { left: number; top: number },
+  width: number,
+  height: number,
+): { originX: "left" | "right"; originY: "top" | "bottom" } {
+  return {
+    originX: placed.left + width <= cursorX + 0.5 ? "right" : "left",
+    originY: placed.top + height <= cursorY + 0.5 ? "bottom" : "top",
+  };
+}

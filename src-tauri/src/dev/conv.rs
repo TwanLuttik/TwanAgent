@@ -195,7 +195,24 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
         context_window: c.context_window.filter(|value| *value > 0),
         permission: c.permission.filter(|value| !value.trim().is_empty()),
         archived: c.archived,
+        preview: last_line_from_messages(&c.messages),
     }
+}
+
+#[cfg(test)]
+fn last_line_from_messages(messages: &[serde_json::Value]) -> String {
+    for message in messages.iter().rev() {
+        let role = message.get("role").and_then(|value| value.as_str()).unwrap_or("");
+        if role != "user" && role != "assistant" {
+            continue;
+        }
+        let content = message.get("content").and_then(|value| value.as_str()).unwrap_or("");
+        let line = crate::store::clip_sidebar_line(content);
+        if !line.is_empty() {
+            return line;
+        }
+    }
+    String::new()
 }
 
 /// An empty chat saved in the local mount. A titled chat, or a terminal, is real.

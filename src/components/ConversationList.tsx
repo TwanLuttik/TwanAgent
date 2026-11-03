@@ -24,6 +24,7 @@ import { AnchoredMenu } from "./ContextMenu";
 import { RunningElapsed } from "./RunningElapsed";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
+import { chatFooterLabel, type ChatPlace } from "../lib/chat-place";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
@@ -51,6 +52,7 @@ export function ConversationList({
   reorderable = true,
   selectedIds,
   onReorder,
+  place,
 }: {
   conversations: ConversationSummary[];
   activeId: string;
@@ -71,6 +73,8 @@ export function ConversationList({
   /** Chat ids in this list that are part of the multi-selection. */
   selectedIds?: ReadonlySet<string>;
   onReorder: (fromId: string, toId: string) => void;
+  /** Branch, pull request, and where this project's chats live. */
+  place: ChatPlace;
 }) {
   const [draggingId, setDraggingId] = useState<UniqueIdentifier | null>(null);
   const [overId, setOverId] = useState<UniqueIdentifier | null>(null);
@@ -193,6 +197,7 @@ export function ConversationList({
               onOpen={onOpen}
               onDelete={onDelete}
               onContextMenu={openRowMenu}
+              place={place}
             />
           ))}
         </div>
@@ -212,6 +217,7 @@ export function ConversationList({
                   : ""
               }
               startedAt={turnStartedAt(runningIds, dragging.id)}
+              place={place}
               overlay
             />
           </div>
@@ -256,6 +262,7 @@ const SortableRow = memo(function SortableRow({
   onSelect,
   onDelete,
   onContextMenu,
+  place,
 }: {
   row: ConversationSummary;
   selected: boolean;
@@ -273,6 +280,7 @@ const SortableRow = memo(function SortableRow({
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
   onContextMenu: (ev: MouseEvent, id: string) => void;
+  place: ChatPlace;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: row.id,
@@ -310,6 +318,7 @@ const SortableRow = memo(function SortableRow({
         onOpen={onOpen}
         onSelect={onSelect}
         onDelete={onDelete}
+        place={place}
       />
     </div>
   );
@@ -336,6 +345,7 @@ const ConversationCard = memo(function ConversationCard({
   onOpen,
   onSelect,
   onDelete,
+  place,
 }: {
   row: ConversationSummary;
   selected: boolean;
@@ -351,11 +361,12 @@ const ConversationCard = memo(function ConversationCard({
   onOpen?: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete?: (id: string) => void;
+  place: ChatPlace;
 }) {
   const showPreview = Boolean(running && preview);
   return (
     <div
-      className={`group/chat relative flex items-center rounded-[6px] select-none ${
+      className={`group/chat relative flex items-start rounded-[6px] select-none ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
@@ -379,10 +390,26 @@ const ConversationCard = memo(function ConversationCard({
           onSelect?.(rowId, { toggle: false, range: false });
           onOpen?.(rowId);
         }}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-[6px] pr-1 pl-2 text-left text-[13px] text-ink disabled:cursor-default"
+        className="flex min-w-0 flex-1 cursor-pointer items-start py-1.5 pr-2 pl-2 text-left text-[13px] text-ink disabled:cursor-default"
       >
         <span className="min-w-0 flex-1">
-          <span className="block min-w-0 truncate">{row.title}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate">{row.title}</span>
+            {age ? (
+              <span
+                className="shrink-0 text-right text-[11px] leading-none tabular-nums text-muted transition-[margin] duration-150 ease-out group-hover/chat:mr-5"
+                title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
+              >
+                {age}
+              </span>
+            ) : null}
+            {running ? (
+              <span
+                className="size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+                aria-label={preview || "Loading"}
+              />
+            ) : null}
+          </span>
           {showPreview ? (
             <span className="mt-0.5 flex h-[14px] min-w-0 items-center gap-1.5 text-[11px] leading-[14px] text-muted">
               <span className="min-w-0 truncate">{preview}</span>
@@ -393,35 +420,15 @@ const ConversationCard = memo(function ConversationCard({
           ) : todo ? (
             <TodoMark badge={todo} />
           ) : null}
+          <ChatFooter place={place} model={row.model} kind={row.kind} preview={row.preview} title={row.title} />
         </span>
       </button>
-      <span className="flex shrink-0 items-center">
-        {age ? (
-          <span
-            className="mr-1.5 w-6 shrink-0 text-right text-[11px] leading-none tabular-nums text-muted"
-            title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
-          >
-            {age}
-          </span>
-        ) : null}
-        {row.kind === "terminal" ? (
-          <Symbol name="terminal" className="mr-1 size-3 shrink-0 text-muted" />
-        ) : (
-          <ModelMark model={row.model} />
-        )}
-        {running ? (
-          <span
-            className="mr-1.5 size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-            aria-label={preview || "Loading"}
-          />
-        ) : null}
-      </span>
       {onDelete && !overlay && !placeholder ? (
         <button
           type="button"
           aria-label="Delete conversation"
           onClick={() => onDelete?.(rowId)}
-          className="flex w-0 shrink-0 items-center justify-center overflow-hidden text-muted opacity-0 transition-all duration-150 ease-out group-hover/chat:mr-1 group-hover/chat:w-4 group-hover/chat:opacity-100 hover:text-ink"
+          className="absolute top-[7px] right-1.5 flex size-4 items-center justify-center text-muted opacity-0 transition-opacity duration-150 ease-out group-hover/chat:opacity-100 hover:text-ink"
         >
           <Symbol name="xmark" className="size-2.5 shrink-0" />
         </button>
@@ -519,3 +526,64 @@ const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) 
     </span>
   );
 });
+
+function PlaceMarks({ place, model, kind }: { place: ChatPlace; model?: string | null; kind?: string }) {
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1.5">
+      <span title={place.server ? "Server" : "Local"} className="flex size-4 items-center justify-center">
+        <Symbol name={place.server ? "cloud.fill" : "desktop"} className="size-4 text-muted/80" />
+      </span>
+      {kind === "terminal" ? (
+        <Symbol name="terminal" className="size-4 shrink-0 text-muted" />
+      ) : (
+        <span className="flex size-4 items-center justify-center [&_.model-mark]:mr-0 [&_.model-mark]:size-4 [&_svg]:!h-4 [&_svg]:!w-4">
+          <ModelMark model={model} />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function ChatFooter({
+  place,
+  model,
+  kind,
+  preview,
+  title,
+}: {
+  place: ChatPlace;
+  model?: string | null;
+  kind?: string;
+  preview?: string | null;
+  title: string;
+}) {
+  const branch = place.branch.trim();
+  const tracking = [place.ahead ? `↑${place.ahead}` : "", place.behind ? `↓${place.behind}` : ""]
+    .filter(Boolean)
+    .join(" ");
+  const pr = place.pr ? (place.pr.open ? `#${place.pr.number}` : `#${place.pr.number} closed`) : "";
+  const line = (preview ?? "").replace(/\s+/g, " ").trim();
+  const caption = branch || !line || line.toLowerCase() === title.trim().toLowerCase() ? "" : line;
+  return (
+    <span
+      className="mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted"
+      title={chatFooterLabel(place)}
+    >
+      {caption ? <span className="min-w-0 flex-1 truncate">{caption}</span> : null}
+      {branch ? (
+        <span className="flex min-w-0 items-center gap-1">
+          <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-muted/70" />
+          <span className="min-w-0 truncate">{branch}</span>
+        </span>
+      ) : null}
+      {tracking ? <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted/80">{tracking}</span> : null}
+      {pr ? (
+        <span className="flex shrink-0 items-center gap-1">
+          <Symbol name="arrow.triangle.pull" className="size-3 shrink-0 text-muted/70" />
+          <span>{pr}</span>
+        </span>
+      ) : null}
+      <PlaceMarks place={place} model={model} kind={kind} />
+    </span>
+  );
+}

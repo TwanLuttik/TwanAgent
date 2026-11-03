@@ -126,6 +126,16 @@ export function todoBadge(todos: AgentTodo[]): TodoBadge | null {
 }
 
 /**
+ * What the sidebar should paint. The conversation hides a list once every item
+ * is done or cancelled, so a finished chip would be a lie after the chat is open.
+ */
+export function sidebarTodoBadge(todos: AgentTodo[]): TodoBadge | null {
+  const badge = todoBadge(todos);
+  if (!badge || badge.finished) return null;
+  return badge;
+}
+
+/**
  * Todos from the latest turn that wrote any.
  * A newer user message with no todo list of its own clears the previous one.
  */

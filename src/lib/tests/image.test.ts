@@ -6,8 +6,10 @@ import {
   MAX_PROMPT_IMAGES,
   appendPromptImages,
   canSendPrompt,
+  expandImageTokens,
   imageBeforeCursor,
   imageSpans,
+  imageTextParts,
   imageToken,
   imageTokenLabel,
   insertImageToken,
@@ -284,6 +286,46 @@ describe("image tokens", () => {
     );
     assert.equal(stripImageTokens("keep [shot.png] typed", []), "keep [shot.png] typed");
     assert.equal(stripImageTokens("only [shot.png]", [shot]), "only");
+  });
+
+  it("replaces the short label with the attachment path for the model", () => {
+    const text = expandImageTokens("use this [CleanShot 202...] as style", [
+      { ...shot, name: "CleanShot 202...", path: "/tmp/attachments/inbox/abc.png" },
+    ]);
+    assert.equal(text, "use this /tmp/attachments/inbox/abc.png as style");
+    assert.equal(text.includes("CleanShot 202..."), false);
+  });
+
+  it("prefers the dropped file's original path over the copied attachment", () => {
+    const text = expandImageTokens("see [CleanShot 202...]", [
+      {
+        ...shot,
+        name: "CleanShot 202...",
+        path: "/tmp/attachments/inbox/abc.png",
+        sourcePath: "/Users/me/Desktop/CleanShot 2026-10-23 at 3.38.14 PM.png",
+      },
+    ]);
+    assert.equal(text, "see /Users/me/Desktop/CleanShot 2026-10-23 at 3.38.14 PM.png");
+  });
+
+  it("does not send the short label when the file has no path yet", () => {
+    assert.equal(
+      expandImageTokens("only [CleanShot 202...]", [{ ...shot, name: "CleanShot 202...", path: "" }]),
+      "only",
+    );
+    assert.equal(expandImageTokens("keep [notes.md] typed", []), "keep [notes.md] typed");
+  });
+
+  it("marks the bracket token so a sent message can highlight it", () => {
+    const parts = imageTextParts("style a bit [CleanShot 202...] please", [
+      { ...shot, name: "CleanShot 202..." },
+    ]);
+    assert.deepEqual(parts, [
+      { text: "style a bit ", image: false },
+      { text: "[CleanShot 202...]", image: true },
+      { text: " please", image: false },
+    ]);
+    assert.deepEqual(imageTextParts("plain note", [shot]), [{ text: "plain note", image: false }]);
   });
 
   it("deletes the whole token from anywhere inside it", () => {

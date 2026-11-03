@@ -38,8 +38,8 @@ pub fn upsert_sidebar_conversation(
     conn.execute(
         "INSERT INTO sidebar_conversations (
             project_path, id, title, created_at, updated_at, kind, journey_id, sort_order,
-            effort, model, context_window, permission, archived
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            effort, model, context_window, permission, archived, preview
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(project_path, id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
@@ -51,7 +51,8 @@ pub fn upsert_sidebar_conversation(
             model = excluded.model,
             context_window = excluded.context_window,
             permission = excluded.permission,
-            archived = excluded.archived",
+            archived = excluded.archived,
+            preview = excluded.preview",
         params![
             key,
             row.id,
@@ -66,6 +67,7 @@ pub fn upsert_sidebar_conversation(
             row.context_window.map(|value| value as i64),
             row.permission,
             if row.archived { 1 } else { 0 },
+            row.preview,
         ],
     )?;
     Ok(())
@@ -86,8 +88,8 @@ pub fn replace_sidebar_source(
         tx.execute(
             "INSERT INTO sidebar_conversations (
                 project_path, id, title, created_at, updated_at, kind, journey_id, sort_order,
-                effort, model, context_window, permission, archived
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                effort, model, context_window, permission, archived, preview
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 key,
                 row.id,
@@ -102,6 +104,7 @@ pub fn replace_sidebar_source(
                 row.context_window.map(|value| value as i64),
                 row.permission,
                 if row.archived { 1 } else { 0 },
+                row.preview,
             ],
         )?;
     }
@@ -204,7 +207,7 @@ pub fn sidebar_transcripts(conn: &Connection, project: &str) -> Result<Vec<crate
 pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProject>> {
     let projects = list_projects(conn)?;
     let mut chats = conn.prepare(
-        "SELECT project_path, id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived
+        "SELECT project_path, id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived, preview
          FROM sidebar_conversations ORDER BY project_path ASC, sort_order ASC, id ASC",
     )?;
     let chat_rows = chats.query_map([], conversation_summary_row)?;
@@ -273,6 +276,7 @@ fn conversation_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String
             context_window: window.and_then(|value| u64::try_from(value).ok()),
             permission: row.get(11)?,
             archived: row.get::<_, i64>(12)? != 0,
+            preview: row.get(13)?,
         },
     ))
 }
@@ -298,7 +302,7 @@ pub fn sidebar_for(
 ) -> Result<(Vec<crate::dev::ConversationSummary>, Vec<crate::dev::Journey>)> {
     let key = project_key(project);
     let mut chats = conn.prepare(
-        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived
+        "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived, preview
          FROM sidebar_conversations WHERE project_path = ?1 ORDER BY sort_order ASC, id ASC",
     )?;
     let chat_rows = chats.query_map([&key], |row| {
@@ -316,6 +320,7 @@ pub fn sidebar_for(
             context_window: window.and_then(|value| u64::try_from(value).ok()),
             permission: row.get(10)?,
             archived: row.get::<_, i64>(11)? != 0,
+            preview: row.get(12)?,
         })
     })?;
     let mut conversations = Vec::new();

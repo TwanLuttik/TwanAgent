@@ -127,6 +127,9 @@ pub struct ConversationSummary {
     pub permission: Option<String>,
     #[serde(default)]
     pub archived: bool,
+    /// One flattened line from the latest user or assistant message. Empty when the chat has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -31,8 +31,8 @@ import {
   isImageFile,
   insertImageToken,
   persistableImages,
+  expandImageTokens,
   removeImageTokens,
-  stripImageTokens,
   setImagesForChat,
   uniqueImageTokenLabel,
 } from "../lib/image";
@@ -79,6 +79,7 @@ import {
   composerSettingsForChat,
   claimDraftForChat,
   draftForChat,
+  activityFromTurnStatus,
   isTurnFailureMessage,
   mergeHostedTranscript,
   modelForTurn,
@@ -347,6 +348,13 @@ function applyDetachedEvent(
     return;
   }
   if (event.kind === "refresh") bumpFiles();
+  if (event.kind === "status") {
+    const activity = activityFromTurnStatus(event.text);
+    rememberLive(id, { activity });
+    markRunning(id, { activity });
+    if (visible()) setRunningActivity(activity);
+    return;
+  }
   if (event.kind === "error" && event.text && visible()) setFlash({ kind: "err", text: event.text });
 }
 
@@ -636,7 +644,11 @@ function replaceDraftImage(chatId: string, id: string, next: ChatImage) {
   if (prev.previewUrl) URL.revokeObjectURL(prev.previewUrl);
   commitImages(
     chatId,
-    current.map((img) => (img.id === id ? { ...next, id, name: img.name, previewUrl: undefined } : img)),
+    current.map((img) =>
+      img.id === id
+        ? { ...next, id, name: img.name, sourcePath: img.sourcePath, previewUrl: undefined }
+        : img,
+    ),
   );
 }
 
@@ -695,8 +707,13 @@ function attachPreparedImages(
   });
 }
 
-function placeholderAttachment(file: { name?: string; type?: string }, previewUrl?: string): ChatImage {
+function placeholderAttachment(
+  file: { name?: string; type?: string },
+  previewUrl?: string,
+  sourcePath?: string,
+): ChatImage {
   const image = isImageFile(file);
+  const source = sourcePath?.trim();
   return {
     id: crypto.randomUUID(),
     path: "",
@@ -706,6 +723,7 @@ function placeholderAttachment(file: { name?: string; type?: string }, previewUr
     height: 0,
     resized: false,
     ...(previewUrl ? { previewUrl } : {}),
+    ...(source ? { sourcePath: source } : {}),
     ...(image ? {} : { kind: "file" as const }),
   };
 }
@@ -758,7 +776,9 @@ async function addPromptImagePaths(paths: string[], chatId = activeId) {
   }
   const take = images.slice(0, room);
   const selection = imageSelection(chatId);
-  const pending = take.map((path) => placeholderAttachment({ name: fileBaseName(path) || path }));
+  const pending = take.map((path) =>
+    placeholderAttachment({ name: fileBaseName(path) || path }, undefined, path),
+  );
   attachPreparedImages(pending, selection, chatId);
   const work = Promise.all(
     pending.map(async (row, index) => {
@@ -1042,11 +1062,9 @@ async function send(targetId = activeIdRef.current) {
   const imageKey = sendingSide ? targetId : activeIdRef.current;
   await waitPrepares(imageKey);
   const heldImages = imagesForChat(draftImagesRef.current, imageKey);
+  // Keep the short `[name]` in the stored message. The model copy swaps it for the full path.
   const text = sendingSide
-    ? expandFileMentions(
-        stripImageTokens(draftForChat(draftsRef.current, targetId), heldImages),
-        mentionFiles,
-      ).trim()
+    ? expandFileMentions(draftForChat(draftsRef.current, targetId), mentionFiles).trim()
     : expandFileMentions(expandPasteTokens(draftForChat(draftsRef.current, imageKey) || draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(heldImages);
   if (!canSendPrompt(text, images)) return;
@@ -1224,7 +1242,7 @@ async function runTurn(
   );
   if (hostedTurnStaysOnServer(remoteRef.current)) {
     const prompt = [...next].reverse().find((message) => message.role === "user");
-    const text = String(prompt?.content ?? "").trim();
+    const text = expandImageTokens(String(prompt?.content ?? ""), prompt?.images ?? []).trim();
     if (!text) {
       if (visible()) setFlash({ kind: "err", text: "prompt is empty" });
       turnsRef.current.delete(id);
@@ -1255,8 +1273,8 @@ async function runTurn(
           const streamText = `${live?.streamText ?? ""}` + ev.text;
           rememberLive(id, { streamText });
           if (visible()) setStreamText(streamText);
-        } else if (ev.kind === "status" && ev.text && own) {
-          const activity = { kind: "tool" as const, label: ev.text };
+        } else if (ev.kind === "status" && own) {
+          const activity = activityFromTurnStatus(ev.text);
           rememberLive(id, { activity });
           markRunning(id, { activity });
           if (visible()) setRunningActivity(activity);
@@ -1372,6 +1390,12 @@ async function runTurn(
       },
       onError: (err) => {
         if (visible()) setFlash({ kind: "err", text: err });
+      },
+      onStatus: (text) => {
+        const activity = activityFromTurnStatus(text);
+        rememberLive(id, { activity });
+        markRunning(id, { activity });
+        if (visible()) setRunningActivity(activity);
       },
       confirmShell: (command) => confirmShell(command, id),
       getPermission: () => permissionForChat(id),

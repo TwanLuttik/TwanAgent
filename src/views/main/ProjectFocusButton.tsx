@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import { ProjectMark } from "../../components/ProjectMark";
 import { Symbol } from "../../components/Symbol";
-import { isProjectCollapsed, isSameProject, nestGroupedProjects, sidebarFocusPath } from "../../lib/all-projects";
+import { isProjectCollapsed, isProjectFavorite, isSameProject, nestGroupedProjects, sidebarFocusPath } from "../../lib/all-projects";
 import { useProjectGroups } from "../../lib/project-groups";
 import { projectKey } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
@@ -21,11 +21,15 @@ export function ProjectFocusButton({
   focusPath,
   onFocus,
   hidden = false,
+  favoritePaths = [],
+  onToggleFavorite,
 }: {
   focusPath: string;
   onFocus: (path: string) => void;
   /** The header is still mounted while the sidebar is collapsed. Close the menu then. */
   hidden?: boolean;
+  favoritePaths?: readonly string[];
+  onToggleFavorite?: (path: string) => void;
 }) {
   const { allProjectGroups, sidebarReady, collapsedProjects, toggleProjectCollapsed } = useSidebar();
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -192,6 +196,12 @@ export function ProjectFocusButton({
                         label={group.name}
                         title={group.path}
                         selected={isSameProject(group.path, active)}
+                        favorite={isProjectFavorite(favoritePaths, group.path)}
+                        onFavorite={
+                          onToggleFavorite
+                            ? () => onToggleFavorite(group.path)
+                            : undefined
+                        }
                         onPick={() => pick(group.path)}
                         mark={
                           <ProjectMark
@@ -221,30 +231,52 @@ function FocusRow({
   label,
   title,
   selected,
+  favorite = false,
+  onFavorite,
   onPick,
   mark,
 }: {
   label: string;
   title?: string;
   selected: boolean;
+  favorite?: boolean;
+  onFavorite?: () => void;
   onPick: () => void;
   mark: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      role="menuitemradio"
-      aria-checked={selected}
-      title={title || label}
-      onClick={onPick}
-      className={`flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[13px] hover:bg-wash ${
+    <div
+      className={`flex h-8 w-full items-center gap-1 rounded-md pr-1 text-[13px] hover:bg-wash ${
         selected ? "font-medium text-ink" : "text-ink/80"
       }`}
     >
-      {mark}
-      <span className="min-w-0 flex-1 truncate">{label}</span>
-      <Symbol name="checkmark" className={`size-3 shrink-0 text-accent ${selected ? "opacity-100" : "opacity-0"}`} />
-    </button>
+      <button
+        type="button"
+        role="menuitemradio"
+        aria-checked={selected}
+        title={title || label}
+        onClick={onPick}
+        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 text-left"
+      >
+        {mark}
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <Symbol name="checkmark" className={`size-3 shrink-0 text-accent ${selected ? "opacity-100" : "opacity-0"}`} />
+      </button>
+      {onFavorite ? (
+        <button
+          type="button"
+          aria-label={favorite ? `Unfavorite ${label}` : `Favorite ${label}`}
+          aria-pressed={favorite}
+          title={favorite ? "Unfavorite" : "Favorite"}
+          onClick={onFavorite}
+          className={`flex size-6 shrink-0 cursor-pointer items-center justify-center rounded ${
+            favorite ? "text-warn" : "text-muted hover:text-ink"
+          }`}
+        >
+          <Symbol name={favorite ? "star.fill" : "star"} className="size-3" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 

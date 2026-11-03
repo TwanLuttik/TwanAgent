@@ -10,8 +10,10 @@ import {
 import { restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import {
+  favoriteProjectsFirst,
   isAppProject,
   isProjectCollapsed,
+  isProjectFavorite,
   isSameProject,
   matchesSidebarQuery,
   projectHasArchived,
@@ -20,6 +22,7 @@ import {
   type ProjectGroupRow,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
+import type { ChatPlace } from "../lib/chat-place";
 import { projectGitKey, type ProjectGit } from "../lib/project-git";
 import type { WorktreeChild } from "../lib/worktree.ts";
 import * as api from "../lib/tauri";
@@ -29,7 +32,6 @@ import { ProjectMark } from "./ProjectMark";
 import { Symbol } from "./Symbol";
 import {
   DeleteWorktreeDialog,
-  ProjectGitMenu,
   ProjectGitRow,
   ProjectMarks,
   ProjectSection,
@@ -37,6 +39,25 @@ import {
   WorktreeRow,
 } from "./projects/ProjectRows";
 import { DeleteProjectDialog, ProjectContextMenu, type ProjectDeleteMode } from "./projects/ProjectDialogs";
+
+/** Height transition for a project body. Content stays mounted until the close finishes. */
+function Collapse({ open, children }: { open: boolean; children: ReactNode }) {
+  const [shown, setShown] = useState(open);
+  if (open && !shown) setShown(true);
+  return (
+    <div
+      className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${
+        open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+      }`}
+      onTransitionEnd={(ev) => {
+        if (ev.target !== ev.currentTarget || ev.propertyName !== "grid-template-rows" || open) return;
+        setShown(false);
+      }}
+    >
+      <div className="min-h-0 overflow-hidden">{shown ? children : null}</div>
+    </div>
+  );
+}
 
 export function AllProjectsList({
   groups,
@@ -65,6 +86,9 @@ export function AllProjectsList({
   onAddToGroup,
   onRemoveMember,
   onDeleteGroup,
+  focusPath = "",
+  favoritePaths = [],
+  onToggleFavorite,
 }: {
   groups: ProjectChatGroup[];
   activeWorkspace: string;
@@ -80,7 +104,10 @@ export function AllProjectsList({
   worktreesFor?: (path: string) => WorktreeChild[];
   onRemoveWorktree?: (path: string) => void;
   renderWorktree?: (child: WorktreeChild) => ReactNode;
-  renderList: (group: ProjectChatGroup, options: { showArchived: boolean }) => ReactNode;
+  renderList: (
+    group: ProjectChatGroup,
+    options: { showArchived: boolean; place: Omit<ChatPlace, "pr"> },
+  ) => ReactNode;
   archiveOpen: Record<string, boolean>;
   onToggleArchive: (path: string) => void;
   gitByProject?: Record<string, ProjectGit>;
@@ -94,10 +121,13 @@ export function AllProjectsList({
   onAddToGroup?: (groupPath: string, path: string) => void;
   onRemoveMember?: (groupPath: string, path: string) => void;
   onDeleteGroup?: (path: string) => void;
+  /** When this path is the one project in view, its header is already the sidebar title. */
+  focusPath?: string;
+  favoritePaths?: readonly string[];
+  onToggleFavorite?: (path: string) => void;
 }) {
   const [closedWorktrees, setClosedWorktrees] = useState<Record<string, boolean>>({});
   const [menu, setMenu] = useState<{ x: number; y: number; group: ProjectChatGroup } | null>(null);
-  const [gitMenu, setGitMenu] = useState<{ x: number; y: number; path: string; remote: boolean } | null>(null);
   const [worktreeMenu, setWorktreeMenu] = useState<{ x: number; y: number; child: WorktreeChild } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProjectChatGroup | null>(null);
   const [pendingWorktree, setPendingWorktree] = useState<WorktreeChild | null>(null);
@@ -112,14 +142,12 @@ export function AllProjectsList({
       const target = ev.target;
       if (target instanceof Element && target.closest("[role='menu']")) return;
       setMenu(null);
-      setGitMenu(null);
       setWorktreeMenu(null);
       setMemberMenu(null);
     }
     function onKey(ev: KeyboardEvent) {
       if (ev.key === "Escape") {
         setMenu(null);
-        setGitMenu(null);
         setWorktreeMenu(null);
         setMemberMenu(null);
         setPendingDelete(null);
@@ -154,8 +182,8 @@ export function AllProjectsList({
       modifiers={[restrictToVerticalAxis]}
       onDragEnd={onDragEnd}
     >
-    <SortableContext items={groups.map((group) => projectKey(group.path))} strategy={verticalListSortingStrategy}>
-    <div className="flex flex-col gap-2">
+    <SortableContext items={favoriteProjectsFirst(groups, favoritePaths).map((group) => projectKey(group.path))} strategy={verticalListSortingStrategy}>
+    <div className="flex flex-col gap-1">
       {pickedProjects.length >= 2 && onCreateGroup ? (
         <button
           type="button"
@@ -165,9 +193,11 @@ export function AllProjectsList({
           Group {pickedProjects.length} projects
         </button>
       ) : null}
-      {groups.map((group) => {
+      {favoriteProjectsFirst(groups, favoritePaths).map((group) => {
         const current = isSameProject(group.path, activeWorkspace);
-        const closed = isProjectCollapsed(collapsed, group.path);
+        const headerHidden = Boolean(focusPath) && isSameProject(group.path, focusPath);
+        const closed = headerHidden ? false : isProjectCollapsed(collapsed, group.path);
+        const favorite = isProjectFavorite(favoritePaths, group.path);
         const showArchived = Boolean(archiveOpen[projectKey(group.path)]);
         const hasArchived = projectHasArchived(group.conversations);
         const git = gitByProject?.[projectGitKey(group.path)] ?? null;
@@ -194,10 +224,10 @@ export function AllProjectsList({
           <ProjectSection
             key={projectKey(group.path)}
             id={projectKey(group.path)}
-            header={(drag) => (
+            header={(drag) => headerHidden ? null : (
             <div className="contents">
             <div
-              className={`group flex cursor-grab items-center rounded-[6px] select-none hover:bg-wash active:cursor-grabbing ${
+              className={`group flex cursor-pointer items-center rounded-[6px] select-none hover:bg-wash [&_*]:cursor-pointer ${
                 picked ? "bg-accent/10" : ""
               }`}
               {...drag}
@@ -213,7 +243,12 @@ export function AllProjectsList({
                 onClick={() => onToggleCollapsed(group.path)}
                 className="flex size-6 shrink-0 items-center justify-center rounded text-muted hover:text-ink"
               >
-                <Symbol name={closed ? "chevron.right" : "chevron.down"} className="size-3" />
+                <Symbol
+                  name="chevron.down"
+                  className={`size-3 transition-transform duration-200 ease-out motion-reduce:transition-none ${
+                    closed ? "-rotate-90" : ""
+                  }`}
+                />
               </button>
               <button
                 type="button"
@@ -240,12 +275,27 @@ export function AllProjectsList({
                 <span className="min-w-0 truncate">{group.name}</span>
                 <ProjectMarks remote={group.remote} server={group.server} />
               </button>
-              {git && !showArchived ? (
-                <ProjectGitRow
-                  git={git}
-                  onMenu={(x, y) => setGitMenu({ x, y, path: group.path, remote: Boolean(group.remote || group.server) })}
-                />
+              {onToggleFavorite ? (
+                <button
+                  type="button"
+                  aria-label={favorite ? `Unfavorite ${group.name}` : `Favorite ${group.name}`}
+                  aria-pressed={favorite}
+                  title={favorite ? "Unfavorite" : "Favorite"}
+                  onClick={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    onToggleFavorite(group.path);
+                  }}
+                  className={`mr-0.5 flex size-5 shrink-0 items-center justify-center rounded ${
+                    favorite
+                      ? "text-warn"
+                      : "text-muted opacity-0 hover:text-ink group-hover:opacity-100 focus-visible:opacity-100"
+                  }`}
+                >
+                  <Symbol name={favorite ? "star.fill" : "star"} className="size-3" />
+                </button>
               ) : null}
+              {git && !showArchived ? <ProjectGitRow git={git} /> : null}
               {hasArchived ? (
                 <button
                   type="button"
@@ -271,7 +321,8 @@ export function AllProjectsList({
             </div>
             )}
           >
-            {closed || !showArchived ? null : (
+            <Collapse open={!closed}>
+            {!showArchived ? null : (
               <div className="mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/10 px-2 py-1 text-accent">
                 <Symbol name="archivebox" className="size-3 shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-[11px] font-semibold tracking-[0.04em] uppercase">
@@ -286,7 +337,7 @@ export function AllProjectsList({
                 </button>
               </div>
             )}
-            {closed || showArchived || worktrees.length === 0 ? null : (
+            {showArchived || worktrees.length === 0 ? null : (
               <div className="mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5">
                 {worktrees.map((child) => {
                   const childKey = projectKey(child.path);
@@ -303,53 +354,89 @@ export function AllProjectsList({
                         onOpen={() => onOpenProject(child.path)}
                         onMenu={(x, y) => setWorktreeMenu({ x, y, child })}
                       />
-                      {childClosed || !renderWorktree ? null : renderWorktree(child)}
+                      <Collapse open={!childClosed}>{renderWorktree ? renderWorktree(child) : null}</Collapse>
                     </div>
                   );
                 })}
               </div>
             )}
-            {closed || showArchived || members.length === 0 ? null : (
+            {showArchived || members.length === 0 ? null : (
               <div className="mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5">
                 {members.map((member) => {
                   const memberGit = gitByProject?.[projectGitKey(member.path)] ?? null;
+                  const memberClosed = !chatQuery.trim() && isProjectCollapsed(collapsed, member.path);
+                  const memberCurrent = isSameProject(member.path, activeWorkspace);
                   return (
                     <div key={projectKey(member.path)}>
                       <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => onOpenProject(member.path)}
-                        onKeyDown={(ev) => {
-                          if (ev.key === "Enter") onOpenProject(member.path);
-                        }}
+                        className={`flex w-full items-center rounded-[6px] pr-1 hover:bg-wash ${
+                          memberCurrent ? "text-ink" : "text-ink/75"
+                        }`}
                         onContextMenu={(ev) => {
                           ev.preventDefault();
                           ev.stopPropagation();
                           setMemberMenu({ x: ev.clientX, y: ev.clientY, groupPath: group.path, member });
                         }}
-                        className={`flex w-full items-center gap-1.5 rounded-[6px] px-1.5 py-[5px] text-left text-[12px] hover:bg-wash ${
-                          isSameProject(member.path, activeWorkspace) ? "text-ink" : "text-ink/75"
-                        }`}
                       >
-                        <ProjectMark path={member.path} remote={Boolean(member.remote)} refresh={logoRefresh} className="size-3" />
-                        <span className="min-w-0 flex-1 truncate">{member.name}</span>
-                        {memberGit ? <ProjectGitRow git={memberGit} onMenu={() => undefined} /> : null}
+                        <button
+                          type="button"
+                          aria-label={memberClosed ? `Expand ${member.name}` : `Collapse ${member.name}`}
+                          onClick={() => onToggleCollapsed(member.path)}
+                          className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted hover:text-ink"
+                        >
+                          <Symbol
+                            name="chevron.down"
+                            className={`size-3 transition-transform duration-200 ease-out motion-reduce:transition-none ${
+                              memberClosed ? "-rotate-90" : ""
+                            }`}
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onOpenProject(member.path)}
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-[5px] pr-1 text-left text-[12px]"
+                        >
+                          <ProjectMark path={member.path} remote={Boolean(member.remote)} refresh={logoRefresh} className="size-3" />
+                          <span className="min-w-0 flex-1 truncate">{member.name}</span>
+                          {memberGit ? <ProjectGitRow git={memberGit} /> : null}
+                        </button>
                       </div>
-                      {renderList(member, { showArchived: false })}
+                      <Collapse open={!memberClosed}>{renderList(member, {
+                        showArchived: false,
+                        place: {
+                          branch: gitByProject?.[projectGitKey(member.path)]?.branch ?? "",
+                          worktree: false,
+                          server: Boolean(member.remote || member.server),
+                          ahead: gitByProject?.[projectGitKey(member.path)]?.ahead,
+                          behind: gitByProject?.[projectGitKey(member.path)]?.behind,
+                          dirty: gitByProject?.[projectGitKey(member.path)]?.dirty,
+                        },
+                      })}</Collapse>
                     </div>
                   );
                 })}
               </div>
             )}
-            {closed ? null : visibleEmpty && members.length === 0 ? (
+            {visibleEmpty && members.length === 0 ? (
               <p className="px-7 py-0.5 text-[12px] text-muted">
                 {showArchived ? "No archived chats" : "No chats yet"}
               </p>
             ) : (
               <div className={worktrees.length ? "pl-2" : undefined}>
-                {renderList(listed, { showArchived: chatQuery.trim() ? false : showArchived })}
+                {renderList(listed, {
+                  showArchived: chatQuery.trim() ? false : showArchived,
+                  place: {
+                    branch: git?.branch ?? "",
+                    worktree: false,
+                    server: Boolean(group.remote || group.server),
+                    ahead: git?.ahead,
+                    behind: git?.behind,
+                    dirty: git?.dirty,
+                  },
+                })}
               </div>
             )}
+            </Collapse>
           </ProjectSection>
         );
       })}
@@ -363,6 +450,15 @@ export function AllProjectsList({
             onNewChat(menu.group.path);
             setMenu(null);
           }}
+          favorite={isProjectFavorite(favoritePaths, menu.group.path)}
+          onFavorite={
+            onToggleFavorite
+              ? () => {
+                  onToggleFavorite(menu.group.path);
+                  setMenu(null);
+                }
+              : undefined
+          }
           onSettings={() => {
             onOpenSettings(menu.group.path, menu.group.name);
             setMenu(null);
@@ -393,20 +489,17 @@ export function AllProjectsList({
             onAddToGroup?.(groupPath, menu.group.path);
             setMenu(null);
           }}
+          onReveal={
+            menu.group.remote || menu.group.server
+              ? undefined
+              : () => {
+                  const path = menu.group.path;
+                  setMenu(null);
+                  void api.revealFolder(path).catch(() => undefined);
+                }
+          }
           onCopied={() => setMenu(null)}
           removeLabel={projectGroups.some((row) => isSameProject(row.path, menu.group.path)) ? "Remove group" : "Remove project"}
-        />
-      ) : null}
-      {gitMenu ? (
-        <ProjectGitMenu
-          x={gitMenu.x}
-          y={gitMenu.y}
-          remote={gitMenu.remote}
-          onOpenFinder={() => {
-            const path = gitMenu.path;
-            setGitMenu(null);
-            void api.revealFolder(path).catch(() => undefined);
-          }}
         />
       ) : null}
       {worktreeMenu ? (
