@@ -149,22 +149,26 @@ fn decode_call_frame(
 }
 
 /// The data dir holds the pairing token and the provider keys. Another user on the box must not list it.
+#[cfg(unix)]
 fn private_dir(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
 }
 
+/// Windows has no Unix mode bits. The user who created the directory already owns it.
+#[cfg(not(unix))]
+fn private_dir(_path: &Path) {}
+
 /// The fifo is how frames reach the resident process. Only the owner should be able to write it.
+#[cfg(unix)]
 fn private_file(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
+
+/// Windows has no Unix mode bits. The fifo is not used on this platform.
+#[cfg(not(unix))]
+fn private_file(_path: &Path) {}
 
 fn project_store_key(project: &Path) -> String {
     use sha2::{Digest, Sha256};
