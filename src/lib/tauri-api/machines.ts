@@ -200,6 +200,11 @@ export function agentServerStatus(id: string): Promise<ServerInstallStatus> {
   return invoke("dev_agent_server_status", { id });
 }
 
+/** Whether the machine answers. No SSH login, so the keychain is not touched. */
+export function agentServerOnline(id: string): Promise<boolean> {
+  return invoke("dev_agent_server_online", { id });
+}
+
 /** SSH to a machine that was just saved and see if the server program is there. Does not install it. */
 export function probeAgentServer(host: string, port = 22): Promise<ServerInstallStatus> {
   return invoke("dev_probe_agent_server", { host, port });
@@ -239,6 +244,10 @@ export function installAgentServer(input: {
     key_path: input.keyPath ?? null,
     secret: input.secret ?? null,
   });
+}
+
+export function renameAgentServer(id: string, name: string): Promise<AgentServer> {
+  return invoke("dev_rename_agent_server", { id, name });
 }
 
 export function pairAgentServer(id: string): Promise<AgentServer> {

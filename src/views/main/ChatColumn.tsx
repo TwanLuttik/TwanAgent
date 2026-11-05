@@ -5,6 +5,7 @@ import { SkillDock } from "../../components/SkillDock";
 import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
 import { conversationActivityLabel } from "../../lib/core";
+import { holdTranscript } from "../../lib/chat-window";
 import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
 import { chatHasRunningTurn, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
@@ -55,12 +56,16 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     workspace,
   } = useMain();
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
+  const heldRef = useRef({ id: activeId, messages, model });
+  const held = holdTranscript(heldRef.current, messages, activeId, model);
+  heldRef.current = held;
   useLayoutEffect(() => {
+    if (held.id !== activeId) return;
     const el = scroller.current;
     const saved = chatScrollFor(activeId);
     if (!el || saved == null) return;
     el.scrollTop = saved;
-  }, [activeId, scroller]);
+  }, [activeId, held.id, scroller]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => {
@@ -105,12 +110,12 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
         >
           <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
             <LiveTranscript
-              messages={messages}
-              model={model}
+              messages={held.messages}
+              model={held.model}
               centeredWithoutStream={centeredWithoutStream}
-              activeRunning={activeRunning}
+              activeRunning={activeRunning && held.id === activeId}
               transcriptPending={transcriptPending}
-              conversationId={activeId}
+              conversationId={held.id}
               mentionFiles={mentionFiles}
               onLoadOlder={holdScrollForOlder}
               pendingShell={Boolean(pendingShell)}

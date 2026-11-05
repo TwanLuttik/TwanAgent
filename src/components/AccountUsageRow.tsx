@@ -1,11 +1,24 @@
+import { useEffect, useState } from "react";
 import {
+  accountUsageMiniSummary,
   formatAccountBalance,
   formatAccountReset,
   formatAccountUsed,
   type AccountUsage,
 } from "../lib/account-usage";
 import { refreshAccountUsage, useAccountUsage } from "../lib/account-usage-store";
+import {
+  loadSidebarAccountUsage,
+  subscribePrefs,
+  type SidebarAccountUsageMode,
+} from "../lib/prefs";
 import { Symbol } from "./Symbol";
+
+function useSidebarAccountUsage(): SidebarAccountUsageMode {
+  const [mode, setMode] = useState(loadSidebarAccountUsage);
+  useEffect(() => subscribePrefs(() => setMode(loadSidebarAccountUsage())), []);
+  return mode;
+}
 
 function AccountBalance({ usage }: { usage: AccountUsage }) {
   const amount = formatAccountBalance(usage.balanceCents, usage.balanceCurrency ?? "USD");
@@ -60,11 +73,13 @@ const ACCOUNT_ROWS: {
 
 /** Grok, Claude, and MiniMax account allowance, shown under the sidebar Usage button. */
 export function AccountUsageRow({ refresh = 0 }: { refresh?: number }) {
-  refreshAccountUsage(refresh);
+  const mode = useSidebarAccountUsage();
+  if (mode !== "off") refreshAccountUsage(refresh);
+  if (mode === "off") return null;
   return (
     <>
       {ACCOUNT_ROWS.map((row) => (
-        <ProviderAccountUsage key={row.id} {...row} />
+        <ProviderAccountUsage key={row.id} {...row} minimized={mode === "minimized"} />
       ))}
     </>
   );
@@ -77,6 +92,7 @@ function ProviderAccountUsage({
   barClass,
   fallback,
   remaining = false,
+  minimized = false,
 }: {
   id: "xai" | "anthropic" | "minimax";
   logo: string;
@@ -84,6 +100,7 @@ function ProviderAccountUsage({
   barClass: string;
   fallback: string;
   remaining?: boolean;
+  minimized?: boolean;
 }) {
   const { usage, loading } = useAccountUsage(id);
 
@@ -100,6 +117,24 @@ function ProviderAccountUsage({
     );
   }
   const title = usage.label && usage.label !== fallback ? `${fallback} · ${usage.label}` : `${fallback} account`;
+  if (minimized) {
+    const summary = accountUsageMiniSummary(usage, remaining);
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2 py-[3px] text-[11px] text-muted"
+        title={title}
+        aria-label={summary ? `${title}, ${summary}` : title}
+      >
+        <Symbol name={logo} colored className={`size-3 shrink-0 ${logoClass}`} />
+        <span className="min-w-0 flex-1 truncate">{usage.label === fallback ? fallback : usage.label}</span>
+        {loading ? (
+          <span className="size-2.5 shrink-0 animate-spin rounded-full border border-current border-t-transparent" aria-label="Updating" />
+        ) : summary ? (
+          <span className="shrink-0 tabular-nums">{summary}</span>
+        ) : null}
+      </div>
+    );
+  }
   const wide = usage.windows.some((window) => window.label.length > 4);
 
   return (

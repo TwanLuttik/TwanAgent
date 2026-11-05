@@ -86,7 +86,10 @@ export function LandingScreen() {
       ) : null}
       {showServers ? (
         <div className="relative z-10 flex min-h-0 flex-1 flex-col">
-          <ServersDialog onClose={closeServers} />
+          <ServersDialog
+            onClose={closeServers}
+            onOpenProject={(path, name) => applyWorkspace(path, "", name, true)}
+          />
         </div>
       ) : (
         <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-16">

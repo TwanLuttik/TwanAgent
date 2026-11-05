@@ -3,11 +3,80 @@ import { describe, it } from "node:test";
 import {
   CHAT_WINDOW_PAGE,
   CHAT_WINDOW_TURNS,
+  cachedTranscript,
   chatTurnSlice,
+  holdTranscript,
   hasOlderTurns,
+  openedTranscriptIsCurrent,
+  rememberShownTranscript,
   revealOlderTurns,
   scrollTopAfterPrepend,
 } from "../chat-window.ts";
+
+describe("holdTranscript", () => {
+  it("keeps the chat on screen until the next one's messages arrive", () => {
+    const first = [{ role: "user", content: "a" }];
+    const held = { id: "a", messages: first, model: "grok" };
+    assert.equal(holdTranscript(held, first, "b", "gpt"), held);
+    const second = [{ role: "user", content: "b" }];
+    assert.deepEqual(holdTranscript(held, second, "b", "gpt"), {
+      id: "b",
+      messages: second,
+      model: "gpt",
+    });
+  });
+});
+
+describe("rememberShownTranscript", () => {
+  it("does not file the open transcript under the chat that was just selected", () => {
+    const cache = new Map<string, string[]>();
+    const open = ["remove the local computer"];
+    cache.set("a", open);
+    const shown = rememberShownTranscript(cache, "a", "b", open, open);
+    assert.equal(shown, "a");
+    assert.equal(cache.has("b"), false);
+    assert.equal(cachedTranscript(cache, "b", shown, open), undefined);
+  });
+
+  it("keeps each chat's own transcript once its messages arrive", () => {
+    const cache = new Map<string, string[]>();
+    const open = ["remove the local computer"];
+    const next = ["for the running agents"];
+    cache.set("a", open);
+    const shown = rememberShownTranscript(cache, "a", "b", next, open);
+    assert.equal(shown, "b");
+    assert.equal(cachedTranscript(cache, "b", shown, next), next);
+    assert.equal(cachedTranscript(cache, "a", shown, next), open);
+  });
+
+  it("still updates the chat that is already on screen", () => {
+    const cache = new Map<string, string[]>();
+    const first = ["a"];
+    const streamed = ["a", "more"];
+    rememberShownTranscript(cache, "a", "a", first, first);
+    const shown = rememberShownTranscript(cache, "a", "a", streamed, first);
+    assert.equal(shown, "a");
+    assert.equal(cachedTranscript(cache, "a", shown, streamed), streamed);
+  });
+});
+
+describe("openedTranscriptIsCurrent", () => {
+  it("paints a loaded transcript while the previous chat is still the one on screen", () => {
+    const cache = new Map<string, string[]>();
+    const open = ["the chat we left"];
+    cache.set("a", open);
+    const shown = rememberShownTranscript(cache, "a", "b", open, open);
+    assert.equal(shown, "a");
+    assert.equal(openedTranscriptIsCurrent(1, 1, "b", "b"), true);
+  });
+
+  it("drops a load the user already left", () => {
+    assert.equal(openedTranscriptIsCurrent(1, 2, "b", "b"), false);
+    assert.equal(openedTranscriptIsCurrent(2, 2, "c", "b"), false);
+    assert.equal(openedTranscriptIsCurrent(2, 2, "", "b"), false);
+    assert.equal(openedTranscriptIsCurrent(2, 2, "b", ""), false);
+  });
+});
 
 describe("chatTurnSlice", () => {
   it("mounts every turn when the chat is short", () => {

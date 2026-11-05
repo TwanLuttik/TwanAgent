@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import type { ChatImage, ProjectRow } from "../lib/core";
+import { folderName, projectKey, type ChatImage, type ProjectRow } from "../lib/core";
 import { applyMention, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/mention";
 import { expandPasteTokens, pasteBeforeCursor, removePasteSpan, type PasteBlock } from "../lib/paste";
 import {
@@ -487,7 +487,7 @@ export function Composer({
       {commandRun && showCommand ? (
         <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 pb-1.5">
           <div className="pointer-events-auto">
-            <CommandRunPill run={commandRun} />
+            <CommandRunPill key={commandRun.id} run={commandRun} />
           </div>
         </div>
       ) : null}
@@ -619,6 +619,14 @@ export function Composer({
           ) : null}
           <div className="min-w-0 flex-1" />
           {recording ? <VoiceMeter level={voiceLevel} /> : null}
+          {!showProject && workspace ? (
+            <span
+              title={workspace}
+              className="pointer-events-none max-w-[9rem] select-none truncate px-1.5 text-[11px] text-muted"
+            >
+              {projects?.find((row) => projectKey(row.path) === projectKey(workspace))?.name || folderName(workspace)}
+            </span>
+          ) : null}
           {onDictate ? (
             <button
               type="button"

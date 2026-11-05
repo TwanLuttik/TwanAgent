@@ -417,6 +417,8 @@ export type SidebarActivityItem = {
   project: string;
   status: SidebarActivityStatus;
   updatedAt: string;
+  /** Model id for this chat. Empty when the row has not stored one. */
+  model: string;
 };
 
 const ACTIVITY_LIMIT = 8;
@@ -452,6 +454,7 @@ export function sidebarActivity(
         project: source.name || folderName(source.path),
         status,
         updatedAt: row.updated_at,
+        model: row.model?.trim() ?? "",
       });
     }
   }
@@ -460,6 +463,18 @@ export function sidebarActivity(
     return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
   });
   return items.slice(0, ACTIVITY_LIMIT);
+}
+
+/** How many running chats sit on the dock before the rest collapse into a plus. */
+export const RUNNING_BADGE_SHOWN = 4;
+
+/**
+ * The minimized running badges on the usage card.
+ * Four or fewer each get a mark. Five or more keep four and a plus for the rest.
+ */
+export function runningBadgeWindow<T>(items: readonly T[]): { shown: T[]; extra: number } {
+  if (items.length <= RUNNING_BADGE_SHOWN) return { shown: [...items], extra: 0 };
+  return { shown: items.slice(0, RUNNING_BADGE_SHOWN), extra: items.length - RUNNING_BADGE_SHOWN };
 }
 
 /** Match a chat or its project against the sidebar search. An empty query matches everything. */

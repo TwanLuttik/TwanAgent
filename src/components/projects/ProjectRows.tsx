@@ -17,21 +17,45 @@ export function ProjectSection({
   id,
   header,
   children,
+  card = false,
+  open = true,
 }: {
   id: string;
   header: (drag: HTMLAttributes<HTMLDivElement>) => ReactNode;
   children?: ReactNode;
+  /** A project group. The card face stays mounted so it can ease in and out. */
+  card?: boolean;
+  /** Whether that card is showing. Ignored when `card` is false. */
+  open?: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const body = (
+    <>
+      {header({ ...attributes, ...listeners })}
+      {children}
+    </>
+  );
   return (
     <section
       ref={setNodeRef}
       style={{ transform: rowDragTransform(transform), transition }}
       className={isDragging ? "relative z-10 opacity-70" : undefined}
     >
-      {header({ ...attributes, ...listeners })}
-      {children}
+      {card ? <GroupCard open={open}>{body}</GroupCard> : body}
     </section>
+  );
+}
+
+/** Stays mounted so the face eases in with the body and eases out as it closes. */
+function GroupCard({ open, children }: { open: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={`overflow-hidden rounded-[10px] border transition-[background-color,border-color,margin] duration-200 ease-out motion-reduce:transition-none ${
+        open ? "mb-1 border-line/40 bg-wash/40" : "mb-0 border-transparent bg-transparent"
+      }`}
+    >
+      {children}
+    </div>
   );
 }
 

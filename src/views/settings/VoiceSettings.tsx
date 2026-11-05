@@ -15,7 +15,7 @@ import {
   type SpeechModelInfo,
 } from "../../lib/speech";
 import { useApp } from "../../state/app-state";
-import { Card } from "./SettingsChrome";
+import { fieldClass } from "./SettingsChrome";
 
 function speechRowStatus(models: SpeechModelInfo[], id: string): SpeechModelStatus {
   return models.find((row) => row.id === id)?.status ?? "missing";
@@ -36,13 +36,13 @@ export function VoiceModelCard({
   const status = speechRowStatus(models, model.id);
   const active = downloading && (!progress?.id || progress.id === model.id);
   return (
-    <Card>
+    <div className="px-3.5 py-2.5">
       <div className="text-[13px] font-medium text-ink">{model.label}</div>
-      <div className="text-[12px] text-muted">{speechNote(model.id)}</div>
-      <div className="text-[12px] text-muted">
+      <div className="mt-0.5 text-[12px] leading-snug text-muted">{speechNote(model.id)}</div>
+      <div className="mt-1 text-[12px] text-muted">
         {speechSizeLabel(model.bytes)} · {voiceStatusText(status, active ? progress : null, active)}
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -146,8 +146,8 @@ export function MicTest() {
   return (
     <div className="grid gap-2">
       <label className="grid gap-1.5">
-        <span className="block text-[13px] font-medium text-ink">Microphone</span>
         <select
+          aria-label="Microphone"
           value={devices.some((row) => row.id === deviceId) ? deviceId : ""}
           onChange={(event) => {
             const next = event.target.value;
@@ -158,7 +158,7 @@ export function MicTest() {
               void startTest();
             }
           }}
-          className="h-8 rounded-md border border-line bg-canvas px-2 text-[13px] text-ink outline-none focus:border-accent"
+          className={fieldClass}
         >
           <option value="">System default</option>
           {devices.map((device) => (

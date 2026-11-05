@@ -18,10 +18,11 @@ import {
   loadCollapsedProjects,
   loadComposerDrafts,
   loadConversation,
-  loadProjectOpenTabs,
+  loadOpenTabs,
   loadRecentWorkspaces,
   loadWorkspace,
   loadPerfOverlay,
+  loadSidebarAccountUsage,
   loadSpaceCorner,
   loadSpaceCornerImage,
   loadSpaceCornerScene,
@@ -46,7 +47,7 @@ import {
   scheduleComposerDraft,
   scheduleComposerPastes,
   saveConversation,
-  saveProjectOpenTabs,
+  saveOpenTabs,
   saveWorkspace,
   saveMarkdownOpenMode,
   saveOpenFileTree,
@@ -55,6 +56,7 @@ import {
   setFileHoverCard,
   setLiveSocketDebug,
   setPerfOverlay,
+  saveSidebarAccountUsage,
   setSpaceCorner,
   setSpaceCornerImage,
   setSpaceCornerScene,
@@ -252,11 +254,18 @@ describe("project path migration", () => {
     pushRecentWorkspace("/App/projects/Demo");
     pushRecentWorkspace("/Users/me/code");
     saveConversation("/app/projects/demo", "chat-1");
-    saveProjectOpenTabs("/app/projects/demo", [
-      { kind: "chat", id: "chat-1" },
-      { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
+    saveOpenTabs([
+      { kind: "chat", id: "chat-1", workspace: "/app/projects/demo" },
+      {
+        kind: "split",
+        id: "split-1",
+        chatIds: ["chat-2", "chat-3"],
+        workspaces: ["/app/projects/demo", "/app/projects/demo"],
+        activePane: 1,
+        leftShare: 0.4,
+      },
     ]);
-    saveActiveTab("/app/projects/demo", "chat:chat-1");
+    saveActiveTab("chat:chat-1");
     saveCollapsedProjects(["/app/projects/demo"]);
     saveSidebarFocus("/app/projects/Demo/");
     rewriteStoredProjectPaths([
@@ -269,13 +278,18 @@ describe("project path migration", () => {
     ]);
     assert.equal(loadConversation("/Users/me/twanagent/projects/Demo"), "chat-1");
     assert.equal(loadConversation("/app/projects/demo"), "");
-    assert.deepEqual(loadProjectOpenTabs("/Users/me/twanagent/projects/Demo"), [
-      { kind: "chat", id: "chat-1" },
-      { kind: "split", id: "split-1", chatIds: ["chat-2", "chat-3"], activePane: 1, leftShare: 0.4 },
+    assert.deepEqual(loadOpenTabs(), [
+      { kind: "chat", id: "chat-1", workspace: "/Users/me/twanagent/projects/Demo" },
+      {
+        kind: "split",
+        id: "split-1",
+        chatIds: ["chat-2", "chat-3"],
+        workspaces: ["/Users/me/twanagent/projects/Demo", "/Users/me/twanagent/projects/Demo"],
+        activePane: 1,
+        leftShare: 0.4,
+      },
     ]);
-    assert.deepEqual(loadProjectOpenTabs("/app/projects/demo"), []);
-    assert.equal(loadActiveTab("/Users/me/twanagent/projects/Demo"), "chat:chat-1");
-    assert.equal(loadActiveTab("/app/projects/demo"), "");
+    assert.equal(loadActiveTab(), "chat:chat-1");
     assert.deepEqual(loadCollapsedProjects(), ["/users/me/twanagent/projects/demo"]);
     assert.equal(loadSidebarFocus(), "/Users/me/twanagent/projects/Demo");
   });
@@ -286,19 +300,34 @@ describe("open tabs", () => {
     mockStorage();
   });
 
-  it("keeps each project's open tabs, including a split", () => {
-    saveProjectOpenTabs("/App/projects/Demo", [
-      { kind: "chat", id: "a" },
-      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.35 },
+  it("keeps one strip for every project", () => {
+    saveOpenTabs([
+      { kind: "chat", id: "a", workspace: "/App/projects/Demo" },
+      { kind: "chat", id: "b", workspace: "/Users/me/other" },
+      {
+        kind: "split",
+        id: "split-1",
+        chatIds: ["c", "d"],
+        workspaces: ["/App/projects/Demo", "/Users/me/other"],
+        activePane: 0,
+        leftShare: 0.35,
+      },
     ]);
-    assert.deepEqual(loadProjectOpenTabs("/App/projects/Demo"), [
-      { kind: "chat", id: "a" },
-      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.35 },
+    assert.deepEqual(loadOpenTabs(), [
+      { kind: "chat", id: "a", workspace: "/App/projects/Demo" },
+      { kind: "chat", id: "b", workspace: "/Users/me/other" },
+      {
+        kind: "split",
+        id: "split-1",
+        chatIds: ["c", "d"],
+        workspaces: ["/App/projects/Demo", "/Users/me/other"],
+        activePane: 0,
+        leftShare: 0.35,
+      },
     ]);
-    assert.deepEqual(loadProjectOpenTabs("/Users/me/other"), []);
   });
 
-  it("drops a broken entry and a chat listed twice", () => {
+  it("folds tabs that were saved under each project into that strip", () => {
     localStorage.setItem(
       "twanagent.openTabs",
       JSON.stringify({
@@ -309,26 +338,37 @@ describe("open tabs", () => {
           { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 3, leftShare: "wide" },
           { kind: "split", id: "", chatIds: ["c", "d"] },
         ],
+        "/other": [{ kind: "chat", id: "d" }, { kind: "code" }],
       }),
     );
-    assert.deepEqual(loadProjectOpenTabs("/demo"), [
-      { kind: "chat", id: "a" },
-      { kind: "split", id: "split-1", chatIds: ["b", "c"], activePane: 0, leftShare: 0.5 },
+    assert.deepEqual(loadOpenTabs(), [
+      { kind: "chat", id: "a", workspace: "/demo" },
+      { kind: "split", id: "split-1", chatIds: ["b", "c"], workspaces: ["/demo", "/demo"], activePane: 0, leftShare: 0.5 },
+      { kind: "chat", id: "d", workspace: "/other" },
+      { kind: "code" },
     ]);
   });
 
-  it("remembers which tab was selected", () => {
-    saveActiveTab("/App/projects/Demo", "split:split-1");
-    assert.equal(loadActiveTab("/App/projects/Demo"), "split:split-1");
-    assert.equal(loadActiveTab("/Users/me/other"), "");
-    saveActiveTab("/App/projects/Demo", "");
-    assert.equal(loadActiveTab("/App/projects/Demo"), "");
+  it("remembers the one selected tab", () => {
+    saveActiveTab("split:split-1");
+    assert.equal(loadActiveTab(), "split:split-1");
+    saveActiveTab("");
+    assert.equal(loadActiveTab(), "");
   });
 
-  it("clears a project when its last tab closes", () => {
-    saveProjectOpenTabs("/demo", [{ kind: "chat", id: "a" }]);
-    saveProjectOpenTabs("/demo", []);
-    assert.deepEqual(loadProjectOpenTabs("/demo"), []);
+  it("reads a selected tab that was stored per project", () => {
+    saveWorkspace("/other");
+    localStorage.setItem(
+      "twanagent.activeTab",
+      JSON.stringify({ "/demo": "chat:a", "/other": "chat:b" }),
+    );
+    assert.equal(loadActiveTab(), "chat:b");
+  });
+
+  it("clears the strip when the last tab closes", () => {
+    saveOpenTabs([{ kind: "chat", id: "a", workspace: "/demo" }]);
+    saveOpenTabs([]);
+    assert.deepEqual(loadOpenTabs(), []);
   });
 });
 
@@ -342,6 +382,16 @@ describe("recent workspaces", () => {
     pushRecentWorkspace("/app/other");
     assert.deepEqual(removeRecentWorkspace("/app/Demo/"), ["/app/other"]);
     assert.deepEqual(loadRecentWorkspaces(), ["/app/other"]);
+  });
+
+  it("replaces another spelling of the same folder", () => {
+    pushRecentWorkspace("/Users/me/orca/projects/TwanAgent");
+    pushRecentWorkspace("/app/other");
+    pushRecentWorkspace("/users/me/orca/projects/twanagent");
+    assert.deepEqual(loadRecentWorkspaces(), [
+      "/users/me/orca/projects/twanagent",
+      "/app/other",
+    ]);
   });
 });
 
@@ -471,6 +521,25 @@ describe("performance overlay", () => {
     assert.equal(loadPerfOverlay(), true);
     setPerfOverlay(false);
     assert.equal(loadPerfOverlay(), false);
+  });
+});
+
+describe("sidebar account usage", () => {
+  beforeEach(() => {
+    mockStorage();
+  });
+
+  it("defaults to the full meters", () => {
+    assert.equal(loadSidebarAccountUsage(), "full");
+  });
+
+  it("saves minimized and off, and ignores anything else", () => {
+    saveSidebarAccountUsage("minimized");
+    assert.equal(loadSidebarAccountUsage(), "minimized");
+    saveSidebarAccountUsage("off");
+    assert.equal(loadSidebarAccountUsage(), "off");
+    localStorage.setItem("twanagent.sidebarAccountUsage", "hidden");
+    assert.equal(loadSidebarAccountUsage(), "full");
   });
 });
 

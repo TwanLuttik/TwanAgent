@@ -96,6 +96,32 @@ export function formatAccountUsed(percent: number): string {
   return `${rounded}%`;
 }
 
+/**
+ * One line for the sidebar when account usage is minimized.
+ * With several windows, this is the tightest one: least remaining, or most used.
+ */
+export function accountUsageMiniSummary(
+  usage: AccountUsage,
+  remaining: boolean,
+  nowMs = Date.now(),
+): string {
+  if (usage.windows.length === 0) {
+    const amount = formatAccountBalance(usage.balanceCents, usage.balanceCurrency ?? "USD");
+    if (amount) return `${amount} left`;
+    if (usage.creditStatus === "available") return "Credits";
+    if (usage.creditStatus === "exhausted") return "Used up";
+    return "";
+  }
+  const window = usage.windows.reduce((best, next) => {
+    if (remaining) return next.usedPercent < best.usedPercent ? next : best;
+    return next.usedPercent > best.usedPercent ? next : best;
+  });
+  const reset = formatAccountReset(window.resetsAt, nowMs);
+  const head = usage.windows.length > 1 ? `${window.label} ` : "";
+  const left = remaining ? " left" : "";
+  return `${head}${formatAccountUsed(window.usedPercent)}${left}${reset ? ` · ${reset}` : ""}`;
+}
+
 /** Short reset hint. Empty when the timestamp is missing or unreadable. */
 export function formatAccountReset(iso: string | null, nowMs = Date.now()): string {
   if (!iso) return "";

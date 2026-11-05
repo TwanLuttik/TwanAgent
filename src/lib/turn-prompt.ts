@@ -266,23 +266,41 @@ export function stampTurnDuration(
   const stampTime = finishedAt.trim();
   const stampDuration = Number.isFinite(durationMs) && durationMs >= 0;
   if (!stampDuration && !stampTime) return messages;
+  let fallback = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
-    if (!msg || msg.role === "user") return messages;
+    if (!msg || msg.role === "user") break;
     if (msg.role !== "assistant" || msg.error) continue;
-    if (!(msg.content ?? "").trim() || msg.tool_calls?.length) continue;
-    const sameDuration = !stampDuration || msg.durationMs === durationMs;
-    const sameTime = !stampTime || msg.finishedAt === stampTime;
-    if (sameDuration && sameTime) return messages;
-    const next = messages.slice();
-    next[i] = {
-      ...msg,
-      ...(stampDuration ? { durationMs } : {}),
-      ...(stampTime ? { finishedAt: stampTime } : {}),
-    };
-    return next;
+    const text = (msg.content ?? "").trim();
+    const tools = Boolean(msg.tool_calls?.length);
+    // A later plain reply is the ending. A turn that stops on tool calls still
+    // needs the finish time, or the chat ends with no closing line.
+    if (text && !tools) return stampFinishMessage(messages, i, durationMs, stampTime, stampDuration);
+    if (fallback < 0 && (text || tools)) fallback = i;
   }
-  return messages;
+  if (fallback < 0) return messages;
+  return stampFinishMessage(messages, fallback, durationMs, stampTime, stampDuration);
+}
+
+function stampFinishMessage(
+  messages: ChatMessage[],
+  index: number,
+  durationMs: number,
+  stampTime: string,
+  stampDuration: boolean,
+): ChatMessage[] {
+  const msg = messages[index];
+  if (!msg) return messages;
+  const sameDuration = !stampDuration || msg.durationMs === durationMs;
+  const sameTime = !stampTime || msg.finishedAt === stampTime;
+  if (sameDuration && sameTime) return messages;
+  const next = messages.slice();
+  next[index] = {
+    ...msg,
+    ...(stampDuration ? { durationMs } : {}),
+    ...(stampTime ? { finishedAt: stampTime } : {}),
+  };
+  return next;
 }
 
 export function newConversationId(): string {

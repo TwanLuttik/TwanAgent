@@ -442,13 +442,21 @@ pub fn remote_project_by_mount(conn: &Connection, mount: &Path) -> Result<Option
     .map_err(Error::from)
 }
 
-#[allow(dead_code)]
 pub fn delete_remote_project(conn: &Connection, id: &str) -> Result<Option<RemoteProject>> {
     let existing = remote_project_by_id(conn, id)?;
     if existing.is_some() {
         conn.execute("DELETE FROM remote_projects WHERE id = ?1", [id])?;
     }
     Ok(existing)
+}
+
+/// Drop the remote row when its project leaves the sidebar. The folder on the
+/// server stays. A later open of that same path creates a new mount.
+pub fn delete_remote_project_by_mount(conn: &Connection, mount: &Path) -> Result<Option<RemoteProject>> {
+    let Some(existing) = remote_project_by_mount(conn, mount)? else {
+        return Ok(None);
+    };
+    delete_remote_project(conn, &existing.id)
 }
 
 fn read_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteProject> {
@@ -605,5 +613,9 @@ mod tests {
         assert_eq!(found.id, project.id);
         assert!(remote_project_by_mount(&conn, dir.path()).unwrap().is_none());
         assert!(insert_remote_project(&conn, "missing", "x", "/srv/x", &mount).is_err());
+        let removed = delete_remote_project_by_mount(&conn, &mount).unwrap().unwrap();
+        assert_eq!(removed.id, project.id);
+        assert!(delete_remote_project_by_mount(&conn, &mount).unwrap().is_none());
+        assert!(list_remote_projects(&conn).unwrap().is_empty());
     }
 }

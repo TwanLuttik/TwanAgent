@@ -53,12 +53,14 @@ function machineKind(row: LanHost): { symbol: string; place: string } {
 export function ConnectForm({
   found,
   scanning,
+  name,
   host,
   user,
   port,
   password,
   keyPath,
   busy,
+  onName,
   onHost,
   onUser,
   onPort,
@@ -69,12 +71,14 @@ export function ConnectForm({
 }: {
   found: LanHost[];
   scanning: boolean;
+  name: string;
   host: string;
   user: string;
   port: string;
   password: string;
   keyPath: string | null;
   busy: boolean;
+  onName: (value: string) => void;
   onHost: (value: string) => void;
   onUser: (value: string) => void;
   onPort: (value: string) => void;
@@ -128,6 +132,15 @@ export function ConnectForm({
           </div>
         )}
       </div>
+      <Field label="Name">
+        <input
+          value={name}
+          onChange={(ev) => onName(ev.target.value)}
+          placeholder="Optional. Office, lab, the Mac mini"
+          maxLength={80}
+          className="h-9 rounded-lg border border-line bg-canvas px-3 text-[13px] outline-none focus:border-accent"
+        />
+      </Field>
       <Field label="Address">
         <input
           autoFocus

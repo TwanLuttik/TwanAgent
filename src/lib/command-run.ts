@@ -8,6 +8,8 @@ export type CommandRun = {
   label: string;
   output: string;
   running: boolean;
+  /** The output is open. A finished command stays only while this is set. */
+  watching: boolean;
   /** The shell returned, but the command was left running (a trailing `&`). */
   background: boolean;
   exitCode: number | null;
@@ -88,19 +90,18 @@ export function getCommandRuns(): CommandRun[] {
 }
 
 /**
- * Only a command the agent left running stays above the input, the way the
- * Grok CLI parks `cmd &`. A foreground command, however long it takes, stays
- * in the transcript and never opens the floating terminal.
+ * A command stays above the input while it runs. Once it finishes, it stays
+ * only when its output is open. A background command is still running.
  */
 export function commandRunVisible(run: CommandRun | null, _now = Date.now()): boolean {
   if (!run) return false;
-  return run.background;
+  return run.running || run.watching;
 }
 
 /**
- * The backgrounded command the terminal should stay on. A server that is
- * already up wins over a later check, so the panel does not close and open
- * again for the same process. Foreground commands are not shown.
+ * The command the terminal should show. The newest running command wins, so a
+ * check covers a server until the check finishes. A finished command is shown
+ * only while its output is open.
  */
 export function commandRunForChat(
   chatId: string,
@@ -117,12 +118,13 @@ export function commandRunForChat(
 }
 
 export function startCommandRun(
-  run: Omit<CommandRun, "output" | "running" | "background" | "exitCode" | "startedAt">,
+  run: Omit<CommandRun, "output" | "running" | "watching" | "background" | "exitCode" | "startedAt">,
 ): void {
   runs.set(run.id, {
     ...run,
     output: "",
     running: true,
+    watching: false,
     // A guess only. The runner's result is what keeps the terminal open.
     background: false,
     exitCode: null,
@@ -150,7 +152,7 @@ export function finishCommandRun(id: string, exitCode: number | null = null): vo
 
 /**
  * The tool call returned. A backgrounded command stays pinned above the input.
- * A foreground command is already done, so it leaves. A command that looked
+ * A finished command leaves, unless its output is open. A command that looked
  * foreground and then reports it is still running stays, instead of closing
  * and opening again.
  */
@@ -161,7 +163,13 @@ export function settleCommandRun(id: string, result: string): void {
   // job, and that guess must not keep the terminal up after a normal command.
   const background = result.includes(BACKGROUND_NOTE);
   if (!background) {
-    runs.delete(id);
+    if (!row.watching) {
+      runs.delete(id);
+      publish();
+      return;
+    }
+    if (!row.running && !row.background) return;
+    runs.set(id, { ...row, background: false, running: false });
     publish();
     return;
   }
@@ -176,6 +184,56 @@ export function settleCommandRun(id: string, result: string): void {
   }
   runs.set(id, next);
   publish();
+}
+
+/** The output was opened or closed. Closing a finished command drops it. */
+export function watchCommandRun(id: string, watching: boolean): void {
+  const row = runs.get(id);
+  if (!row || row.watching === watching) return;
+  if (!watching && !row.running) {
+    runs.delete(id);
+    publish();
+    return;
+  }
+  runs.set(id, { ...row, watching });
+  publish();
+}
+
+export type CommandStreamEvent = {
+  kind: string;
+  text?: string | null;
+  tool?: { id: string; name: string; arguments: string } | null;
+};
+
+/**
+ * A local turn reports each shell command on the chat stream.
+ * Start shows it, chunks grow the output, and exit drops it unless it is
+ * still running in the background or the output is open.
+ */
+export function noteCommandStream(chatId: string, event: CommandStreamEvent): void {
+  if (!chatId) return;
+  const id = event.tool?.id?.trim() ?? "";
+  if (!id) return;
+  if (event.kind === "command-start") {
+    const command = String(event.text ?? "");
+    const description = String(event.tool?.arguments ?? "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .replace(/^run\s+/i, "");
+    const trimmed = command.trim();
+    startCommandRun({
+      id,
+      chatId,
+      command,
+      label: description ? `Run ${description}` : trimmed ? `Run ${trimmed}` : "Run command",
+    });
+    return;
+  }
+  if (event.kind === "command") {
+    if (event.text) appendCommandOutput(id, event.text);
+    return;
+  }
+  if (event.kind === "command-exit") settleCommandRun(id, event.text ?? "");
 }
 
 export function clearCommandRun(id: string): void {

@@ -22,7 +22,7 @@ import {
   type ProjectGroupRow,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
-import type { ChatPlace } from "../lib/chat-place";
+import { serverDisplayName, type ChatPlace } from "../lib/chat-place";
 import { projectGitKey, type ProjectGit } from "../lib/project-git";
 import type { WorktreeChild } from "../lib/worktree.ts";
 import * as api from "../lib/tauri";
@@ -103,7 +103,7 @@ export function AllProjectsList({
   onReorderProject?: (fromPath: string, toPath: string) => void;
   worktreesFor?: (path: string) => WorktreeChild[];
   onRemoveWorktree?: (path: string) => void;
-  renderWorktree?: (child: WorktreeChild) => ReactNode;
+  renderWorktree?: (child: WorktreeChild, group: ProjectChatGroup) => ReactNode;
   renderList: (
     group: ProjectChatGroup,
     options: { showArchived: boolean; place: Omit<ChatPlace, "pr"> },
@@ -224,6 +224,8 @@ export function AllProjectsList({
           <ProjectSection
             key={projectKey(group.path)}
             id={projectKey(group.path)}
+            card={grouped}
+            open={!closed}
             header={(drag) => headerHidden ? null : (
             <div className="contents">
             <div
@@ -354,14 +356,14 @@ export function AllProjectsList({
                         onOpen={() => onOpenProject(child.path)}
                         onMenu={(x, y) => setWorktreeMenu({ x, y, child })}
                       />
-                      <Collapse open={!childClosed}>{renderWorktree ? renderWorktree(child) : null}</Collapse>
+                      <Collapse open={!childClosed}>{renderWorktree ? renderWorktree(child, group) : null}</Collapse>
                     </div>
                   );
                 })}
               </div>
             )}
             {showArchived || members.length === 0 ? null : (
-              <div className="mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5">
+              <div className={grouped ? "px-1 pb-1" : "mt-0.5 mb-0.5 ml-3 border-l border-line/40 pl-1.5"}>
                 {members.map((member) => {
                   const memberGit = gitByProject?.[projectGitKey(member.path)] ?? null;
                   const memberClosed = !chatQuery.trim() && isProjectCollapsed(collapsed, member.path);
@@ -407,6 +409,7 @@ export function AllProjectsList({
                           branch: gitByProject?.[projectGitKey(member.path)]?.branch ?? "",
                           worktree: false,
                           server: Boolean(member.remote || member.server),
+                          serverName: serverDisplayName(member.server),
                           ahead: gitByProject?.[projectGitKey(member.path)]?.ahead,
                           behind: gitByProject?.[projectGitKey(member.path)]?.behind,
                           dirty: gitByProject?.[projectGitKey(member.path)]?.dirty,
@@ -422,13 +425,14 @@ export function AllProjectsList({
                 {showArchived ? "No archived chats" : "No chats yet"}
               </p>
             ) : (
-              <div className={worktrees.length ? "pl-2" : undefined}>
+              <div className={worktrees.length ? "pl-2" : grouped ? "px-1 pb-1" : undefined}>
                 {renderList(listed, {
                   showArchived: chatQuery.trim() ? false : showArchived,
                   place: {
                     branch: git?.branch ?? "",
                     worktree: false,
                     server: Boolean(group.remote || group.server),
+                    serverName: serverDisplayName(group.server),
                     ahead: git?.ahead,
                     behind: git?.behind,
                     dirty: git?.dirty,

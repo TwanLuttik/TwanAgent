@@ -37,6 +37,7 @@ export function AppSidebar() {
     sidebarCollapsed,
     setSidebarCollapsed,
     usageTick,
+    workspace,
   } = useMain();
   const { showSettings } = useSidebar();
   const [usageHover, setUsageHover] = useState(false);
@@ -50,6 +51,19 @@ export function AppSidebar() {
     setFocusPath(path);
     saveSidebarFocus(path);
   }, []);
+  const focusedWorkspace = useRef(workspace);
+  // A tab from another project opens that project. The sidebar filter has to
+  // follow, or the highlight stays on the project that was focused before.
+  useEffect(() => {
+    if (isSameProject(focusedWorkspace.current, workspace)) return;
+    focusedWorkspace.current = workspace;
+    if (!workspace) return;
+    setFocusPath((current) => {
+      if (!current || isSameProject(current, workspace)) return current;
+      saveSidebarFocus(workspace);
+      return workspace;
+    });
+  }, [workspace]);
   const [favoritePaths, setFavoritePaths] = useState(loadProjectFavorites);
   const toggleFavorite = useCallback((path: string) => {
     setFavoritePaths((prev) => {
@@ -351,25 +365,30 @@ function SettingsNav({
           Settings
         </span>
       </div>
-      <nav className="relative z-10 flex min-h-0 flex-1 flex-col gap-0.5 overflow-auto px-2 pb-3" aria-label="Settings">
-        {SETTINGS_TABS.map((opt) => {
+      <nav className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto px-2 pb-3" aria-label="Settings">
+        {SETTINGS_TABS.map((opt, index) => {
           const on = tab === opt.id;
+          const groupStart = index === 0 || SETTINGS_TABS[index - 1]?.group !== opt.group;
           return (
-            <button
-              key={opt.id}
-              type="button"
-              aria-current={on ? "page" : undefined}
-              onClick={() => onTab(opt.id)}
-              className={`flex w-full items-center gap-2 rounded-[6px] px-2 py-1.5 text-left ${
-                on ? "bg-wash-strong text-ink" : "text-ink/90 hover:bg-wash"
-              }`}
-            >
-              <Symbol name={opt.icon} className={`size-4 shrink-0 ${on ? "text-ink" : "text-muted"}`} />
-              <span className="min-w-0">
-                <span className="block truncate text-[13px]">{opt.label}</span>
-                <span className="block truncate text-[11px] text-muted">{opt.hint}</span>
-              </span>
-            </button>
+            <div key={opt.id} className={groupStart && index > 0 ? "mt-2" : undefined}>
+              {groupStart ? (
+                <div className="px-2 pt-1.5 pb-1 text-[10px] font-semibold tracking-[0.08em] text-muted uppercase">
+                  {opt.group}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                aria-current={on ? "page" : undefined}
+                title={opt.hint}
+                onClick={() => onTab(opt.id)}
+                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
+                  on ? "bg-wash-strong text-ink" : "text-ink/85 hover:bg-wash"
+                }`}
+              >
+                <Symbol name={opt.icon} className={`size-4 shrink-0 ${on ? "text-ink" : "text-muted"}`} />
+                <span className="min-w-0 truncate">{opt.label}</span>
+              </button>
+            </div>
           );
         })}
       </nav>

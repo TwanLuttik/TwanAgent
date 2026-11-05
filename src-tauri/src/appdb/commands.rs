@@ -34,7 +34,11 @@ pub fn dev_app_reorder_projects(
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_app_remove_project(state: State<'_, AppState>, path: String) -> Result<bool> {
     let conn = open(&state.data_dir)?;
-    remove_project(&conn, &path)
+    let removed = remove_project(&conn, &path)?;
+    // The sidebar forgets the project. The remote row must go with it, or usage
+    // sync keeps asking a machine the list no longer shows.
+    let _ = crate::remote::config::delete_remote_project_by_mount(&conn, std::path::Path::new(&path));
+    Ok(removed)
 }
 
 #[tauri::command(rename_all = "snake_case")]

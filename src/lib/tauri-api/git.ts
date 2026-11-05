@@ -51,6 +51,39 @@ export type GitPullRequest = {
   open?: boolean;
 };
 
+export type GitPullRequestChecks = { pass: number; fail: number; pending: number };
+
+export type GitPullRequestCommit = {
+  hash: string;
+  short: string;
+  author: string;
+  at: string;
+  subject: string;
+};
+
+export type GitPullRequestFile = { path: string; additions: number; deletions: number };
+
+/** The pull request for the branch that is checked out. Null when this branch has none. */
+export type GitBranchPullRequest = {
+  number: number;
+  title: string;
+  /** open, draft, merged, or closed. */
+  state: string;
+  body: string;
+  author: string;
+  base: string;
+  head: string;
+  url: string;
+  additions: number;
+  deletions: number;
+  changed: number;
+  /** approved, changes, review, or empty when GitHub has no decision yet. */
+  review: string;
+  checks: GitPullRequestChecks;
+  commits: GitPullRequestCommit[];
+  files: GitPullRequestFile[];
+};
+
 export function gitStatus(workspace: string, stats = true): Promise<GitChange[]> {
   return invoke("dev_git_status", { workspace, stats });
 }
@@ -139,6 +172,10 @@ export function gitPullRequestsCached(workspace: string): Promise<GitPullRequest
 }
 
 /** Fetch one open pull request into a sibling worktree and return that checkout. */
+export function gitBranchPullRequest(workspace: string): Promise<GitBranchPullRequest | null> {
+  return invoke("dev_git_branch_pull_request", { workspace });
+}
+
 export function gitPullRequestCheckout(workspace: string, number: number): Promise<GitWorktreeAdd> {
   return invoke("dev_git_pull_request_checkout", { workspace, number });
 }

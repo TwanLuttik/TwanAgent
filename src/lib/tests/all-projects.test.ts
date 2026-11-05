@@ -33,6 +33,7 @@ import {
   upsertProjectGroup,
   matchesSidebarQuery,
   sidebarActivity,
+  runningBadgeWindow,
   visibleConversations,
   nextTopSort,
   orderSidebarChats,
@@ -99,7 +100,7 @@ describe("sidebarActivity", () => {
       name: "Orca",
       path: "/work/orca",
       conversations: [
-        chat("run", "Rewrite sidebar"),
+        { ...chat("run", "Rewrite sidebar"), model: "grok-4" },
         { ...chat("done", "Fix tests"), updated_at: "2026-04-02T10:00:00Z" },
         { ...chat("old", "Older finish"), updated_at: "2026-04-01T10:00:00Z" },
         { ...chat("box", "Archived"), archived: true },
@@ -124,6 +125,7 @@ describe("sidebarActivity", () => {
         ["old", "finished", "Orca"],
       ],
     );
+    assert.equal(rows[0]?.model, "grok-4");
   });
 
   it("keeps a chat that is both running and unseen under running, once", () => {
@@ -138,6 +140,21 @@ describe("sidebarActivity", () => {
     ]);
     assert.equal(rows[0]?.project, "orca-wt");
     assert.equal(rows[0]?.path, "/work/orca-wt");
+  });
+});
+
+describe("runningBadgeWindow", () => {
+  it("shows every running chat until there are five", () => {
+    assert.deepEqual(runningBadgeWindow(["a", "b", "c", "d"]), { shown: ["a", "b", "c", "d"], extra: 0 });
+    assert.deepEqual(runningBadgeWindow(["a"]), { shown: ["a"], extra: 0 });
+  });
+
+  it("keeps four marks and a plus once five or more are running", () => {
+    assert.deepEqual(runningBadgeWindow(["a", "b", "c", "d", "e"]), {
+      shown: ["a", "b", "c", "d"],
+      extra: 1,
+    });
+    assert.deepEqual(runningBadgeWindow(["a", "b", "c", "d", "e", "f", "g"]).extra, 3);
   });
 });
 

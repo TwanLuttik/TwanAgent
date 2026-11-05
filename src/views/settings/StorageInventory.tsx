@@ -100,7 +100,7 @@ export function StorageInventory() {
   const cloudChats = (cloud ?? []).reduce((sum, row) => sum + (row.chats ?? 0), 0);
   return (
     <div className="grid gap-5">
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 divide-x divide-line/55 overflow-hidden rounded-xl border border-line/45 bg-panel">
         <CountTile label="Projects" value={local == null ? "—" : String(local.length)} />
         <CountTile label="Chats" value={local == null ? "—" : String(chats)} />
         <CountTile label="Worktrees" value={local == null ? "—" : String(worktrees)} />
@@ -146,8 +146,8 @@ export function StorageInventory() {
 
 function CountTile({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-inset/70 px-2.5 py-2">
-      <div className="text-[16px] font-semibold leading-none tabular-nums text-ink">{value}</div>
+    <div className="px-3.5 py-3">
+      <div className="text-[18px] font-semibold leading-none tabular-nums tracking-[-0.02em] text-ink">{value}</div>
       <div className="mt-1 text-[11px] text-muted">{label}</div>
     </div>
   );
@@ -167,17 +167,15 @@ function StorageGroup<T>({
   render: (row: T) => ReactNode;
 }) {
   return (
-    <div>
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <div className="text-[13px] font-medium text-ink">{title}</div>
+    <section className="grid gap-1.5">
+      <div className="flex items-baseline justify-between gap-2 px-1">
+        <h3 className="m-0 text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">{title}</h3>
         {note ? <div className="text-[11px] text-muted">{note}</div> : null}
       </div>
-      {!rows || rows.length === 0 ? (
-        <p className="m-0 text-[12px] text-muted">{empty}</p>
-      ) : (
-        <div className="grid gap-0.5">{rows.map(render)}</div>
-      )}
-    </div>
+      <div className="divide-y divide-line/55 overflow-hidden rounded-xl border border-line/45 bg-panel">
+        {!rows || rows.length === 0 ? <p className="m-0 px-3.5 py-3 text-[12px] text-muted">{empty}</p> : rows.map(render)}
+      </div>
+    </section>
   );
 }
 
@@ -199,7 +197,7 @@ function ProjectLine({
   chips?: { label: string; detail: string }[];
 }) {
   return (
-    <div className="grid gap-1 rounded-md px-1.5 py-1.5 hover:bg-wash" title={title ?? hint}>
+    <div className="grid gap-1 px-3.5 py-2 hover:bg-wash" title={title ?? hint}>
       <div className="flex min-w-0 items-center gap-2">
         <Symbol name={icon} className="size-3.5 shrink-0 text-muted" />
         <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{name}</span>

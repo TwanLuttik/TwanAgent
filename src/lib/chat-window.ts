@@ -1,3 +1,76 @@
+export type HeldTranscript<T> = {
+  id: string;
+  messages: T;
+  model: string;
+};
+
+/**
+ * Keep showing the transcript already on screen until the next chat's messages arrive.
+ * The click changes the active id first. Rendering the previous chat under that id
+ * parses it again, which is the hitch before the next conversation shows.
+ */
+export function holdTranscript<T>(
+  held: HeldTranscript<T>,
+  messages: T,
+  activeId: string,
+  model: string,
+): HeldTranscript<T> {
+  if (messages !== held.messages) return { id: activeId, messages, model };
+  return held;
+}
+
+/**
+ * Remember which transcript belongs to the chat on screen.
+ * Selecting a row changes the active id before its messages arrive. The list
+ * still on screen belongs to the chat we left. Storing it under the new id
+ * makes both rows open that one conversation, and a later click never fetches
+ * the other.
+ */
+export function rememberShownTranscript<T>(
+  cache: Map<string, T>,
+  shownId: string,
+  activeId: string,
+  messages: T,
+  previousMessages: T,
+): string {
+  if (!activeId) return messages === previousMessages ? shownId : "";
+  if (activeId !== shownId && messages === previousMessages) return shownId;
+  cache.set(activeId, messages);
+  return activeId;
+}
+
+/**
+ * The open that loaded this transcript is still the one the user selected.
+ * `shownId` stays on the chat we left until these messages commit, so it cannot
+ * be this gate. Gating on it drops the first click and the window stays there
+ * until the same row is selected again.
+ */
+export function openedTranscriptIsCurrent(
+  generation: number,
+  latestGeneration: number,
+  activeId: string,
+  requestedId: string,
+): boolean {
+  return requestedId !== "" && generation === latestGeneration && activeId === requestedId;
+}
+
+/**
+ * The saved list for `id`, unless a torn switch stored the other chat's array
+ * under this id. That copy is not this conversation.
+ */
+export function cachedTranscript<T>(
+  cache: ReadonlyMap<string, T>,
+  id: string,
+  shownId: string,
+  shownMessages: T,
+): T | undefined {
+  if (!id) return undefined;
+  const cached = cache.get(id);
+  if (cached === undefined) return undefined;
+  if (id !== shownId && cached === shownMessages) return undefined;
+  return cached;
+}
+
 /** How many turns stay mounted. Older turns stay in memory but are not rendered. */
 export const CHAT_WINDOW_TURNS = 24;
 

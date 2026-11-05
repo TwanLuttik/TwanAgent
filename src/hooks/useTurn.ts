@@ -1,6 +1,7 @@
 import { type Dispatch, type RefObject, type SetStateAction } from "react";
 import { nextTopSort } from "../lib/all-projects";
 import { completeTurn, resumeLocalTurn } from "../lib/agent";
+import { noteCommandStream } from "../lib/command-run";
 import { keepCompaction } from "../lib/compact";
 import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
 import {
@@ -89,6 +90,7 @@ import {
   pendingIndexAfterRemove,
   removePending,
   commitPartialReply,
+  replyCoversStream,
   setDraftForChat,
   takeNextPending,
   turnAppliesToChat,
@@ -266,16 +268,22 @@ function applyDetachedEvent(
   },
 ) {
   if (event.kind === "saved" && event.messages) {
-    const messages = event.messages;
-    rememberLive(id, { messages, streamText: "", streamReasoning: "" });
+    const live = liveByChatRef.current.get(id);
+    const messages = mergeHostedTranscript(live?.messages ?? [], event.messages);
+    // Clearing the buffer before this snapshot contains it hides the reply.
+    // The text then only comes back when the chat is read from disk.
+    const covered = replyCoversStream(messages, live?.streamText ?? "", live?.streamReasoning ?? "");
+    rememberLive(id, covered ? { messages, streamText: "", streamReasoning: "" } : { messages });
     if (event.usage) {
       setUsageByChat((prev) => (sameChatUsage(prev[id], event.usage!) ? prev : { ...prev, [id]: event.usage! }));
       setUsageTick((n) => n + 1);
     }
     if (visible()) {
       setMessages(messages);
-      setStreamText("");
-      setStreamReasoning("");
+      if (covered) {
+        setStreamText("");
+        setStreamReasoning("");
+      }
     }
     return;
   }
@@ -344,7 +352,8 @@ function applyDetachedEvent(
     });
     return;
   }
-  if (event.kind === "command" && event.text) {
+  if (event.kind === "command-start" || event.kind === "command" || event.kind === "command-exit") {
+    noteCommandStream(id, event);
     return;
   }
   if (event.kind === "refresh") bumpFiles();
@@ -1289,15 +1298,21 @@ async function runTurn(
         } else if (ev.kind === "done") {
           const saved = ev.conversation;
           const incoming = (saved?.messages as ChatMessage[] | undefined) ?? [];
+          const live = liveByChatRef.current.get(id);
           // A stopped turn can publish the transcript from before this prompt.
           // The optimistic copy is already on screen, so a shorter one does not replace it.
-          const messages = mergeHostedTranscript(liveByChatRef.current.get(id)?.messages ?? [], incoming);
+          const held = mergeHostedTranscript(live?.messages ?? [], incoming);
+          const messages = commitPartialReply(held, {
+            text: live?.streamText ?? "",
+            reasoning: live?.streamReasoning ?? "",
+          });
           if (messages.length) {
             latestMessages = messages;
             rememberLive(id, { messages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
             if (visible()) {
               setMessages(messages);
               setStreamText("");
+              setStreamReasoning("");
               setRunningActivity(null);
             }
           }

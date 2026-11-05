@@ -37,6 +37,7 @@ import {
   runningTurnStartedAt,
   shouldQueueForChat,
   commitPartialReply,
+  replyCoversStream,
   takeNextPending,
   updatePending,
   turnAppliesToChat,
@@ -332,6 +333,66 @@ describe("commitPartialReply", () => {
   it("leaves the transcript alone when nothing was received yet", () => {
     assert.equal(commitPartialReply(history, { text: "", reasoning: "" }), history);
     assert.equal(commitPartialReply(history, { text: "   ", reasoning: "  " }), history);
+  });
+
+  it("does not add a reply the saved transcript already has", () => {
+    const saved = [
+      ...history,
+      { role: "assistant" as const, content: "Settings is now grouped panels." },
+    ];
+    assert.equal(
+      commitPartialReply(saved, { text: "Settings is now grouped panels.", reasoning: "" }),
+      saved,
+    );
+    assert.equal(replyCoversStream(saved, "Settings is now grouped panels."), true);
+  });
+
+  it("keeps a reply that is still only in the live buffer", () => {
+    const tools = [
+      ...history,
+      { role: "assistant" as const, content: "Reading the settings.", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] },
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+    ];
+    assert.equal(replyCoversStream(tools, "Settings is now grouped panels."), false);
+    const next = commitPartialReply(tools, { text: "Settings is now grouped panels." });
+    assert.equal(next.length, tools.length + 1);
+    assert.equal(next[next.length - 1]?.content, "Settings is now grouped panels.");
+  });
+
+  it("does not let an earlier sentence cover the final reply", () => {
+    const mid = [
+      ...history,
+      { role: "assistant" as const, content: "Reading the settings." },
+    ];
+    assert.equal(replyCoversStream(mid, "Settings is now grouped panels."), false);
+  });
+
+  it("treats a saved reply that already starts with the buffer as the same text", () => {
+    const saved = [
+      ...history,
+      { role: "assistant" as const, content: "Settings is now grouped panels." },
+    ];
+    assert.equal(replyCoversStream(saved, "Settings is now"), true);
+    assert.equal(commitPartialReply(saved, { text: "Settings is now" }), saved);
+  });
+
+  it("extends the open reply when the buffer has more than the snapshot", () => {
+    const partial = [...history, { role: "assistant" as const, content: "Settings is" }];
+    const next = commitPartialReply(partial, { text: "Settings is now grouped panels." });
+    assert.equal(next.length, partial.length);
+    assert.equal(next[next.length - 1]?.content, "Settings is now grouped panels.");
+  });
+
+  it("keeps a longer saved transcript when an older tool save arrives late", () => {
+    const withReply = [
+      ...history,
+      { role: "assistant" as const, content: "Reading the settings." },
+      { role: "tool" as const, content: "file" },
+      { role: "assistant" as const, content: "Settings is now grouped panels." },
+    ];
+    const toolSave = withReply.slice(0, -1);
+    assert.deepEqual(mergeHostedTranscript(withReply, toolSave), withReply);
+    assert.deepEqual(mergeHostedTranscript(toolSave, withReply), withReply);
   });
 });
 

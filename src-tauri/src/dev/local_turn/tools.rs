@@ -23,6 +23,7 @@ pub(super) fn run_shell(
     conversation_id: &str,
     workspace: &Path,
     command: &str,
+    description: &str,
     permission: &str,
     live: &LiveTurn,
 ) -> Result<String> {
@@ -37,22 +38,50 @@ pub(super) fn run_shell(
     if stopped_flag(&live.cancel) {
         return Ok("Skipped: stopped.".into());
     }
-    let app_chunks = app.clone();
-    let id = conversation_id.to_string();
+    // Provider tool ids repeat (`tool_0`) across chats and subagents. The process
+    // map is global, so that id would let Stop kill the other command.
     let command_id = uuid::Uuid::new_v4().to_string();
     if let Ok(mut commands) = live.commands.lock() {
         commands.push(command_id.clone());
     }
+    emit_command(app, conversation_id, "command-start", &command_id, command, description);
+    let app_chunks = app.clone();
+    let id = conversation_id.to_string();
+    let chunk_id = command_id.clone();
     let outcome = super::super::cmd::run_command_streaming(workspace, command, &command_id, move |chunk| {
-        emit(&app_chunks, &id, "command", Some(chunk.to_string()), None, None);
+        emit_command(&app_chunks, &id, "command", &chunk_id, chunk, "");
     });
     if let Ok(mut commands) = live.commands.lock() {
         commands.retain(|running| running != &command_id);
     }
+    let reported = if stopped_flag(&live.cancel) {
+        "Skipped: stopped.".to_string()
+    } else {
+        match &outcome {
+            Ok(text) => text.clone(),
+            Err(err) => format!("Error: {err}"),
+        }
+    };
+    emit_command(app, conversation_id, "command-exit", &command_id, &reported, "");
     if stopped_flag(&live.cancel) {
         return Ok("Skipped: stopped.".into());
     }
     outcome
+}
+
+fn emit_command(app: &AppHandle, conversation_id: &str, kind: &str, command_id: &str, text: &str, description: &str) {
+    emit(
+        app,
+        conversation_id,
+        kind,
+        Some(text.to_string()),
+        Some(crate::dev::types::DevToolCall {
+            id: command_id.to_string(),
+            name: "run_command".into(),
+            arguments: description.to_string(),
+        }),
+        None,
+    );
 }
 
 fn ask_shell(app: &AppHandle, conversation_id: &str, command: &str, live: &LiveTurn) -> Result<bool> {

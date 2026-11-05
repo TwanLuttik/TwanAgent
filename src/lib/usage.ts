@@ -40,6 +40,27 @@ export function usageOnServer(ev: UsageEvent): boolean {
   return (ev.source ?? "").trim().startsWith("server:");
 }
 
+export type ServerUsage = { tokens: number; usd: number };
+
+/**
+ * Tokens and list-price spend copied from one server.
+ * `mountPaths` are the local folders for that server's projects. A turn recorded
+ * on this Mac is not included, even when the chat belongs to one of those folders.
+ */
+export function serverUsage(
+  events: UsageEvent[],
+  mountPaths: string[],
+  range: UsageRange,
+  nowMs = Date.now(),
+): ServerUsage {
+  const keys = new Set(mountPaths.map((path) => projectKey(path)).filter(Boolean));
+  if (keys.size === 0) return { tokens: 0, usd: 0 };
+  const rows = events.filter((ev) => usageOnServer(ev) && keys.has(projectKey(ev.workspace_path)));
+  const snap = buildUsageSnapshot(rows, { range, nowMs });
+  const cost = estimateUsageCost(rows, { range, nowMs });
+  return { tokens: snap.totals.total, usd: cost.usd };
+}
+
 export type UsageSnapshot = {
   totals: UsageTotals;
   days: UsageDay[];

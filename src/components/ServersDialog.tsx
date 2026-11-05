@@ -35,7 +35,14 @@ function keySyncNotice(copied: ProviderId[], keys: ServerProviderKeys): string {
 }
 
 /** TwanAgent servers. A row appears only after the server program is installed and a token is saved. */
-export function ServersDialog({ onClose }: { onClose: () => void }) {
+export function ServersDialog({
+  onClose,
+  onOpenProject,
+}: {
+  onClose: () => void;
+  /** Local mount path returned after the remote folder is registered. */
+  onOpenProject: (path: string, name: string) => void;
+}) {
   const { setFlash } = useApp();
   const [step, setStep] = useState<Step>("list");
   const [saved, setSaved] = useState<AgentServer[]>([]);
@@ -48,6 +55,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
   const [keysById, setKeysById] = useState<Record<string, ServerProviderKeys>>({});
   const [copyProviders, setCopyProviders] = useState<ProviderId[]>([]);
   const [localKeys, setLocalKeys] = useState<LocalKeys>(NO_LOCAL_KEYS);
+  const [serverName, setServerName] = useState("");
   const [user, setUser] = useState("");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("22");
@@ -321,7 +329,7 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
 
   async function rememberServer(address = host.trim(), login = user.trim(), parsedPort = Number(port)) {
     const server = await api.installAgentServer({
-      name: address,
+      name: serverName.trim(),
       user: login,
       host: address,
       port: parsedPort,
@@ -479,17 +487,25 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               copy={copyById[selected.id] ?? null}
               openingPath={openingPath}
               onOpenProject={(project) => {
-                if (!selected.machine_id || openingPath) return;
+                const machineId = selected.machine_id?.trim() ?? "";
+                if (openingPath) return;
+                if (!machineId) {
+                  setError("This server is not linked to a machine yet.");
+                  return;
+                }
                 setOpeningPath(project.remote_path);
                 setError(null);
                 void api
-                  .createRemoteProject(project.name, selected.machine_id, project.remote_path)
-                  .then(() => {
-                    loadProjects(selected.id);
-                    void api.listRemoteProjects().then(setProjects).catch(() => undefined);
+                  .createRemoteProject(project.name, machineId, project.remote_path)
+                  .then((path) => {
+                    if (!path) throw new Error("The server did not return a project to open.");
+                    onOpenProject(path, project.name);
+                    onClose();
                   })
-                  .catch((err) => setError(String(err)))
-                  .finally(() => setOpeningPath(null));
+                  .catch((err) => {
+                    setError(String(err));
+                    setOpeningPath(null);
+                  });
               }}
               storage={storageById[selected.id] ?? null}
               git={gitById[selected.id] ?? "checking"}
@@ -521,6 +537,19 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
               mcpName={mcpName}
               localMcp={localMcp}
               onMcpName={setMcpName}
+              mountPaths={projects
+                .filter((project) => selected.machine_id && project.machine_id === selected.machine_id)
+                .map((project) => project.mount_path)}
+              onRename={async (name) => {
+                try {
+                  const row = await api.renameAgentServer(selected.id, name);
+                  setSaved((rows) => rows.map((item) => (item.id === row.id ? row : item)));
+                  setError(null);
+                } catch (err) {
+                  setError(String(err));
+                  throw err;
+                }
+              }}
               onSyncCapabilities={() => {
                 setBusy(true);
                 setError(null);
@@ -549,12 +578,14 @@ export function ServersDialog({ onClose }: { onClose: () => void }) {
             <ConnectForm
               found={found}
               scanning={scanning}
+              name={serverName}
               host={host}
               user={user}
               port={port}
               password={password}
               keyPath={keyPath}
               busy={busy}
+              onName={setServerName}
               onHost={setHost}
               onUser={setUser}
               onPort={setPort}

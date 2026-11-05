@@ -230,9 +230,9 @@ textarea.text-transparent::selection {
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   overflow: visible;
-  padding: 0 12px;
+  padding: 0 10px 0 8px;
   line-height: 16px;
   pointer-events: none;
 }
@@ -571,6 +571,53 @@ html[data-theme-mode="light"] .model-tip {
   background: #5c5c62;
   color: #f5f5f7;
   border-color: rgb(0 0 0 / 0.16);
+}
+
+/* Running caption. Darker edge than the model tip, with a notch that sits
+   outside the label so it never covers the text. */
+.running-tip {
+  border-color: rgb(0 0 0 / 0.34);
+}
+
+html[data-theme-mode="light"] .running-tip {
+  border-color: rgb(0 0 0 / 0.5);
+}
+
+.running-notch {
+  width: 12px;
+  height: 6px;
+}
+
+.running-notch::before,
+.running-notch::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  border-style: solid;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+}
+
+.running-notch::before {
+  top: 0;
+  border-width: 7px 6px 0;
+  border-top-color: rgb(0 0 0 / 0.34);
+}
+
+.running-notch::after {
+  top: -1px;
+  left: 1px;
+  border-width: 6px 5px 0;
+  border-top-color: #c8c8ce;
+}
+
+html[data-theme-mode="light"] .running-notch::before {
+  border-top-color: rgb(0 0 0 / 0.5);
+}
+
+html[data-theme-mode="light"] .running-notch::after {
+  border-top-color: #5c5c62;
 }
 
 .media-check {

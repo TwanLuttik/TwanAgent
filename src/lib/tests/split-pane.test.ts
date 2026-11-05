@@ -18,11 +18,29 @@ import {
   splitSelectedChats,
   tabItemKey,
   tabItemsFromIds,
+  retainOpenTabs,
   unsplitGroup,
   withCodeTab,
+  groupTabsByProject,
   CODE_TAB_KEY,
   visibleChatIds,
 } from "../split-pane.ts";
+
+describe("retainOpenTabs", () => {
+  it("drops a chat only from the project that just listed it", () => {
+    const items = tabItemsFromIds(["a", "b"]);
+    const homes = { a: "/demo", b: "/other" };
+    const known = new Set(["gone"]);
+    const seen = new Set(["a", "b"]);
+    assert.deepEqual(retainOpenTabs(items, homes, "/demo", known, seen), [{ kind: "chat", id: "b" }]);
+  });
+
+  it("keeps a chat whose project has not listed conversations yet", () => {
+    const items = tabItemsFromIds(["a"]);
+    const next = retainOpenTabs(items, { a: "/demo" }, "/demo", new Set(), new Set());
+    assert.deepEqual(next, items);
+  });
+});
 
 describe("splitChatTab", () => {
   it("pairs the right-clicked chat with the tab on its left", () => {
@@ -61,6 +79,14 @@ describe("close and unsplit", () => {
     const split = splitChatTab(tabItemsFromIds(["a", "b", "c"]), "b", "split-1");
     assert.deepEqual(unsplitGroup(split, "split-1"), tabItemsFromIds(["a", "b", "c"]));
     assert.equal(unsplitGroup(split, "missing"), split);
+  });
+
+  it("does not pair chats that live in different projects", () => {
+    const items = tabItemsFromIds(["a", "b"]);
+    const homes = { a: "/demo", b: "/other" };
+    assert.equal(splitChatTab(items, "b", "split-1", homes), items);
+    assert.equal(splitSelectedChats(items, ["a", "b"], "split-1", homes), items);
+    assert.notEqual(splitChatTab(items, "b", "split-1", { a: "/demo", b: "/demo" }), items);
   });
 
   it("keeps the other pane when one side of a split closes", () => {
@@ -140,6 +166,19 @@ describe("open and focus", () => {
     assert.deepEqual(chatIdsInTabs(moved), ["a", "b"]);
     assert.equal(withCodeTab(moved, false).some((item) => item.kind === "code"), false);
     assert.equal(withCodeTab(items, true), items);
+  });
+
+  it("pulls a project's later tabs next to the ones already open", () => {
+    const items = [
+      ...tabItemsFromIds(["a", "b", "c"]),
+      { kind: "code" as const },
+      ...tabItemsFromIds(["d"]),
+    ];
+    const homes = { a: "/app", b: "/notes", c: "/app/", d: "/notes" };
+    const next = groupTabsByProject(items, homes);
+    assert.deepEqual(chatIdsInTabs(next), ["a", "c", "b", "d"]);
+    assert.equal(next[3]?.kind, "code");
+    assert.equal(groupTabsByProject(next, homes), next);
   });
 
   it("splits the command-selected chats in the order they were picked", () => {

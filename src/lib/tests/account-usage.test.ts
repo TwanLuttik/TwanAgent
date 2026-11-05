@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { accountFromUsage, forecastAccounts } from "../account-forecast.ts";
 import {
   accountUsageIsFresh,
+  accountUsageMiniSummary,
   formatAccountBalance,
   formatAccountReset,
   formatAccountUsed,
@@ -173,6 +174,57 @@ describe("formatAccountUsed", () => {
     assert.equal(formatAccountUsed(42.4), "42%");
     assert.equal(formatAccountUsed(4.25), "4.3%");
     assert.equal(formatAccountUsed(140), "100%");
+  });
+});
+
+describe("accountUsageMiniSummary", () => {
+  const now = Date.parse("2026-07-20T12:00:00Z");
+
+  it("keeps the tightest remaining window on one line", () => {
+    const usage = parseAccountUsage({
+      provider: "minimax",
+      connected: true,
+      label: "MiniMax",
+      windows: [
+        { id: "five_hour", label: "5h", used_percent: 100, resets_at: "2026-07-20T17:00:00Z" },
+        { id: "week", label: "Week", used_percent: 82, resets_at: "2026-07-21T01:00:00Z" },
+      ],
+    });
+    assert.ok(usage);
+    assert.equal(accountUsageMiniSummary(usage, true, now), "Week 82% left · 13h");
+  });
+
+  it("drops the window name when there is only one", () => {
+    const usage = parseAccountUsage({
+      provider: "anthropic",
+      connected: true,
+      label: "Claude",
+      windows: [{ id: "five_hour", label: "5h", used_percent: 80, resets_at: "2026-07-20T14:00:00Z" }],
+    });
+    assert.ok(usage);
+    assert.equal(accountUsageMiniSummary(usage, false, now), "80% · 2h");
+  });
+
+  it("falls back to the balance or a short credit status", () => {
+    const balance = parseAccountUsage({
+      provider: "xai",
+      connected: true,
+      label: "SuperGrok Heavy",
+      windows: [],
+      balance_cents: 0,
+      balance_currency: "USD",
+    });
+    const credits = parseAccountUsage({
+      provider: "xai",
+      connected: true,
+      label: "SuperGrok Heavy",
+      windows: [],
+      credit_status: "available",
+    });
+    assert.ok(balance);
+    assert.ok(credits);
+    assert.match(accountUsageMiniSummary(balance, false, now), /left$/);
+    assert.equal(accountUsageMiniSummary(credits, false, now), "Credits");
   });
 });
 

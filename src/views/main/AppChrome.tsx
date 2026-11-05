@@ -21,6 +21,7 @@ import { AnchoredMenu } from "../../components/ContextMenu";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS } from "../../components/WindowButtons";
 import type { EditorState } from "../../lib/editor";
+import { projectKey } from "../../lib/core";
 import { CODE_TAB_KEY, tabItemKey, type TabItem, type TabMenu } from "../../lib/split-pane";
 import { chatHasRunningTurn, type RunningTurn } from "../../lib/turn";
 import type { ConversationKind } from "../../lib/terminal-chat";
@@ -78,7 +79,7 @@ export function NewChatMenu({
             className="flex w-full items-center justify-between gap-4 px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
           >
             <span className="flex items-center gap-2">
-              <Symbol name="bubble.left" className="size-3.5 text-muted" />
+              <Symbol name="bubble.dots" className="size-3.5 text-muted" />
               Chat
             </span>
             <span className="text-[11px] text-muted">{isMacOS() ? "⌘N" : "Ctrl+N"}</span>
@@ -115,6 +116,7 @@ export function CenterTabs({
   activeChatId,
   splitChatIds,
   runningTurns,
+  tabHomes,
   menu,
   onChat,
   onCloseChat,
@@ -133,6 +135,8 @@ export function CenterTabs({
   /** Both chats in the open split, when one is showing. */
   splitChatIds?: readonly string[];
   runningTurns?: Readonly<Record<string, RunningTurn>>;
+  /** Workspace path for each open chat, used to keep one project's tabs together. */
+  tabHomes: Readonly<Record<string, string>>;
   menu: TabMenu | null;
   onChat: (id: string) => void;
   onCloseChat: (id: string) => void;
@@ -202,11 +206,13 @@ export function CenterTabs({
     >
     <SortableContext items={keys} strategy={horizontalListSortingStrategy}>
     <ChromeTabStrip>
-      {items.map((item) => {
+      {items.map((item, index) => {
+        const projectBreak = tabProjectBreak(items, index, tabHomes);
+        let body: ReactNode;
         if (item.kind === "split") {
           const [leftId, rightId] = item.group.chatIds;
           const groupOn = chatOn && splitOpen && splitChatIds?.includes(leftId) && splitChatIds.includes(rightId);
-          return (
+          body = (
             <SortableTab key={item.group.id} id={tabItemKey(item)} dragging={draggingKey === tabItemKey(item)}>
               <ChromeTabGroup selected={Boolean(groupOn)}>
                 <SplitTab
@@ -234,9 +240,8 @@ export function CenterTabs({
               </ChromeTabGroup>
             </SortableTab>
           );
-        }
-        if (item.kind === "code") {
-          return (
+        } else if (item.kind === "code") {
+          body = (
             <SortableTab key={CODE_TAB_KEY} id={CODE_TAB_KEY} dragging={draggingKey === CODE_TAB_KEY}>
               <ChromeTab
                 selected={codeOn}
@@ -246,9 +251,9 @@ export function CenterTabs({
               />
             </SortableTab>
           );
-        }
+        } else {
         const chat = byId.get(item.id);
-        return (
+        body = (
           <SortableTab key={item.id} id={tabItemKey(item)} dragging={draggingKey === tabItemKey(item)}>
             <ChatChromeTab
               chat={chat}
@@ -268,6 +273,15 @@ export function CenterTabs({
               onMenu={(event) => onMenu({ kind: "chat", id: item.id, x: event.clientX, y: event.clientY })}
             />
           </SortableTab>
+        );
+        }
+        return (
+          <span key={tabItemKey(item)} className="contents">
+            {projectBreak ? (
+              <span aria-hidden className="mx-1 h-3 w-px shrink-0 self-center bg-line" />
+            ) : null}
+            {body}
+          </span>
         );
       })}
       {menu ? (
@@ -306,6 +320,24 @@ export function CenterTabs({
     </SortableContext>
     </DndContext>
   );
+}
+
+function tabProject(item: TabItem, homes: Readonly<Record<string, string>>): string {
+  const path =
+    item.kind === "chat"
+      ? homes[item.id] ?? ""
+      : item.kind === "split"
+        ? homes[item.group.chatIds[0]] || homes[item.group.chatIds[1]] || ""
+        : "";
+  return path ? projectKey(path) : "";
+}
+
+/** A hairline before a tab when the project changes. The Code tab does not count. */
+function tabProjectBreak(items: TabItem[], index: number, homes: Readonly<Record<string, string>>): boolean {
+  if (index <= 0) return false;
+  const here = tabProject(items[index]!, homes);
+  const prev = tabProject(items[index - 1]!, homes);
+  return Boolean(here && prev && here !== prev);
 }
 
 /** Move the held tab without scaling it to the tab it passes over. */
@@ -421,7 +453,7 @@ function ChatChromeTab({
     <ChromeTab
       selected={selected}
       label={label}
-      icon={<Symbol name={terminal ? "terminal.fill" : "bubble.left.fill"} className="size-3.5 shrink-0" />}
+      icon={<Symbol name={terminal ? "terminal.fill" : "bubble.dots"} className="size-3.5 shrink-0" />}
       running={running}
       grouped={grouped}
       marked={marked}

@@ -5,17 +5,30 @@ export type ChatPlace = {
   branch: string;
   worktree: boolean;
   server: boolean;
+  /** Machine name, or the host when the machine has no name yet. */
+  serverName?: string;
   ahead?: number;
   behind?: number;
   dirty?: number;
   pr: ChatPullRequest | null;
 };
 
+/** The name to show for a project that runs on a server. */
+export function serverDisplayName(server?: { machineName?: string; host?: string } | null): string {
+  return server?.machineName?.trim() || server?.host?.trim() || "";
+}
+
+/** Label for the server mark. Empty when this chat is local. */
+export function serverMarkLabel(place: Pick<ChatPlace, "server" | "serverName">): string {
+  if (!place.server) return "";
+  return place.serverName?.trim() || "Server";
+}
+
 function gitTracking(place: Pick<ChatPlace, "ahead" | "behind">): string {
   return [place.ahead ? `↑${place.ahead}` : "", place.behind ? `↓${place.behind}` : ""].filter(Boolean).join(" ");
 }
 
-/** One line under the chat title: branch, pull request, then Local or Server. */
+/** One line under the chat title: branch, pull request, then Local or the server name. */
 export function chatFooterLabel(place: ChatPlace): string {
   const branch = [place.branch.trim(), gitTracking(place)].filter(Boolean).join(" ");
   const pr = place.pr
@@ -23,7 +36,7 @@ export function chatFooterLabel(place: ChatPlace): string {
       ? `#${place.pr.number}`
       : `#${place.pr.number} closed`
     : "";
-  return [branch, pr, place.server ? "Server" : "Local"].filter(Boolean).join(" · ");
+  return [branch, pr, place.server ? serverMarkLabel(place) : "Local"].filter(Boolean).join(" · ");
 }
 
 /** The pull request whose head is this checkout. Missing when the branch has none. */

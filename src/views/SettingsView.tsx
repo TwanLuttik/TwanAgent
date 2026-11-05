@@ -1,33 +1,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
-import { ThemePicker } from "../components/ThemePicker";
 import { formatBytes } from "../lib/usage";
 import { folderName } from "../lib/core";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
-import {
-  loadExpandEdits,
-  loadFileHoverCard,
-  loadLiveSocketDebug,
-  loadMarkdownOpenMode,
-  loadPerfOverlay,
-  loadSpaceCorner,
-  loadSpaceCornerImage,
-  loadSpaceCornerScene,
-  loadWrapLines,
-  saveMarkdownOpenMode,
-  setExpandEdits,
-  setFileHoverCard,
-  setLiveSocketDebug,
-  setPerfOverlay,
-  setSpaceCorner,
-  setSpaceCornerImage,
-  setSpaceCornerScene,
-  setWrapLines,
-  type SpaceCornerImage,
-  type MarkdownOpenMode,
-} from "../lib/prefs";
-import { DEFAULT_SCENE, isSceneId, SCENES, type SceneId } from "../lib/ascii/scenes";
-import { loadTheme, type ThemeSelection } from "../lib/theme";
 import * as api from "../lib/tauri";
 import {
   setProviderCli,
@@ -39,7 +14,8 @@ import {
 } from "../lib/provider-status";
 import { useApp } from "../state/app-state";
 import { SPEECH_MODELS, type SpeechModelInfo } from "../lib/speech";
-import { Card, Row, Section, Toggle } from "./settings/SettingsChrome";
+import { AppearancePane } from "./settings/AppearancePane";
+import { Group, Line, Page } from "./settings/SettingsChrome";
 import { ProvidersPane, PROVIDER_CARDS, type ProviderCard, type ProviderCardId } from "./settings/ProvidersPane";
 import { MicTest, VoiceModelCard, VoiceModelDialog } from "./settings/VoiceSettings";
 import { StorageInventory } from "./settings/StorageInventory";
@@ -47,12 +23,12 @@ import { PermissionsPane } from "./settings/PermissionsPane";
 
 export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "permissions";
 
-export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string }[] = [
-  { id: "providers", label: "Model Providers", hint: "Grok, Claude, and MiniMax", icon: "sparkles" },
-  { id: "voice", label: "Voice", hint: "Dictation model", icon: "mic" },
-  { id: "permissions", label: "Permissions", hint: "Folders and chats", icon: "lock" },
-  { id: "storage", label: "Storage", hint: "Usage database", icon: "externaldrive" },
-  { id: "appearance", label: "Appearance", hint: "Theme and display", icon: "paintbrush" },
+export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string; group: string }[] = [
+  { id: "appearance", label: "Appearance", hint: "Theme and display", icon: "paintbrush", group: "General" },
+  { id: "providers", label: "Providers", hint: "Grok, Claude, and MiniMax", icon: "sparkles", group: "Models" },
+  { id: "voice", label: "Voice", hint: "Dictation", icon: "mic", group: "Models" },
+  { id: "permissions", label: "Permissions", hint: "Folders and chats", icon: "lock", group: "System" },
+  { id: "storage", label: "Storage", hint: "Projects and usage", icon: "externaldrive", group: "System" },
 ];
 
 export function SettingsView({
@@ -92,21 +68,6 @@ export function SettingsView({
   useEffect(() => {
     if (active) startProviderStatusCached();
   }, [active]);
-  const [theme, setThemeSel] = useState<ThemeSelection>(() => loadTheme());
-  const [spaceArt, setSpaceArt] = useState(() => loadSpaceCorner());
-  const [spaceScene, setSpaceScene] = useState<SceneId>(() => {
-    const stored = loadSpaceCornerScene();
-    return isSceneId(stored) ? stored : DEFAULT_SCENE;
-  });
-  const [spaceVideo, setSpaceVideo] = useState(() => isSceneId(loadSpaceCornerScene()));
-  const [spaceImage, setSpaceImage] = useState<SpaceCornerImage | null>(() => loadSpaceCornerImage());
-  const [pickingImage, setPickingImage] = useState(false);
-  const [fileHoverCard, setFileHoverCardOn] = useState(() => loadFileHoverCard());
-  const [perfOverlay, setPerfOverlayOn] = useState(() => loadPerfOverlay());
-  const [liveSocketDebug, setLiveSocketDebugOn] = useState(() => loadLiveSocketDebug());
-  const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
-  const [wrapLines, setWrapLinesOn] = useState(() => loadWrapLines());
-  const [markdownOpen, setMarkdownOpen] = useState<MarkdownOpenMode>(() => loadMarkdownOpenMode());
   const [providerKeys, setProviderKeys] = useState<Record<ProviderCardId, string>>({
     xai: "",
     anthropic: "",
@@ -153,190 +114,24 @@ export function SettingsView({
     });
   }
 
+  function resetDatabase() {
+    setResettingDb(true);
+    void api
+      .usageDbReset()
+      .then((info) => {
+        setProviderDb(info);
+        setConfirmReset(false);
+        setFlash({ kind: "ok", text: "Reset the usage database." });
+      })
+      .catch((e) => setFlash({ kind: "err", text: String(e) }))
+      .finally(() => setResettingDb(false));
+  }
+
   const body = (
     <div className="flex min-h-0 flex-1">
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
-        <div className="grid max-w-[520px] gap-4">
-          {tab === "appearance" && (
-            <Section title="Appearance" text="Finder is the default. Custom builds a theme from light or dark plus accent, background, and sidebar.">
-              <ThemePicker value={theme} onChange={setThemeSel} />
-              <Toggle
-                title="Space corner"
-                text="Show a faded picture in the top-left of the sidebar."
-                checked={spaceArt}
-                onChange={(next) => {
-                  setSpaceArt(next);
-                  setSpaceCorner(next);
-                }}
-              />
-              <div className="grid gap-1.5">
-                <span className="block text-[13px] font-medium text-ink">Picture</span>
-                <span className="text-[12px] leading-relaxed text-muted">
-                  {spaceImage
-                    ? `${spaceImage.name} is saved in the TwanAgent folder, so it stays if you delete the original.`
-                    : "Uses the built-in picture. A chosen image is copied into the TwanAgent folder."}
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    disabled={pickingImage}
-                    onClick={() => {
-                      setPickingImage(true);
-                      void api
-                        .pickImage()
-                        .then(async (path) => {
-                          if (!path) return;
-                          const saved = await api.setSpaceCornerImage(path);
-                          const next = {
-                            path: saved.path,
-                            name: saved.name,
-                            width: saved.width,
-                            height: saved.height,
-                          };
-                          setSpaceImage(next);
-                          setSpaceCornerImage(next);
-                          if (!spaceArt) {
-                            setSpaceArt(true);
-                            setSpaceCorner(true);
-                          }
-                          if (spaceVideo) {
-                            setSpaceVideo(false);
-                            setSpaceCornerScene("");
-                          }
-                          setFlash({ kind: "ok", text: `Using ${saved.name} in the corner.` });
-                        })
-                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                        .finally(() => setPickingImage(false));
-                    }}
-                  >
-                    {pickingImage ? "Choosing…" : spaceImage ? "Change image" : "Choose image"}
-                  </Button>
-                  {spaceImage ? (
-                    <Button
-                      onClick={() => {
-                        void api
-                          .clearSpaceCornerImage()
-                          .then(() => {
-                            setSpaceImage(null);
-                            setSpaceCornerImage(null);
-                            setFlash({ kind: "ok", text: "Using the built-in picture." });
-                          })
-                          .catch((e) => setFlash({ kind: "err", text: String(e) }));
-                      }}
-                    >
-                      Use default
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-              <Toggle
-                title="Video"
-                text="Play an animated ascii scene from ascii.rest instead of the picture."
-                checked={spaceVideo}
-                onChange={(next) => {
-                  setSpaceVideo(next);
-                  setSpaceCornerScene(next ? spaceScene : "");
-                  if (next && !spaceArt) {
-                    setSpaceArt(true);
-                    setSpaceCorner(true);
-                  }
-                }}
-              />
-              {spaceVideo ? (
-                <label className="grid gap-1.5">
-                  <span className="block text-[13px] font-medium text-ink">Scene</span>
-                  <select
-                    value={spaceScene}
-                    onChange={(e) => {
-                      const next = e.target.value;
-                      if (!isSceneId(next)) return;
-                      setSpaceScene(next);
-                      setSpaceCornerScene(next);
-                    }}
-                    className="h-8 rounded-md border border-line bg-canvas px-2 text-[13px] text-ink outline-none focus:border-accent"
-                  >
-                    {SCENES.map((scene) => (
-                      <option key={scene.id} value={scene.id}>
-                        {scene.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              <Toggle
-                title="File hover cards"
-                text="Show a small preview when you hover a file name in chat."
-                checked={fileHoverCard}
-                onChange={(next) => {
-                  setFileHoverCardOn(next);
-                  setFileHoverCard(next);
-                }}
-              />
-              <Toggle
-                title="Performance overlay"
-                text="Show FPS, native CPU, and memory in the bottom-right, with a live graph."
-                checked={perfOverlay}
-                onChange={(next) => {
-                  setPerfOverlayOn(next);
-                  setPerfOverlay(next);
-                }}
-              />
-              <Toggle
-                title="Live socket debug"
-                text="Show raw websocket frames from a cloud conversation in a window at the bottom-right."
-                checked={liveSocketDebug}
-                onChange={(next) => {
-                  setLiveSocketDebugOn(next);
-                  setLiveSocketDebug(next);
-                }}
-              />
-              <Toggle
-                title="Wrap lines"
-                text="Break long lines in the code editor onto the next row so you don't have to scroll sideways."
-                checked={wrapLines}
-                onChange={(next) => {
-                  setWrapLinesOn(next);
-                  setWrapLines(next);
-                }}
-              />
-              <Toggle
-                title="Expand edits"
-                text="Open file edit diffs in chat. Reads, lists, and commands stay collapsed."
-                checked={expandEdits}
-                onChange={(next) => {
-                  setExpandEditsOn(next);
-                  setExpandEdits(next);
-                }}
-              />
-              <div className="grid gap-1.5">
-                <span className="block text-[13px] font-medium text-ink">Open Markdown files in</span>
-                <span className="text-[12px] leading-relaxed text-muted">
-                  Editor shows source. Viewer renders the file. You can switch on the file tab.
-                </span>
-                <div className="flex gap-1">
-                  {(
-                    [
-                      { id: "editor", label: "Editor" },
-                      { id: "viewer", label: "Viewer" },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => {
-                        setMarkdownOpen(opt.id);
-                        saveMarkdownOpenMode(opt.id);
-                      }}
-                      className={`rounded-[6px] px-2 py-1 text-[12px] ${
-                        markdownOpen === opt.id ? "bg-wash-strong text-ink" : "text-muted hover:text-ink"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </Section>
-          )}
+      <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+        <div className="mx-auto grid w-full max-w-[640px] gap-5">
+          {tab === "appearance" && <AppearancePane />}
 
           {tab === "providers" && (
             <ProvidersPane
@@ -367,10 +162,7 @@ export function SettingsView({
                 if (due.length === 0 || updatingCli) return;
                 setUpdatingCli("all");
                 void due
-                  .reduce(
-                    (chain, card) => chain.then(() => updateProvider(card)),
-                    Promise.resolve(),
-                  )
+                  .reduce((chain, card) => chain.then(() => updateProvider(card)), Promise.resolve())
                   .catch((e) => setFlash({ kind: "err", text: String(e) }))
                   .finally(() => setUpdatingCli(null));
               }}
@@ -404,22 +196,28 @@ export function SettingsView({
           )}
 
           {tab === "voice" && (
-            <Section
+            <Page
               title="Voice"
               text="Dictate into the message box. A model downloads once and runs on this Mac."
-            >
-              <VoiceModelCard
-                modelId={speechModel || SPEECH_MODELS[0].id}
-                models={speechModels}
-                progress={speechProgress}
-                downloading={speechDownloading}
-              />
-              <MicTest />
-              <div className="flex justify-end">
-                <Button variant="primary" onClick={() => setVoicePicker(true)}>
+              action={
+                <Button size="sm" variant="primary" onClick={() => setVoicePicker(true)}>
                   Add model
                 </Button>
-              </div>
+              }
+            >
+              <Group title="Model">
+                <VoiceModelCard
+                  modelId={speechModel || SPEECH_MODELS[0].id}
+                  models={speechModels}
+                  progress={speechProgress}
+                  downloading={speechDownloading}
+                />
+              </Group>
+              <Group title="Microphone">
+                <div className="px-3.5 py-3">
+                  <MicTest />
+                </div>
+              </Group>
               {voicePicker ? (
                 <VoiceModelDialog
                   currentId={speechModel || SPEECH_MODELS[0].id}
@@ -434,67 +232,57 @@ export function SettingsView({
                   onDownload={(id) => onSpeechDownload?.(id)}
                 />
               ) : null}
-            </Section>
+            </Page>
           )}
 
           {tab === "storage" && (
-            <Section
+            <Page
               title="Storage"
               text="Usage history is a local database. Projects and chats on this Mac are listed below, with their open worktrees. Cloud projects stay on the paired machine."
             >
-              <Card>
-                <Row label="File" value={db?.path || "Checking…"} title={db?.path} mono />
-                <Row label="Size" value={db ? formatBytes(db.bytes) : "—"} />
-                <Row label="Status" value={db ? (db.exists ? "On disk" : "Not created yet") : "—"} ok={db?.exists} />
-              </Card>
-              {confirmReset ? (
-                <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2">
-                  <span className="text-[12px] text-ink">Delete the usage database?</span>
-                  <div className="flex shrink-0 gap-2">
-                    <Button disabled={resettingDb} onClick={() => setConfirmReset(false)}>
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="danger"
-                      disabled={resettingDb}
-                      onClick={() => {
-                        setResettingDb(true);
-                        void api
-                          .usageDbReset()
-                          .then((info) => {
-                            setProviderDb(info);
-                            setConfirmReset(false);
-                            setFlash({ kind: "ok", text: "Reset the usage database." });
-                          })
-                          .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                          .finally(() => setResettingDb(false));
-                      }}
-                    >
-                      {resettingDb ? "Resetting…" : "Reset"}
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex justify-end gap-2">
-                  <Button
-                    disabled={!db || openingDb}
-                    onClick={() => {
-                      setOpeningDb(true);
-                      void api
-                        .usageDbOpen()
-                        .catch((e) => setFlash({ kind: "err", text: String(e) }))
-                        .finally(() => setOpeningDb(false));
-                    }}
-                  >
-                    {openingDb ? "Opening…" : "Open folder"}
-                  </Button>
-                  <Button variant="danger" disabled={!db?.exists || resettingDb} onClick={() => setConfirmReset(true)}>
-                    Reset database
-                  </Button>
-                </div>
-              )}
+              <Group
+                title="Usage database"
+                action={
+                  confirmReset ? (
+                    <div className="flex gap-2">
+                      <Button size="sm" disabled={resettingDb} onClick={() => setConfirmReset(false)}>
+                        Cancel
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={resettingDb} onClick={resetDatabase}>
+                        {resettingDb ? "Resetting…" : "Delete"}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        disabled={!db || openingDb}
+                        onClick={() => {
+                          setOpeningDb(true);
+                          void api
+                            .usageDbOpen()
+                            .catch((e) => setFlash({ kind: "err", text: String(e) }))
+                            .finally(() => setOpeningDb(false));
+                        }}
+                      >
+                        {openingDb ? "Opening…" : "Open folder"}
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={!db?.exists || resettingDb} onClick={() => setConfirmReset(true)}>
+                        Reset
+                      </Button>
+                    </div>
+                  )
+                }
+              >
+                {confirmReset ? (
+                  <p className="m-0 px-3.5 py-2 text-[12px] text-err">Delete the usage database? This cannot be undone.</p>
+                ) : null}
+                <Line label="File" value={db?.path || "Checking…"} title={db?.path} mono />
+                <Line label="Size" value={db ? formatBytes(db.bytes) : "—"} />
+                <Line label="Status" value={db ? (db.exists ? "On disk" : "Not created yet") : "—"} ok={db?.exists} />
+              </Group>
               <StorageInventory />
-            </Section>
+            </Page>
           )}
 
           {tab === "permissions" && (

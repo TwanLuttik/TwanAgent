@@ -18,7 +18,9 @@ import {
   focusSplitPane as focusSplitPaneItems,
   forgetSplitPane,
   moveTabItem,
+  retainOpenTabs,
   revealTabChat,
+  groupTabsByProject,
   setSplitShare as setSplitShareItems,
   withCodeTab,
   splitSelectedChats,
@@ -29,7 +31,7 @@ import {
   type TabMenu,
 } from "../lib/split-pane";
 import { projectKey, type ChatImage, type ChatMessage, type ConversationActivity, type LiveToolRow } from "../lib/core";
-import { keptTabChatIds, linkedWorktrees, projectTabChats, rememberTabTitle, sharedRepoTabs, subscribeWorktreeLists, tabProjectKey, tabTitleFor, worktreeListsFor, worktreeNameRevision } from "../lib/worktree";
+import { keptTabChatIds, projectTabChats, rememberTabTitle, subscribeWorktreeLists, tabTitleFor, worktreeNameRevision } from "../lib/worktree";
 import {
   clearLiveStream,
   clearSecondaryLiveStream,
@@ -51,7 +53,7 @@ import {
   loadComposerPastes,
   loadOpenTabs,
   saveActiveTab,
-  saveProjectOpenTabs,
+  saveOpenTabs,
   type StoredTabItem,
   saveComposerPastes,
   loadEffort,
@@ -97,53 +99,53 @@ function dropChatAt(x: number, y: number): string {
   return pane?.dataset.dropChat ?? "";
 }
 
-function loadStoredOpenTabs(): Record<string, TabItem[]> {
-  const out: Record<string, TabItem[]> = {};
-  for (const [path, items] of Object.entries(loadOpenTabs())) {
-    const key = projectKey(path);
-    if (!key || out[key]) continue;
-    out[key] = items.map(storedTabToItem);
+type OpenStrip = { items: TabItem[]; homes: Record<string, string> };
+
+function loadStoredStrip(): OpenStrip {
+  const items: TabItem[] = [];
+  const homes: Record<string, string> = {};
+  for (const item of loadOpenTabs()) {
+    if (item.kind === "code") {
+      items.push({ kind: "code" });
+      continue;
+    }
+    if (item.kind === "chat") {
+      items.push({ kind: "chat", id: item.id });
+      if (item.workspace) homes[item.id] = item.workspace;
+      continue;
+    }
+    items.push({
+      kind: "split",
+      group: {
+        id: item.id,
+        chatIds: item.chatIds,
+        activePane: item.activePane,
+        leftShare: clampSplitShare(item.leftShare),
+      },
+    });
+    if (item.workspaces[0]) homes[item.chatIds[0]] = item.workspaces[0];
+    if (item.workspaces[1]) homes[item.chatIds[1]] = item.workspaces[1];
+  }
+  return { items, homes };
+}
+
+function stripToStored(items: TabItem[], homes: Record<string, string>): StoredTabItem[] {
+  const out: StoredTabItem[] = [];
+  for (const item of items) {
+    if (item.kind === "code") out.push({ kind: "code" });
+    else if (item.kind === "chat") out.push({ kind: "chat", id: item.id, workspace: homes[item.id] ?? "" });
+    else {
+      out.push({
+        kind: "split",
+        id: item.group.id,
+        chatIds: item.group.chatIds,
+        workspaces: [homes[item.group.chatIds[0]] ?? "", homes[item.group.chatIds[1]] ?? ""],
+        activePane: item.group.activePane,
+        leftShare: item.group.leftShare,
+      });
+    }
   }
   return out;
-}
-
-function storedTabToItem(item: StoredTabItem): TabItem {
-  if (item.kind === "code") return { kind: "code" };
-  if (item.kind === "chat") return { kind: "chat", id: item.id };
-  return {
-    kind: "split",
-    group: {
-      id: item.id,
-      chatIds: item.chatIds,
-      activePane: item.activePane,
-      leftShare: clampSplitShare(item.leftShare),
-    },
-  };
-}
-
-/** Drop a tab only after its chat was listed and then disappeared. A chat that
- * has not loaded yet stays, so a restart does not wipe the saved strip. */
-function pruneMissingTab(item: TabItem, known: ReadonlySet<string>, seen: ReadonlySet<string>): TabItem[] {
-  if (item.kind === "code") return [item];
-  if (item.kind === "chat") return !seen.has(item.id) || known.has(item.id) ? [item] : [];
-  const [left, right] = item.group.chatIds;
-  const leftGone = seen.has(left) && !known.has(left);
-  const rightGone = seen.has(right) && !known.has(right);
-  if (!leftGone && !rightGone) return [item];
-  if (leftGone && rightGone) return [];
-  return [{ kind: "chat", id: leftGone ? right : left }];
-}
-
-function tabItemToStored(item: TabItem): StoredTabItem {
-  if (item.kind === "code") return { kind: "code" };
-  if (item.kind === "chat") return { kind: "chat", id: item.id };
-  return {
-    kind: "split",
-    id: item.group.id,
-    chatIds: item.group.chatIds,
-    activePane: item.group.activePane,
-    leftShare: item.group.leftShare,
-  };
 }
 
 export function MainView() {
@@ -171,7 +173,9 @@ export function MainView() {
   const [pendingByChat, setPendingByChat] = useState<Record<string, PendingMessage[]>>({});
   const [editingPending, setEditingPending] = useState<PendingEdit | null>(null);
   const [busy, setBusy] = useState(false);
-  const [chatTabsByProject, setChatTabsByProject] = useState<Record<string, TabItem[]>>(loadStoredOpenTabs);
+  const [openStrip, setOpenStrip] = useState<OpenStrip>(loadStoredStrip);
+  const tabHomesRef = useLiveRef(openStrip.homes);
+  const paintedChatsRef = useRef(new Set<string>());
   const [tabMenu, setTabMenu] = useState<TabMenu | null>(null);
   const [runningId, setRunningId] = useState("");
   const [runningTurns, setRunningTurns] = useState<Record<string, RunningTurn>>({});
@@ -248,8 +252,9 @@ export function MainView() {
   const [usageTick, setUsageTick] = useState(0);
   const [fileDrag, setFileDrag] = useState<string | boolean>(false);
   const [editor, setEditor] = useState<EditorState>(() =>
-    loadActiveTab(loadWorkspace()) === "code" ? codeTabEditor() : emptyEditor(),
+    loadActiveTab() === "code" ? codeTabEditor() : emptyEditor(),
   );
+  const editorRef = useLiveRef(editor);
   const [dirtyFiles, setDirtyFiles] = useState<Record<string, boolean>>({});
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
@@ -406,6 +411,7 @@ export function MainView() {
     holdEmptyChatRef,
     libraryRef,
     cloudTranscriptsRef,
+    paintedChatsRef,
   });
   const {
     recents,
@@ -479,7 +485,12 @@ export function MainView() {
     // for this project is a click from the sidebar, so it still has to open.
     if (holdEmptyChatRef.current && !loadConversation(workspace)) return;
     if (cloudSendWaiting(Boolean(workspace), remoteKnown, remoteWorkspace, linkReady)) return;
-    void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
+    // Let the click paint before the project list is read. A chat that is already
+    // open is not fetched again, so switching back does not freeze the window.
+    const timer = window.setTimeout(() => {
+      void reloadConversations(workspace).catch((e) => setFlash({ kind: "err", text: String(e) }));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [pathsReady, workspace, remoteKnown, remoteWorkspace, linkReady, reloadConversations, setFlash]);
 
   useEffect(() => {
@@ -871,8 +882,28 @@ export function MainView() {
     setOpeningId,
     setUnseenFinished,
     setPendingByChat,
-    setChatTabsByProject,
-    chatTabsByProject,
+    setOpenTabs: (action) => {
+      setOpenStrip((prev) => {
+        const next = typeof action === "function" ? action(prev.items) : action;
+        return next === prev.items ? prev : { ...prev, items: next };
+      });
+    },
+    openTabs: openStrip.items,
+    tabHomesRef,
+    rememberTabHome: (id: string, path: string) => {
+      if (!id || !path) return;
+      const current = tabHomesRef.current[id];
+      if (current === path) return;
+      // A chat already filed under another project stays there. A different
+      // spelling of the same folder is replaced, so the lowercase path does not stick.
+      if (current && projectKey(current) !== projectKey(path)) return;
+      tabHomesRef.current = { ...tabHomesRef.current, [id]: path };
+      setOpenStrip((prev) =>
+        prev.homes[id] === path ? prev : { ...prev, homes: { ...prev.homes, [id]: path } },
+      );
+    },
+    paintedChatsRef,
+    editorRef,
     setFlash,
     bumpFiles,
   });
@@ -992,37 +1023,35 @@ export function MainView() {
   } = library;
 
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
-  const chatTabKey = workspace ? tabProjectKey(workspace) : "";
+  useEffect(() => {
+    if (activeId && messages.length) paintedChatsRef.current.add(activeId);
+  }, [activeId, messages]);
   useEffect(() => {
     if (!workspace || !activeId) return;
-    const key = tabProjectKey(workspace);
-    // Git has not said this folder shares a repo yet. Revealing now would pin the
-    // chat under the worktree path, and the shared strip would never show it.
-    const linked = linkedWorktrees().some((row) => projectKey(row.path) === projectKey(workspace));
-    if (linked && key === projectKey(workspace)) return;
-    setChatTabsByProject((prev) => {
-      const folded = sharedRepoTabs(prev, { [key]: worktreeListsFor(workspace) });
-      const tabs = folded[key] ?? [];
-      const next = revealTabChat(tabs, activeId);
-      if (next === tabs && folded === prev) return prev;
-      return next === tabs ? folded : { ...folded, [key]: next };
+    setOpenStrip((prev) => {
+      const items = revealTabChat(prev.items, activeId);
+      const homes = prev.homes[activeId] ? prev.homes : { ...prev.homes, [activeId]: workspace };
+      if (items === prev.items && homes === prev.homes) return prev;
+      return { items, homes };
     });
-  }, [workspace, activeId, worktreeTick]);
+  }, [workspace, activeId]);
   const codeTabOpen = editor.tabs.length > 0;
-  const tabItems = withCodeTab(chatTabKey ? (chatTabsByProject[chatTabKey] ?? []) : [], codeTabOpen);
+  const tabItems = withCodeTab(openStrip.items, codeTabOpen);
   useEffect(() => {
-    if (!workspace) return;
-    const key = tabProjectKey(workspace);
-    setChatTabsByProject((prev) => {
-      const current = prev[key] ?? [];
-      const next = withCodeTab(current, codeTabOpen);
-      return next === current ? prev : { ...prev, [key]: next };
+    setOpenStrip((prev) => {
+      const next = groupTabsByProject(prev.items, prev.homes);
+      return next === prev.items ? prev : { ...prev, items: next };
     });
-  }, [workspace, codeTabOpen]);
+  }, [openStrip.items, openStrip.homes]);
   useEffect(() => {
-    if (!workspace) return;
-    saveProjectOpenTabs(chatTabKey, tabItems.map(tabItemToStored));
-  }, [workspace, chatTabKey, tabItems]);
+    setOpenStrip((prev) => {
+      const next = withCodeTab(prev.items, codeTabOpen);
+      return next === prev.items ? prev : { ...prev, items: next };
+    });
+  }, [codeTabOpen]);
+  useEffect(() => {
+    saveOpenTabs(stripToStored(tabItems, openStrip.homes));
+  }, [tabItems, openStrip.homes]);
   const activeTabKey = (() => {
     if (editor.focus === "file") return "code";
     const item = tabItems.find((row) => {
@@ -1033,16 +1062,14 @@ export function MainView() {
     return item ? tabItemKey(item) : "";
   })();
   useEffect(() => {
-    if (!workspace || !activeTabKey) return;
-    saveActiveTab(chatTabKey, activeTabKey);
-  }, [workspace, chatTabKey, activeTabKey]);
-  const restoredTabFor = useRef("");
+    if (!activeTabKey) return;
+    saveActiveTab(activeTabKey);
+  }, [activeTabKey]);
+  const restoredTab = useRef(false);
   useEffect(() => {
-    if (!workspace || !activeId) return;
-    const key = tabProjectKey(workspace);
-    if (restoredTabFor.current === key) return;
-    restoredTabFor.current = key;
-    const saved = loadActiveTab(key);
+    if (!workspace || !activeId || restoredTab.current) return;
+    restoredTab.current = true;
+    const saved = loadActiveTab();
     if (!saved.startsWith("split:")) return;
     // A sidebar click names one chat. Restoring the split would replace it
     // with the pane that was focused last time.
@@ -1057,19 +1084,17 @@ export function MainView() {
   useEffect(() => {
     if (!workspace || conversations.length === 0) return;
     void worktreeTick;
-    const key = tabProjectKey(workspace);
+    const key = projectKey(workspace);
     if (seenChats.current.key !== key) seenChats.current = { key, ids: new Set() };
-    const current = chatTabsByProject[key] ?? [];
-    const known = keptTabChatIds(workspace, conversations, chatIdsInTabs(current));
+    const known = keptTabChatIds(workspace, conversations, chatIdsInTabs(openStrip.items));
     const seen = seenChats.current.ids;
-    setChatTabsByProject((prev) => {
-      const rows = prev[key] ?? [];
-      const next = rows.flatMap((item) => pruneMissingTab(item, known, seen));
-      const same = next.length === current.length && next.every((item, index) => item === current[index]);
-      return same ? prev : { ...prev, [key]: next };
+    setOpenStrip((prev) => {
+      const next = retainOpenTabs(prev.items, prev.homes, workspace, known, seen);
+      const same = next.length === prev.items.length && next.every((item, index) => item === prev.items[index]);
+      return same ? prev : { ...prev, items: next };
     });
     known.forEach((id) => seen.add(id));
-  }, [workspace, conversations, allProjectGroups, worktreeTick, chatTabsByProject]);
+  }, [workspace, conversations, allProjectGroups, worktreeTick, openStrip.items]);
   const openSplit = splitGroupForChat(tabItems, activeId);
   const splitChatIds = openSplit ? [...openSplit.chatIds] : [];
   const sideChatId = splitChatIds.find((id) => id !== activeId) ?? "";
@@ -1080,11 +1105,13 @@ export function MainView() {
       sidePrepared.current = "";
       return;
     }
-    const key = `${projectKey(workspace)}:${sideChatId}`;
+    const home = openStrip.homes[sideChatId] || workspace;
+    const key = `${projectKey(home)}:${sideChatId}`;
     if (sidePrepared.current === key) return;
     sidePrepared.current = key;
     let gone = false;
-    const load = hostedChats ? api.getHostedConversation(workspace, sideChatId) : api.getConversation(workspace, sideChatId);
+    const remote = allProjectGroups.some((group) => group.remote && isSameProject(group.path, home));
+    const load = remote ? api.getHostedConversation(home, sideChatId) : api.getConversation(home, sideChatId);
     void load
       .then((full) => {
         if (gone) return;
@@ -1100,7 +1127,7 @@ export function MainView() {
     return () => {
       gone = true;
     };
-  }, [workspace, sideChatId, hostedChats]);
+  }, [workspace, sideChatId, openStrip.homes, allProjectGroups]);
   useEffect(() => {
     if (!sideChatId) {
       clearSecondaryLiveStream();
@@ -1142,11 +1169,10 @@ export function MainView() {
 
   const closeChatTab = useCallback(
     (id: string) => {
-      if (!workspace || !id) return;
-      const key = tabProjectKey(workspace);
-      const result = closeTabChat(chatTabsByProject[key] ?? [], id);
+      if (!id) return;
+      const result = closeTabChat(openStrip.items, id);
       if (!result.removed) return;
-      setChatTabsByProject((prev) => ({ ...prev, [key]: result.items }));
+      setOpenStrip((prev) => ({ ...prev, items: result.items }));
       forgetSplitPane(id);
       forgetChatScroll(id);
       setTabMenu(null);
@@ -1166,95 +1192,72 @@ export function MainView() {
       setRunningId("");
       abortRef.current = null;
     },
-    [workspace, chatTabsByProject, activeId, openChat],
+    [openStrip.items, activeId, openChat],
   );
 
   const splitSelected = useCallback(
     (ids: string[]) => {
-      if (!workspace || ids.length < 2) return;
+      if (ids.length < 2) return;
       const blocked = ids.some((id) => conversations.find((item) => item.id === id)?.kind === "terminal");
       if (blocked) return;
-      const key = tabProjectKey(workspace);
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = splitSelectedChats(current, ids);
-        return next === current ? prev : { ...prev, [key]: next };
+      setOpenStrip((prev) => {
+        const next = splitSelectedChats(prev.items, ids, undefined, prev.homes);
+        return next === prev.items ? prev : { ...prev, items: next };
       });
       setTabMenu(null);
       setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
     },
-    [workspace, conversations],
+    [conversations],
   );
 
-  const moveChatTab = useCallback(
-    (fromKey: string, toKey: string) => {
-      if (!workspace) return;
-      const key = tabProjectKey(workspace);
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = moveTabItem(current, fromKey, toKey);
-        return next === current ? prev : { ...prev, [key]: next };
-      });
-    },
-    [workspace],
-  );
+  const moveChatTab = useCallback((fromKey: string, toKey: string) => {
+    setOpenStrip((prev) => {
+      const next = moveTabItem(prev.items, fromKey, toKey);
+      return next === prev.items ? prev : { ...prev, items: next };
+    });
+  }, []);
 
-  const setSplitShare = useCallback(
-    (groupId: string, share: number) => {
-      if (!workspace || !groupId) return;
-      const key = tabProjectKey(workspace);
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = setSplitShareItems(current, groupId, share);
-        return next === current ? prev : { ...prev, [key]: next };
-      });
-    },
-    [workspace],
-  );
+  const setSplitShare = useCallback((groupId: string, share: number) => {
+    if (!groupId) return;
+    setOpenStrip((prev) => {
+      const next = setSplitShareItems(prev.items, groupId, share);
+      return next === prev.items ? prev : { ...prev, items: next };
+    });
+  }, []);
 
   const splitChat = useCallback(
     (id: string) => {
-      if (!workspace || !id) return;
+      if (!id) return;
       const row = conversations.find((item) => item.id === id);
       if (row?.kind === "terminal") return;
-      const key = tabProjectKey(workspace);
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = splitChatTab(current, id);
-        return next === current ? prev : { ...prev, [key]: next };
+      setOpenStrip((prev) => {
+        const next = splitChatTab(prev.items, id, undefined, prev.homes);
+        return next === prev.items ? prev : { ...prev, items: next };
       });
       setTabMenu(null);
       setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
     },
-    [workspace, conversations],
+    [conversations],
   );
 
-  const unsplitChat = useCallback(
-    (groupId: string) => {
-      if (!workspace || !groupId) return;
-      const key = tabProjectKey(workspace);
-      setChatTabsByProject((prev) => {
-        const current = prev[key] ?? [];
-        const next = unsplitGroup(current, groupId);
-        return next === current ? prev : { ...prev, [key]: next };
-      });
-      setTabMenu(null);
-      clearSecondaryLiveStream();
-    },
-    [workspace],
-  );
+  const unsplitChat = useCallback((groupId: string) => {
+    if (!groupId) return;
+    setOpenStrip((prev) => {
+      const next = unsplitGroup(prev.items, groupId);
+      return next === prev.items ? prev : { ...prev, items: next };
+    });
+    setTabMenu(null);
+    clearSecondaryLiveStream();
+  }, []);
 
   const revealSplitRef = useRef<(id: string) => boolean>(() => false);
   revealSplitRef.current = (id: string) => {
-    if (!id || !workspace) return false;
-    const key = tabProjectKey(workspace);
-    const items = chatTabsByProject[key] ?? [];
-    if (!splitGroupForChat(items, id)) return false;
+    if (!id) return false;
+    if (!splitGroupForChat(openStrip.items, id)) return false;
     setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
-    const current = chatTabsByProject[key] ?? [];
-    const next = focusSplitChat(current, id);
-    if (next !== current) setChatTabsByProject((prev) => ({ ...prev, [key]: next }));
-    if (id !== activeId) void openChat(id, { ...chatTabsByProject, [key]: next });
+    const next = focusSplitChat(openStrip.items, id);
+    if (next !== openStrip.items) setOpenStrip((prev) => ({ ...prev, items: next }));
+    if (id !== activeId) void openChat(id, next);
     return true;
   };
   library.revealListedChatRef.current = (id) => revealSplitRef.current(id);
@@ -1268,21 +1271,16 @@ export function MainView() {
 
   const focusSplitChatPane = useCallback(
     (groupId: string, pane: 0 | 1) => {
-      if (!workspace) return;
-      const key = tabProjectKey(workspace);
-      const group = (chatTabsByProject[key] ?? []).find(
-        (item) => item.kind === "split" && item.group.id === groupId,
-      );
+      const group = openStrip.items.find((item) => item.kind === "split" && item.group.id === groupId);
       if (!group || group.kind !== "split") return;
       const id = group.group.chatIds[pane];
-      const current = chatTabsByProject[key] ?? [];
-      const next = focusSplitPaneItems(current, groupId, pane);
-      if (next !== current) setChatTabsByProject((prev) => ({ ...prev, [key]: next }));
+      const next = focusSplitPaneItems(openStrip.items, groupId, pane);
+      if (next !== openStrip.items) setOpenStrip((prev) => ({ ...prev, items: next }));
       // Pass the focused tabs in. State has not committed yet, and openChat must
       // see this chat as already on screen so it does not fetch it and show Loading….
-      if (id && id !== activeId) void openChat(id, { ...chatTabsByProject, [key]: next });
+      if (id && id !== activeId) void openChat(id, next);
     },
-    [workspace, chatTabsByProject, activeId, openChat],
+    [openStrip.items, activeId, openChat],
   );
 
   const {
@@ -1596,6 +1594,7 @@ export function MainView() {
     busy,
     chatTabs,
     tabItems,
+    tabHomes: openStrip.homes,
     splitChatIds,
     tabMenu,
     setTabMenu,

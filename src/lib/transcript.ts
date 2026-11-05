@@ -31,6 +31,9 @@ export type TranscriptItem =
       details: (ToolFileChange | null)[];
       commands: string[];
       callIds: string[];
+      /** Set when this tool batch is the end of the turn, so the finish line can follow it. */
+      durationMs?: number;
+      finishedAt?: string;
     };
 
 export type ToolTrailRow = {
@@ -291,6 +294,7 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
       out.push(item);
     }
     if (labels.length) {
+      const finish = toolFinish(msg);
       const last = out[out.length - 1];
       if (last?.kind === "tools") {
         last.labels.push(...labels);
@@ -298,7 +302,9 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
         last.commands.push(...commands);
         last.callIds.push(...callIds);
         last.files = mergeToolFileChanges([...last.files, ...files]);
-      } else out.push({ kind: "tools", labels, files, details, commands, callIds });
+        if (finish.finishedAt) last.finishedAt = finish.finishedAt;
+        if (typeof finish.durationMs === "number") last.durationMs = finish.durationMs;
+      } else out.push({ kind: "tools", labels, files, details, commands, callIds, ...finish });
     }
   }
   return out;
@@ -469,6 +475,17 @@ function fillLoadedSkill(items: TranscriptItem[], toolMessage: ChatMessage): voi
     item.commands[index] = text;
     return;
   }
+}
+
+/** A tool-calling reply can still be the end of the turn. The finish line follows the tools. */
+function toolFinish(msg: ChatMessage): { durationMs?: number; finishedAt?: string } {
+  const finishedAt = String(msg.finishedAt ?? "").trim();
+  const durationMs = typeof msg.durationMs === "number" && msg.durationMs >= 0 ? msg.durationMs : undefined;
+  if (!finishedAt && durationMs == null) return {};
+  return {
+    ...(durationMs == null ? {} : { durationMs }),
+    ...(finishedAt ? { finishedAt } : {}),
+  };
 }
 
 function thinkingAlreadyShown(items: TranscriptItem[], text: string): boolean {

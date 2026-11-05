@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
 import { GrokTerminal } from "../../components/GrokTerminal";
-import { filePaneNeedsReload } from "../../lib/pane-sessions";
+import { filePaneNeedsReload, filePanePending } from "../../lib/pane-sessions";
 import {
   editorFileView,
   focusEditor,
@@ -33,6 +33,7 @@ import { SplitRow } from "./SplitChatPane";
 export function ChatStage() {
   const {
     activeId,
+    applyWorkspace,
     closeFileTab,
     closeProjectSettings,
     closeServers,
@@ -67,6 +68,7 @@ export function ChatStage() {
     bumpFiles,
     chatTabs,
     tabItems,
+    tabHomes,
     splitChatIds,
     tabMenu,
     setTabMenu,
@@ -119,9 +121,15 @@ export function ChatStage() {
   }
   useEffect(() => {
     if (!workspace || !opened) return;
-    // The same folder can come back under a canonical path. Swapping the key
-    // would reset the tree and flash the loading cover.
-    if (!filePaneNeedsReload(paneProjectRef.current, workspace)) return;
+    // The same folder can come back under a canonical path. That is not a new
+    // project: keep the tree mounted and point it at the spelling now in use.
+    // Leaving the pane on the old spelling made `pending` stay true, so the
+    // right sidebar spinner never left, including for an existing chat.
+    if (!filePaneNeedsReload(paneProjectRef.current, workspace)) {
+      paneProjectRef.current = workspace;
+      setPaneWorkspace(workspace);
+      return;
+    }
     paneProjectRef.current = workspace;
     setPaneWorkspace(workspace);
   }, [workspace, opened]);
@@ -156,6 +164,7 @@ export function ChatStage() {
             editor={editor}
             chats={chatTabs}
             items={tabItems}
+            tabHomes={tabHomes}
             activeChatId={activeId}
             splitChatIds={splitChatIds}
             runningTurns={runningTurns}
@@ -227,7 +236,10 @@ export function ChatStage() {
             <DocsView onClose={folderOpen ? undefined : closeDocs} />
           ) : null}
           {showServers && !showSettings ? (
-            <ServersDialog onClose={folderOpen ? () => undefined : closeServers} />
+            <ServersDialog
+              onClose={folderOpen ? () => undefined : closeServers}
+              onOpenProject={(path, name) => applyWorkspace(path, "", name, true)}
+            />
           ) : null}
           {/* Chat and the file editor stay mounted under settings. Closing with
               Escape only hides the page, so it does not have to rebuild them. */}
@@ -374,7 +386,7 @@ export function ChatStage() {
                   openProjectFromSidebar(path);
                 }}
                 onCollapse={() => slidePane(true)}
-                pending={paneWorkspace !== workspace}
+                pending={filePanePending(paneWorkspace, workspace)}
               />
             </div>
             </div>

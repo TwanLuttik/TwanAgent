@@ -210,6 +210,7 @@ pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()
     }
     if let Ok(conn) = crate::appdb::open(&state.data_dir) {
         let _ = crate::appdb::remove_project(&conn, &path);
+        let _ = crate::remote::config::delete_remote_project_by_mount(&conn, Path::new(&path));
     }
     if let Ok(root) = expand_folder_path(&path) {
         let _ = state.forget_workspace(&root);

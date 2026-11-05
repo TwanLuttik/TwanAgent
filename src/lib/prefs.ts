@@ -202,7 +202,10 @@ export function loadRecentWorkspaces(): string[] {
 }
 
 export function pushRecentWorkspace(path: string): string[] {
-  const next = [path, ...loadRecentWorkspaces().filter((p) => p !== path)].slice(0, RECENTS_MAX);
+  const key = projectKey(path);
+  // Another spelling of this folder is the same recent. Keeping both let the
+  // lowercase one win the sidebar, then the canonical open left the file pane loading.
+  const next = [path, ...loadRecentWorkspaces().filter((p) => projectKey(p) !== key)].slice(0, RECENTS_MAX);
   localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
   return next;
 }
@@ -258,19 +261,18 @@ export function rewriteStoredProjectPaths(moves: ProjectPathMove[]): void {
   }
   localStorage.setItem(CONVERSATION_KEY, JSON.stringify(nextSaved));
 
-  const nextTabs: Record<string, StoredTabItem[]> = {};
-  for (const [path, items] of Object.entries(loadOpenTabs())) {
-    const dest = remap(path);
-    if (!nextTabs[dest]) nextTabs[dest] = items;
-  }
-  localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(nextTabs));
-
-  const nextActive: Record<string, string> = {};
-  for (const [path, key] of Object.entries(loadActiveTabs())) {
-    const dest = remap(path);
-    if (key && !nextActive[dest]) nextActive[dest] = key;
-  }
-  localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(nextActive));
+  const nextTabs = loadOpenTabs().map((item) => {
+    if (item.kind === "chat") return { ...item, workspace: remap(item.workspace) };
+    if (item.kind === "split") {
+      return {
+        ...item,
+        workspaces: [remap(item.workspaces[0]), remap(item.workspaces[1])] as [string, string],
+      };
+    }
+    return item;
+  });
+  if (nextTabs.length) localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(nextTabs));
+  else localStorage.removeItem(OPEN_TABS_KEY);
 
   const collapsed = new Set(
     loadCollapsedProjects().map((key) => {
@@ -619,6 +621,22 @@ export function setWrapLines(on: boolean): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
 }
 
+export type SidebarAccountUsageMode = "full" | "minimized" | "off";
+
+const SIDEBAR_ACCOUNT_USAGE_KEY = "twanagent.sidebarAccountUsage";
+
+/** How the Grok, Claude, and MiniMax meters render under the sidebar Usage button. */
+export function loadSidebarAccountUsage(): SidebarAccountUsageMode {
+  const raw = localStorage.getItem(SIDEBAR_ACCOUNT_USAGE_KEY);
+  if (raw === "minimized" || raw === "off") return raw;
+  return "full";
+}
+
+export function saveSidebarAccountUsage(mode: SidebarAccountUsageMode): void {
+  localStorage.setItem(SIDEBAR_ACCOUNT_USAGE_KEY, mode);
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(PREFS_EVENT));
+}
+
 const EXPAND_EDITS_KEY = "twanagent.expandEdits";
 
 export function loadExpandEdits(): boolean {
@@ -641,85 +659,84 @@ export function subscribePrefs(onChange: () => void): () => void {
   };
 }
 
-/** One open conversation tab, or two chats kept side by side. */
+/** One open conversation tab, or two chats kept side by side. A chat remembers its project. */
 export type StoredTabItem =
-  | { kind: "chat"; id: string }
+  | { kind: "chat"; id: string; workspace: string }
   | { kind: "code" }
   | {
       kind: "split";
       id: string;
       chatIds: [string, string];
+      workspaces: [string, string];
       activePane: 0 | 1;
       leftShare: number;
     };
 
-export function loadOpenTabs(): Record<string, StoredTabItem[]> {
+/** The open strip. One list for every project. An older per-project map is folded in once. */
+export function loadOpenTabs(): StoredTabItem[] {
   try {
     const raw = JSON.parse(localStorage.getItem(OPEN_TABS_KEY) ?? "");
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const out: Record<string, StoredTabItem[]> = {};
+    if (Array.isArray(raw)) return storedTabItems(raw, "");
+    if (!raw || typeof raw !== "object") return [];
+    const out: StoredTabItem[] = [];
+    const seen = new Set<string>();
     for (const [path, items] of Object.entries(raw as Record<string, unknown>)) {
-      const tabs = storedTabItems(items);
-      if (path && tabs.length) out[path] = tabs;
+      for (const tab of storedTabItems(items, path)) {
+        const ids = storedTabIds(tab);
+        if (ids.some((id) => seen.has(id))) continue;
+        ids.forEach((id) => seen.add(id));
+        out.push(tab);
+      }
     }
     return out;
   } catch {
-    return {};
+    return [];
   }
 }
 
-export function loadProjectOpenTabs(workspace: string): StoredTabItem[] {
-  if (!workspace) return [];
-  const all = loadOpenTabs();
-  return all[workspace] ?? all[projectKey(workspace)] ?? [];
+export function saveOpenTabs(items: StoredTabItem[]): void {
+  const tabs = storedTabItems(items, "");
+  if (tabs.length) localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(tabs));
+  else localStorage.removeItem(OPEN_TABS_KEY);
 }
 
-export function saveProjectOpenTabs(workspace: string, items: StoredTabItem[]): void {
-  if (!workspace) return;
-  const all = loadOpenTabs();
-  const tabs = storedTabItems(items);
-  if (tabs.length) all[workspace] = tabs;
-  else delete all[workspace];
-  localStorage.setItem(OPEN_TABS_KEY, JSON.stringify(all));
-}
-
-/** The tab that was selected, keyed like `chat:<id>`, `split:<id>`, or `code`. */
-export function loadActiveTabs(): Record<string, string> {
+/** The selected tab, keyed like `chat:<id>`, `split:<id>`, or `code`. */
+export function loadActiveTab(): string {
   try {
     const raw = JSON.parse(localStorage.getItem(ACTIVE_TAB_KEY) ?? "");
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-    const out: Record<string, string> = {};
-    for (const [path, key] of Object.entries(raw as Record<string, unknown>)) {
-      if (path && typeof key === "string" && key.trim()) out[path] = key;
-    }
-    return out;
+    if (typeof raw === "string") return raw.trim();
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "";
+    const entries = Object.entries(raw as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1].trim()),
+    );
+    if (!entries.length) return "";
+    const current = projectKey(loadWorkspace());
+    const match = current ? entries.find(([path]) => projectKey(path) === current) : undefined;
+    return (match ?? entries[0])?.[1] ?? "";
   } catch {
-    return {};
+    return "";
   }
 }
 
-export function loadActiveTab(workspace: string): string {
-  if (!workspace) return "";
-  const all = loadActiveTabs();
-  return all[workspace] ?? all[projectKey(workspace)] ?? "";
+export function saveActiveTab(key: string): void {
+  if (key.trim()) localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(key));
+  else localStorage.removeItem(ACTIVE_TAB_KEY);
 }
 
-export function saveActiveTab(workspace: string, key: string): void {
-  if (!workspace) return;
-  const all = loadActiveTabs();
-  if (key.trim()) all[workspace] = key;
-  else delete all[workspace];
-  localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify(all));
+function storedTabIds(tab: StoredTabItem): string[] {
+  if (tab.kind === "chat") return [tab.id];
+  if (tab.kind === "code") return ["code"];
+  return tab.chatIds;
 }
 
-function storedTabItems(items: unknown): StoredTabItem[] {
+function storedTabItems(items: unknown, fallbackWorkspace: string): StoredTabItem[] {
   if (!Array.isArray(items)) return [];
   const out: StoredTabItem[] = [];
   const seen = new Set<string>();
   for (const item of items) {
-    const tab = storedTabItem(item);
+    const tab = storedTabItem(item, fallbackWorkspace);
     if (!tab) continue;
-    const ids = tab.kind === "chat" ? [tab.id] : tab.kind === "code" ? ["code"] : tab.chatIds;
+    const ids = storedTabIds(tab);
     if (ids.some((id) => seen.has(id))) continue;
     ids.forEach((id) => seen.add(id));
     out.push(tab);
@@ -727,11 +744,19 @@ function storedTabItems(items: unknown): StoredTabItem[] {
   return out;
 }
 
-function storedTabItem(item: unknown): StoredTabItem | null {
+function storedWorkspaces(value: unknown, fallback: string): [string, string] {
+  if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "string") {
+    return [value[0].trim() || fallback, value[1].trim() || fallback];
+  }
+  return [fallback, fallback];
+}
+
+function storedTabItem(item: unknown, fallbackWorkspace: string): StoredTabItem | null {
   if (!item || typeof item !== "object") return null;
-  const row = item as Partial<StoredTabItem> & { chatIds?: unknown; leftShare?: unknown };
+  const row = item as Partial<StoredTabItem> & { chatIds?: unknown; leftShare?: unknown; workspace?: unknown; workspaces?: unknown };
   if (row.kind === "chat" && typeof row.id === "string" && row.id.trim()) {
-    return { kind: "chat", id: row.id };
+    const workspace = typeof row.workspace === "string" && row.workspace.trim() ? row.workspace : fallbackWorkspace;
+    return { kind: "chat", id: row.id, workspace };
   }
   if (row.kind === "code") return { kind: "code" };
   if (row.kind !== "split" || typeof row.id !== "string" || !row.id.trim()) return null;
@@ -742,7 +767,14 @@ function storedTabItem(item: unknown): StoredTabItem | null {
   }
   const pane = row.activePane === 1 ? 1 : 0;
   const share = typeof row.leftShare === "number" && Number.isFinite(row.leftShare) ? row.leftShare : 0.5;
-  return { kind: "split", id: row.id, chatIds: [left, right], activePane: pane, leftShare: share };
+  return {
+    kind: "split",
+    id: row.id,
+    chatIds: [left, right],
+    workspaces: storedWorkspaces(row.workspaces, fallbackWorkspace),
+    activePane: pane,
+    leftShare: share,
+  };
 }
 
 export function saveConversation(workspace: string, id: string): void {

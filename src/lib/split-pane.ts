@@ -1,4 +1,4 @@
-import type { ChatMessage, ConversationActivity, LiveToolRow } from "./core.ts";
+import { projectKey, type ChatMessage, type ConversationActivity, type LiveToolRow } from "./core.ts";
 
 /** A conversation tab, or two chats shown side by side. */
 
@@ -81,7 +81,12 @@ export function findSplitGroup(items: TabItem[], groupId: string): SplitGroup | 
  * Pair `id` with the neighbor chat. The right-clicked chat stays on the left.
  * A chat that is already split, or a tab strip with nothing else to pair, stays put.
  */
-export function splitChatTab(items: TabItem[], id: string, groupId = newSplitGroupId()): TabItem[] {
+export function splitChatTab(
+  items: TabItem[],
+  id: string,
+  groupId = newSplitGroupId(),
+  homes?: Readonly<Record<string, string>>,
+): TabItem[] {
   const index = items.findIndex((item) => item.kind === "chat" && item.id === id);
   if (index < 0) return items;
   const partnerIndex = index > 0 ? index - 1 : index + 1 < items.length && items[index + 1]?.kind === "chat" ? index + 1 : -1;
@@ -93,6 +98,7 @@ export function splitChatTab(items: TabItem[], id: string, groupId = newSplitGro
   const leftItem = items[left];
   const rightItem = items[right];
   if (!leftItem || leftItem.kind !== "chat" || !rightItem || rightItem.kind !== "chat") return items;
+  if (!sameChatHome(homes, leftItem.id, rightItem.id)) return items;
   // Tab order stays left to right. The right-clicked chat is the focused pane.
   const group: SplitGroup = {
     id: groupId,
@@ -172,6 +178,48 @@ export function closeTabChat(
   return { items: next, removed: true, next: neighbor ? primaryChatId(neighbor) : null };
 }
 
+/**
+ * Drop a chat only after its own project has listed conversations and the chat is gone.
+ * A tab from any other project stays, so switching projects does not clear the strip.
+ * `seen` holds ids that project's list has included before. An id that has never
+ * been listed is kept, so a list that has not arrived yet cannot wipe the strip.
+ */
+export function retainOpenTabs(
+  items: TabItem[],
+  homes: Readonly<Record<string, string>>,
+  project: string,
+  known: ReadonlySet<string>,
+  seen: ReadonlySet<string>,
+): TabItem[] {
+  const here = projectKey(project);
+  const homedHere = (id: string) => {
+    const home = homes[id] ?? "";
+    return Boolean(here && home && projectKey(home) === here);
+  };
+  const out: TabItem[] = [];
+  for (const item of items) {
+    if (item.kind === "code") {
+      out.push(item);
+      continue;
+    }
+    if (item.kind === "chat") {
+      if (!homedHere(item.id) || !seen.has(item.id) || known.has(item.id)) out.push(item);
+      continue;
+    }
+    if (!item.group.chatIds.every(homedHere)) {
+      out.push(item);
+      continue;
+    }
+    const [left, right] = item.group.chatIds;
+    const leftGone = seen.has(left) && !known.has(left);
+    const rightGone = seen.has(right) && !known.has(right);
+    if (!leftGone && !rightGone) out.push(item);
+    else if (leftGone && rightGone) continue;
+    else out.push({ kind: "chat", id: leftGone ? right : left });
+  }
+  return out;
+}
+
 export function openTabChat(items: TabItem[], id: string): TabItem[] {
   const next = id.trim();
   if (!next) return items;
@@ -206,6 +254,51 @@ export function tabItemKey(item: TabItem): string {
   return CODE_TAB_KEY;
 }
 
+/**
+ * Keep each project's chats together, in the order that project first appears.
+ * A Code tab stays where it is and splits the strip. Order inside one project stays put.
+ */
+export function groupTabsByProject(items: TabItem[], homes: Readonly<Record<string, string>>): TabItem[] {
+  const homeOf = (id: string) => {
+    const path = homes[id] ?? "";
+    return path ? projectKey(path) : "";
+  };
+  const projectOf = (item: TabItem): string => {
+    if (item.kind === "chat") return homeOf(item.id);
+    if (item.kind === "split") return homeOf(item.group.chatIds[0]) || homeOf(item.group.chatIds[1]);
+    return "";
+  };
+  const out: TabItem[] = [];
+  let pending: TabItem[] = [];
+  const flush = () => {
+    if (!pending.length) return;
+    const order: string[] = [];
+    const groups = new Map<string, TabItem[]>();
+    for (const item of pending) {
+      const key = projectOf(item);
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(item);
+      else {
+        groups.set(key, [item]);
+        order.push(key);
+      }
+    }
+    for (const key of order) out.push(...(groups.get(key) ?? []));
+    pending = [];
+  };
+  for (const item of items) {
+    if (item.kind === "code") {
+      flush();
+      out.push(item);
+      continue;
+    }
+    pending.push(item);
+  }
+  flush();
+  if (out.length === items.length && out.every((item, index) => item === items[index])) return items;
+  return out;
+}
+
 /** Put the Code tab at the end once files are open. A saved place is kept. */
 export function withCodeTab(items: TabItem[], open: boolean): TabItem[] {
   const present = items.some((item) => item.kind === "code");
@@ -218,13 +311,19 @@ export function withCodeTab(items: TabItem[], open: boolean): TabItem[] {
  * Pair the command-selected chats, in the order they were picked.
  * The first two plain tabs become the split. A chat already inside a split is left there.
  */
-export function splitSelectedChats(items: TabItem[], ids: readonly string[], groupId = newSplitGroupId()): TabItem[] {
+export function splitSelectedChats(
+  items: TabItem[],
+  ids: readonly string[],
+  groupId = newSplitGroupId(),
+  homes?: Readonly<Record<string, string>>,
+): TabItem[] {
   const picked = uniqueIds(ids).filter((id) => tabItemForChat(items, id)?.kind === "chat");
   if (picked.length < 2) return items;
   const [leftId, rightId] = picked;
   const left = items.findIndex((item) => item.kind === "chat" && item.id === leftId);
   const right = items.findIndex((item) => item.kind === "chat" && item.id === rightId);
   if (left < 0 || right < 0 || left === right) return items;
+  if (!sameChatHome(homes, leftId!, rightId!)) return items;
   const at = Math.min(left, right);
   const group: SplitGroup = {
     id: groupId,
@@ -246,6 +345,15 @@ export function setSplitShare(items: TabItem[], groupId: string, share: number):
     return { kind: "split" as const, group: { ...item.group, leftShare: nextShare } };
   });
   return changed ? next : items;
+}
+
+/** A split pane is loaded from one project. Chats from two projects stay separate tabs. */
+function sameChatHome(homes: Readonly<Record<string, string>> | undefined, left: string, right: string): boolean {
+  if (!homes) return true;
+  const a = homes[left] ?? "";
+  const b = homes[right] ?? "";
+  if (!a || !b) return true;
+  return projectKey(a) === projectKey(b);
 }
 
 function uniqueIds(ids: readonly string[]): string[] {

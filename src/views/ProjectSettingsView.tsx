@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Group, Page } from "./settings/SettingsChrome";
 
 export function ProjectSettingsView({
   name,
@@ -22,16 +23,13 @@ export function ProjectSettingsView({
   }, [onClose]);
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
-      <div className="mx-auto grid w-full max-w-[420px] gap-5">
-        <div>
-          <h1 className="m-0 text-[15px] font-semibold">Project settings</h1>
-          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">{name}</p>
-        </div>
-        <section className="grid gap-1">
-          <h2 className="m-0 text-[11px] font-semibold tracking-wide text-muted uppercase">Folder path</h2>
-          <p className="m-0 font-mono text-[12px] leading-relaxed break-all text-ink">{path}</p>
-        </section>
+    <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
+      <div className="mx-auto grid w-full max-w-[640px]">
+        <Page title="Project" text={name}>
+          <Group title="Folder">
+            <p className="m-0 px-3.5 py-3 font-mono text-[12px] leading-relaxed break-all text-ink">{path}</p>
+          </Group>
+        </Page>
       </div>
     </div>
   );

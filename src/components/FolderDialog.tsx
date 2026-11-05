@@ -84,9 +84,9 @@ export function FolderDialog({
         setServers(paired);
         for (const row of paired) {
           void api
-            .agentServerStatus(row.id)
-            .then((status) => {
-              if (!gone) setOnline((current) => ({ ...current, [row.id]: status.online }));
+            .agentServerOnline(row.id)
+            .then((online) => {
+              if (!gone) setOnline((current) => ({ ...current, [row.id]: online }));
             })
             .catch(() => {
               if (!gone) setOnline((current) => ({ ...current, [row.id]: false }));

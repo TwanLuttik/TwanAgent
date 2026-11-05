@@ -268,7 +268,14 @@ fn wait_round(
                     usage = Some(next);
                 }
                 if text.is_empty() {
-                    if let Some(full) = event.text {
+                    if let Some(full) = event.text.filter(|value| !value.is_empty()) {
+                        // Nothing streamed. The saved transcript has this reply, but
+                        // the page only hears deltas, so a missed save left a finished
+                        // turn with no text until the next reload.
+                        on_progress(RoundProgress {
+                            kind: "delta",
+                            text: full.clone(),
+                        });
                         text = full;
                     }
                 }

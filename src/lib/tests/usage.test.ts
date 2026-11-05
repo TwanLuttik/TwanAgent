@@ -24,6 +24,7 @@ import {
   usageLevel,
   usageSeries,
   usageTotalSince,
+  serverUsage,
   type UsageDay,
   type UsageEvent,
 } from "../usage.ts";
@@ -963,5 +964,49 @@ describe("buildUsageGrid", () => {
     assert.equal(weeks[0].monthLabel, "Aug");
     const labeled = weeks.filter((week) => week.monthLabel);
     assert.ok(labeled.some((week) => week.monthLabel === "Sep"));
+  });
+});
+
+describe("serverUsage", () => {
+  const now = Date.parse("2026-09-17T18:00:00.000Z");
+
+  it("counts turns copied from that server and skips local turns and other servers", () => {
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/Users/me/mounts/office",
+        model: "grok-4.6",
+        source: "server:/users/me/mounts/office:4",
+        prompt_tokens: 1000,
+        completion_tokens: 200,
+        total_tokens: 1200,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "local",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/Users/me/mounts/office",
+        model: "grok-4.6",
+        prompt_tokens: 5000,
+        completion_tokens: 0,
+        total_tokens: 5000,
+      }),
+      ev({
+        id: 3,
+        conversation_id: "other",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/Users/me/mounts/lab",
+        model: "grok-4.6",
+        source: "server:/users/me/mounts/lab:1",
+        prompt_tokens: 800,
+        completion_tokens: 0,
+        total_tokens: 800,
+      }),
+    ];
+    const usage = serverUsage(events, ["/users/me/mounts/office/"], 30, now);
+    assert.equal(usage.tokens, 1200);
+    assert.equal(usage.usd, (1000 * 2 + 200 * 6) / 1_000_000);
+    assert.deepEqual(serverUsage(events, [], 30, now), { tokens: 0, usd: 0 });
   });
 });

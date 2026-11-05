@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::config::{validate_host, validate_port, validate_user};
+use super::config::{validate_host, validate_name, validate_port, validate_user};
 use crate::error::{Error, Result};
 
 pub const TOKEN_PREFIX: &str = "agent-token:";
@@ -604,6 +604,16 @@ pub fn list_servers(conn: &Connection, paired: impl Fn(&str) -> bool) -> Result<
 }
 
 /// Save the pairing token next to the server. A reload reads this, not the keychain.
+/// The label shown in the server list. The host and login stay as they were.
+pub fn rename_server(conn: &Connection, id: &str, name: &str) -> Result<()> {
+    let name = validate_name(name)?;
+    let changed = conn.execute("UPDATE agent_servers SET name = ?1 WHERE id = ?2", params![name, id])?;
+    if changed == 0 {
+        return Err(Error::NotFound("server not found".into()));
+    }
+    Ok(())
+}
+
 pub fn set_server_token(conn: &Connection, id: &str, token: &str) -> Result<()> {
     let token = token.trim();
     if token.len() < 32 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -874,6 +884,30 @@ mod tests {
         let account = delete_server(&conn, &saved.id).unwrap().unwrap();
         assert_eq!(account, token_account(&saved.id));
         assert!(list_servers(&conn, |_| true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rename_changes_the_label_and_keeps_the_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = appdb::open(dir.path()).unwrap();
+        let saved = insert_server(
+            &conn,
+            NewAgentServer {
+                name: "10.0.0.5".into(),
+                user: "root".into(),
+                host: "10.0.0.5".into(),
+                port: 22,
+                machine_id: None,
+            },
+        )
+        .unwrap();
+        rename_server(&conn, &saved.id, "  Office  ").unwrap();
+        let found = server_by_host(&conn, "10.0.0.5", 22).unwrap().unwrap();
+        assert_eq!(found.name, "Office");
+        assert_eq!(found.host, "10.0.0.5");
+        assert!(rename_server(&conn, &saved.id, "   ").is_err());
+        assert!(rename_server(&conn, "missing", "Office").is_err());
+        assert_eq!(server_by_host(&conn, "10.0.0.5", 22).unwrap().unwrap().name, "Office");
     }
 
     #[test]

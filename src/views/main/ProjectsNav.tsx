@@ -5,6 +5,7 @@ import { Symbol } from "../../components/Symbol";
 import { UsageTeaser } from "../../components/UsageTeaser";
 import { isMacOS } from "../../components/WindowButtons";
 import { archiveTargets, chatSelectionKey, focusedProjectGroups, groupOwningPath, isSameProject, matchesSidebarQuery, nestGroupedProjects, nextChatSelection, orderSidebarChats, sidebarActivity, sidebarFocusPath, sidebarTodoKey, visibleConversations, type ChatSelection, type ProjectGroupRow, type SidebarChatOrder } from "../../lib/all-projects";
+import { serverDisplayName } from "../../lib/chat-place";
 import { conversationActivityLabel, projectKey, type ChatMessage } from "../../lib/core";
 import { fileRefreshRevision, subscribeFileRefresh } from "../../lib/file-structure";
 import { forgetPaneWorkspace } from "../../lib/pane-sessions";
@@ -20,7 +21,7 @@ import { useApp } from "../../state/app-state";
 import { NewChatMenu } from "./AppChrome";
 import { useSidebar } from "./context";
 import { ProjectConversations } from "./ProjectConversations";
-import { SidebarActivity, todoSignature } from "./SidebarActivity";
+import { ActivityDock, todoSignature } from "./SidebarActivity";
 import { SidebarSearch } from "./SidebarSearch";
 import { UpdateRow } from "./UpdateRow";
 
@@ -105,6 +106,16 @@ export function ProjectsNav({
   const pickAnchor = useRef<ChatSelection | null>(null);
   const pickedRef = useRef(picked);
   pickedRef.current = picked;
+  // Tab clicks change the open chat without going through the row click, which is
+  // what normally sets this selection. Follow the open chat so the highlight moves.
+  useEffect(() => {
+    if (!activeId || !workspace) return;
+    const next = { path: workspace, id: activeId };
+    const already = pickedRef.current.some((row) => row.id === activeId && isSameProject(row.path, workspace));
+    if (already) return;
+    pickAnchor.current = next;
+    setPicked([next]);
+  }, [activeId, workspace]);
   const [query, setQuery] = useState("");
   const searching = query.trim().length > 0;
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -588,13 +599,6 @@ export function ProjectsNav({
   return (
     <>
       <SidebarSearch query={query} onQuery={setQuery} />
-      <SidebarActivity
-        items={visibleActivity}
-        activeId={activeId}
-        runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
-        runningStartedAt={(id) => runningTurns[id]?.startedAt ?? 0}
-        onOpen={(path, id) => void openSidebarChat(path, id)}
-      />
       <div className="relative z-20 flex items-center justify-between gap-2 px-4 pt-1.5 pb-1">
         <span
           className={`min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted ${focusedName ? "" : "uppercase"}`}
@@ -652,7 +656,7 @@ export function ProjectsNav({
           onDeleteGroup={(path) => void deleteGroup(path)}
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
-          renderWorktree={(child) => (
+          renderWorktree={(child, owner) => (
             <div className="pl-4">
               <ProjectConversations
                 conversations={orderSidebarChats(
@@ -663,7 +667,8 @@ export function ProjectsNav({
                 place={{
                   branch: child.branch,
                   worktree: true,
-                  server: false,
+                  server: Boolean(owner.remote || owner.server),
+                  serverName: serverDisplayName(owner.server),
                   ahead: gitByProject[projectGitKey(child.path)]?.ahead,
                   behind: gitByProject[projectGitKey(child.path)]?.behind,
                   dirty: gitByProject[projectGitKey(child.path)]?.dirty,
@@ -699,7 +704,14 @@ export function ProjectsNav({
           )}
         /> : null}
       </div>
-      <div className="sidebar-dock relative z-10 mx-2 mt-1 mb-2 flex flex-col gap-0.5 px-1.5 py-1.5">
+      <div className="sidebar-dock relative z-20 mx-2 mt-3 mb-2 flex flex-col gap-0.5 px-1.5 py-1.5">
+        <ActivityDock
+          items={visibleActivity}
+          activeId={activeId}
+          runningPreview={(id) => conversationActivityLabel(runningTurns[id]?.activity)}
+          runningStartedAt={(id) => runningTurns[id]?.startedAt ?? 0}
+          onOpen={(path, id) => void openSidebarChat(path, id)}
+        />
         <button
           type="button"
           onClick={openUsage}

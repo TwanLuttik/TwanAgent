@@ -1,9 +1,11 @@
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "../Button";
 import { Symbol } from "../Symbol";
+import { formatTokenCount } from "../../lib/context";
 import type { DetectedMcpServer } from "../../lib/mcp";
 import type { AgentServer, ServerInstallStatus, ServerProject, ServerProviderKeys, ServerStorage } from "../../lib/tauri";
-import { formatBytes } from "../../lib/usage";
+import * as api from "../../lib/tauri";
+import { formatBytes, formatUsd, rangeStartMs, serverUsage, type UsageEvent, type UsageRange } from "../../lib/usage";
 import { CapabilitySync, GitSection, ProviderKeys, newerVersion, versionLabel, type LocalKeys, type ProviderId } from "./ConnectSteps";
 
 export type InstallView = ServerInstallStatus | "checking" | "copying";
@@ -164,6 +166,8 @@ export function ServerDetail({
   mcpName,
   localMcp,
   onMcpName,
+  mountPaths,
+  onRename,
 }: {
   row: AgentServer;
   status: InstallView | undefined;
@@ -192,6 +196,9 @@ export function ServerDetail({
   mcpName: string;
   localMcp: DetectedMcpServer[];
   onMcpName: (name: string) => void;
+  /** Local folders whose chats run on this server. Usage is matched against these. */
+  mountPaths: string[];
+  onRename: (name: string) => Promise<void>;
 }) {
   const { label, online } = reachOf(status);
   const copying = status === "copying";
@@ -228,8 +235,8 @@ export function ServerDetail({
         <span className="flex size-10 items-center justify-center rounded-full bg-inset text-accent">
           <Symbol name="server.rack" className="size-5" />
         </span>
-        <div className="min-w-0">
-          <h2 className="m-0 truncate text-[15px] font-semibold text-ink">{row.name}</h2>
+        <div className="min-w-0 flex-1">
+          <ServerName name={row.name} disabled={busy} onRename={onRename} />
           <p className="mt-0.5 mb-0 flex items-center gap-1.5 text-[12px] text-muted">
             <StatusDot online={online} title={label} />
             {label} · {address}
@@ -257,6 +264,7 @@ export function ServerDetail({
           }
         />
       </div>
+      <ServerUsage serverId={row.id} mountPaths={mountPaths} />
       {copying ? <CopyBar progress={copy} /> : null}
       <div className="flex justify-end gap-2">
         <Button disabled={busy || copying} onClick={onRecheck}>
@@ -336,6 +344,121 @@ export function ServerDetail({
           })
         )}
       </div>
+    </div>
+  );
+}
+
+const USAGE_RANGES: { id: UsageRange; label: string }[] = [
+  { id: "24h", label: "24h" },
+  { id: 7, label: "7d" },
+  { id: 30, label: "30d" },
+  { id: 90, label: "90d" },
+];
+
+function ServerName({
+  name,
+  disabled,
+  onRename,
+}: {
+  name: string;
+  disabled: boolean;
+  onRename: (name: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(name);
+  const skip = useRef(false);
+  useEffect(() => setDraft(name), [name]);
+  function commit() {
+    if (skip.current) {
+      skip.current = false;
+      return;
+    }
+    const next = draft.trim();
+    if (!next || next === name) {
+      setDraft(name);
+      return;
+    }
+    void onRename(next).catch(() => setDraft(name));
+  }
+  return (
+    <input
+      aria-label="Server name"
+      value={draft}
+      disabled={disabled}
+      maxLength={80}
+      onChange={(ev) => setDraft(ev.target.value)}
+      onBlur={commit}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          ev.currentTarget.blur();
+        }
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          skip.current = true;
+          setDraft(name);
+          ev.currentTarget.blur();
+        }
+      }}
+      className="m-0 w-full min-w-0 truncate bg-transparent text-[15px] font-semibold text-ink outline-none placeholder:text-muted focus:underline"
+    />
+  );
+}
+
+function ServerUsage({ serverId, mountPaths }: { serverId: string; mountPaths: string[] }) {
+  const [range, setRange] = useState<UsageRange>(30);
+  const [events, setEvents] = useState<UsageEvent[] | null>(null);
+  useEffect(() => {
+    let gone = false;
+    setEvents(null);
+    const since = new Date(rangeStartMs(90)).toISOString();
+    void api
+      .usageSync()
+      .catch(() => 0)
+      .then(() => api.usageList(since))
+      .then((rows) => {
+        if (!gone) setEvents(rows);
+      })
+      .catch(() => {
+        if (!gone) setEvents([]);
+      });
+    return () => {
+      gone = true;
+    };
+  }, [serverId]);
+  const totals = useMemo(
+    () => (events ? serverUsage(events, mountPaths, range) : null),
+    [events, mountPaths, range],
+  );
+  const empty = events != null && (totals?.tokens ?? 0) <= 0;
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] font-semibold tracking-wide text-muted uppercase">Usage</div>
+        <div className="flex items-center gap-1" role="group" aria-label="Usage range">
+          {USAGE_RANGES.map((item) => {
+            const on = item.id === range;
+            return (
+              <button
+                key={item.label}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setRange(item.id)}
+                className={`rounded-md px-1.5 py-0.5 text-[11px] ${on ? "bg-wash text-ink" : "text-muted hover:text-ink"}`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 rounded-xl bg-inset/70 px-3 py-3">
+        <Fact label="Tokens" value={totals ? formatTokenCount(totals.tokens) : "Checking…"} />
+        <Fact label="Estimated spend" value={totals ? formatUsd(totals.usd) : "Checking…"} />
+      </div>
+      {empty ? (
+        <p className="m-0 text-[12px] text-muted">No usage on this server in this range yet.</p>
+      ) : null}
     </div>
   );
 }

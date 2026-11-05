@@ -10,6 +10,8 @@ use super::worktree::{git_worktree_add, git_worktrees, GitWorktreeAdd};
 use super::{
     clip, clip_bytes, drain, git_output, git_run, git_text, kill_git, set_nonblocking, GitTarget, GitText,
 };
+use serde::{Deserialize, Serialize};
+
 use crate::env_path::command_path;
 use crate::error::{Error, Result};
 
@@ -146,6 +148,217 @@ fn pull_request_number(reference: &str) -> Option<u32> {
 pub struct PullRequestInfo {
     pub title: String,
     pub open: bool,
+}
+
+/// The pull request for the branch that is checked out. `gh pr view` is the source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBranchPullRequest {
+    pub number: u32,
+    pub title: String,
+    pub state: String,
+    pub body: String,
+    pub author: String,
+    pub base: String,
+    pub head: String,
+    pub url: String,
+    pub additions: u32,
+    pub deletions: u32,
+    pub changed: u32,
+    pub review: String,
+    pub checks: GitPullRequestChecks,
+    pub commits: Vec<GitPullRequestCommit>,
+    pub files: Vec<GitPullRequestFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPullRequestChecks {
+    pub pass: u32,
+    pub fail: u32,
+    pub pending: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPullRequestCommit {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    pub at: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPullRequestFile {
+    pub path: String,
+    pub additions: u32,
+    pub deletions: u32,
+}
+
+/// `gh pr view --json` for the current branch. None when the payload is not a pull request.
+pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
+    let value: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let number = json_u32(&value, "number");
+    if number == 0 {
+        return None;
+    }
+    let draft = value.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+    let raw_state = value.get("state").and_then(|v| v.as_str()).unwrap_or("");
+    let state = if raw_state.eq_ignore_ascii_case("merged") {
+        "merged"
+    } else if raw_state.eq_ignore_ascii_case("closed") {
+        "closed"
+    } else if draft {
+        "draft"
+    } else {
+        "open"
+    };
+    let title = clip_text(
+        value.get("title").and_then(|v| v.as_str()).unwrap_or("").trim(),
+        180,
+    );
+    let title = if title.is_empty() {
+        format!("Pull request #{number}")
+    } else {
+        title
+    };
+    let author = value
+        .get("author")
+        .and_then(|author| {
+            author
+                .get("login")
+                .and_then(|v| v.as_str())
+                .filter(|login| !login.is_empty())
+                .or_else(|| author.get("name").and_then(|v| v.as_str()))
+        })
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let review = match value.get("reviewDecision").and_then(|v| v.as_str()).unwrap_or("") {
+        "APPROVED" => "approved",
+        "CHANGES_REQUESTED" => "changes",
+        "REVIEW_REQUIRED" => "review",
+        _ => "",
+    };
+    let mut commits = Vec::new();
+    if let Some(rows) = value.get("commits").and_then(|v| v.as_array()) {
+        for row in rows.iter().take(40) {
+            let hash = row.get("oid").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if hash.len() < 7 {
+                continue;
+            }
+            let author = row
+                .get("authors")
+                .and_then(|v| v.as_array())
+                .and_then(|authors| authors.first())
+                .and_then(|author| {
+                    author
+                        .get("login")
+                        .and_then(|v| v.as_str())
+                        .filter(|login| !login.is_empty())
+                        .or_else(|| author.get("name").and_then(|v| v.as_str()))
+                })
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            commits.push(GitPullRequestCommit {
+                short: hash.chars().take(7).collect(),
+                hash: hash.to_string(),
+                author,
+                at: row.get("authoredDate").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                subject: clip_text(
+                    row.get("messageHeadline").and_then(|v| v.as_str()).unwrap_or("").trim(),
+                    200,
+                ),
+            });
+        }
+    }
+    let file_rows = value.get("files").and_then(|v| v.as_array());
+    let mut changed = json_u32(&value, "changedFiles");
+    if changed == 0 {
+        changed = file_rows.map(|rows| rows.len().min(u32::MAX as usize) as u32).unwrap_or(0);
+    }
+    let mut files = Vec::new();
+    if let Some(rows) = file_rows {
+        for row in rows.iter().take(80) {
+            let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if path.is_empty() {
+                continue;
+            }
+            files.push(GitPullRequestFile {
+                path: path.to_string(),
+                additions: json_u32(row, "additions"),
+                deletions: json_u32(row, "deletions"),
+            });
+        }
+    }
+    Some(GitBranchPullRequest {
+        number,
+        title,
+        state: state.to_string(),
+        body: clip_text(value.get("body").and_then(|v| v.as_str()).unwrap_or("").trim(), 6_000),
+        author,
+        base: value.get("baseRefName").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+        head: value.get("headRefName").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+        url: value.get("url").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+        additions: json_u32(&value, "additions"),
+        deletions: json_u32(&value, "deletions"),
+        changed,
+        review: review.to_string(),
+        checks: count_checks(value.get("statusCheckRollup")),
+        commits,
+        files,
+    })
+}
+
+fn json_u32(value: &serde_json::Value, key: &str) -> u32 {
+    value
+        .get(key)
+        .and_then(|n| n.as_u64().or_else(|| n.as_i64().filter(|n| *n > 0).map(|n| n as u64)))
+        .unwrap_or(0)
+        .min(u64::from(u32::MAX)) as u32
+}
+
+fn clip_text(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in text.chars().enumerate() {
+        if i >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn count_checks(value: Option<&serde_json::Value>) -> GitPullRequestChecks {
+    let mut checks = GitPullRequestChecks { pass: 0, fail: 0, pending: 0 };
+    let Some(rows) = value.and_then(|v| v.as_array()) else {
+        return checks;
+    };
+    for row in rows {
+        let kind = row.get("__typename").and_then(|v| v.as_str()).unwrap_or("");
+        if kind == "CheckRun" {
+            let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let conclusion = row.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
+            if !status.eq_ignore_ascii_case("completed") {
+                checks.pending += 1;
+                continue;
+            }
+            match conclusion.to_ascii_uppercase().as_str() {
+                "SUCCESS" | "NEUTRAL" | "SKIPPED" => checks.pass += 1,
+                "FAILURE" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                    checks.fail += 1
+                }
+                _ => checks.pending += 1,
+            }
+        } else {
+            match row.get("state").and_then(|v| v.as_str()).unwrap_or("").to_ascii_uppercase().as_str() {
+                "SUCCESS" => checks.pass += 1,
+                "FAILURE" | "ERROR" => checks.fail += 1,
+                _ => checks.pending += 1,
+            }
+        }
+    }
+    checks
 }
 
 /// `gh pr list` for open and closed requests. None when the CLI is missing or refuses.
@@ -296,4 +509,17 @@ fn local_tool(root: &Path, program: &str, args: &[&str]) -> Result<String> {
         return Err(Error::Other(clip(&String::from_utf8_lossy(&err_buf))));
     }
     Ok(clip_bytes(&String::from_utf8_lossy(&out_buf)))
+}
+
+const BRANCH_PULL_REQUEST_FIELDS: &str = "number,title,state,isDraft,body,author,baseRefName,headRefName,url,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,commits,files";
+
+/// The open request for the checked-out branch. Missing `gh`, or no request, is an empty result.
+pub fn git_branch_pull_request(target: &GitTarget) -> Result<Option<GitBranchPullRequest>> {
+    if target.remote.is_some() {
+        return Ok(None);
+    }
+    match local_tool(target.root.as_path(), "gh", &["pr", "view", "--json", BRANCH_PULL_REQUEST_FIELDS]) {
+        Ok(text) => Ok(parse_branch_pull_request(&text)),
+        Err(_) => Ok(None),
+    }
 }

@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { clearCommandRun, type CommandRun } from "../lib/command-run";
+import { clearCommandRun, watchCommandRun, type CommandRun } from "../lib/command-run";
 import { attachTerminalLinks } from "../lib/term-io";
 import { openUrl, stopCommand } from "../lib/tauri";
 import { formatElapsed } from "../lib/relative-time";
@@ -10,8 +10,9 @@ import { Symbol } from "./Symbol";
 import { paneIsShown, watchTerminalBox, xtermTheme } from "./Terminal";
 
 export function CommandRunPill({ run }: { run: CommandRun }) {
-  // A new command arrives closed. The bar is enough until the user asks for the output.
-  const [open, setOpen] = useState(false);
+  // Open lives on the run. A local flag resets when the chat remounts, and the
+  // finished command then stays up while looking closed.
+  const open = run.watching;
   const title = run.label || run.command;
 
   return (
@@ -21,7 +22,7 @@ export function CommandRunPill({ run }: { run: CommandRun }) {
           type="button"
           aria-expanded={open}
           aria-label={open ? "Hide command output" : "Show command output"}
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => watchCommandRun(run.id, !open)}
           className="flex min-w-0 flex-1 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-left hover:bg-wash"
         >
           <span

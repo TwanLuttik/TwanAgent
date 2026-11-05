@@ -4,11 +4,12 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::dev::{off_main, same_project_path};
 use crate::dev::git::{
-    git_branches, git_commit, git_create_branch, git_diff, git_discard, git_file_at, git_identity,
-    git_label, git_log, git_pull_request_checkout, git_pull_requests, git_set_identity,
-    git_show, git_stage, git_stash, git_status_with, git_switch, git_sync, git_unstage,
-    git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
-    GitCommit, GitIdentity, GitPullRequest, GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
+    git_branch_pull_request, git_branches, git_commit, git_create_branch, git_diff, git_discard,
+    git_file_at, git_identity, git_label, git_log, git_pull_request_checkout, git_pull_requests,
+    git_set_identity, git_show, git_stage, git_stash, git_status_with, git_switch, git_sync,
+    git_unstage, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
+    GitBranchPullRequest, GitCommit, GitIdentity, GitPullRequest, GitRepoSummary, GitTarget,
+    GitWorktree, GitWorktreeAdd,
 };
 use crate::dev::types::{GitBranches, GitChange};
 use crate::dev::paths::{expand_folder_path, path_string};
@@ -257,6 +258,15 @@ fn pull_request_repo(url: &str) -> Option<String> {
         return None;
     }
     Some(format!("{owner}/{repo}"))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_branch_pull_request(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Option<GitBranchPullRequest>> {
+    let target = git_target(&state, &workspace)?;
+    off_main(move || git_branch_pull_request(&target)).await
 }
 
 #[tauri::command(rename_all = "snake_case")]

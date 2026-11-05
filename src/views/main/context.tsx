@@ -20,6 +20,7 @@ export type MainModel = {
   busy: any;
   chatTabs: { id: string; title: string; kind: "chat" | "terminal"; running: boolean }[];
   tabItems: TabItem[];
+  tabHomes: Record<string, string>;
   splitChatIds: string[];
   tabMenu: TabMenu | null;
   setTabMenu: MainFn;

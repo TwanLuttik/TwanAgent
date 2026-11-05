@@ -40,6 +40,7 @@ import {
   isEmptyCompletion,
   isRetryableChatError,
   isTransientProviderError,
+  mergeHostedTranscript,
   providerRetryPauseMs,
   PROVIDER_RETRY_STATUS,
   skipToolIfAborted,
@@ -429,7 +430,9 @@ export async function resumeLocalTurn(input: {
       void api.onLocalTurn((event) => {
         if (event.stream_id !== input.conversationId) return;
         if (event.kind === "saved" && event.conversation?.messages) {
-          latest = event.conversation.messages as ChatMessage[];
+          // A tool save is large and can arrive after the reply that followed it.
+          // Replacing the transcript with that older copy drops the final text.
+          latest = mergeHostedTranscript(latest, event.conversation.messages as ChatMessage[]);
           input.onEvent({
             kind: "saved",
             messages: latest,
@@ -472,7 +475,19 @@ export async function resumeLocalTurn(input: {
       });
     }
     if (input.signal.aborted) onAbort();
-    return await finished;
+    const ended = await finished;
+    // Idle is emitted after the turn has been written. The saved event that
+    // carries the reply can be dropped or still be in flight, which is why a
+    // reload showed text the finished view never painted.
+    if (!input.workspace.trim() || !input.conversationId.trim()) return ended;
+    try {
+      const stored = await api.getConversation(input.workspace, input.conversationId);
+      // Disk wins only when it has messages the live copy never received.
+      // An equal snapshot stays, so a duration stamp is not thrown away.
+      return mergeHostedTranscript((stored.messages as ChatMessage[]) ?? [], ended);
+    } catch {
+      return ended;
+    }
   } finally {
     input.signal.removeEventListener("abort", onAbort);
     unlisten?.();

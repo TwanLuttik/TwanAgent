@@ -35,6 +35,17 @@ export function filePaneNeedsReload(shown: string, next: string): boolean {
   return !isSameProject(shown, next);
 }
 
+/**
+ * Cover the file pane only while it is still showing a different project.
+ * Opening a folder rewrites `/users/.../twanagent` to `/Users/.../TwanAgent`.
+ * That is the same project, so the cover must not stay up. A strict `!==`
+ * check did, including on an existing chat whose saved path used the other spelling.
+ */
+export function filePanePending(shown: string, next: string): boolean {
+  if (!shown || !next) return false;
+  return !isSameProject(shown, next);
+}
+
 export function closedTerminalTabs(prev: PaneState, next: PaneState): PaneTab[] {
   const kept = new Set(next.tabs.map((tab) => tab.id));
   return prev.tabs.filter((tab) => tab.kind === "terminal" && !kept.has(tab.id));

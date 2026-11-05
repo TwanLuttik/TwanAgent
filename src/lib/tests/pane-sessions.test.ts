@@ -4,6 +4,7 @@ import { closePane, openPane } from "../pane.ts";
 import {
   closedTerminalTabs,
   filePaneNeedsReload,
+  filePanePending,
   forgetPaneWorkspace,
   paneForWorkspace,
   savePaneForWorkspace,
@@ -32,6 +33,15 @@ describe("pane sessions", () => {
     assert.equal(filePaneNeedsReload("/repo", "/other"), true);
     assert.equal(filePaneNeedsReload("", "/repo"), true);
     assert.equal(filePaneNeedsReload("/repo", ""), false);
+  });
+
+  it("does not keep the loading cover up for another spelling of the same project", () => {
+    assert.equal(filePanePending("/users/me/orca/projects/twanagent", "/Users/me/orca/projects/TwanAgent"), false);
+    assert.equal(filePanePending("/repo", "/repo/"), false);
+    assert.equal(filePanePending("/Repo", "/repo"), false);
+    assert.equal(filePanePending("/repo", "/other"), true);
+    assert.equal(filePanePending("", "/repo"), false);
+    assert.equal(filePanePending("/repo", ""), false);
   });
 
   it("lists terminal tabs removed by a close", () => {

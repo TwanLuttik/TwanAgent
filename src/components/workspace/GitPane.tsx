@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { formatDiffCount, gitChangeTotals, gitChangesTree } from "../../lib/core";
 import { ALL_DIFF_PATH } from "../../lib/editor";
+import { gitSectionAfterLoad, type GitSection } from "../../lib/git-sections";
 import { loadGitChangesView, saveGitChangesView, type GitChangesView } from "../../lib/prefs";
-import type { GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary, GitWorktree } from "../../lib/tauri";
+import * as api from "../../lib/tauri";
+import type { GitBranchPullRequest, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary, GitWorktree } from "../../lib/tauri";
 import { Symbol } from "../Symbol";
 import { BranchSwitch } from "./BranchSwitch";
 import { ChangeFileRow, ChangeTree, changeLabel } from "./GitChanges";
-import { relativeCommitTime } from "./gitBits";
+import { CommitList, GitSectionTabs, PullRequestView } from "./GitSections";
 
 export function GitPane({
   branches,
@@ -76,17 +78,61 @@ export function GitPane({
   const [commitText, setCommitText] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [section, setSection] = useState<GitSection>("changes");
+  const [request, setRequest] = useState<GitBranchPullRequest | null>(null);
   const tree = view === "tree" ? gitChangesTree(changes) : [];
   const totals = gitChangeTotals(changes);
   const staged = changes.filter((row) => row.staged);
   const unstaged = changes.filter((row) => !row.staged || row.unstaged || row.status === "untracked");
   const repo = branches.repo !== false && (summary?.repo !== false);
+  const branch = summary?.detached ? "" : branches.current ?? "";
+  const showing = gitSectionAfterLoad(section, Boolean(request));
+  const requestFor = useRef("");
 
   useEffect(() => {
     if (!identity) return;
     setName(identity.name);
     setEmail(identity.email);
   }, [identity]);
+
+  useEffect(() => {
+    const key = `${workspacePath}\n${branch}`;
+    if (requestFor.current !== key) {
+      requestFor.current = key;
+      setRequest(null);
+    }
+    if (!workspacePath || !repo || grouped || busy) {
+      if (!workspacePath || !repo || grouped) setRequest(null);
+      return;
+    }
+    let cancel = false;
+    void api.gitBranchPullRequest(workspacePath).then(
+      (row) => {
+        if (!cancel) setRequest(row && row.number > 0 ? row : null);
+      },
+      () => {
+        if (!cancel) setRequest(null);
+      },
+    );
+    return () => {
+      cancel = true;
+    };
+  }, [workspacePath, branch, repo, grouped, busy]);
+
+  useEffect(() => {
+    if (section === "request" && !request) setSection("changes");
+  }, [section, request]);
+
+  function openCommit(hash: string) {
+    if (commitHash === hash && commitText !== null) {
+      setCommitHash(null);
+      setCommitText(null);
+      return;
+    }
+    setCommitHash(hash);
+    setCommitText(null);
+    void onShow(hash).then(setCommitText).catch((e) => setCommitText(String(e)));
+  }
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -225,7 +271,59 @@ export function GitPane({
           <GitAction label="Save identity" disabled={busy || !name.trim() || !email.trim()} onClick={() => undefined} submit />
         </form>
       ) : null}
-      {changes.length > 0 ? (
+      {repo ? (
+        <GitSectionTabs
+          section={showing}
+          hasRequest={Boolean(request)}
+          onSelect={setSection}
+          trailing={
+            showing === "changes" ? (
+              <div className="mb-1 flex items-center gap-1.5">
+                <div className="flex items-center rounded-[6px] bg-wash p-px" role="group" aria-label="Change list layout">
+                  <button
+                    type="button"
+                    aria-pressed={view === "list"}
+                    aria-label="List view"
+                    title="List"
+                    onClick={() => setChangesView("list")}
+                    className={`flex size-5 items-center justify-center rounded-[5px] ${
+                      view === "list" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    <Symbol name="list.bullet" className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={view === "tree"}
+                    aria-label="Tree view"
+                    title="Tree"
+                    onClick={() => setChangesView("tree")}
+                    className={`flex size-5 items-center justify-center rounded-[5px] ${
+                      view === "tree" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    <Symbol name="list.tree" className="size-3" />
+                  </button>
+                </div>
+                <span className="rounded-full bg-wash px-1.5 py-px text-[10px] font-medium text-muted tabular-nums">{changes.length}</span>
+              </div>
+            ) : null
+          }
+        />
+      ) : null}
+      {showing === "commits" ? (
+        <CommitList commits={history} openHash={commitHash} detail={commitText} onOpen={openCommit} />
+      ) : null}
+      {showing === "request" && request ? (
+        <PullRequestView
+          request={request}
+          openHash={commitHash}
+          detail={commitText}
+          onOpenCommit={openCommit}
+          onOpenUrl={(url) => void api.openUrl(url)}
+        />
+      ) : null}
+      {showing === "changes" && changes.length > 0 ? (
         <div className="shrink-0 px-1.5 pt-1.5">
           <button
             type="button"
@@ -284,38 +382,7 @@ export function GitPane({
           </form>
         </div>
       ) : null}
-      <div className="mt-1 flex h-7 shrink-0 items-center justify-between gap-2 border-t border-line/40 px-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Changes</span>
-          <div className="flex items-center rounded-[6px] bg-wash p-px" role="group" aria-label="Change list layout">
-            <button
-              type="button"
-              aria-pressed={view === "list"}
-              aria-label="List view"
-              title="List"
-              onClick={() => setChangesView("list")}
-              className={`flex size-5 items-center justify-center rounded-[5px] ${
-                view === "list" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
-              }`}
-            >
-              <Symbol name="list.bullet" className="size-3" />
-            </button>
-            <button
-              type="button"
-              aria-pressed={view === "tree"}
-              aria-label="Tree view"
-              title="Tree"
-              onClick={() => setChangesView("tree")}
-              className={`flex size-5 items-center justify-center rounded-[5px] ${
-                view === "tree" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
-              }`}
-            >
-              <Symbol name="list.tree" className="size-3" />
-            </button>
-          </div>
-        </div>
-        <span className="rounded-full bg-wash px-1.5 py-px text-[10px] font-medium text-muted tabular-nums">{changes.length}</span>
-      </div>
+      {showing === "changes" ? (
       <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {changes.length === 0 ? (
           <p className="px-2 py-1 text-[12px] text-muted">No changes</p>
@@ -350,45 +417,6 @@ export function GitPane({
           ))
         )}
       </div>
-      {history.length ? (
-        <div className="mt-auto flex h-[7.25rem] max-h-[32%] shrink-0 flex-col border-t border-line/60 bg-canvas/30">
-          <div className="flex h-6 shrink-0 items-center justify-between px-3">
-            <span className="text-[10px] font-semibold tracking-[0.06em] text-muted uppercase">History</span>
-            <span className="text-[10px] text-muted/80 tabular-nums">{history.length}</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-1.5">
-            {history.map((row) => {
-              const open = commitText !== null && commitHash === row.hash;
-              const when = relativeCommitTime(row.at);
-              return (
-                <button
-                  key={row.hash}
-                  type="button"
-                  title={`${row.short} ${row.subject}\n${row.author}${when ? ` · ${when}` : ""}`}
-                  onClick={() => {
-                    if (open) {
-                      setCommitHash(null);
-                      setCommitText(null);
-                      return;
-                    }
-                    setCommitHash(row.hash);
-                    void onShow(row.hash).then(setCommitText).catch((e) => setCommitText(String(e)));
-                  }}
-                  className={`flex w-full items-center gap-1.5 rounded-[5px] px-1.5 py-[2px] text-left text-[11px] leading-4 ${
-                    open ? "bg-wash-strong" : "hover:bg-wash"
-                  }`}
-                >
-                  <span className="w-12 shrink-0 font-mono text-[10px] text-accent/80">{row.short}</span>
-                  <span className="min-w-0 flex-1 truncate text-ink/85">{row.subject}</span>
-                  {when ? <span className="shrink-0 text-[10px] text-muted/70">{when}</span> : null}
-                </button>
-              );
-            })}
-            {commitText ? (
-              <pre className="mt-1 max-h-32 overflow-auto rounded-[6px] bg-wash px-2 py-1 font-mono text-[10px] leading-snug whitespace-pre-wrap text-ink/75">{commitText}</pre>
-            ) : null}
-          </div>
-        </div>
       ) : null}
     </>
   );

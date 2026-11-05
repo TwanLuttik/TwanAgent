@@ -564,6 +564,55 @@ export function skipToolIfAborted(signal: AbortSignal): string | null {
   return signal.aborted ? SKIPPED_STOPPED : null;
 }
 
+type OpenAssistant = {
+  index: number;
+  content: string;
+  reasoning: string;
+  /** Tool results follow this message, so the live buffer is the next reply. */
+  trailingTools: boolean;
+};
+
+/** The assistant message the live buffer belongs to, if this turn has one. */
+function openAssistant(messages: ChatMessage[]): OpenAssistant | null {
+  let trailingTools = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role === "user") break;
+    if (msg.role !== "assistant" || msg.error) {
+      if (msg?.role === "tool") trailingTools = true;
+      continue;
+    }
+    return {
+      index: i,
+      content: String(msg.content ?? "").trim(),
+      reasoning: String(msg.reasoning ?? "").trim(),
+      trailingTools,
+    };
+  }
+  return null;
+}
+
+/** True when the stored text already includes the live buffer. */
+function bufferHeld(stored: string, live: string): boolean {
+  if (!live) return true;
+  return stored === live || stored.startsWith(live);
+}
+
+/**
+ * The open reply already contains this buffer.
+ * A save must not clear the buffer until that is true, or the finished turn
+ * paints no text until the transcript is loaded again. An earlier tool round
+ * does not count: its sentence is not the reply still streaming.
+ */
+export function replyCoversStream(messages: ChatMessage[], text: string, reasoning = ""): boolean {
+  const want = text.trim();
+  const thought = reasoning.trim();
+  if (!want && !thought) return true;
+  const open = openAssistant(messages);
+  if (!open || open.trailingTools) return false;
+  return bufferHeld(open.content, want) && bufferHeld(open.reasoning, thought);
+}
+
 /**
  * Keep a reply that was still streaming when the turn stopped.
  * The user message stays put. Text already saved by a finished model round
@@ -575,7 +624,28 @@ export function commitPartialReply(
 ): ChatMessage[] {
   const text = partial.text ?? "";
   const reasoning = String(partial.reasoning ?? "").trim();
-  if (!text.trim() && !reasoning) return messages;
+  const want = text.trim();
+  if (!want && !reasoning) return messages;
+  if (replyCoversStream(messages, text, reasoning)) return messages;
+  const open = openAssistant(messages);
+  // The snapshot has the start of this same reply and the buffer has the rest.
+  if (
+    open &&
+    !open.trailingTools &&
+    open.content &&
+    want.startsWith(open.content) &&
+    want !== open.content
+  ) {
+    const next = messages.slice();
+    const msg = messages[open.index];
+    if (!msg) return messages;
+    next[open.index] = {
+      ...msg,
+      content: text,
+      ...(reasoning ? { reasoning } : {}),
+    };
+    return next;
+  }
   return [
     ...messages,
     {

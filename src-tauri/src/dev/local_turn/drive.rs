@@ -542,7 +542,15 @@ pub(super) fn run_tool(
             })
         }),
         "git_commit" => commit_files(workspace, data_dir, &args),
-        "run_command" => run_shell(app, conversation_id, workspace, str_arg(&args, "command"), permission, live),
+        "run_command" => run_shell(
+            app,
+            conversation_id,
+            workspace,
+            str_arg(&args, "command"),
+            str_arg(&args, "description"),
+            permission,
+            live,
+        ),
         "web_search" => search(app, data_dir, &call.arguments),
         "list_chats" => list_group_chats(data_dir, workspace, &args),
         "read_chat" => read_group_chat(data_dir, workspace, &args),

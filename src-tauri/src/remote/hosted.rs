@@ -735,22 +735,46 @@ pub fn dev_hosted_sidebar_cached(
 }
 
 /// Copy each hosted project's usage log into the local usage database.
-/// The cursor is the last server row id already copied, so a second sync only fetches what is new.
-/// A server that is offline, or an older server that has no usage log, is skipped.
+/// Only a project still in the sidebar is contacted. A remote row left behind
+/// after that project was removed is not. The cursor is the last server row id
+/// already copied, so a second sync only fetches what is new.
+/// A machine with no paired server is skipped quietly. A server that is offline,
+/// or an older server that has no usage log, is skipped.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_usage_sync(state: State<'_, AppState>) -> Result<usize> {
     let data_dir = state.data_dir.clone();
     let conn = crate::appdb::open(&data_dir)?;
     let projects = crate::remote::config::list_remote_projects(&conn)?;
+    let saved = saved_project_mounts(&conn)?;
     drop(conn);
     let mut added = 0usize;
-    for project in projects {
+    for project in remote_projects_to_sync(projects, &saved) {
         match sync_one_project(&state, &data_dir, &project).await {
             Ok(count) => added += count,
             Err(err) => eprintln!("usage sync skipped {}: {err}", project.name),
         }
     }
     Ok(added)
+}
+
+fn saved_project_mounts(conn: &rusqlite::Connection) -> Result<std::collections::HashSet<String>> {
+    Ok(crate::appdb::list_projects(conn)?
+        .into_iter()
+        .map(|row| crate::appdb::project_key_public(&row.path))
+        .collect())
+}
+
+/// A remote row stays after the project leaves the sidebar. Usage sync must not
+/// keep asking those machines, or a removed project prints "server is not paired"
+/// on every usage open.
+fn remote_projects_to_sync(
+    projects: Vec<crate::remote::config::RemoteProject>,
+    saved: &std::collections::HashSet<String>,
+) -> Vec<crate::remote::config::RemoteProject> {
+    projects
+        .into_iter()
+        .filter(|project| saved.contains(&crate::appdb::project_key_public(&project.mount_path)))
+        .collect()
 }
 
 async fn sync_one_project(
@@ -761,8 +785,11 @@ async fn sync_one_project(
     let conn = crate::appdb::open(data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let server = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
-        .ok_or_else(|| Error::Other("server is not paired".into()))?;
+    // An SSH project, or an old machine whose agent server was removed, has nothing to copy.
+    // That is not a failure. Logging it repeats for every usage open.
+    let Some(server) = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)? else {
+        return Ok(0);
+    };
     if !server.paired {
         return Ok(0);
     }
@@ -919,6 +946,28 @@ pub async fn dev_hosted_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn remote_project(name: &str, mount: &str) -> crate::remote::config::RemoteProject {
+        crate::remote::config::RemoteProject {
+            id: name.into(),
+            machine_id: "machine".into(),
+            name: name.into(),
+            remote_path: format!("/srv/{name}"),
+            mount_path: mount.into(),
+            created_at: "2026-10-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn usage_sync_skips_projects_removed_from_the_sidebar() {
+        let kept = remote_project("Hello-world", "/mounts/hello");
+        let gone = remote_project("Cloud-test-2", "/mounts/old");
+        let mut saved = std::collections::HashSet::new();
+        saved.insert(crate::appdb::project_key_public("/mounts/hello/"));
+        let synced = remote_projects_to_sync(vec![kept, gone], &saved);
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].name, "Hello-world");
+    }
 
     #[test]
     fn a_saved_server_token_is_used_without_the_keychain() {

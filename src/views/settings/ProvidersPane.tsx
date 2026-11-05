@@ -1,8 +1,8 @@
-import type { ReactNode } from "react";
 import { Button } from "../../components/Button";
 import { Symbol } from "../../components/Symbol";
 import { maskEmail } from "../../lib/mask";
 import * as api from "../../lib/tauri";
+import { Block, fieldClass, Group, Line, Page } from "./SettingsChrome";
 
 export type ProviderCardId = "xai" | "anthropic" | "minimax";
 
@@ -128,78 +128,66 @@ export function ProvidersPane({
   const due = cards.filter((card) => cliCanUpdate(cliFor(card))).length;
   const updatingAll = updatingId === "all";
   return (
-    <div>
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="m-0 text-[15px] font-semibold">Providers</h2>
-          <p className="mt-1 mb-0 text-[12px] leading-relaxed text-muted">
-            A saved key is used first, then the signed-in CLI.
-          </p>
-        </div>
-        <button
-          type="button"
+    <Page
+      title="Providers"
+      text="A saved key is used first, then the signed-in CLI."
+      action={
+        <Button
+          size="sm"
           disabled={due === 0 || updatingId != null}
           title={due === 0 ? "Every CLI is current" : `Update ${due} ${due === 1 ? "CLI" : "CLIs"}`}
           onClick={onUpdateAll}
-          className="shrink-0 text-[12px] text-muted hover:text-ink disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted"
         >
           {updatingAll ? "Updating…" : "Update all"}
-        </button>
-      </div>
-      <div className="grid gap-x-4 gap-y-4 md:grid-cols-[minmax(168px,190px)_minmax(0,1fr)]">
-        <div className="grid content-start gap-1 px-1">
-          {cards.map((card) => {
-            const cli = cliFor(card);
-            const status = statusFor(card);
-            const on = card.id === selected.id;
-            const version = cli?.installed ? cli.version : null;
-            return (
-              <button
-                key={card.id}
-                type="button"
-                aria-pressed={on}
-                onClick={() => onSelect(card.id)}
-                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${
-                  on ? "bg-wash-strong" : "hover:bg-wash"
-                }`}
-              >
-                <span className={`flex size-6 shrink-0 items-center justify-center rounded-md ${card.markClass}`}>
-                  <Symbol name={card.logo} colored className="size-3.5" />
+        </Button>
+      }
+    >
+      <div className="grid grid-cols-3 gap-2">
+        {cards.map((card) => {
+          const cli = cliFor(card);
+          const status = statusFor(card);
+          const on = card.id === selected.id;
+          return (
+            <button
+              key={card.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onSelect(card.id)}
+              className={`flex min-w-0 items-center gap-2 rounded-xl border px-2.5 py-2 text-left ${
+                on ? "border-accent bg-wash" : "border-line/60 bg-panel hover:bg-wash"
+              }`}
+            >
+              <span className={`flex size-7 shrink-0 items-center justify-center rounded-lg ${card.markClass}`}>
+                <Symbol name={card.logo} colored className="size-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="flex items-center gap-1">
+                  <span className="truncate text-[13px] font-medium text-ink">{card.title}</span>
+                  {cliCanUpdate(cli) ? <Symbol name="arrow.up" className="size-2.5 shrink-0 text-ok" /> : null}
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex min-w-0 items-baseline gap-1.5">
-                    <span className="truncate text-[13px] font-medium text-ink">{card.title}</span>
-                    {version ? <span className="shrink-0 font-mono text-[10px] text-muted">{version}</span> : null}
-                    {cliCanUpdate(cli) ? (
-                      <Symbol name="arrow.up" className="size-2.5 shrink-0 self-center text-ok" />
-                    ) : null}
-                  </span>
-                  <span className="block truncate text-[11px] text-muted">
-                    {providerStatusLine(cli, status)}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        {selected ? (
-          <ProviderDetail
-            card={selected}
-            cli={cliFor(selected)}
-            status={statusFor(selected)}
-            draft={draftFor(selected)}
-            onDraft={(value) => onDraft(selected, value)}
-            saving={savingId === selected.id}
-            updating={updatingId === selected.id || updatingAll}
-            revealed={revealed}
-            onToggleReveal={onToggleReveal}
-            onUpdate={() => onUpdate(selected)}
-            onClear={() => onClear(selected)}
-            onSave={() => onSave(selected)}
-          />
-        ) : null}
+                <span className="block truncate text-[11px] text-muted">{providerStatusLine(cli, status)}</span>
+              </span>
+            </button>
+          );
+        })}
       </div>
-    </div>
+      {selected ? (
+        <ProviderDetail
+          card={selected}
+          cli={cliFor(selected)}
+          status={statusFor(selected)}
+          draft={draftFor(selected)}
+          onDraft={(value) => onDraft(selected, value)}
+          saving={savingId === selected.id}
+          updating={updatingId === selected.id || updatingAll}
+          revealed={revealed}
+          onToggleReveal={onToggleReveal}
+          onUpdate={() => onUpdate(selected)}
+          onClear={() => onClear(selected)}
+          onSave={() => onSave(selected)}
+        />
+      ) : null}
+    </Page>
   );
 }
 
@@ -231,53 +219,50 @@ function ProviderDetail({
   onSave: () => void;
 }) {
   const canUpdate = cliCanUpdate(cli);
+  const login = !cli
+    ? "Checking…"
+    : cli.logged_in
+      ? cli.email
+        ? maskEmail(cli.email, revealed)
+        : "Signed in"
+      : "Not signed in";
   return (
-    <div className="grid gap-4">
-      <div className="flex items-center gap-2">
-        <span className={`flex size-6 shrink-0 items-center justify-center rounded-md ${card.markClass}`}>
-          <Symbol name={card.logo} colored className="size-3.5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="m-0 text-[13px] font-semibold text-ink">{card.title}</h3>
-          <p className="m-0 truncate text-[11px] text-muted">{providerStatusLine(cli, status)}</p>
-        </div>
-        {canUpdate ? (
-          <button
-            type="button"
-            disabled={updating}
-            title={`Install ${cli?.update}`}
-            onClick={onUpdate}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok/15 px-2 py-0.5 text-[11px] font-medium text-ok hover:bg-ok/25 disabled:opacity-60"
-          >
-            <Symbol name="arrow.up" className={`size-2.5 ${updating ? "animate-pulse" : ""}`} />
-            {updating ? "Updating…" : cli?.update}
-          </button>
-        ) : null}
-      </div>
-      <div className="grid gap-2.5">
-        <Fact
+    <>
+      <Group
+        title="Connection"
+        text={card.text}
+        action={
+          canUpdate ? (
+            <button
+              type="button"
+              disabled={updating}
+              title={`Install ${cli?.update}`}
+              onClick={onUpdate}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok/15 px-2 py-0.5 text-[11px] font-medium text-ok hover:bg-ok/25 disabled:opacity-60"
+            >
+              <Symbol name="arrow.up" className={`size-2.5 ${updating ? "animate-pulse" : ""}`} />
+              {updating ? "Updating…" : cli?.update}
+            </button>
+          ) : null
+        }
+      >
+        <Line
           label="CLI"
           value={cli ? (cli.installed ? cli.version || "Installed" : "Not found") : "Checking…"}
           tone={cli?.installed ? "ok" : cli ? "err" : "muted"}
         />
-        <Fact
+        <Line
           label="Path"
           value={cli?.installed && cli.path ? cli.path : "Not found"}
           mono
+          tone={cli?.installed ? undefined : "muted"}
           title={cli?.path}
         />
-        <Fact
+        <Line
           label="Login"
-          value={
-            !cli
-              ? "Checking…"
-              : cli.logged_in
-                ? cli.email
-                  ? maskEmail(cli.email, revealed)
-                  : "Signed in"
-                : "Not signed in"
-          }
+          value={login}
           tone={cli?.logged_in ? "ok" : cli ? "err" : "muted"}
+          title={cli?.email ?? login}
           action={
             cli?.email ? (
               <button
@@ -291,54 +276,26 @@ function ProviderDetail({
             ) : null
           }
         />
-      </div>
-      <KeyField
-        label={card.keyLabel}
-        value={draft}
-        onChange={onDraft}
-        placeholder={status?.saved ? "Key saved — paste to replace" : card.placeholder}
-        status={status}
-        envName={card.envName}
-        saving={saving}
-        onClear={onClear}
-        onSave={onSave}
-      />
-    </div>
-  );
-}
-
-/** A value the app reads. Not an input, so it has no field chrome. */
-function Fact({
-  label,
-  value,
-  mono,
-  title,
-  tone = "ink",
-  action,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-  title?: string;
-  tone?: "ok" | "err" | "muted" | "ink";
-  action?: ReactNode;
-}) {
-  const color = tone === "ok" ? "text-ok" : tone === "err" ? "text-err" : tone === "muted" ? "text-muted" : "text-ink";
-  return (
-    <div className="grid grid-cols-[52px_minmax(0,1fr)] items-center gap-3">
-      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">{label}</span>
-      <span className="flex min-w-0 items-center gap-1">
-        <span title={title ?? value} className={`min-w-0 truncate text-[12px] ${mono ? "font-mono" : ""} ${color}`}>
-          {value}
-        </span>
-        {action}
-      </span>
-    </div>
+      </Group>
+      <Group title="API key" text={card.keyLabel}>
+        <Block>
+          <KeyField
+            value={draft}
+            onChange={onDraft}
+            placeholder={status?.saved ? "Key saved — paste to replace" : card.placeholder}
+            status={status}
+            envName={card.envName}
+            saving={saving}
+            onClear={onClear}
+            onSave={onSave}
+          />
+        </Block>
+      </Group>
+    </>
   );
 }
 
 function KeyField({
-  label,
   value,
   onChange,
   placeholder,
@@ -348,7 +305,6 @@ function KeyField({
   onSave,
   onClear,
 }: {
-  label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
@@ -366,20 +322,15 @@ function KeyField({
   const tone = status?.saved || status?.env ? "text-ok" : "text-muted";
   return (
     <div className="grid gap-2">
-      <label className="grid gap-1">
-        <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wide text-muted uppercase">
-          <Symbol name="key" className="size-3" />
-          {label}
-        </span>
-        <input
-          type="password"
-          value={value}
-          autoComplete="off"
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          className="h-8 rounded-md border border-line bg-canvas px-2.5 text-[13px] outline-none focus:border-accent"
-        />
-      </label>
+      <input
+        type="password"
+        value={value}
+        autoComplete="off"
+        aria-label="API key"
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={fieldClass}
+      />
       <div className="flex items-center justify-between gap-2">
         <p className={`m-0 flex items-center gap-1.5 text-[12px] ${tone}`}>
           <Symbol name={status?.saved || status?.env ? "lock.fill" : "lock"} className="size-3" />
@@ -387,12 +338,12 @@ function KeyField({
         </p>
         <div className="flex shrink-0 gap-2">
           {status?.saved ? (
-            <Button disabled={saving} onClick={onClear}>
+            <Button size="sm" disabled={saving} onClick={onClear}>
               Clear
             </Button>
           ) : null}
-          <Button variant="primary" disabled={saving || !value.trim()} onClick={onSave}>
-            {saving ? "Saving…" : "Save key"}
+          <Button size="sm" variant="primary" disabled={saving || !value.trim()} onClick={onSave}>
+            {saving ? "Saving…" : "Save"}
           </Button>
         </div>
       </div>

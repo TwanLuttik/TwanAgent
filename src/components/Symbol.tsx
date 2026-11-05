@@ -571,6 +571,21 @@ const ICONS: Record<string, ReactNode> = {
       fill="currentColor"
     />
   ),
+  "bubble.round": (
+    <path
+      d="M10.12 16.58Q7.4 19.3 4.9 19.5Q6.6 16.8 6.48 14.03A6.5 6.5 0 1 1 10.12 16.58Z"
+      fill="currentColor"
+    />
+  ),
+  "bubble.dots": (
+    <>
+      <path
+        d="M6.2 6.1h10.2A2.1 2.1 0 0 1 18.5 8.2v4.7a2.1 2.1 0 0 1-2.1 2.1H10l-2.5 2.5v-2.5H6.2A2.1 2.1 0 0 1 4.1 12.9V8.2A2.1 2.1 0 0 1 6.2 6.1Z"
+        {...stroke}
+      />
+      <path d="M8.2 10.55h.01M11.3 10.55h.01M14.4 10.55h.01" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" />
+    </>
+  ),
   "arrow.triangle.pull": (
     <>
       <circle cx="7.2" cy="6.4" r="2.1" {...stroke} />

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chatFooterLabel, pullRequestForBranch } from "../chat-place.ts";
+import { chatFooterLabel, pullRequestForBranch, serverDisplayName, serverMarkLabel } from "../chat-place.ts";
 
 describe("chatFooterLabel", () => {
   it("joins the branch, an open pull request, and where the project lives", () => {
@@ -47,6 +47,33 @@ describe("chatFooterLabel", () => {
       chatFooterLabel({ branch: "  ", worktree: false, server: false, pr: null }),
       "Local",
     );
+  });
+
+  it("uses the server name when the project knows it", () => {
+    assert.equal(
+      chatFooterLabel({
+        branch: "main",
+        worktree: false,
+        server: true,
+        serverName: "  build  ",
+        pr: null,
+      }),
+      "main · build",
+    );
+  });
+});
+
+describe("server marks", () => {
+  it("prefers the machine name, then the host", () => {
+    assert.equal(serverDisplayName({ machineName: " build ", host: "10.0.0.5" }), "build");
+    assert.equal(serverDisplayName({ machineName: " ", host: "10.0.0.5" }), "10.0.0.5");
+    assert.equal(serverDisplayName(null), "");
+  });
+
+  it("hides the mark for a local chat and falls back when the name is missing", () => {
+    assert.equal(serverMarkLabel({ server: false, serverName: "build" }), "");
+    assert.equal(serverMarkLabel({ server: true }), "Server");
+    assert.equal(serverMarkLabel({ server: true, serverName: "build" }), "build");
   });
 });
 

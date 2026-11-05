@@ -199,7 +199,7 @@ fn base_tools_json() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "Run a shell command in the workspace. The user must approve it first. Always set description to one short sentence of what the command does. That sentence is the chat line. A command runs in the foreground and this tool waits for it. End the command with & only when it should keep running after the tool returns, such as a dev server, file watcher, or other long-lived process. That is the only way a command stays open above the input.",
+                "description": "Run a shell command in the workspace. The user must approve it first. Always set description to one short sentence of what the command does. That sentence is the chat line. A command runs in the foreground and this tool waits for it. Its output stays above the input while it runs, and closes when the command finishes. End the command with & only when it should keep running after the tool returns, such as a dev server, file watcher, or other long-lived process. That is the only way a command stays open after it finishes.",
                 "parameters": {
                     "type": "object",
                     "properties": {

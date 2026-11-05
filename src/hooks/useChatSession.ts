@@ -1,5 +1,6 @@
 import { useCallback, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { resumeLocalTurn } from "../lib/agent";
+import { noteCommandStream } from "../lib/command-run";
 import { insertCompactionEvent } from "../lib/compact";
 import { parseChatUsage, putChatUsage, type ChatUsage } from "../lib/context";
 import type { ChatMessage, ConversationActivity, LiveToolRow } from "../lib/core";
@@ -71,6 +72,7 @@ export function useChatSession({
   holdEmptyChatRef,
   libraryRef,
   cloudTranscriptsRef,
+  paintedChatsRef,
 }: {
   hostedChats: boolean;
   models: Runtime["models"];
@@ -112,6 +114,8 @@ export function useChatSession({
   stickToBottomRef: RefObject<boolean>;
   holdEmptyChatRef?: RefObject<boolean>;
   cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
+  /** Chats already painted. A project switch must not read their transcript again. */
+  paintedChatsRef?: RefObject<Set<string>>;
   libraryRef: RefObject<{
     persist: (
       next: ChatMessage[],
@@ -225,13 +229,14 @@ export function useChatSession({
       // The first prompt of a cloud chat is on screen before the server list
       // includes it. Preferring the last saved chat would paint that older
       // conversation while this one is still waiting on SSH.
-      const want = hostedChats
+      let want = hostedChats
         ? hostedChatToOpen({
             currentId,
             currentInRows: Boolean(currentId) && rows.some((row) => row.id === currentId),
             preferredId: preferId || preferred?.id || "",
           })
         : preferId || preferred?.id || "";
+      if (currentId && rows.some((row) => row.id === currentId)) want = currentId;
       if (!hostedChats) {
         void markLiveLocalTurns(
           rows.map((row) => row.id).filter((id) => id !== want),
@@ -243,6 +248,13 @@ export function useChatSession({
             setBusy,
           },
         );
+      }
+      // A chat already on screen stays there. Reloading its transcript on every
+      // project switch is the hitch that blocks the window. A chat from another
+      // open tab is not in this list, and must not be replaced either.
+      if (currentId && (paintedChatsRef?.current.has(currentId) || !rows.some((row) => row.id === currentId))) {
+        setOpeningId?.("");
+        return;
       }
       if (!want) {
         setActiveId("");
@@ -426,6 +438,7 @@ export function useChatSession({
       holdEmptyChatRef,
       libraryRef,
       cloudTranscriptsRef,
+      paintedChatsRef,
     ],
   );
 
@@ -511,6 +524,9 @@ export async function rejoinLocalTurn(input: {
       onEvent: (event) => {
         if (event.compaction?.summary && event.compaction.through > 0) input.onCompaction?.(event.compaction);
         if (event.usage) input.onUsage?.(event.usage);
+        if (event.kind === "command-start" || event.kind === "command" || event.kind === "command-exit") {
+          noteCommandStream(input.chatId, event);
+        }
         if (event.kind === "saved" && event.messages?.length) input.onMessages(event.messages);
         else if (event.kind === "delta" && event.text) input.onStream(event.text);
         else if (event.kind === "reasoning" && event.text) input.onReasoning(event.text);

@@ -22,10 +22,11 @@ mod worktree;
 mod pull_request;
 
 pub use pull_request::{
-    git_pull_request_checkout, git_pull_requests, git_remote_url, github_repo_slug,
+    git_branch_pull_request, git_pull_request_checkout, git_pull_requests, git_remote_url,
+    github_repo_slug, GitBranchPullRequest,
 };
 #[cfg(test)]
-pub use pull_request::{parse_pull_request_heads, parse_pull_request_states};
+pub use pull_request::{parse_branch_pull_request, parse_pull_request_heads, parse_pull_request_states};
 pub use worktree::{
     external_worktree_root, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
     project_removal, remove_project_worktrees, GitWorktreeAdd, ProjectRemoval,
@@ -1644,6 +1645,51 @@ abc1234\trefs/pull/4/merge
     assert_eq!(states.get(&12).unwrap().title, "Show open pull requests");
     assert!(!states.get(&4).unwrap().open);
     assert!(parse_pull_request_states("not json").is_none());
+}
+
+#[test]
+fn parse_branch_pull_request_reads_the_github_mobile_fields() {
+    let text = r#"{
+      "number": 12,
+      "title": "Show the pull request",
+      "state": "OPEN",
+      "isDraft": false,
+      "body": "Looks like the phone.",
+      "author": {"login": "twan"},
+      "baseRefName": "main",
+      "headRefName": "git-pane",
+      "url": "https://github.com/TwanLuttik/TwanAgent/pull/12",
+      "additions": 40,
+      "deletions": 5,
+      "reviewDecision": "APPROVED",
+      "statusCheckRollup": [
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+        {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""}
+      ],
+      "commits": [{
+        "oid": "abcdef1234567890",
+        "messageHeadline": "Restyle the git pane",
+        "authoredDate": "2026-11-05T08:00:00Z",
+        "authors": [{"login": "twan", "name": "Twan"}]
+      }],
+      "files": [{"path": "src/components/workspace/GitPane.tsx", "additions": 30, "deletions": 4}]
+    }"#;
+    let row = parse_branch_pull_request(text).unwrap();
+    assert_eq!(row.number, 12);
+    assert_eq!(row.state, "open");
+    assert_eq!(row.author, "twan");
+    assert_eq!(row.base, "main");
+    assert_eq!(row.head, "git-pane");
+    assert_eq!(row.review, "approved");
+    assert_eq!(row.checks, pull_request::GitPullRequestChecks { pass: 1, fail: 1, pending: 1 });
+    assert_eq!(row.commits[0].short, "abcdef1");
+    assert_eq!(row.files[0].path, "src/components/workspace/GitPane.tsx");
+    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"MERGED","isDraft":true}"#).unwrap().state, "merged");
+    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"OPEN","isDraft":true}"#).unwrap().state, "draft");
+    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"CLOSED"}"#).unwrap().state, "closed");
+    assert!(parse_branch_pull_request("").is_none());
+    assert!(parse_branch_pull_request(r#"{"title":"no number"}"#).is_none());
 }
 
 #[test]

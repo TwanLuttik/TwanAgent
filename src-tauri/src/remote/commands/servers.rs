@@ -89,18 +89,22 @@ fn status_for(work: &ServerWork, server: &super::super::agent_server::AgentServe
 }
 
 fn stored_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> {
+    // Pairing writes this column and the keychain. The column is enough, and reading
+    // the keychain first asks for the login password whenever this build's signature
+    // is not on the item yet.
+    let token: Option<String> = conn
+        .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    if let Some(token) = token.filter(|value| super::super::agent_server::valid_token(value)) {
+        return Ok(token);
+    }
     if let Some(token) = crate::secrets::get_agent_token(server_id) {
         if super::super::agent_server::valid_token(&token) {
             return Ok(token);
         }
     }
-    let token: Option<String> = conn
-        .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
-        .optional()?
-        .flatten();
-    token
-        .filter(|value| super::super::agent_server::valid_token(value))
-        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))
+    Err(Error::Other("Pair this server before sending a message.".into()))
 }
 
 fn token_hash_matches(hashes: &[String], token: &str) -> bool {
@@ -474,6 +478,19 @@ pub async fn dev_agent_server_status(
     .await
 }
 
+/// Up or down, without SSH. The project picker only draws a reach dot. A full status
+/// logs in, and that reads the key passphrase from the login keychain.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_agent_server_online(state: State<'_, AppState>, id: String) -> Result<bool> {
+    let work = super::server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = super::work_db(&work)?;
+        let server = agent_server_by_id(&conn, &id)?;
+        Ok(super::machine_reachable(&server.host, server.port))
+    })
+    .await
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_install_agent_binary(
     app: AppHandle,
@@ -527,13 +544,19 @@ fn install_agent_server(
         method
     };
     let conn = super::work_db(work)?;
+    let port = port.unwrap_or(22);
+    // The machine stays under its address. A friendly name is only the server label,
+    // so two servers can both be called Office without one login replacing the other.
+    // The machine name is also a lookup key. Reusing the bare host would retarget
+    // a different port that was already saved under that name.
+    let machine_name = if port == 22 { host.clone() } else { format!("{host}:{port}") };
     let machine = config::upsert_machine(
         &conn,
         NewMachine {
-            name: name.clone(),
+            name: machine_name,
             user,
             host: host.clone(),
-            port: port.unwrap_or(22),
+            port,
             auth: method,
             key_path,
         },
@@ -557,13 +580,20 @@ fn install_agent_server(
     // A token already on the machine is the pairing. Replacing it would drop the one the server uses.
     let already = super::super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
     let created = already.is_none();
+    let label = name.trim();
     let server = if let Some(already) = already {
-        already
+        // A blank name on a second connect keeps the label they already set.
+        if !label.is_empty() && label != already.name {
+            super::super::agent_server::rename_server(&conn, &already.id, label)?;
+            agent_server_by_id(&conn, &already.id)?
+        } else {
+            already
+        }
     } else {
         super::super::agent_server::insert_server(
             &conn,
             super::super::agent_server::NewAgentServer {
-                name: if name.trim().is_empty() { host } else { name },
+                name: if label.is_empty() { host } else { label.to_string() },
                 user: machine.user.clone(),
                 host: machine.host.clone(),
                 port: machine.port,
@@ -597,6 +627,21 @@ fn install_agent_server(
         return Err(err);
     }
     agent_server_by_id(&conn, &server.id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_rename_agent_server(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<super::super::agent_server::AgentServer> {
+    let work = super::server_work(&state);
+    crate::state::run_blocking(move || {
+        let conn = super::work_db(&work)?;
+        super::super::agent_server::rename_server(&conn, &id, &name)?;
+        agent_server_by_id(&conn, &id)
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]

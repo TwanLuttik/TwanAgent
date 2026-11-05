@@ -538,16 +538,21 @@ function TranscriptTurn({
           return <ThinkingTrace key={index} text={item.content} live={item.live} />;
         }
         if (item.kind === "tools") {
+          const live = liveIndex === index;
           return (
-            <ToolTrail
-              key={index}
-              labels={item.labels}
-              files={item.files}
-              details={item.details}
-              commands={item.commands}
-              live={liveIndex === index}
-              conversationId={conversationId}
-            />
+            <div key={index}>
+              <ToolTrail
+                labels={item.labels}
+                files={item.files}
+                details={item.details}
+                commands={item.commands}
+                live={live}
+                conversationId={conversationId}
+              />
+              {!live && (typeof item.durationMs === "number" || item.finishedAt) ? (
+                <FinishedLine durationMs={item.durationMs} finishedAt={item.finishedAt} />
+              ) : null}
+            </div>
           );
         }
         if (item.kind === "compaction") {

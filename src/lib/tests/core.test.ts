@@ -983,6 +983,27 @@ describe("stampTurnDuration", () => {
     assert.equal(stampTurnDuration(stamped, 12_400, "2026-09-16T15:04:00Z"), stamped);
   });
 
+  it("still marks a turn that ends on tool calls", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "I'll look through the project.",
+        tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }],
+      },
+      { role: "tool", tool_call_id: "1", content: "ok" },
+    ];
+    const stamped = stampTurnDuration(messages, 4_000, "2026-09-16T15:04:00Z");
+    assert.equal(stamped[1]?.finishedAt, "2026-09-16T15:04:00Z");
+    assert.equal(stamped[1]?.durationMs, 4_000);
+    const items = transcriptItems(stamped);
+    const tools = items.find((item) => item.kind === "tools");
+    const preface = items.find((item) => item.kind === "assistant");
+    assert.equal(preface?.kind === "assistant" && preface.finishedAt, undefined);
+    assert.equal(tools?.kind === "tools" && tools.finishedAt, "2026-09-16T15:04:00Z");
+    assert.equal(tools?.kind === "tools" && tools.durationMs, 4_000);
+  });
+
   it("does not put the finish time on an intermediate tool reply", () => {
     const messages: ChatMessage[] = [
       { role: "user", content: "go" },
