@@ -1,8 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { startTransition, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
 import { GrokTerminal } from "../../components/GrokTerminal";
-import { filePaneNeedsReload, filePanePending } from "../../lib/pane-sessions";
+import { afterInput } from "../../lib/after-input";
+import { holdPaneSelection, paneProjectFollow } from "../../lib/pane-follow";
+import { filePanePending } from "../../lib/pane-sessions";
 import {
   editorFileView,
   focusEditor,
@@ -99,6 +101,12 @@ export function ChatStage() {
   // `activeId` is empty for a frame while the next transcript loads.
   const [paneChat, setPaneChat] = useState(activeId);
   const paneProjectRef = useRef(workspace);
+  // The highlight belongs to the tree still on screen. Pointing it at the next
+  // project's file would reconcile that whole tree on the click.
+  const heldPaneSelection = useRef<string | null>(editor.activePath ?? null);
+  const paneSwitching = filePanePending(paneWorkspace, workspace);
+  if (!paneSwitching) heldPaneSelection.current = editor.activePath ?? null;
+  const paneSelectedPath = holdPaneSelection(paneSwitching, heldPaneSelection.current, editor.activePath ?? null);
   const [paneWidth, setPaneWidth] = useState(loadPaneWidth);
   const paneSlotRef = useRef<HTMLDivElement>(null);
   const paneBodyRef = useRef<HTMLDivElement>(null);
@@ -125,13 +133,18 @@ export function ChatStage() {
     // project: keep the tree mounted and point it at the spelling now in use.
     // Leaving the pane on the old spelling made `pending` stay true, so the
     // right sidebar spinner never left, including for an existing chat.
-    if (!filePaneNeedsReload(paneProjectRef.current, workspace)) {
+    // A different project waits. Rebuilding files and the terminal in this
+    // effect is what freezes the conversation that was just selected.
+    if (paneProjectFollow(paneProjectRef.current, workspace) === "now") {
       paneProjectRef.current = workspace;
       setPaneWorkspace(workspace);
       return;
     }
-    paneProjectRef.current = workspace;
-    setPaneWorkspace(workspace);
+    const next = workspace;
+    return afterInput(() => {
+      paneProjectRef.current = next;
+      startTransition(() => setPaneWorkspace(next));
+    });
   }, [workspace, opened]);
   useEffect(() => {
     if (activeId) setPaneChat(activeId);
@@ -378,7 +391,7 @@ export function ChatStage() {
             <div ref={paneBodyRef} className="relative h-full min-h-0 shrink-0" style={{ width: paneWidth }}>
               <Workspace
                 workspace={paneWorkspace}
-                selectedPath={editor.activePath}
+                selectedPath={paneSelectedPath}
                 onOpenFile={openWorkspaceFile}
                 onRefresh={bumpFiles}
                 onOpenWorkspace={(path) => {
@@ -386,7 +399,7 @@ export function ChatStage() {
                   openProjectFromSidebar(path);
                 }}
                 onCollapse={() => slidePane(true)}
-                pending={filePanePending(paneWorkspace, workspace)}
+                pending={paneSwitching}
               />
             </div>
             </div>

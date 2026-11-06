@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { afterInput } from "../lib/after-input";
 import { shellSessionId } from "../lib/shell-sessions";
 import { shellSessions } from "../lib/shell-terminal";
 import { browserFitClock, createPaneFitGate, onPaneFit, paneLayoutMoving } from "../lib/terminal-fit";
@@ -20,72 +21,88 @@ export function Terminal({
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const [error, setError] = useState<string | null>(null);
   const id = shellSessionId(workspace, sessionKey);
 
   useEffect(() => {
     const el = host.current;
     if (!el) return;
-    const term = new XTerm({
-      cursorBlink: true,
-      fontSize: 12,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-      theme: xtermTheme(),
-      scrollback: 4000,
-      macOptionClickForcesSelection: true,
-      rightClickSelectsWord: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(el);
-    fit.fit();
-    termRef.current = term;
-    fitRef.current = fit;
-
     let cancelled = false;
-    let written = 0;
-    const unsub = shellSessions.subscribe((ev) => {
-      if (ev.type === "data") {
-        if (ev.id !== id) return;
-        term.write(ev.chunk);
-        written += ev.chunk.length;
-        return;
-      }
-      if (ev.session.id !== id) return;
-      setError(ev.session.phase === "error" ? ev.session.error : null);
+    let term: XTerm | null = null;
+    let stopWatch: (() => void) | null = null;
+    let unsub: (() => void) | null = null;
+    let detachLinks: (() => void) | null = null;
+    // Opening xterm builds a canvas on the main thread. Wait until a click on
+    // the conversation can land first. Cancel keeps a fast project switch from
+    // constructing a shell for the folder we already left.
+    const cancelIdle = afterInput(() => {
+      if (cancelled || !host.current) return;
+      const node = host.current;
+      const created = new XTerm({
+        cursorBlink: true,
+        fontSize: 12,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+        theme: xtermTheme(),
+        scrollback: 4000,
+        macOptionClickForcesSelection: true,
+        rightClickSelectsWord: true,
+      });
+      term = created;
+      const fit = new FitAddon();
+      created.loadAddon(fit);
+      created.open(node);
+      fit.fit();
+      termRef.current = created;
+      fitRef.current = fit;
+
+      let written = 0;
+      unsub = shellSessions.subscribe((ev) => {
+        if (ev.type === "data") {
+          if (ev.id !== id) return;
+          created.write(ev.chunk);
+          written += ev.chunk.length;
+          return;
+        }
+        if (ev.session.id !== id) return;
+        setError(ev.session.phase === "error" ? ev.session.error : null);
+      });
+
+      attachXtermInput(
+        created,
+        (data) => shellSessions.write(id, data),
+        (data) => shellSessions.writeBytes(id, data),
+      );
+      detachLinks = attachTerminalLinks(created, (url) => void openUrl(url));
+      created.onResize(({ cols, rows }) => {
+        if (!paneIsShown(node)) return;
+        shellSessions.resize(id, cols, rows);
+      });
+
+      void (async () => {
+        const session = await shellSessions.open(id, workspace, created.cols, created.rows);
+        if (cancelled) return;
+        setError(session.phase === "error" ? session.error : null);
+        shellSessions.resize(id, created.cols, created.rows);
+        if (session.buffer.length > written) {
+          const pending = session.buffer.slice(written);
+          created.write(pending);
+          written += pending.length;
+        }
+      })();
+
+      stopWatch = watchTerminalBox(node, () => fit.fit());
+      if (activeRef.current) created.focus();
     });
-
-    attachXtermInput(
-      term,
-      (data) => shellSessions.write(id, data),
-      (data) => shellSessions.writeBytes(id, data),
-    );
-    const detachLinks = attachTerminalLinks(term, (url) => void openUrl(url));
-    term.onResize(({ cols, rows }) => {
-      if (!paneIsShown(el)) return;
-      shellSessions.resize(id, cols, rows);
-    });
-
-    void (async () => {
-      const session = await shellSessions.open(id, workspace, term.cols, term.rows);
-      if (cancelled) return;
-      setError(session.phase === "error" ? session.error : null);
-      shellSessions.resize(id, term.cols, term.rows);
-      if (session.buffer.length > written) {
-        const pending = session.buffer.slice(written);
-        term.write(pending);
-        written += pending.length;
-      }
-    })();
-
-    const stopWatch = watchTerminalBox(el, () => fit.fit());
 
     return () => {
       cancelled = true;
-      stopWatch();
-      unsub();
-      detachLinks();
-      term.dispose();
+      cancelIdle();
+      stopWatch?.();
+      unsub?.();
+      detachLinks?.();
+      term?.dispose();
       termRef.current = null;
       fitRef.current = null;
     };

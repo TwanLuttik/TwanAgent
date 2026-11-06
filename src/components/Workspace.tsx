@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { afterInput } from "../lib/after-input";
 import { oneGroupRepo } from "../lib/all-projects";
 import { useGroupMembers } from "../lib/project-groups";
 import { ALL_DIFF_PATH } from "../lib/editor";
@@ -32,6 +33,36 @@ import { fileNodeMap } from "./workspace/fileNodes";
 import { FilesPane, visibleRange } from "./workspace/FilesPane";
 import { GitPane } from "./workspace/GitPane";
 import { PaneTabs } from "./workspace/PaneTabs";
+
+type PaneAct = {
+  toggle: (path: string) => void;
+  selectRow: (path: string, kind: string, ev: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => void;
+  openFile: (path: string, mode?: "preview" | "pin", view?: "edit" | "diff") => void;
+  rename: (path: string) => void;
+  renameEntry: (path: string, name: string) => void;
+  nameCreated: (path: string, name: string) => void;
+  removeEntries: (paths: string[]) => void;
+  moveEntries: (paths: string[], dest: string) => void;
+  makeFolder: (parent: string) => void;
+  startNewFile: (parent: string) => void;
+  makeFile: (parent: string, name: string) => void;
+  cancelNewFile: () => void;
+  switchBranch: (name: string) => void;
+  createBranch: (name: string) => void;
+  stage: (paths: string[]) => void;
+  unstage: (paths: string[]) => void;
+  discard: (paths: string[]) => void;
+  commit: (message: string) => void;
+  setIdentity: (name: string, email: string) => void;
+  sync: (action: "fetch" | "pull" | "push" | "publish") => void;
+  stash: (action: "push" | "pop" | "list") => void;
+  show: (hash: string) => Promise<string>;
+  createWorktree: (branch: string) => void;
+  removeWorktree: (path: string) => void;
+  openChange: (change: GitChange, mode?: "preview" | "pin") => void;
+  openAllDiff: () => void;
+  openWorkspace?: (path: string) => void;
+};
 
 export const Workspace = memo(function Workspace({
   workspace,
@@ -74,22 +105,67 @@ export const Workspace = memo(function Workspace({
   const [error, setError] = useState<string | null>(null);
   const [gitMissing, setGitMissing] = useState(false);
   const [treeReady, setTreeReady] = useState(false);
+  // Terminals stay unmounted until the conversation can take a click. The shell
+  // is created in xterm, which blocks the main thread.
+  const [terminalReady, setTerminalReady] = useState(true);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
+  const branchGen = useRef(0);
   const lastStatsAt = useRef<number | null>(null);
   const statsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeKindRef = useRef<string | null>(null);
   const switchedToGitRef = useRef(false);
+  const act = useRef<PaneAct>(null!);
+  const [boundWorkspace, setBoundWorkspace] = useState(workspace);
+  let projectChanged = false;
+  if (filePaneNeedsReload(boundWorkspace, workspace)) {
+    // Drop the previous project's rows before paint. Doing this in an effect
+    // left that tree, and its terminal, on screen for the commit that swaps.
+    projectChanged = true;
+    setBoundWorkspace(workspace);
+    refreshGen.current += 1;
+    branchGen.current += 1;
+    setExpanded(openTreeState(loadOpenFileTree(workspace)));
+    setPaneState(paneForWorkspace(workspace));
+    setSelected([]);
+    setRenaming(null);
+    setCreating(null);
+    setNewFileParent(null);
+    setTreeReady(false);
+    setTerminalReady(false);
+    setChildren({});
+    setChanges([]);
+    setBranches({ current: null, branches: [] });
+    setSummary(null);
+    setIdentity(null);
+    setHistory([]);
+    setWorktrees([]);
+    setBranchError(null);
+    setError(null);
+    setGitMissing(false);
+  }
   const activeKind = pane.tabs.find((tab) => tab.id === pane.activeId)?.kind ?? null;
   // Set during render so the refresh this tab change recreates still requests stats.
   if (switchedOntoGitTab(activeKindRef.current, activeKind)) switchedToGitRef.current = true;
   activeKindRef.current = activeKind;
+  if (projectChanged) {
+    // The pass above still sees the previous pane. Stats belong to the project
+    // that actually commits, which is the render after this reset.
+    switchedToGitRef.current = false;
+    lastStatsAt.current = null;
+  }
   const fileRefresh = useSyncExternalStore(subscribeFileRefresh, fileRefreshRevision, fileRefreshRevision);
 
   const loadDir = useCallback(
     async (path: string) => {
+      const gen = refreshGen.current;
       const rows = await api.listDir(workspace, path);
-      setChildren((prev) => ({ ...prev, [path]: rows }));
+      // A listing started for the project we just left must not land on this one.
+      if (gen !== refreshGen.current) return;
+      startTransition(() => {
+        if (gen !== refreshGen.current) return;
+        setChildren((prev) => ({ ...prev, [path]: rows }));
+      });
     },
     [workspace],
   );
@@ -145,106 +221,114 @@ export const Workspace = memo(function Workspace({
       }),
     );
     let gitFailed = false;
+    let nextGit: { rows: GitChange[]; missing: boolean } | null = null;
     try {
-      const nextGit = await gitResult;
-      if (gen !== refreshGen.current) return;
-      setGitMissing(nextGit.missing);
-      setChanges(nextGit.rows);
+      nextGit = await gitResult;
     } catch (e) {
       gitFailed = true;
-      if (gen === refreshGen.current) setError(String(e));
-    }
-    const listError = listed.find((row) => row.failed)?.failed ?? "";
-    if (listError && gen === refreshGen.current) {
-      gitFailed = true;
-      setError(listError);
+      if (gen === refreshGen.current) {
+        const text = String(e);
+        startTransition(() => {
+          if (gen === refreshGen.current) setError(text);
+        });
+      }
     }
     if (gen !== refreshGen.current) return;
+    const listError = listed.find((row) => row.failed)?.failed ?? "";
+    if (listError) gitFailed = true;
     const gone = listed.filter((row) => row.missing).map((row) => row.path);
-    if (gone.length) {
-      setExpanded((prev) => {
-        if (!gone.some((path) => prev[path])) return prev;
+    // Painting a large tree is interruptible. Typing in the conversation wins.
+    startTransition(() => {
+      if (gen !== refreshGen.current) return;
+      if (nextGit) {
+        setGitMissing(nextGit.missing);
+        setChanges(nextGit.rows);
+      }
+      if (listError) setError(listError);
+      else if (!gitFailed) setError(null);
+      if (gone.length) {
+        setExpanded((prev) => {
+          if (!gone.some((path) => prev[path])) return prev;
+          const next = { ...prev };
+          for (const path of gone) delete next[path];
+          saveOpenFileTree(workspace, openTreePaths(next));
+          return next;
+        });
+      }
+      setChildren((prev) => {
         const next = { ...prev };
-        for (const path of gone) delete next[path];
-        saveOpenFileTree(workspace, openTreePaths(next));
+        for (const listing of listed) {
+          if (listing.missing) {
+            delete next[listing.path];
+            continue;
+          }
+          next[listing.path] = listing.rows;
+        }
+        const live = new Set(
+          listed.filter((listing) => !listing.missing).flatMap((listing) => listing.rows.map((row) => row.path)),
+        );
+        for (const path of Object.keys(next)) {
+          if (path && !live.has(path)) delete next[path];
+        }
         return next;
       });
-    }
-    setChildren((prev) => {
-      const next = { ...prev };
-      for (const listing of listed) {
-        if (listing.missing) {
-          delete next[listing.path];
-          continue;
-        }
-        next[listing.path] = listing.rows;
-      }
-      const live = new Set(
-        listed.filter((listing) => !listing.missing).flatMap((listing) => listing.rows.map((row) => row.path)),
-      );
-      for (const path of Object.keys(next)) {
-        if (path && !live.has(path)) delete next[path];
-      }
-      return next;
+      setTreeReady(true);
     });
-    if (gen === refreshGen.current) setTreeReady(true);
-    if (!gitFailed && gen === refreshGen.current) setError(null);
   }, [workspace, expanded, activeKind]);
 
   const refreshBranches = useCallback(async () => {
     if (!workspace) return;
+    const gen = ++branchGen.current;
     if (groupMembers) {
-      setBranches({ current: null, branches: [], repo: false });
-      setSummary(null);
-      setIdentity(null);
-      setHistory([]);
-      setWorktrees([]);
-      setBranchError(null);
+      startTransition(() => {
+        if (gen !== branchGen.current) return;
+        setBranches({ current: null, branches: [], repo: false });
+        setSummary(null);
+        setIdentity(null);
+        setHistory([]);
+        setWorktrees([]);
+        setBranchError(null);
+      });
       return;
     }
     try {
-      const [next, repo, who, log] = await Promise.all([
+      const [next, repo, who, log, trees] = await Promise.all([
         api.gitBranches(workspace),
         api.gitSummary(workspace).catch(() => null),
         api.gitIdentity(workspace).catch(() => null),
         api.gitLog(workspace, 30).catch(() => [] as GitCommit[]),
+        api.gitWorktrees(workspace).catch(() => [] as GitWorktree[]),
       ]);
-      setBranches(next);
-      setSummary(repo);
-      setIdentity(who);
-      setHistory(log);
-      setWorktrees(await api.gitWorktrees(workspace).catch(() => [] as GitWorktree[]));
-      setBranchError(null);
+      if (gen !== branchGen.current) return;
+      startTransition(() => {
+        if (gen !== branchGen.current) return;
+        setBranches(next);
+        setSummary(repo);
+        setIdentity(who);
+        setHistory(log);
+        setWorktrees(trees);
+        setBranchError(null);
+      });
     } catch (e) {
       const text = String(e);
-      if (text.includes("open that repository")) {
-        setBranchError(null);
-        return;
-      }
-      setBranchError(text);
+      if (gen !== branchGen.current) return;
+      startTransition(() => {
+        if (gen !== branchGen.current) return;
+        if (text.includes("open that repository")) {
+          setBranchError(null);
+          return;
+        }
+        setBranchError(text);
+      });
     }
   }, [workspace, groupMembers]);
 
-  const treeProjectRef = useRef(workspace);
   useEffect(() => {
-    // A canonical rewrite of the open folder is still this project. Resetting
-    // here covers the tree with the spinner while a chat in it is opening.
-    if (!filePaneNeedsReload(treeProjectRef.current, workspace)) {
-      treeProjectRef.current = workspace;
-      return;
-    }
-    treeProjectRef.current = workspace;
-    activeKindRef.current = null;
-    switchedToGitRef.current = false;
-    lastStatsAt.current = null;
-    setExpanded(openTreeState(loadOpenFileTree(workspace)));
-    setPaneState(paneForWorkspace(workspace));
-    setSelected([]);
-    setRenaming(null);
-    setCreating(null);
-    setNewFileParent(null);
-    setTreeReady(false);
-  }, [workspace]);
+    if (terminalReady) return;
+    // The file list is already in flight. The terminal opens on a later idle
+    // turn so creating the shell does not sit on the same frame as that list.
+    return afterInput(() => setTerminalReady(true));
+  }, [terminalReady, workspace]);
 
   const setPane = useCallback(
     (next: PaneState | ((prev: PaneState) => PaneState)) => {
@@ -302,7 +386,6 @@ export const Workspace = memo(function Workspace({
   }
 
   const nodeMap = fileNodeMap(children);
-  const picked = selected.filter((path) => nodeMap.has(path));
 
   function selectRow(path: string, kind: string, ev: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) {
     const multi = ev.metaKey || ev.ctrlKey;
@@ -491,13 +574,114 @@ export const Workspace = memo(function Workspace({
     }
   }
 
+  // Files and git each keep their own snapshot. A conversation render passes new
+  // callbacks, and that must not walk the tree or the diff list again.
+  const fileModel = useMemo(
+    () => ({
+      error,
+      gitMissing,
+      expanded,
+      children,
+      selected,
+      selectedPath: selectedPath ?? null,
+      renaming,
+      creating,
+      newFileParent,
+      changes,
+    }),
+    [error, gitMissing, expanded, children, selected, selectedPath, renaming, creating, newFileParent, changes],
+  );
+  const gitModel = useMemo(
+    () => ({
+      branches,
+      summary,
+      identity,
+      history,
+      branchError,
+      switching,
+      busy: gitBusy,
+      grouped: Boolean(groupMembers),
+      workspace,
+      worktrees,
+      changes,
+      selectedPath: selectedPath ?? null,
+    }),
+    [
+      branches,
+      summary,
+      identity,
+      history,
+      branchError,
+      switching,
+      gitBusy,
+      groupMembers,
+      workspace,
+      worktrees,
+      changes,
+      selectedPath,
+    ],
+  );
+  act.current = {
+    toggle: (path) => void toggle(path),
+    selectRow,
+    openFile,
+    rename: setRenaming,
+    renameEntry: (path, name) => void renameEntry(path, name),
+    nameCreated: (path, name) => void nameCreated(path, name),
+    removeEntries: (paths) => void removeEntries(paths),
+    moveEntries: (paths, dest) => void moveEntries(paths, dest),
+    makeFolder: (parent) => void makeFolder(parent),
+    startNewFile: (parent) => {
+      setExpanded((prev) => {
+        const next = { ...prev, [parent]: true };
+        saveOpenFileTree(workspace, openTreePaths(next));
+        return next;
+      });
+      setNewFileParent(parent);
+    },
+    makeFile: (parent, name) => void makeFile(parent, name),
+    cancelNewFile: () => setNewFileParent(null),
+    switchBranch: (name) => void switchBranch(name),
+    createBranch: (name) => void runGit(() => api.gitCreateBranch(workspace, name, true)),
+    stage: (paths) => void runGit(() => inMember(paths, api.gitStage)),
+    unstage: (paths) => void runGit(() => inMember(paths, api.gitUnstage)),
+    discard: (paths) => void runGit(() => inMember(paths, api.gitDiscard)),
+    commit: (message) =>
+      void runGit(async () => {
+        if (!groupMembers) return api.gitCommit(workspace, message);
+        const staged = changes.filter((row) => row.staged).map((row) => row.path);
+        const split = oneGroupRepo(groupMembers, staged);
+        if ("error" in split) throw new Error(split.error);
+        return api.gitCommit(split.path, message);
+      }),
+    setIdentity: (name, email) => void runGit(() => api.gitSetIdentity(workspace, name, email)),
+    sync: (action) => void runGit(() => api.gitSync(workspace, action)),
+    stash: (action) => void runGit(() => api.gitStash(workspace, action)),
+    show: (hash) => api.gitShow(workspace, hash),
+    createWorktree: (branch) =>
+      void runGit(async () => {
+        const added = await api.gitWorktreeAdd(workspace, branch, true);
+        bumpFileRefresh();
+        if (added.opened && onOpenWorkspace) onOpenWorkspace(added.opened);
+        return added;
+      }),
+    removeWorktree: (path) =>
+      void runGit(async () => {
+        if (!window.confirm("Remove this worktree? Uncommitted changes will keep it.")) return;
+        setWorktrees(await api.gitWorktreeRemove(workspace, path));
+      }),
+    openChange,
+    openAllDiff: () => openFile(ALL_DIFF_PATH, "pin", "diff"),
+    openWorkspace: onOpenWorkspace,
+  };
+
   return (
     <aside
       ref={asideRef}
       className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-canvas"
     >
       <PaneTabs pane={pane} onChange={setPane} onAdd={addKind} onCollapse={onCollapse} />
-      <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`} data-pane-pending={pending || !treeReady ? "" : undefined}>
+      <div className={`relative min-h-0 flex-1 ${pending || !treeReady ? "invisible" : ""}`} data-pane-pending={pending || !treeReady ? "" : undefined} inert={pending ? true : undefined}>
         {pane.tabs.map((tab) => {
           const active = tab.id === pane.activeId;
           return (
@@ -508,90 +692,10 @@ export const Workspace = memo(function Workspace({
               aria-hidden={!active}
             >
               {tab.kind === "terminal" ? (
-                <Terminal workspace={workspace} sessionKey={tab.id} active={active} />
+                terminalReady ? <Terminal workspace={workspace} sessionKey={tab.id} active={active} /> : null
               ) : null}
-              {tab.kind === "files" ? (
-                <FilesPane
-                  error={error}
-                  gitMissing={gitMissing}
-                  expanded={expanded}
-                  childrenOf={children}
-                  selected={picked}
-                  activePath={selectedPath ?? null}
-                  renaming={renaming}
-                  creating={creating}
-                  newFileParent={newFileParent}
-                  changes={changes}
-                  onToggle={(p) => void toggle(p)}
-                  onSelect={(path, kind, ev) => selectRow(path, kind, ev)}
-                  onOpen={(p, mode) => void openFile(p, mode)}
-                  onRename={(path) => setRenaming(path)}
-                  onRenameCommit={(path, name) => void renameEntry(path, name)}
-                  onCreateCommit={(path, name) => void nameCreated(path, name)}
-                  onDelete={(paths) => void removeEntries(paths)}
-                  onMove={(paths, dest) => void moveEntries(paths, dest)}
-                  onNewFolder={(parent) => void makeFolder(parent)}
-                  onNewFile={(parent) => {
-                    setExpanded((prev) => {
-                      const next = { ...prev, [parent]: true };
-                      saveOpenFileTree(workspace, openTreePaths(next));
-                      return next;
-                    });
-                    setNewFileParent(parent);
-                  }}
-                  onNewFileCommit={(parent, name) => void makeFile(parent, name)}
-                  onNewFileCancel={() => setNewFileParent(null)}
-                />
-              ) : null}
-              {tab.kind === "git" ? (
-                <GitPane
-                  branches={branches}
-                  summary={summary}
-                  identity={identity}
-                  history={history}
-                  branchError={branchError}
-                  switching={switching}
-                  busy={gitBusy}
-                  onSwitch={(name) => void switchBranch(name)}
-                  onCreate={(name) => void runGit(() => api.gitCreateBranch(workspace, name, true))}
-                  grouped={Boolean(groupMembers)}
-                  onStage={(paths) => void runGit(() => inMember(paths, api.gitStage))}
-                  onUnstage={(paths) => void runGit(() => inMember(paths, api.gitUnstage))}
-                  onDiscard={(paths) => void runGit(() => inMember(paths, api.gitDiscard))}
-                  onCommit={(message) => void runGit(async () => {
-                    if (!groupMembers) return api.gitCommit(workspace, message);
-                    const staged = changes.filter((row) => row.staged).map((row) => row.path);
-                    const split = oneGroupRepo(groupMembers, staged);
-                    if ("error" in split) throw new Error(split.error);
-                    return api.gitCommit(split.path, message);
-                  })}
-                  onIdentity={(name, email) => void runGit(() => api.gitSetIdentity(workspace, name, email))}
-                  onSync={(action) => void runGit(() => api.gitSync(workspace, action))}
-                  onStash={(action) => void runGit(() => api.gitStash(workspace, action))}
-                  onShow={(hash) => api.gitShow(workspace, hash)}
-                  workspacePath={workspace}
-                  worktrees={worktrees}
-                  onOpenWorkspace={onOpenWorkspace}
-                  onCreateWorktree={(branch) =>
-                    void runGit(async () => {
-                      const added = await api.gitWorktreeAdd(workspace, branch, true);
-                      bumpFileRefresh();
-                      if (added.opened && onOpenWorkspace) onOpenWorkspace(added.opened);
-                      return added;
-                    })
-                  }
-                  onRemoveWorktree={(path) =>
-                    void runGit(async () => {
-                      if (!window.confirm("Remove this worktree? Uncommitted changes will keep it.")) return;
-                      setWorktrees(await api.gitWorktreeRemove(workspace, path));
-                    })
-                  }
-                  changes={changes}
-                  selected={selectedPath ?? null}
-                  onOpen={(row, mode) => openChange(row, mode)}
-                  onOpenAll={() => openFile(ALL_DIFF_PATH, "pin", "diff")}
-                />
-              ) : null}
+              {tab.kind === "files" ? <StableFiles model={fileModel} act={act} /> : null}
+              {tab.kind === "git" ? <StableGit model={gitModel} act={act} /> : null}
             </div>
           );
         })}
@@ -602,6 +706,98 @@ export const Workspace = memo(function Workspace({
         </div>
       ) : null}
     </aside>
+  );
+});
+
+type FilesModel = {
+  error: string | null;
+  gitMissing: boolean;
+  expanded: Record<string, boolean>;
+  children: Record<string, Entry[]>;
+  selected: string[];
+  selectedPath: string | null;
+  renaming: string | null;
+  creating: string | null;
+  newFileParent: string | null;
+  changes: GitChange[];
+};
+
+type GitModel = {
+  branches: GitBranches;
+  summary: GitRepoSummary | null;
+  identity: GitIdentity | null;
+  history: GitCommit[];
+  branchError: string | null;
+  switching: boolean;
+  busy: boolean;
+  grouped: boolean;
+  workspace: string;
+  worktrees: GitWorktree[];
+  changes: GitChange[];
+  selectedPath: string | null;
+};
+
+const StableFiles = memo(function StableFiles({ model, act }: { model: FilesModel; act: { current: PaneAct } }) {
+  const picked = model.selected.filter((path) => fileNodeMap(model.children).has(path));
+  return (
+    <FilesPane
+      error={model.error}
+      gitMissing={model.gitMissing}
+      expanded={model.expanded}
+      childrenOf={model.children}
+      selected={picked}
+      activePath={model.selectedPath}
+      renaming={model.renaming}
+      creating={model.creating}
+      newFileParent={model.newFileParent}
+      changes={model.changes}
+      onToggle={(path) => act.current.toggle(path)}
+      onSelect={(path, kind, ev) => act.current.selectRow(path, kind, ev)}
+      onOpen={(path, mode) => act.current.openFile(path, mode)}
+      onRename={(path) => act.current.rename(path)}
+      onRenameCommit={(path, name) => act.current.renameEntry(path, name)}
+      onCreateCommit={(path, name) => act.current.nameCreated(path, name)}
+      onDelete={(paths) => act.current.removeEntries(paths)}
+      onMove={(paths, dest) => act.current.moveEntries(paths, dest)}
+      onNewFolder={(parent) => act.current.makeFolder(parent)}
+      onNewFile={(parent) => act.current.startNewFile(parent)}
+      onNewFileCommit={(parent, name) => act.current.makeFile(parent, name)}
+      onNewFileCancel={() => act.current.cancelNewFile()}
+    />
+  );
+});
+
+const StableGit = memo(function StableGit({ model, act }: { model: GitModel; act: { current: PaneAct } }) {
+  return (
+    <GitPane
+      branches={model.branches}
+      summary={model.summary}
+      identity={model.identity}
+      history={model.history}
+      branchError={model.branchError}
+      switching={model.switching}
+      busy={model.busy}
+      onSwitch={(name) => act.current.switchBranch(name)}
+      onCreate={(name) => act.current.createBranch(name)}
+      grouped={model.grouped}
+      onStage={(paths) => act.current.stage(paths)}
+      onUnstage={(paths) => act.current.unstage(paths)}
+      onDiscard={(paths) => act.current.discard(paths)}
+      onCommit={(message) => act.current.commit(message)}
+      onIdentity={(name, email) => act.current.setIdentity(name, email)}
+      onSync={(action) => act.current.sync(action)}
+      onStash={(action) => act.current.stash(action)}
+      onShow={(hash) => act.current.show(hash)}
+      workspacePath={model.workspace}
+      worktrees={model.worktrees}
+      onOpenWorkspace={(path) => act.current.openWorkspace?.(path)}
+      onCreateWorktree={(branch) => act.current.createWorktree(branch)}
+      onRemoveWorktree={(path) => act.current.removeWorktree(path)}
+      changes={model.changes}
+      selected={model.selectedPath}
+      onOpen={(row, mode) => act.current.openChange(row, mode)}
+      onOpenAll={() => act.current.openAllDiff()}
+    />
   );
 });
 
