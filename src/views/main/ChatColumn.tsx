@@ -36,6 +36,7 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     mentionFiles,
     messages,
     model,
+    models,
     openingId,
     pendingPlan,
     pendingShell,
@@ -59,21 +60,25 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
   const heldRef = useRef({ id: activeId, messages, model });
   const held = holdTranscript(heldRef.current, messages, activeId, model);
   heldRef.current = held;
+  const showingTranscript = held.id === activeId;
   useLayoutEffect(() => {
-    if (held.id !== activeId) return;
+    if (!showingTranscript) return;
     const el = scroller.current;
-    const saved = chatScrollFor(activeId);
+    const saved = chatScrollFor(held.id);
     if (!el || saved == null) return;
     el.scrollTop = saved;
-  }, [activeId, held.id, scroller]);
+  }, [showingTranscript, held.id, scroller]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => {
-    if (activeId) rememberSplitPane(activeId, { messages: messagesRef.current });
-  }, [activeId, messages]);
-  const transcriptPending = Boolean(openingId) && openingId === activeId && messages.length === 0;
+    // activeId changes before its messages arrive. Writing now would store the
+    // chat we left under the one just selected.
+    if (!showingTranscript || !held.id) return;
+    rememberSplitPane(held.id, { messages: messagesRef.current });
+  }, [showingTranscript, held.id, messages]);
+  const transcriptPending = Boolean(openingId) && openingId === activeId && (!showingTranscript || messages.length === 0);
   const centeredWithoutStream =
-    !transcriptPending && messages.length === 0 && !activeRunning && queued.length === 0;
+    !transcriptPending && showingTranscript && messages.length === 0 && !activeRunning && queued.length === 0;
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -104,25 +109,32 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
         <div
           ref={scroller}
           onScroll={() => {
-            if (scroller.current) rememberChatScroll(activeId, scroller.current.scrollTop);
+            if (!showingTranscript || !scroller.current || !held.id) return;
+            rememberChatScroll(held.id, scroller.current.scrollTop);
           }}
           className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         >
           <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
-            <LiveTranscript
-              messages={held.messages}
-              model={held.model}
-              centeredWithoutStream={centeredWithoutStream}
-              activeRunning={activeRunning && held.id === activeId}
-              transcriptPending={transcriptPending}
-              conversationId={held.id}
-              mentionFiles={mentionFiles}
-              onLoadOlder={holdScrollForOlder}
-              pendingShell={Boolean(pendingShell)}
-              pendingPlan={Boolean(pendingPlan)}
-              activity={runningTurns[activeId]?.activity}
-              startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
-            />
+            {showingTranscript ? (
+              <LiveTranscript
+                key={held.id}
+                messages={held.messages}
+                model={held.model}
+                modelName={catalogModelName(models, held.model)}
+                centeredWithoutStream={centeredWithoutStream}
+                activeRunning={activeRunning}
+                transcriptPending={transcriptPending}
+                conversationId={held.id}
+                mentionFiles={mentionFiles}
+                onLoadOlder={holdScrollForOlder}
+                pendingShell={Boolean(pendingShell)}
+                pendingPlan={Boolean(pendingPlan)}
+                activity={runningTurns[activeId]?.activity}
+                startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
+              />
+            ) : transcriptPending ? (
+              <ActivityStatus label="Loading…" />
+            ) : null}
             {pendingShell && (
               <div className="mb-4">
                 <div className="text-[13px] text-ink">
@@ -251,14 +263,15 @@ function useComposerCentered(centeredWithoutStream: boolean): boolean {
   return centeredWithoutStream && streamEmpty;
 }
 
-function catalogModelName(models: { id?: string; name?: string }[] | null | undefined, id: string): string {
+export function catalogModelName(models: { id?: string; name?: string }[] | null | undefined, id: string): string {
   const name = models?.find((row) => row.id === id)?.name;
   return typeof name === "string" ? name.trim() : "";
 }
 
-export function LiveTranscript({
+export const LiveTranscript = memo(function LiveTranscript({
   messages,
   model,
+  modelName = "",
   centeredWithoutStream,
   activeRunning,
   transcriptPending,
@@ -276,6 +289,8 @@ export function LiveTranscript({
 }: {
   messages: Parameters<typeof ChatTranscript>[0]["messages"];
   model: string;
+  /** Catalog name, such as "Grok 4.6". Looked up by the parent so a composer resize does not rebuild the turns. */
+  modelName?: string;
   centeredWithoutStream: boolean;
   activeRunning: boolean;
   transcriptPending: boolean;
@@ -291,8 +306,6 @@ export function LiveTranscript({
   liveTools?: Parameters<typeof ChatTranscript>[0]["liveTools"];
   runningActivity?: Parameters<typeof conversationActivityLabel>[0];
 }) {
-  const { models } = useMain();
-  const modelName = catalogModelName(models, model);
   const live = useLiveStream();
   const streamText = givenText ?? live.streamText;
   const streamReasoning = givenReasoning ?? live.streamReasoning;
@@ -327,4 +340,4 @@ export function LiveTranscript({
       )}
     </>
   );
-}
+});

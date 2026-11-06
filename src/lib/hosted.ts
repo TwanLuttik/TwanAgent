@@ -62,6 +62,26 @@ export function frameRunsToolsOnClient(frame: { type: string }): boolean {
 }
 
 /**
+ * Transcripts still worth downloading.
+ * The open chat and anything already cached are left out, so a project switch
+ * does not spend its connection on chats the window is not showing.
+ */
+export function hostedTranscriptsToWarm(
+  ids: readonly string[],
+  skip: ReadonlySet<string>,
+  seen: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  const taken = new Set<string>();
+  for (const id of ids) {
+    if (!id || skip.has(id) || seen.has(id) || taken.has(id)) continue;
+    taken.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+/**
  * Run `worker` for each item, at most `limit` at a time.
  * A worker that throws is skipped. The rest still run.
  */

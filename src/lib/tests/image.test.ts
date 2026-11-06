@@ -10,6 +10,7 @@ import {
   imageBeforeCursor,
   imageSpans,
   imageTextParts,
+  prettyFilePath,
   imageToken,
   imageTokenLabel,
   insertImageToken,
@@ -314,6 +315,19 @@ describe("image tokens", () => {
       "only",
     );
     assert.equal(expandImageTokens("keep [notes.md] typed", []), "keep [notes.md] typed");
+  });
+
+  it("shortens a linked file path without dropping the file name", () => {
+    assert.equal(prettyFilePath(""), "");
+    assert.equal(prettyFilePath("/Users/me/Desktop/shot.png"), "~/Desktop/shot.png");
+    assert.equal(
+      prettyFilePath("/Users/me/Documents/lab/potency/workbooks/sample-14051.xlsx"),
+      "~/…/workbooks/sample-14051.xlsx",
+    );
+    const long = prettyFilePath(`/Users/me/${"folder/".repeat(12)}report.pdf`);
+    assert.ok(long.endsWith("report.pdf"));
+    assert.ok(long.startsWith("~/"));
+    assert.ok([...long].length <= 48);
   });
 
   it("marks the bracket token so a sent message can highlight it", () => {

@@ -2,7 +2,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChatImage } from "../lib/core";
-import { isFileAttachment } from "../lib/image";
+import { isFileAttachment, prettyFilePath } from "../lib/image";
 import { FileIcon } from "./FileIcon";
 import { Symbol } from "./Symbol";
 
@@ -53,6 +53,7 @@ export function PromptImages({
 
 function ImageThumb({ image, onOpen }: { image: ChatImage; onOpen: () => void }) {
   const src = image.previewUrl || (image.path ? convertFileSrc(image.path) : "");
+  const linked = image.sourcePath?.trim() ?? "";
   if (!src) {
     return (
       <div
@@ -62,15 +63,36 @@ function ImageThumb({ image, onOpen }: { image: ChatImage; onOpen: () => void })
     );
   }
   return (
-    <button
-      type="button"
-      aria-label={`Enlarge ${image.name || "image"}`}
-      title={image.name || "Enlarge"}
-      onClick={onOpen}
-      className="block overflow-hidden rounded-md border border-line/50"
+    <span className="group relative block">
+      <button
+        type="button"
+        aria-label={`Enlarge ${image.name || "image"}`}
+        title={linked || image.name || "Enlarge"}
+        onClick={onOpen}
+        className="block overflow-hidden rounded-md border border-line/50 transition duration-150 group-hover:border-accent/50 group-hover:shadow-card"
+      >
+        <img
+          src={src}
+          alt={image.name || "Image"}
+          className="h-14 w-14 object-cover transition duration-150 group-hover:scale-105"
+        />
+      </button>
+      {linked ? <FilePathTip path={linked} /> : null}
+    </span>
+  );
+}
+
+export function FilePathTip({ path }: { path: string }) {
+  const pretty = prettyFilePath(path);
+  if (!pretty) return null;
+  return (
+    <span
+      role="tooltip"
+      title={path}
+      className="pointer-events-none absolute bottom-full left-0 z-30 mb-1 hidden max-w-64 truncate rounded-md border border-line/70 bg-panel px-1.5 py-0.5 text-left text-[11px] font-normal text-muted shadow-card group-hover:block"
     >
-      <img src={src} alt={image.name || "Image"} className="h-14 w-14 object-cover" />
-    </button>
+      {pretty}
+    </span>
   );
 }
 

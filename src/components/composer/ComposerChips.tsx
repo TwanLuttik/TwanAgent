@@ -1,22 +1,48 @@
-import { useRef, useState, type RefObject } from "react";
-import { voiceBars, type MicDevice } from "../../lib/speech";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { orderedVoiceTrace } from "../../lib/mic-capture";
+import type { MicDevice } from "../../lib/speech";
 import type { Effort } from "../../lib/tauri";
 import { Symbol } from "../Symbol";
 import { PopChoice, PopMenu } from "./PopMenu";
 
-export function VoiceMeter({ level }: { level: number }) {
-  const bars = voiceBars(level);
+/** Bars drawn beside the mic. The capture buffer is longer than this. */
+const WAVE_BARS = 7;
+
+/** Live microphone levels, a short meter beside the mic button. */
+export function VoiceWave({
+  trace,
+  written,
+}: {
+  trace: RefObject<Float32Array | null>;
+  written: RefObject<number>;
+}) {
+  const [levels, setLevels] = useState<number[]>(() => shownVoiceLevels(trace.current ?? [], written.current));
+  useEffect(() => {
+    const tick = () => setLevels(shownVoiceLevels(trace.current ?? [], written.current));
+    tick();
+    const timer = window.setInterval(tick, 50);
+    return () => window.clearInterval(timer);
+  }, [trace, written]);
   return (
-    <span className="mr-1 flex h-4 items-center gap-[2px]" aria-hidden title="Microphone level">
-      {bars.map((height, index) => (
+    <div className="flex h-7 w-11 items-center justify-end gap-[3px] pr-0.5" aria-hidden>
+      {levels.map((level, index) => (
         <span
           key={index}
-          className={`w-[2px] rounded-full ${level > 0.08 ? "bg-err" : "bg-muted/50"}`}
-          style={{ height: `${Math.round(height * 14)}px` }}
+          className="w-[3px] shrink-0 rounded-full bg-accent transition-[height,opacity] duration-150 ease-out motion-reduce:transition-none"
+          style={{
+            height: `${Math.max(3, Math.round(3 + level * 11))}px`,
+            opacity: level > 0.05 ? 0.45 + level * 0.55 : 0.32,
+          }}
         />
       ))}
-    </span>
+    </div>
   );
+}
+
+function shownVoiceLevels(trace: ArrayLike<number>, written: number): number[] {
+  const levels = orderedVoiceTrace(trace, written);
+  if (levels.length <= WAVE_BARS) return levels;
+  return levels.slice(levels.length - WAVE_BARS);
 }
 
 export function MicSelect({

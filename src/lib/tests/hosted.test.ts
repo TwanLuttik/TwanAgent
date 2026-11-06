@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTurnStaysOnServer, runHostedTurn, runPool, type HostedEvent, type HostedServer } from "../hosted.ts";
+import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTranscriptsToWarm, hostedTurnStaysOnServer, runHostedTurn, runPool, type HostedEvent, type HostedServer } from "../hosted.ts";
 import type { ChatMessage } from "../core.ts";
 
 describe("hosted turns", () => {
@@ -87,6 +87,16 @@ describe("hosted turns", () => {
         }),
       /Copy provider keys/,
     );
+  });
+});
+
+describe("hostedTranscriptsToWarm", () => {
+  it("skips the open chat and transcripts already cached", () => {
+    assert.deepEqual(
+      hostedTranscriptsToWarm(["open", "cached", "next", "open"], new Set(["open"]), new Set(["cached"])),
+      ["next"],
+    );
+    assert.deepEqual(hostedTranscriptsToWarm(["", "a"], new Set(), new Set()), ["a"]);
   });
 });
 

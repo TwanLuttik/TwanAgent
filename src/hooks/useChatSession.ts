@@ -252,7 +252,26 @@ export function useChatSession({
       // A chat already on screen stays there. Reloading its transcript on every
       // project switch is the hitch that blocks the window. A chat from another
       // open tab is not in this list, and must not be replaced either.
-      if (currentId && (paintedChatsRef?.current.has(currentId) || !rows.some((row) => row.id === currentId))) {
+      const keepCurrent = Boolean(currentId) && (paintedChatsRef?.current.has(currentId) || !rows.some((row) => row.id === currentId));
+      const openingHere = !keepCurrent && Boolean(want) && rows.some((row) => row.id === want);
+      // Start this chat before the background downloads. The list call used to
+      // queue every transcript first, so the window waited behind chats nobody opened.
+      const fullPromise = openingHere
+        ? hostedChats
+          ? api.getHostedConversation(ws, want)
+          : api.getConversation(ws, want)
+        : null;
+      if (hostedChats) {
+        const skip = hostedTranscriptIds(cloudTranscriptsRef.current, ws);
+        if (currentId) skip.add(currentId);
+        if (openingHere) skip.add(want);
+        api.warmHostedTranscripts(
+          ws,
+          rows.map((row) => row.id),
+          skip,
+        );
+      }
+      if (keepCurrent) {
         setOpeningId?.("");
         return;
       }
@@ -275,9 +294,8 @@ export function useChatSession({
         setOpeningId?.("");
         return;
       }
-      const full = hostedChats
-        ? await api.getHostedConversation(ws, found.id)
-        : await api.getConversation(ws, found.id);
+      const full = fullPromise ? await fullPromise : null;
+      if (!full) return;
       if (!isSameProject(ws, workspaceRef.current)) return;
       stickToBottomRef.current = true;
       setActiveId(found.id);
@@ -545,6 +563,16 @@ function clearRejoinedTurn(running: Record<string, RunningTurn>, id: string): Re
   const next = { ...running };
   delete next[id];
   return next;
+}
+
+function hostedTranscriptIds(store: ReadonlyMap<string, { id?: string }>, workspace: string): Set<string> {
+  const prefix = `${workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}\t`;
+  const ids = new Set<string>();
+  for (const [key, row] of store) {
+    if (!key.startsWith(prefix)) continue;
+    ids.add(row.id || key.slice(prefix.length));
+  }
+  return ids;
 }
 
 export function rememberCloudTranscripts(

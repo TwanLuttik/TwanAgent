@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runPool } from "../hosted.ts";
+import { hostedTranscriptsToWarm, runPool } from "../hosted.ts";
+import { projectKey } from "../project-rows.ts";
 
 export type ConversationSummary = {
   id: string;
@@ -96,12 +97,35 @@ export async function listHostedConversations(workspace: string): Promise<Conver
   // A newer frame name fails on a server that has not been updated.
   const frame = await hostedFrame(workspace, { type: "list_conversations" });
   const rows = Array.isArray(frame.rows) ? frame.rows : [];
-  const summaries = rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
-  // The list has no messages. Warm each transcript in the background, two SSH
-  // calls at a time, so the sidebar can paint before every chat has downloaded.
-  const ids = summaries.map((row) => row.id).filter((id) => id.length > 0);
-  void runPool(ids, 2, (id) => getHostedConversation(workspace, id).catch(() => undefined));
-  return summaries;
+  return rows.map((row) => summaryFromHosted(row as Record<string, unknown>));
+}
+
+const hostedWarmSeen = new Set<string>();
+
+/**
+ * Download transcripts the window does not have yet.
+ * `skip` is the chat already being opened, so this queue cannot start ahead of it.
+ * Two at a time leaves the connection free for the conversation on screen.
+ */
+export function warmHostedTranscripts(
+  workspace: string,
+  ids: readonly string[],
+  skip: ReadonlySet<string> = new Set(),
+): void {
+  const prefix = `${projectKey(workspace)}\t`;
+  const seen = new Set<string>();
+  for (const key of hostedWarmSeen) {
+    if (key.startsWith(prefix)) seen.add(key.slice(prefix.length));
+  }
+  const todo = hostedTranscriptsToWarm(ids, skip, seen);
+  for (const id of todo) hostedWarmSeen.add(`${prefix}${id}`);
+  void runPool(todo, 2, async (id) => {
+    try {
+      await getHostedConversation(workspace, id);
+    } catch {
+      hostedWarmSeen.delete(`${prefix}${id}`);
+    }
+  });
 }
 
 export async function getHostedConversation(workspace: string, id: string): Promise<Conversation> {

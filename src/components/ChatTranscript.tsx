@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { PromptImages } from "./PromptImages";
+import { FilePathTip, PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { forgetSeenToolSignature, ToolTrail } from "./ToolTrail";
 import { chatTurnSlice, hasOlderTurns, revealOlderTurns } from "../lib/chat-window";
@@ -12,7 +12,7 @@ import {
   type TranscriptItem,
   type TranscriptTurn,
 } from "../lib/core";
-import { imageTextParts } from "../lib/image";
+import { imageTextParts, imageTokenLabel } from "../lib/image";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
@@ -73,6 +73,21 @@ function finalAssistantIndex(rest: TranscriptTurn["rest"]): number {
 
 const USER_MESSAGE_MAX = "max-h-32";
 
+function ImageToken({ token, images }: { token: string; images?: ChatImage[] }) {
+  const label = token.replace(/^\[/, "").replace(/]$/, "").toLowerCase();
+  const image = images?.find((item) => imageTokenLabel(item.name).toLowerCase() === label);
+  const linked = image?.sourcePath?.trim() ?? "";
+  return (
+    <span
+      className="group relative inline rounded-[3px] bg-accent/15 text-accent transition-colors hover:bg-accent/25"
+      title={linked || undefined}
+    >
+      {token}
+      {linked ? <FilePathTip path={linked} /> : null}
+    </span>
+  );
+}
+
 function UserBubble({
   text,
   images,
@@ -119,9 +134,7 @@ function UserBubble({
           >
             {parts.map((part, index) =>
               part.image ? (
-                <span key={index} className="rounded-[3px] bg-accent/15 text-accent">
-                  {part.text}
-                </span>
+                <ImageToken key={index} token={part.text} images={images} />
               ) : (
                 part.text
               ),

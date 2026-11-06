@@ -40,6 +40,8 @@ import {
   isEmptyCompletion,
   isRetryableChatError,
   isTransientProviderError,
+  commitPartialReply,
+  mergeFinishedTranscript,
   mergeHostedTranscript,
   providerRetryPauseMs,
   PROVIDER_RETRY_STATUS,
@@ -425,39 +427,46 @@ export async function resumeLocalTurn(input: {
     void api.localTurnStop(input.conversationId);
   };
   input.signal.addEventListener("abort", onAbort);
+  let resolveIdle: (messages: ChatMessage[]) => void = () => {};
+  const finished = new Promise<ChatMessage[]>((resolve) => {
+    resolveIdle = resolve;
+  });
   try {
-    const finished = new Promise<ChatMessage[]>((resolve, reject) => {
-      void api.onLocalTurn((event) => {
-        if (event.stream_id !== input.conversationId) return;
-        if (event.kind === "saved" && event.conversation?.messages) {
-          // A tool save is large and can arrive after the reply that followed it.
-          // Replacing the transcript with that older copy drops the final text.
-          latest = mergeHostedTranscript(latest, event.conversation.messages as ChatMessage[]);
-          input.onEvent({
-            kind: "saved",
-            messages: latest,
-            usage: parseChatUsage(event.conversation.context_usage),
-            compaction: keepCompaction(null, event.conversation.compaction),
-          });
-          return;
-        }
-        if (event.kind === "idle") {
-          resolve(latest);
-          return;
-        }
+    // Listen before the turn starts. A fast reply used to finish before this
+    // callback existed, so the saved text never reached the window.
+    unlisten = await api.onLocalTurn((event) => {
+      if (event.stream_id !== input.conversationId) return;
+      if (event.kind === "saved" && event.conversation?.messages) {
+        // A tool save is large and can arrive after the reply that followed it.
+        // Replacing the transcript with that older copy drops the final text.
+        latest = mergeHostedTranscript(latest, event.conversation.messages as ChatMessage[]);
         input.onEvent({
-          kind: event.kind,
-          text: event.text,
-          tool: event.tool_calls?.[0] ?? null,
+          kind: "saved",
+          messages: latest,
+          usage: parseChatUsage(event.conversation.context_usage),
+          compaction: keepCompaction(null, event.conversation.compaction),
         });
-        if (event.kind === "error" && event.text && event.text !== "Stopped.") {
-          // The saved transcript already carries the failure. Idle ends the wait.
-          return;
-        }
-        if (event.kind === "stopped") return;
-      }).then((stop) => {
-        unlisten = stop;
-      }).catch(reject);
+        return;
+      }
+      if (event.kind === "reply" && event.text) {
+        latest = commitPartialReply(latest, { text: event.text });
+        input.onEvent({ kind: "reply", text: event.text, messages: latest });
+        return;
+      }
+      if (event.kind === "idle") {
+        resolveIdle(latest);
+        return;
+      }
+      input.onEvent({
+        kind: event.kind,
+        text: event.text,
+        tool: event.tool_calls?.[0] ?? null,
+      });
+      if (event.kind === "error" && event.text && event.text !== "Stopped.") {
+        // The saved transcript already carries the failure. Idle ends the wait.
+        return;
+      }
+      if (event.kind === "stopped") return;
     });
     if (!input.resume) {
       const prompt = await withImageDataUrls(input.messages, (path) => api.imageDataUrl(path));
@@ -482,9 +491,9 @@ export async function resumeLocalTurn(input: {
     if (!input.workspace.trim() || !input.conversationId.trim()) return ended;
     try {
       const stored = await api.getConversation(input.workspace, input.conversationId);
-      // Disk wins only when it has messages the live copy never received.
-      // An equal snapshot stays, so a duration stamp is not thrown away.
-      return mergeHostedTranscript((stored.messages as ChatMessage[]) ?? [], ended);
+      // Same length used to keep the live copy, even when only the saved row
+      // had the reply. That is the text a reload showed and the window did not.
+      return mergeFinishedTranscript(ended, (stored.messages as ChatMessage[]) ?? []);
     } catch {
       return ended;
     }

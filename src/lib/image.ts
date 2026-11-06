@@ -233,6 +233,51 @@ function tidyTokenGaps(text: string): string {
   return text.replace(/[^\S\n]{2,}/g, " ").replace(/[^\S\n]+$/gm, "").trim();
 }
 
+/**
+ * A short path for a hover label.
+ * The file name stays. A long chain of folders collapses, and a home directory becomes `~`.
+ */
+export function prettyFilePath(path: string, limit = 48): string {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) return "";
+  const home = normalized
+    .replace(/^\/Users\/[^/]+(?=\/|$)/, "~")
+    .replace(/^\/home\/[^/]+(?=\/|$)/, "~");
+  if (charLength(home) <= limit) return home;
+  const parts = home.split("/").filter(Boolean);
+  const file = parts[parts.length - 1] ?? home;
+  const head = parts[0] === "~" ? "~" : "";
+  const parent = parts.length >= 3 ? parts[parts.length - 2] ?? "" : "";
+  const options = [
+    head && parent ? `${head}/…/${parent}/${file}` : "",
+    head ? `${head}/…/${file}` : "",
+    `…/${file}`,
+  ];
+  for (const option of options) {
+    if (option && charLength(option) <= limit) return option;
+  }
+  const room = Math.max(8, limit - 2);
+  return `…/${trimFileName(file, room)}`;
+}
+
+function charLength(value: string): number {
+  return [...value].length;
+}
+
+function trimFileName(file: string, limit: number): string {
+  if (charLength(file) <= limit) return file;
+  const dot = file.lastIndexOf(".");
+  const ext = dot > 0 && charLength(file) - dot <= 8 ? file.slice(dot) : "";
+  const stem = ext ? file.slice(0, file.length - ext.length) : file;
+  const room = Math.max(1, limit - charLength(ext) - 1);
+  const chars = [...stem];
+  const left = Math.ceil(room / 2);
+  const right = Math.max(0, room - left);
+  const head = chars.slice(0, left).join("");
+  const tail = right > 0 ? chars.slice(-right).join("") : "";
+  return `${head}…${tail}${ext}`;
+}
+
 /** The path the model should read. A drop keeps the original file. A paste uses the stored copy. */
 export function attachmentPromptPath(image: ChatImage): string {
   const source = image.sourcePath?.trim();

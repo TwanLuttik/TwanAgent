@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { transcriptItems } from "../transcript.ts";
 import {
   canPersistTurn,
   closeDanglingToolCalls,
   hostedChatToOpen,
   liveTurnMessages,
+  mergeFinishedTranscript,
   mergeHostedTranscript,
   clearPendingForChat,
   clearUnseenFinished,
@@ -37,6 +39,7 @@ import {
   runningTurnStartedAt,
   shouldQueueForChat,
   commitPartialReply,
+  messagesShowStream,
   replyCoversStream,
   takeNextPending,
   updatePending,
@@ -383,6 +386,34 @@ describe("commitPartialReply", () => {
     assert.equal(next[next.length - 1]?.content, "Settings is now grouped panels.");
   });
 
+  it("keeps the saved answer when the live list is only the tool round", () => {
+    const lookUp = { role: "assistant" as const, content: "I'll look it up.", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] };
+    const file = { role: "tool" as const, tool_call_id: "1", content: "file" };
+    const live = [...history, lookUp, file, { role: "tool" as const, tool_call_id: "2", content: "local" }];
+    const stored = [...history, lookUp, file, { role: "assistant" as const, content: "Status is stored on the sample row." }];
+    assert.equal(mergeFinishedTranscript(live, stored).at(-1)?.content, "Status is stored on the sample row.");
+  });
+
+  it("paints the saved reply when the live list is the same length but empty", () => {
+    const live = [...history, { role: "assistant" as const, content: "" }];
+    const stored = [...history, { role: "assistant" as const, content: "Settings is now grouped panels." }];
+    assert.equal(mergeFinishedTranscript(live, stored).at(-1)?.content, "Settings is now grouped panels.");
+    assert.equal(mergeFinishedTranscript(stored, live).at(-1)?.content, "Settings is now grouped panels.");
+  });
+
+  it("does not clear a reply that is still only in the buffer", () => {
+    assert.equal(messagesShowStream(history, "Looking at the header"), false);
+    const saved = [...history, { role: "assistant" as const, content: "Looking at the header" }];
+    assert.equal(messagesShowStream(saved, "Looking at the header"), true);
+    const tools = [
+      ...history,
+      { role: "assistant" as const, content: "Reading the settings.", tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }] },
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+    ];
+    assert.equal(messagesShowStream(tools, "Reading the settings."), true);
+    assert.equal(messagesShowStream(tools, "Settings is now grouped panels."), false);
+  });
+
   it("keeps a longer saved transcript when an older tool save arrives late", () => {
     const withReply = [
       ...history,
@@ -393,6 +424,59 @@ describe("commitPartialReply", () => {
     const toolSave = withReply.slice(0, -1);
     assert.deepEqual(mergeHostedTranscript(withReply, toolSave), withReply);
     assert.deepEqual(mergeHostedTranscript(toolSave, withReply), withReply);
+  });
+
+  it("keeps the concluding reply when a longer tool save arrives after it", () => {
+    const narration = {
+      role: "assistant" as const,
+      content: "I'll look at the header.",
+      tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }],
+    };
+    const file = { role: "tool" as const, tool_call_id: "1", content: "file" };
+    const reply = { role: "assistant" as const, content: "The header is fixed." };
+    const withReply = [...history, narration, reply];
+    const toolSave = [...history, narration, file, { role: "tool" as const, tool_call_id: "2", content: "more" }];
+    const merged = mergeHostedTranscript(withReply, toolSave);
+    assert.equal(merged.at(-1)?.content, "The header is fixed.");
+    assert.equal(merged.some((message) => message.role === "tool" && message.content === "more"), true);
+    assert.equal(mergeHostedTranscript(toolSave, withReply).at(-1)?.content, "The header is fixed.");
+  });
+
+  it("does not hang the previous answer on a new prompt", () => {
+    const shown = [...history, { role: "user" as const, content: "and the footer" }];
+    const previous = [...history, { role: "assistant" as const, content: "The header is fixed." }];
+    assert.equal(mergeHostedTranscript(shown, previous).at(-1)?.content, "and the footer");
+  });
+
+  it("paints the saved reply when the live tool list is longer and would be what a restart loads", () => {
+    const narration = {
+      role: "assistant" as const,
+      content: "I'll look at the header.",
+      tool_calls: [{ id: "1", name: "read_file", arguments: "{}" }],
+    };
+    const file = { role: "tool" as const, tool_call_id: "1", content: "file" };
+    const reply = { role: "assistant" as const, content: "The header is fixed." };
+    const done = [...history, narration, file, reply];
+    const painted = [
+      ...done.slice(0, -1),
+      { role: "tool" as const, tool_call_id: "2", content: "local only" },
+      { role: "tool" as const, tool_call_id: "3", content: "still local" },
+    ];
+    const finished = mergeFinishedTranscript(commitPartialReply(done, { text: "" }), painted);
+    assert.equal(finished.at(-1)?.content, "The header is fixed.");
+    assert.equal(finished.some((message) => message.content === "local only"), true);
+    assert.equal(
+      transcriptItems(finished).some((item) => item.kind === "assistant" && item.content === "The header is fixed."),
+      true,
+    );
+    assert.equal(mergeFinishedTranscript(painted, done).at(-1)?.content, "The header is fixed.");
+    // A dangling tool result can land after the answer. The answer still has to survive.
+    const buried = [...done, { role: "tool" as const, tool_call_id: "9", content: "dangling" }];
+    const kept = mergeFinishedTranscript(buried, painted);
+    assert.equal(
+      kept.some((message) => message.role === "assistant" && message.content === "The header is fixed."),
+      true,
+    );
   });
 });
 

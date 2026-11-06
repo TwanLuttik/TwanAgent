@@ -8,7 +8,7 @@ import { chatHasRunningTurn, pendingForChat, runningTurnStartedAt, type PendingM
 import { rememberSplitPane, splitGroupForChat, splitPaneCache } from "../../lib/split-pane";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
-import { ComposerDockChrome, LiveTranscript } from "./ChatColumn";
+import { catalogModelName, ComposerDockChrome, LiveTranscript } from "./ChatColumn";
 
 export function SplitRow({ ids }: { ids: string[] }) {
   const { activeId, tabItems } = useMain();
@@ -82,6 +82,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
     mentionFiles,
     messages: liveMessages,
     model,
+    models,
     pendingByChat,
     removePendingAt,
     runningTurns,
@@ -243,8 +244,10 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
       >
         <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-4 pt-5">
           <LiveTranscript
+            key={chatId}
             messages={messages}
             model={model}
+            modelName={catalogModelName(models, model)}
             centeredWithoutStream={centered}
             activeRunning={activeRunning}
             transcriptPending={!active && loading && messages.length === 0}

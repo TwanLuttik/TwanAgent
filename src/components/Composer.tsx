@@ -13,8 +13,8 @@ import {
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
-import pcmCaptureUrl from "../lib/pcm-capture-processor.js?url";
-import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, micLevel, saveMicDevice, type MicDevice } from "../lib/speech";
+import { openMicCapture, pushVoiceTrace, VOICE_TRACE, type MicCapture } from "../lib/mic-capture";
+import { audioInputDevices, encodeWav, loadMicDevice, micAudioConstraints, saveMicDevice, type MicDevice } from "../lib/speech";
 import { commandRunVisible, useCommandRun } from "../lib/command-run";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Model } from "../lib/tauri";
@@ -23,7 +23,7 @@ import { ContextUsageChip } from "./ContextUsageChip";
 import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { TodoSteps } from "./TodoSteps";
-import { ChipSelect, MicSelect, PlanToggle, VoiceMeter } from "./composer/ComposerChips";
+import { ChipSelect, MicSelect, PlanToggle, VoiceWave } from "./composer/ComposerChips";
 import { MentionField, MentionMenu } from "./composer/MentionField";
 import { ModelSelect, orderModels } from "./composer/ModelSelect";
 import { ProjectSelect } from "./composer/ProjectSelect";
@@ -153,14 +153,16 @@ export function Composer({
   const [micMenu, setMicMenu] = useState(false);
   const [micDevices, setMicDevices] = useState<MicDevice[]>([]);
   const [micDeviceId, setMicDeviceId] = useState(loadMicDevice);
-  const [voiceLevel, setVoiceLevel] = useState(0);
-  const voiceLevelRef = useRef(0);
   const recordStream = useRef<MediaStream | null>(null);
   const recordContext = useRef<AudioContext | null>(null);
+  const recordCapture = useRef<MicCapture | null>(null);
   const recordChunks = useRef<Float32Array[]>([]);
   const recordSelection = useRef({ start: 0, end: 0 });
   const discardRecording = useRef(false);
   const recordingRef = useRef(false);
+  const recordGeneration = useRef(0);
+  const voiceTrace = useRef<Float32Array | null>(null);
+  const voiceWritten = useRef(0);
   const [cursor, setCursor] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
@@ -172,6 +174,8 @@ export function Composer({
   const showCommand = commandRunVisible(commandRun);
 
   function stopMic() {
+    recordCapture.current?.stop();
+    recordCapture.current = null;
     recordStream.current?.getTracks().forEach((track) => track.stop());
     recordStream.current = null;
     const ctx = recordContext.current;
@@ -180,19 +184,22 @@ export function Composer({
   }
 
   function finishRecording() {
+    recordGeneration.current += 1;
     if (!recordingRef.current) return;
     recordingRef.current = false;
     const chunks = recordChunks.current;
-    const rate = recordContext.current?.sampleRate ?? 48_000;
+    const rate = recordCapture.current?.sampleRate ?? recordContext.current?.sampleRate ?? 48_000;
     const keep = !discardRecording.current;
     stopMic();
     setRecording(false);
-    setVoiceLevel(0);
-    voiceLevelRef.current = 0;
+    voiceWritten.current = 0;
     recordChunks.current = [];
     if (!keep || !onDictate) return;
     const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    if (!length) return;
+    if (!length) {
+      onDictateError?.("The microphone did not pick up any audio.");
+      return;
+    }
     const samples = new Float32Array(length);
     let offset = 0;
     for (const chunk of chunks) {
@@ -225,48 +232,72 @@ export function Composer({
       onDictateError?.("Allow the microphone to dictate.");
       return;
     }
+    const generation = recordGeneration.current + 1;
+    recordGeneration.current = generation;
+    const chosen = loadMicDevice();
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(loadMicDevice()) });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints(chosen) });
     } catch {
-      onDictateError?.("Allow the microphone to dictate.");
+      if (!chosen) {
+        onDictateError?.("Allow the microphone to dictate.");
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: micAudioConstraints("") });
+      } catch {
+        onDictateError?.("Allow the microphone to dictate.");
+        return;
+      }
+    }
+    if (recordGeneration.current !== generation) {
+      stream.getTracks().forEach((track) => track.stop());
       return;
     }
     const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) {
       stream.getTracks().forEach((track) => track.stop());
-      onDictateError?.("This browser recorded a format the local model cannot read.");
+      onDictateError?.("Could not open the microphone.");
       return;
     }
     const ctx = new AudioCtx();
+    recordChunks.current = [];
+    voiceTrace.current = new Float32Array(VOICE_TRACE);
+    voiceWritten.current = 0;
+    let capture: MicCapture;
     try {
-      await ctx.audioWorklet.addModule(pcmCaptureUrl);
+      capture = await openMicCapture(
+        ctx,
+        stream,
+        (samples) => {
+          if (!recordingRef.current) return;
+          recordChunks.current.push(samples);
+        },
+        (level) => {
+          const trace = voiceTrace.current;
+          if (!trace || !recordingRef.current) return;
+          voiceWritten.current = pushVoiceTrace(trace, voiceWritten.current, level);
+        },
+      );
     } catch {
       stream.getTracks().forEach((track) => track.stop());
       void ctx.close();
-      onDictateError?.("This browser recorded a format the local model cannot read.");
+      onDictateError?.("Could not open the microphone.");
       return;
     }
-    const source = ctx.createMediaStreamSource(stream);
-    const processor = new AudioWorkletNode(ctx, "pcm-capture");
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    recordChunks.current = [];
-    processor.port.onmessage = (event: MessageEvent<Float32Array>) => {
-      if (!recordingRef.current || !(event.data instanceof Float32Array)) return;
-      recordChunks.current.push(new Float32Array(event.data));
-      const next = micLevel(event.data);
-      voiceLevelRef.current = Math.max(voiceLevelRef.current * 0.72, next);
-    };
-    source.connect(processor);
-    processor.connect(sink);
-    sink.connect(ctx.destination);
+    if (recordGeneration.current !== generation) {
+      capture.stop();
+      stream.getTracks().forEach((track) => track.stop());
+      void ctx.close();
+      return;
+    }
     const el = area.current;
     recordSelection.current = {
       start: el?.selectionStart ?? draft.length,
       end: el?.selectionEnd ?? draft.length,
     };
     discardRecording.current = false;
+    recordCapture.current = capture;
     recordStream.current = stream;
     recordContext.current = ctx;
     recordingRef.current = true;
@@ -283,11 +314,9 @@ export function Composer({
       finishRecording();
     }
     const timer = window.setTimeout(() => finishRecording(), 60_000);
-    const meter = window.setInterval(() => setVoiceLevel(voiceLevelRef.current), 120);
     window.addEventListener("keydown", onKey, true);
     return () => {
       window.clearTimeout(timer);
-      window.clearInterval(meter);
       window.removeEventListener("keydown", onKey, true);
     };
   }, [recording]);
@@ -295,6 +324,7 @@ export function Composer({
   useEffect(() => {
     return () => {
       discardRecording.current = true;
+      recordGeneration.current += 1;
       recordingRef.current = false;
       stopMic();
     };
@@ -485,10 +515,8 @@ export function Composer({
   return (
     <form ref={box} onSubmit={submit} className="relative w-full">
       {commandRun && showCommand ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 pb-1.5">
-          <div className="pointer-events-auto">
-            <CommandRunPill key={commandRun.id} run={commandRun} />
-          </div>
+        <div className="pb-2">
+          <CommandRunPill key={commandRun.id} run={commandRun} />
         </div>
       ) : null}
       <div
@@ -618,7 +646,6 @@ export function Composer({
             />
           ) : null}
           <div className="min-w-0 flex-1" />
-          {recording ? <VoiceMeter level={voiceLevel} /> : null}
           {!showProject && workspace ? (
             <span
               title={workspace}
@@ -627,6 +654,20 @@ export function Composer({
               {projects?.find((row) => projectKey(row.path) === projectKey(workspace))?.name || folderName(workspace)}
             </span>
           ) : null}
+          <AnimatePresence initial={false}>
+            {recording ? (
+              <motion.div
+                key="voice-wave"
+                initial={{ opacity: 0, width: 0 }}
+                animate={{ opacity: 1, width: 44 }}
+                exit={{ opacity: 0, width: 0 }}
+                transition={{ duration: TODO_DURATION, ease: TODO_EASE }}
+                className="flex min-w-0 shrink-0 justify-end overflow-hidden"
+              >
+                <VoiceWave trace={voiceTrace} written={voiceWritten} />
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
           {onDictate ? (
             <button
               type="button"
@@ -644,7 +685,7 @@ export function Composer({
               aria-label={recording ? "Stop dictation" : "Dictate"}
               title={recording ? "Stop dictation" : transcribing ? "Transcribing" : "Dictate. Right-click to choose a microphone."}
               className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-wash ${
-                recording ? "text-err" : "text-muted hover:text-ink"
+                recording ? "text-accent" : "text-muted hover:text-ink"
               } disabled:opacity-60`}
             >
               <Symbol name={recording ? "mic.fill" : "mic"} className="size-3.5" />

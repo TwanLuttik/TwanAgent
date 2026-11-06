@@ -37,7 +37,7 @@ import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForCha
 import { shellSessions } from "../lib/shell-terminal";
 import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
 import { terminalSessions } from "../lib/terminal-sessions";
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, commitPartialReply, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, messagesShowStream, type PendingMessage, type RunningTurn } from "../lib/turn";
 import { publishWorktreeList, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
@@ -536,11 +536,13 @@ function applyWorkspace(path: string, preferId = "", name = "", remote = false) 
       setTurnStartedAt(0);
       hideSubagents();
     } else if (savedId && entering?.conversations.some((row) => row.id === savedId)) {
-      // The clicked chat is in this project's list. Keep it selected while its
-      // transcript loads, instead of painting the empty new-chat screen first.
+      // The row is selected, but its transcript is not in memory yet. Clearing
+      // the list here paints the empty new-chat screen. Keep the previous
+      // messages until the cached copy arrives, and mark this chat as opening.
       showChatSettings(entering.conversations.find((row) => row.id === savedId));
+      activeIdRef.current = savedId;
       setActiveId(savedId);
-      setMessages([]);
+      setOpeningId(savedId);
       setRunningActivity(null);
       setTurnStartedAt(0);
       hideSubagents();
@@ -1027,18 +1029,21 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   // which is the pause before the sidebar row can highlight.
   setActiveId(id);
   saveConversation(path, id);
-  // A cloud chat that is not in memory yet still reads the sqlite copy before SSH.
+  // Read the saved copy and the server together. Waiting a frame, or waiting
+  // for sqlite before SSH, is what lets the project reload download other chats first.
   const cachedLookup = hostedChatsRef.current && !painted
     ? api.hostedConversationCached(path, id).catch(() => null)
     : null;
+  const serverLookup = (hostedChatsRef.current
+    ? api.getHostedConversation(path, id)
+    : api.getConversation(path, id)
+  ).then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
   setOpeningId(painted ? "" : id);
-  // The highlight is already committed. Yield so that paint is not stuck behind
-  // the transcript read, then load. A newer click bumps the generation and this returns.
-  await new Promise<void>((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-  if (generation !== openGeneration.current) return;
   try {
+    if (generation !== openGeneration.current) return;
     const cachedTranscript = cachedLookup ? await cachedLookup : null;
     if (generation !== openGeneration.current) return;
     if (
@@ -1058,9 +1063,9 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
         setCompactionByChat((prev) => ({ ...prev, [id]: cachedTranscript.compaction! }));
       }
     }
-    const full = hostedChatsRef.current
-      ? await api.getHostedConversation(path, id)
-      : await api.getConversation(path, id);
+    const loaded = await serverLookup;
+    if (!loaded.ok) throw loaded.error;
+    const full = loaded.value;
     if (generation !== openGeneration.current) return;
     const known = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
     const raw = (full.messages as ChatMessage[]) ?? [];
@@ -1234,22 +1239,29 @@ async function watchHosted(ws: string, id: string) {
         if (shownId.current === id) setRunningActivity(activity);
       } else if (ev.kind === "done" && ev.conversation) {
         const incoming = (ev.conversation.messages as ChatMessage[]) ?? [];
-        const held = liveByChatRef.current.get(id)?.messages ?? shownMessages.current.get(id) ?? [];
+        const live = liveByChatRef.current.get(id);
+        const held = live?.messages ?? shownMessages.current.get(id) ?? [];
         // The follow socket replays the tail. A done from the turn before this
         // prompt is shorter than the messages already on screen, so it stays.
-        const messages = mergeHostedTranscript(held, incoming);
+        const merged = mergeHostedTranscript(held, incoming);
+        const partial = { text: live?.streamText ?? "", reasoning: live?.streamReasoning ?? "" };
+        const messages = commitPartialReply(merged, partial);
+        const covered = messagesShowStream(messages, partial.text, partial.reasoning);
         if (messages.length) {
           shownMessages.current.set(id, messages);
           liveByChatRef.current.set(id, {
             messages,
-            streamText: "",
-            streamReasoning: "",
-            liveTools: [],
+            streamText: covered ? "" : (live?.streamText ?? ""),
+            streamReasoning: covered ? "" : (live?.streamReasoning ?? ""),
+            liveTools: covered ? [] : (live?.liveTools ?? []),
             activity: null,
           });
           if (shownId.current === id) {
             setMessages(messages);
-            setStreamText("");
+            if (covered) {
+              setStreamText("");
+              setStreamReasoning("");
+            }
             setRunningActivity(null);
           }
         } else if (!held.length) {

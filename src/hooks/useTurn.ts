@@ -71,7 +71,7 @@ import {
 } from "../lib/subagent";
 import { beginTurnClock, endTurnClock } from "../lib/turn-clock";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
-import { setSecondaryLiveStream } from "../lib/live-stream";
+import { getLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
 import { rememberSplitPane } from "../lib/split-pane";
 import {
   clearPendingForChat,
@@ -82,7 +82,9 @@ import {
   draftForChat,
   activityFromTurnStatus,
   isTurnFailureMessage,
+  mergeFinishedTranscript,
   mergeHostedTranscript,
+  messagesShowStream,
   modelForTurn,
   markUnseenFinished,
   patchRunningTurn,
@@ -90,7 +92,6 @@ import {
   pendingIndexAfterRemove,
   removePending,
   commitPartialReply,
-  replyCoversStream,
   setDraftForChat,
   takeNextPending,
   turnAppliesToChat,
@@ -267,12 +268,33 @@ function applyDetachedEvent(
     usage?: ChatUsage | null;
   },
 ) {
+  if (event.kind === "reply" && (event.text || event.messages?.length)) {
+    const live = liveByChatRef.current.get(id);
+    // The reply event can land on a short snapshot from before the tool results.
+    // Replacing the screen with that snapshot drops rows the window already has,
+    // and clearing the stream then leaves nothing to paint when a fatter tool
+    // save arrives without the answer.
+    const merged = mergeHostedTranscript(live?.messages ?? [], event.messages ?? []);
+    const messages = commitPartialReply(merged, { text: event.text ?? "" });
+    const covered =
+      messagesShowStream(messages, live?.streamText ?? "", live?.streamReasoning ?? "") &&
+      messagesShowStream(messages, event.text ?? "", "");
+    rememberLive(id, covered ? { messages, streamText: "", streamReasoning: "" } : { messages });
+    if (visible()) {
+      setMessages(messages);
+      if (covered) {
+        setStreamText("");
+        setStreamReasoning("");
+      }
+    }
+    return;
+  }
   if (event.kind === "saved" && event.messages) {
     const live = liveByChatRef.current.get(id);
     const messages = mergeHostedTranscript(live?.messages ?? [], event.messages);
     // Clearing the buffer before this snapshot contains it hides the reply.
     // The text then only comes back when the chat is read from disk.
-    const covered = replyCoversStream(messages, live?.streamText ?? "", live?.streamReasoning ?? "");
+    const covered = messagesShowStream(messages, live?.streamText ?? "", live?.streamReasoning ?? "");
     rememberLive(id, covered ? { messages, streamText: "", streamReasoning: "" } : { messages });
     if (event.usage) {
       setUsageByChat((prev) => (sameChatUsage(prev[id], event.usage!) ? prev : { ...prev, [id]: event.usage! }));
@@ -1308,11 +1330,19 @@ async function runTurn(
           });
           if (messages.length) {
             latestMessages = messages;
-            rememberLive(id, { messages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
+            const covered = messagesShowStream(messages, live?.streamText ?? "", live?.streamReasoning ?? "");
+            rememberLive(
+              id,
+              covered
+                ? { messages, streamText: "", streamReasoning: "", liveTools: [], activity: null }
+                : { messages, liveTools: [], activity: null },
+            );
             if (visible()) {
               setMessages(messages);
-              setStreamText("");
-              setStreamReasoning("");
+              if (covered) {
+                setStreamText("");
+                setStreamReasoning("");
+              }
               setRunningActivity(null);
             }
           }
@@ -1346,7 +1376,12 @@ async function runTurn(
       if (kept && visible()) setMessages(kept.messages);
       if (visible()) {
         setRunningActivity(null);
-        setStreamText("");
+        const painted = kept?.messages ?? [];
+        const stream = getLiveStream();
+        if (messagesShowStream(painted, stream.streamText, stream.streamReasoning)) {
+          setStreamText("");
+          setStreamReasoning("");
+        }
         setTurnStartedAt(0);
         runningIdRef.current = "";
         setRunningId("");
@@ -1499,7 +1534,14 @@ async function runTurn(
           last?.role === "assistant" && (last.tool_calls ?? []).some((call) => call.name === "run_command");
         const activity =
           commandStillOpen && kept?.kind === "tool" && kept.label.startsWith("Run ") ? kept : null;
-        rememberLive(id, { messages: nextMessages, streamText: "", streamReasoning: "", activity });
+        const previous = liveByChatRef.current.get(id);
+        const covered = messagesShowStream(nextMessages, previous?.streamText ?? "", previous?.streamReasoning ?? "");
+        rememberLive(
+          id,
+          covered
+            ? { messages: nextMessages, streamText: "", streamReasoning: "", activity }
+            : { messages: nextMessages, activity },
+        );
         const badge = todoBadge(todosInLatestTurn(nextMessages));
         markRunning(id, {
           activity,
@@ -1507,8 +1549,10 @@ async function runTurn(
         });
         if (!visible()) return;
         setMessages(nextMessages);
-        setStreamText("");
-        setStreamReasoning("");
+        if (covered) {
+          setStreamText("");
+          setStreamReasoning("");
+        }
         setRunningActivity(activity);
       },
       onRefresh: bumpFiles,
@@ -1532,18 +1576,31 @@ async function runTurn(
       },
       signal: ac.signal,
     });
+    const partial = partialReply(id);
+    const painted = liveByChatRef.current.get(id)?.messages ?? [];
     latestMessages = stampTurnDuration(
-      commitPartialReply(closeDanglingToolCalls(storeWorktreeName(done, id, ws)), partialReply(id)),
+      mergeFinishedTranscript(
+        commitPartialReply(closeDanglingToolCalls(storeWorktreeName(done, id, ws)), partial),
+        painted,
+      ),
       Date.now() - startedAt,
       nowIso(),
     );
     saveMessages(latestMessages, { flush: true });
-    rememberLive(id, { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null });
+    const covered = messagesShowStream(latestMessages, partial.text, partial.reasoning);
+    rememberLive(
+      id,
+      covered
+        ? { messages: latestMessages, streamText: "", streamReasoning: "", liveTools: [], activity: null }
+        : { messages: latestMessages, liveTools: [], activity: null },
+    );
     if (visible()) {
       setMessages(latestMessages);
-      setStreamText("");
-      setStreamReasoning("");
-      setLiveTools([]);
+      if (covered) {
+        setStreamText("");
+        setStreamReasoning("");
+        setLiveTools([]);
+      }
       setRunningActivity(null);
     }
     await persistQueue;
@@ -1576,9 +1633,12 @@ async function runTurn(
     clearRunning(id);
     if (visible()) {
       setRunningActivity(null);
-      setLiveTools([]);
-      setStreamText("");
-      setStreamReasoning("");
+      const stream = getLiveStream();
+      if (messagesShowStream(latestMessages, stream.streamText, stream.streamReasoning)) {
+        setLiveTools([]);
+        setStreamText("");
+        setStreamReasoning("");
+      }
       setTurnStartedAt(0);
       if (!turnsRef.current.has(id)) {
         runningIdRef.current = "";

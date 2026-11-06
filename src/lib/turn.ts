@@ -167,14 +167,135 @@ export function hostedChatToOpen(input: {
 /**
  * The server copy of a hosted chat can be older than the prompt already on
  * screen. Status frames do not carry messages, and a stopped turn may save
- * only the first prompt. Keep the longer transcript so a resend does not
- * replace the new prompt with the previous one.
+ * only the first prompt. Keep the transcript that has the newer prompt.
+ * A longer tool save must not drop the concluding reply the other list already has.
+ * That save is what gets written back, so a restart would miss the answer too.
  */
 export function mergeHostedTranscript(shown: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
   if (incoming.length === 0) return shown;
   if (shown.length === 0) return incoming;
-  if (incoming.length >= shown.length) return incoming;
-  return shown;
+  const shownPrompts = promptCount(shown);
+  const incomingPrompts = promptCount(incoming);
+  if (shownPrompts > incomingPrompts) return shown;
+  if (incomingPrompts > shownPrompts) return incoming;
+  const base = incoming.length >= shown.length ? incoming : shown;
+  const extra = base === incoming ? shown : incoming;
+  return attachPlainReply(base, extra);
+}
+
+/**
+ * The transcript to paint when a turn finishes.
+ * A saved copy can hold the reply in the same number of messages the live list
+ * already has. A longer live list can be the tool rows only. Length then kept
+ * that list, the reply was never painted, and the next save stored the gap.
+ */
+export function mergeFinishedTranscript(live: ChatMessage[], stored: ChatMessage[]): ChatMessage[] {
+  if (!stored.length) return live;
+  if (!live.length) return stored;
+  const chosen = preferFinishedTranscript(live, stored);
+  const other = chosen === stored ? live : stored;
+  return attachPlainReply(chosen, other);
+}
+
+function promptCount(messages: ChatMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message?.role === "user") count += 1;
+  }
+  return count;
+}
+
+const QUIET_TOOLS = new Set(["todo_write", "enter_plan_mode", "exit_plan_mode"]);
+
+function hasVisibleToolCall(message: ChatMessage): boolean {
+  return (message.tool_calls ?? []).some((call) => !QUIET_TOOLS.has(call.name));
+}
+
+type PlainReply = {
+  index: number;
+  content: string;
+  message: ChatMessage;
+};
+
+/**
+ * The answer that ends the turn.
+ * Tool rows after it still count: a late result can be appended behind the text.
+ * Narration that called a tool is not the answer.
+ */
+function plainReply(messages: ChatMessage[]): PlainReply | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || message.role === "user") return null;
+    if (message.role === "tool") continue;
+    if (message.role !== "assistant" || message.error) continue;
+    if (hasVisibleToolCall(message)) return null;
+    const content = String(message.content ?? "").trim();
+    const reasoning = String(message.reasoning ?? "").trim();
+    if (!content && !reasoning) return null;
+    return { index: i, content, message };
+  }
+  return null;
+}
+
+function preferFinishedTranscript(live: ChatMessage[], stored: ChatMessage[]): ChatMessage[] {
+  if (promptCount(stored) !== promptCount(live)) {
+    return promptCount(stored) > promptCount(live) ? stored : live;
+  }
+  if (stored.length > live.length) return stored;
+  if (live.length > stored.length) return live;
+  const liveReply = plainReply(live);
+  const storedReply = plainReply(stored);
+  if (storedReply && !liveReply) return stored;
+  if (liveReply && !storedReply) return live;
+  if (
+    storedReply &&
+    liveReply &&
+    storedReply.content.length > liveReply.content.length &&
+    storedReply.content.startsWith(liveReply.content)
+  ) {
+    return stored;
+  }
+  return live;
+}
+
+/** Put `extra`'s concluding reply onto `base` when this turn's tool list lost it. */
+function attachPlainReply(base: ChatMessage[], extra: ChatMessage[]): ChatMessage[] {
+  if (promptCount(base) !== promptCount(extra)) return base;
+  const reply = plainReply(extra);
+  if (!reply) return base;
+  const current = plainReply(base);
+  if (current) {
+    if (!reply.content || current.content === reply.content || current.content.startsWith(reply.content)) {
+      return base;
+    }
+    if (current.content && reply.content.startsWith(current.content)) {
+      const next = base.slice();
+      const kept = base[current.index];
+      if (!kept) return base;
+      next[current.index] = {
+        ...kept,
+        content: String(reply.message.content ?? ""),
+        ...(String(reply.message.reasoning ?? "").trim() ? { reasoning: reply.message.reasoning } : {}),
+      };
+      return next;
+    }
+    return base;
+  }
+  const open = openAssistant(base);
+  if (open && reply.content && open.content === reply.content) return base;
+  return [...base, plainReplyMessage(reply.message)];
+}
+
+function plainReplyMessage(message: ChatMessage): ChatMessage {
+  const reasoning = String(message.reasoning ?? "").trim();
+  return {
+    role: "assistant",
+    content: String(message.content ?? ""),
+    ...(reasoning ? { reasoning: message.reasoning } : {}),
+    ...(message.thinking?.length ? { thinking: message.thinking } : {}),
+    ...(message.finishedAt ? { finishedAt: message.finishedAt } : {}),
+    ...(typeof message.durationMs === "number" ? { durationMs: message.durationMs } : {}),
+  };
 }
 
 export function canPersistTurn(conversationId: string, deletedIds: Iterable<string>): boolean {
@@ -610,6 +731,21 @@ export function replyCoversStream(messages: ChatMessage[], text: string, reasoni
   if (!want && !thought) return true;
   const open = openAssistant(messages);
   if (!open || open.trailingTools) return false;
+  return bufferHeld(open.content, want) && bufferHeld(open.reasoning, thought);
+}
+
+/**
+ * True when clearing the live buffer would not take the reply off the screen.
+ * The open reply counts, and so does the sentence already saved just before a
+ * tool result. A reply that exists only in the buffer must stay there.
+ */
+export function messagesShowStream(messages: ChatMessage[], text: string, reasoning = ""): boolean {
+  if (replyCoversStream(messages, text, reasoning)) return true;
+  const want = text.trim();
+  const thought = reasoning.trim();
+  if (!want && !thought) return true;
+  const open = openAssistant(messages);
+  if (!open?.trailingTools) return false;
   return bufferHeld(open.content, want) && bufferHeld(open.reasoning, thought);
 }
 

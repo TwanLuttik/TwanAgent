@@ -202,6 +202,12 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 fail(app, id, &mut transcript, EMPTY_REPLY);
             } else {
                 transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
+                // The full transcript save is large after a tool round. Send the
+                // answer by itself first, or the window keeps the tool list and
+                // the reply appears only on the next launch.
+                if !round.text.trim().is_empty() {
+                    emit(app, id, "reply", Some(round.text.clone()), None, None);
+                }
             }
             save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
             emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());

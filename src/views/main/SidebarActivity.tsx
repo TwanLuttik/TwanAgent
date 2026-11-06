@@ -37,13 +37,21 @@ export function ActivityDock({
   if (!running.length && !finished.length) return null;
   return (
     <div className="absolute bottom-[calc(100%-2px)] left-3 z-30 flex flex-col items-start gap-1">
-      {running.length ? (
+      {running.length > 1 ? (
+        <RunningStack
+          items={running}
+          activeId={activeId}
+          previewFor={runningPreview}
+          startedAtFor={runningStartedAt}
+          onOpen={onOpen}
+        />
+      ) : running.length === 1 ? (
         <DockPill
           items={running}
           activeId={activeId}
-          label={running.length === 1 ? activityParts(runningPreview(running[0]!.id)).badge : `${running.length} running`}
-          ariaLabel={running.length === 1 ? running[0]!.title : `${running.length} running chats`}
-          clock={running.length === 1 ? runningStartedAt(running[0]!.id) : 0}
+          label={activityParts(runningPreview(running[0]!.id)).badge}
+          ariaLabel={running[0]!.title}
+          clock={runningStartedAt(running[0]!.id)}
           previewFor={runningPreview}
           startedAtFor={runningStartedAt}
           onOpen={onOpen}
@@ -109,20 +117,17 @@ function DockPill({
             transition={{ duration: reduceMotion ? 0 : 0.15, ease: TIP_EASE }}
             className="absolute bottom-full left-0 z-40 pb-2.5"
           >
-            <div className="relative">
-              <div role="tooltip" className="model-tip running-tip w-max max-w-[15rem] rounded-lg border px-0.5 py-0.5 shadow-card">
-                {items.map((item) => (
-                  <RunningTipRow
-                    key={`${item.path}\t${item.id}`}
-                    item={item}
-                    selected={item.id === activeId}
-                    preview={previewFor(item.id)}
-                    startedAt={startedAtFor(item.id)}
-                    onOpen={onOpen}
-                  />
-                ))}
-              </div>
-              <span aria-hidden className="running-notch pointer-events-none absolute top-full left-4" />
+            <div role="tooltip" className="w-max max-w-[16rem] rounded-xl border border-line/50 bg-panel px-1 py-1 shadow-card">
+              {items.map((item) => (
+                <RunningTipRow
+                  key={`${item.path}\t${item.id}`}
+                  item={item}
+                  selected={item.id === activeId}
+                  preview={previewFor(item.id)}
+                  startedAt={startedAtFor(item.id)}
+                  onOpen={onOpen}
+                />
+              ))}
             </div>
           </motion.div>
         ) : null}
@@ -134,9 +139,7 @@ function DockPill({
         onClick={() => {
           if (only) onOpen(only.path, only.id);
         }}
-        className={`flex h-[22px] max-w-[190px] items-center gap-1.5 rounded-full border bg-canvas px-2 shadow-card ${
-          items.some((item) => item.id === activeId) ? "border-ink/55" : "border-line"
-        }`}
+        className="flex h-[22px] max-w-[190px] items-center gap-1.5 rounded-full border border-line/60 bg-panel/90 px-2 shadow-card"
       >
         {model != null ? <ProviderMark model={model} /> : null}
         <span className="min-w-0 truncate text-[11px] font-medium text-ink">{label}</span>
@@ -161,6 +164,41 @@ function ProviderMark({ model }: { model: string }) {
   return <Symbol name={profile.symbol} colored={profile.id === "minimax"} className={`size-3 shrink-0 ${tone}`} />;
 }
 
+function RunningStack({
+  items,
+  activeId,
+  previewFor,
+  startedAtFor,
+  onOpen,
+}: {
+  items: SidebarActivityItem[];
+  activeId: string;
+  previewFor: (id: string) => string;
+  startedAtFor: (id: string) => number;
+  onOpen: (path: string, id: string) => void;
+}) {
+  return (
+    <div className="w-[13.75rem] rounded-xl border border-line/50 bg-panel/95 p-1 shadow-card">
+      <div className="flex items-center gap-1.5 px-1.5 pt-0.5 pb-1 text-[10px] font-medium text-muted">
+        <span className="size-2.5 shrink-0 animate-spin rounded-full border border-muted/45 border-t-transparent" />
+        {items.length} running
+      </div>
+      <div className="flex flex-col">
+        {items.map((item) => (
+          <RunningTipRow
+            key={`${item.path}\t${item.id}`}
+            item={item}
+            selected={item.id === activeId}
+            preview={previewFor(item.id)}
+            startedAt={startedAtFor(item.id)}
+            onOpen={onOpen}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function RunningTipRow({
   item,
   selected,
@@ -180,18 +218,15 @@ function RunningTipRow({
     <button
       type="button"
       onClick={() => onOpen(item.path, item.id)}
-      className={`block w-full rounded-[6px] px-2 py-1 text-left ${selected ? "bg-current/10" : "hover:bg-current/10"}`}
+      className={`block w-full rounded-lg px-1.5 py-1 text-left ${selected ? "bg-wash" : "hover:bg-wash/80"}`}
     >
-      <span className="block max-w-[14rem] truncate text-[12px] leading-4 font-medium">{item.title}</span>
-      <span className="block max-w-[14rem] truncate text-[11px] leading-4 opacity-65">
-        {place}
+      <span className="flex items-baseline gap-2">
+        <span className="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink">{item.title}</span>
         {startedAt > 0 ? (
-          <>
-            {" · "}
-            <RunningElapsed startedAt={startedAt} className="tabular-nums" />
-          </>
+          <RunningElapsed startedAt={startedAt} className="shrink-0 text-[10px] tabular-nums text-muted" />
         ) : null}
       </span>
+      <span className="block max-w-[13rem] truncate text-[11px] leading-4 text-muted">{place}</span>
     </button>
   );
 }
