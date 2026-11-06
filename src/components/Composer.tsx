@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import type { ProjectGroupRow } from "../lib/all-projects";
 import { folderName, projectKey, type ChatImage, type ProjectRow } from "../lib/core";
 import { applyMention, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/mention";
 import { expandPasteTokens, pasteBeforeCursor, removePasteSpan, type PasteBlock } from "../lib/paste";
@@ -45,6 +46,7 @@ export function Composer({
   placeholder,
   workspace,
   projects = [],
+  projectGroups = [],
   showProject = true,
   onOpenProject,
   onOpenWorktree,
@@ -91,6 +93,8 @@ export function Composer({
   workspace: string;
   /** Known projects. When present, the folder chip opens this list instead of the new-project dialog. */
   projects?: ProjectRow[];
+  /** Groups whose members should appear under the group in the project menu. */
+  projectGroups?: ProjectGroupRow[];
   /** Hidden once the open chat already has messages. A saved chat cannot move projects. */
   showProject?: boolean;
   onOpenProject?: (path: string) => void;
@@ -538,7 +542,7 @@ export function Composer({
               animate={{ height: "auto", opacity: 1 }}
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: TODO_DURATION, ease: TODO_EASE }}
-              className="overflow-hidden"
+              className="overflow-visible"
             >
               <TodoSteps todos={todos} compact={compact} />
             </motion.div>
@@ -703,6 +707,7 @@ export function Composer({
             <ProjectSelect
               workspace={workspace}
               projects={projects}
+              groups={projectGroups}
               onOpen={onOpenProject ?? (() => onOpenFolder())}
               onNew={onOpenFolder}
             />

@@ -41,6 +41,7 @@ import {
   chatSelectionKey,
   nextChatSelection,
   nestGroupedProjects,
+  projectMenuRows,
   toggleProjectSelection,
   oneGroupRepo,
   type ChatSelection,
@@ -850,6 +851,21 @@ describe("nestGroupedProjects", () => {
       ],
     },
   ];
+
+  it("lists a group's children under the group, including a search hit", () => {
+    assert.deepEqual(
+      projectMenuRows(projects, groups).map((row) => `${row.depth}:${row.row.name}`),
+      ["0:notes", "0:apps", "1:web", "1:api"],
+    );
+    assert.deepEqual(
+      projectMenuRows(projects, groups, "api").map((row) => `${row.depth}:${row.row.name}`),
+      ["0:apps", "1:api"],
+    );
+    assert.deepEqual(
+      projectMenuRows(projects, groups, "apps").map((row) => row.row.name),
+      ["apps", "web", "api"],
+    );
+  });
 
   it("hides members from the top and keeps their stored order", () => {
     const nested = nestGroupedProjects(projects, groups);

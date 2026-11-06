@@ -8,6 +8,7 @@ import {
   parseAccent,
   PRESET_META,
   PRESETS,
+  randomCustomTheme,
   setTheme,
   surfacesFor,
   toCustom,
@@ -233,7 +234,7 @@ export function ThemePicker({
 
   return (
     <div className="grid gap-3">
-      <div className="grid grid-cols-2 gap-2" role="listbox" aria-label="Theme">
+      <div className="grid grid-cols-3 gap-2" role="listbox" aria-label="Theme">
         {PRESET_META.map((preset) => (
           <ThemeCard
             key={preset.id}
@@ -253,19 +254,28 @@ export function ThemePicker({
 
       {value.id === "custom" && (
         <div className="grid gap-2">
-          <div className="flex rounded-md border border-line bg-canvas p-0.5">
-            {(["light", "dark"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setCustom({ mode })}
-                className={`h-7 flex-1 rounded px-2 text-[12px] capitalize ${
-                  modeOf(value) === mode ? "bg-inset font-medium text-ink" : "text-muted hover:text-ink"
-                }`}
-              >
-                {mode}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <div className="flex min-w-0 flex-1 rounded-md border border-line bg-canvas p-0.5">
+              {(["light", "dark"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setCustom({ mode })}
+                  className={`h-7 flex-1 rounded px-2 text-[12px] capitalize ${
+                    modeOf(value) === mode ? "bg-inset font-medium text-ink" : "text-muted hover:text-ink"
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => choose(randomCustomTheme(modeOf(value)))}
+              className="h-8 shrink-0 rounded-md border border-line px-2.5 text-[12px] text-ink hover:bg-wash"
+            >
+              Regenerate
+            </button>
           </div>
           <ColorField
             label="Accent"

@@ -31,7 +31,7 @@ export function DocsView({ onClose }: { onClose?: () => void } = {}) {
         ))}
       </nav>
       <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
-        <article className="mx-auto w-full max-w-[640px]">
+        <article className="w-full max-w-[760px]">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="m-0 text-[18px] font-semibold tracking-tight">{page.title}</h1>

@@ -18,7 +18,7 @@ import type { ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
 import { chatHasRunningTurn, composerSettingsForChat, draftForChat } from "../../lib/turn";
-import { useGroupMembers } from "../../lib/project-groups";
+import { useGroupMembers, useProjectGroups } from "../../lib/project-groups";
 import { useApp } from "../../state/app-state";
 import { useMain } from "./context";
 
@@ -70,6 +70,7 @@ export const SessionComposer = memo(function SessionComposer({
   } = useMain();
   const { setFlash } = useApp();
   const groupMembers = useGroupMembers(workspace);
+  const projectGroups = useProjectGroups();
   const [creatingWorktree, setCreatingWorktree] = useState(false);
   const [checkingOut, setCheckingOut] = useState(0);
   const worktreeTick = useSyncExternalStore(subscribeWorktreeLists, worktreeNameRevision, worktreeNameRevision);
@@ -169,6 +170,7 @@ export const SessionComposer = memo(function SessionComposer({
       }
       workspace={workspace}
       projects={allProjectGroups}
+      projectGroups={projectGroups}
       showProject={projectOpen}
       onOpenProject={(path) => {
         if (!boundId) assignDraftProject(path);

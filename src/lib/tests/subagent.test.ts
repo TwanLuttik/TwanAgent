@@ -274,6 +274,16 @@ describe("subagents per conversation", () => {
 
     const collapsed = toggleSubagentExpanded(byChat, "chat-a", "s1");
     assert.equal(collapsed.expanded.s1, false);
+    const reopened = toggleSubagentExpanded(byChat, "chat-a", "s1");
+    assert.equal(reopened.expanded.s1, true);
+    const finished = applySubagentToChat(byChat, "chat-a", {
+      type: "done",
+      id: "s1",
+      status: "done",
+      summary: "Done",
+      messages: [],
+    });
+    assert.equal(finished.expanded.s1, false);
     assert.equal(subagentsForChat(byChat, "chat-a").expanded.s1, false);
     assert.equal(subagentsForChat(byChat, "chat-b").agents.length, 0);
 

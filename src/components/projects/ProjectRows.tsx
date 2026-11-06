@@ -1,8 +1,10 @@
-import { useRef, useState, type HTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS, type Transform } from "@dnd-kit/utilities";
 import type { ProjectGit } from "../../lib/project-git";
+import { formatRelativeAge } from "../../lib/relative-time";
 import type { WorktreeChild } from "../../lib/worktree.ts";
 import { AnchoredMenu } from "../ContextMenu";
 import { Symbol } from "../Symbol";
@@ -50,8 +52,8 @@ export function ProjectSection({
 function GroupCard({ open, children }: { open: boolean; children: ReactNode }) {
   return (
     <div
-      className={`overflow-hidden rounded-[10px] border transition-[background-color,border-color,margin] duration-200 ease-out motion-reduce:transition-none ${
-        open ? "mb-1 border-line/40 bg-wash/40" : "mb-0 border-transparent bg-transparent"
+      className={`overflow-hidden rounded-2xl border transition-[background-color,border-color,margin] duration-200 ease-out motion-reduce:transition-none ${
+        open ? "mb-1 border-line/40 bg-wash/40 p-1" : "mb-0 border-transparent bg-transparent"
       }`}
     >
       {children}
@@ -219,12 +221,19 @@ export function ProjectMarks({
 }) {
   const anchor = useRef<HTMLSpanElement>(null);
   const [box, setBox] = useState<{ top: number; right: number } | null>(null);
+  const host = server?.host ?? "";
+  const online = server?.online === true;
+  const [lastSeen, setLastSeen] = useState("Not yet");
+  useEffect(() => {
+    if (!host) return;
+    setLastSeen(touchServerLastSeen(host, online));
+  }, [host, online]);
   if (!remote && !server) return null;
   const offline = server?.online === false;
   return (
     <span
       ref={anchor}
-      className="ml-auto flex shrink-0 items-center pl-1.5"
+      className="ml-auto flex shrink-0 items-center pr-1.5 pl-1.5"
       onMouseEnter={() => {
         const rect = anchor.current?.getBoundingClientRect();
         if (!rect) return;
@@ -237,34 +246,47 @@ export function ProjectMarks({
       onMouseLeave={() => setBox(null)}
     >
       <span className={offline ? "text-err" : "text-[#3b82f6]"} aria-label={offline ? "Cloud project offline" : "Cloud project"}>
-        <Symbol name="cloud.fill" className="size-3.5" />
+        <Symbol name="server.rack" className="size-4" />
       </span>
-      {box
+      {typeof document !== "undefined"
         ? createPortal(
-            <span
-              role="tooltip"
-              className="pointer-events-none fixed z-50 w-max max-w-[min(320px,calc(100vw-16px))] rounded-lg border border-line/25 bg-canvas text-left font-normal shadow-card"
-              style={{ top: box.top, right: window.innerWidth - box.right }}
-            >
-              <span className="flex items-center gap-2 border-b border-line/20 px-3 py-2.5">
-                <Symbol name="cloud.fill" className={`size-3.5 shrink-0 ${offline ? "text-err" : "text-[#3b82f6]"}`} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-ink">Cloud project</span>
-                  <span className={`block truncate text-[11px] ${offline ? "text-err" : "text-muted"}`}>
-                    {offline ? "This machine is not answering" : "Files and chats stay on this machine"}
+            <AnimatePresence>
+              {box ? (
+                <motion.span
+                  key="cloud-card"
+                  role="tooltip"
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                  className="cloud-card pointer-events-none fixed z-50 w-max max-w-[min(320px,calc(100vw-16px))] overflow-hidden rounded-xl bg-canvas/60 text-left font-normal backdrop-blur-xl"
+                  style={{ top: box.top, right: window.innerWidth - box.right }}
+                >
+                  <span className="flex items-center gap-2 border-b border-line/25 bg-white/[0.04] px-3 py-2.5">
+                    <Symbol name="server.rack" className={`size-4 shrink-0 ${offline ? "text-err" : "text-[#3b82f6]"}`} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-ink">Cloud project</span>
+                      <span className={`block truncate text-[11px] ${offline ? "text-err" : "text-muted"}`}>
+                        {offline ? "This machine is not answering" : "Files and chats stay on this machine"}
+                      </span>
+                    </span>
                   </span>
-                </span>
-              </span>
-              {server ? (
-                <span className="grid gap-2 px-3 py-2.5">
-                  <CloudFact label="Runs on" value={server.host} />
-                  <CloudFact label="Project folder" value={server.remotePath} />
-                  <CloudFact label="Models" value={modelKeysLabel(server.providers)} />
-                </span>
-              ) : (
-                <span className="block px-3 py-2.5 text-[12px] text-muted">Checking this machine…</span>
-              )}
-            </span>,
+                  {server ? (
+                    <span className="grid gap-2 px-3 py-2.5">
+                      {server.machineName.trim() && server.machineName.trim() !== server.host ? (
+                        <CloudFact label="Name" value={server.machineName.trim()} />
+                      ) : null}
+                      <CloudFact label="Host" value={server.host} />
+                      <CloudFact label="Folder" value={wrapPath(server.remotePath)} />
+                      <CloudFact label="Models" value={modelKeysLabel(server.providers)} />
+                      <CloudFact label="Last seen" value={lastSeen} />
+                    </span>
+                  ) : (
+                    <span className="block px-3 py-2.5 text-[12px] text-muted">Checking this machine…</span>
+                  )}
+                </motion.span>
+              ) : null}
+            </AnimatePresence>,
             document.body,
           )
         : null}
@@ -276,7 +298,7 @@ function CloudFact({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex items-baseline justify-between gap-3">
       <span className="shrink-0 text-[11px] text-muted">{label}</span>
-      <span className="min-w-0 text-right text-[12px] leading-snug break-all text-ink">{value}</span>
+      <span className="min-w-0 text-right text-[12px] leading-snug break-words text-ink">{value}</span>
     </span>
   );
 }
@@ -286,6 +308,34 @@ const CLOUD_MODELS: { id: string; label: string }[] = [
   { id: "anthropic", label: "Claude" },
   { id: "minimax", label: "MiniMax" },
 ];
+
+const LAST_SEEN_KEY = "twanagent.server-last-seen";
+
+/** Remember a live reply. An offline card keeps the last time this host answered. */
+function touchServerLastSeen(host: string, online: boolean): string {
+  const key = host.trim();
+  if (!key || typeof localStorage === "undefined") return online ? "Just now" : "Not yet";
+  let store: Record<string, number> = {};
+  try {
+    const raw = JSON.parse(localStorage.getItem(LAST_SEEN_KEY) || "{}") as unknown;
+    if (raw && typeof raw === "object") store = raw as Record<string, number>;
+  } catch {
+    store = {};
+  }
+  if (online) {
+    store[key] = Date.now();
+    localStorage.setItem(LAST_SEEN_KEY, JSON.stringify(store));
+    return "Just now";
+  }
+  const at = store[key];
+  if (!at) return "Not yet";
+  const age = formatRelativeAge(new Date(at).toISOString(), Date.now());
+  return age === "now" ? "Just now" : age;
+}
+
+function wrapPath(path: string): string {
+  return path.split("/").join("/\u200b");
+}
 
 function modelKeysLabel(providers: string[] | undefined): string {
   if (!providers) return "Checking…";

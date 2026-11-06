@@ -48,9 +48,9 @@ export function SubagentDock({
   if (agents.length === 0) return null;
   const openAgents = agents.filter((agent) => expanded[agent.id]);
   return (
-    <div className="relative z-20 h-11 shrink-0 overflow-visible px-6 pt-2">
-      <div className="no-scrollbar mx-auto h-9 w-full max-w-[720px] overflow-x-auto overflow-y-hidden">
-        <div className="flex h-9 w-max min-w-full items-center gap-1.5">
+    <div className="relative z-20 shrink-0 overflow-visible px-6 pt-2">
+      <div className="no-scrollbar mx-auto w-full max-w-[720px] overflow-x-auto px-1.5 py-1.5">
+        <div className="flex w-full min-w-0 items-center gap-1.5">
           <AnimatePresence initial={false}>
             {agents.map((agent) => (
               <SubagentChip
@@ -91,7 +91,7 @@ function SubagentChip({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -6, scale: 0.98 }}
       transition={{ duration: DURATION, ease: EASE }}
-      className="pointer-events-auto w-max max-w-[15rem] shrink-0"
+      className="pointer-events-auto min-w-0 max-w-[15rem] flex-1"
     >
       <motion.button
         type="button"
@@ -101,7 +101,8 @@ function SubagentChip({
         animate={{ scale: 1 }}
         whileHover={{ scale: 1.03 }}
         transition={{ duration: DURATION, ease: EASE }}
-        className={`flex h-8 w-full origin-top items-center gap-2 rounded-full border px-3 text-left shadow-card ${
+        style={{ originX: 0.5, originY: 0.5 }}
+        className={`flex h-8 w-full items-center gap-2 rounded-full border px-3 text-left shadow-card ${
           open ? "border-ink/25 bg-wash" : "border-line/55 bg-panel"
         }`}
       >

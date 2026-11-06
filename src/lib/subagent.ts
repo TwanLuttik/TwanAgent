@@ -278,11 +278,17 @@ export function applySubagentToChat(
 ): SubagentDockState {
   const prev = subagentsForChat(byChat, chatId);
   const agents = applySubagentEvent(prev.agents, event);
-  const expanded =
-    event.type === "start" ? { ...prev.expanded, [event.record.id]: true } : prev.expanded;
+  const expanded = expandedAfterEvent(prev.expanded, event);
   const next = { agents, expanded };
   rememberSubagentDock(byChat, chatId, next);
   return next;
+}
+
+/** A new agent opens. A finished or failed agent closes its window. */
+function expandedAfterEvent(expanded: Record<string, boolean>, event: SubagentEvent): Record<string, boolean> {
+  if (event.type === "start") return { ...expanded, [event.record.id]: true };
+  if (event.type === "done" || event.type === "error") return { ...expanded, [event.id]: false };
+  return expanded;
 }
 
 export function toggleSubagentExpanded(

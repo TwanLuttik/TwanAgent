@@ -21,19 +21,13 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS, type Transform } from "@dnd-kit/utilities";
 import { AnchoredMenu } from "./ContextMenu";
-import { RunningElapsed } from "./RunningElapsed";
 import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
-import { chatFooterLabel, serverMarkLabel, type ChatPlace } from "../lib/chat-place";
+import type { ChatPlace } from "../lib/chat-place";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { formatModelName } from "../lib/usage";
-
-function turnStartedAt(runningIds: Readonly<Record<string, { startedAt?: number }>>, id: string): number {
-  const startedAt = runningIds[id]?.startedAt ?? 0;
-  return startedAt > 0 ? startedAt : 0;
-}
 
 export function ConversationList({
   conversations,
@@ -173,7 +167,7 @@ export function ConversationList({
       onDragEnd={onDragEnd}
     >
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-        <div ref={listRef} className="flex flex-col gap-0.5" role="list">
+        <div ref={listRef} className="flex flex-col gap-1" role="list">
           {conversations.map((row) => (
             <SortableRow
               key={row.id}
@@ -198,7 +192,6 @@ export function ConversationList({
               age={
                 !(row.id in runningIds) && loadingId !== row.id ? formatRelativeAge(row.updated_at, nowMs) : ""
               }
-              startedAt={turnStartedAt(runningIds, row.id)}
               reorderable={reorderable}
               onOpen={onOpen}
               onDelete={onDelete}
@@ -222,7 +215,6 @@ export function ConversationList({
                   ? formatRelativeAge(dragging.updated_at, nowMs)
                   : ""
               }
-              startedAt={turnStartedAt(runningIds, dragging.id)}
               place={place}
               overlay
             />
@@ -262,7 +254,6 @@ const SortableRow = memo(function SortableRow({
   insert,
   insertAfter,
   age,
-  startedAt,
   reorderable,
   onOpen,
   onSelect,
@@ -280,7 +271,6 @@ const SortableRow = memo(function SortableRow({
   insert: boolean;
   insertAfter: boolean;
   age: string;
-  startedAt: number;
   reorderable: boolean;
   onOpen: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
@@ -298,7 +288,7 @@ const SortableRow = memo(function SortableRow({
     <div
       ref={setNodeRef}
       style={{ transform: rowDragTransform(transform), transition }}
-      className="group/chat relative touch-none"
+      className="group/chat relative z-0 touch-none hover:z-20"
       {...attributes}
       {...listeners}
       onContextMenu={(ev) => onContextMenu(ev, row.id)}
@@ -319,7 +309,6 @@ const SortableRow = memo(function SortableRow({
         todo={todo}
         placeholder={hidden}
         age={age}
-        startedAt={startedAt}
         rowId={row.id}
         onOpen={onOpen}
         onSelect={onSelect}
@@ -346,7 +335,6 @@ const ConversationCard = memo(function ConversationCard({
   placeholder,
   overlay,
   age,
-  startedAt = 0,
   rowId = "",
   onOpen,
   onSelect,
@@ -362,24 +350,30 @@ const ConversationCard = memo(function ConversationCard({
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
-  startedAt?: number;
   rowId?: string;
   onOpen?: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete?: (id: string) => void;
   place: ChatPlace;
 }) {
-  const showPreview = Boolean(running && preview);
+  const caption = conversationCaption({
+    running,
+    activity: preview,
+    todo,
+    preview: row.preview,
+    title: row.title,
+    place,
+  });
   return (
     <div
-      className={`group/chat relative flex items-start rounded-[6px] select-none ${
+      className={`group/chat relative z-0 flex items-center overflow-visible rounded-xl select-none hover:z-10 ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
             ? "border border-transparent opacity-0"
             : unseen && !selected
               ? "border border-transparent bg-warn/15 hover:bg-warn/25"
-              : selected
+              : selected || running
                 ? "border border-transparent bg-wash-strong"
                 : "border border-transparent hover:bg-wash"
       }`}
@@ -396,49 +390,57 @@ const ConversationCard = memo(function ConversationCard({
           onSelect?.(rowId, { toggle: false, range: false });
           onOpen?.(rowId);
         }}
-        className="flex min-w-0 flex-1 cursor-pointer items-start py-1.5 pr-2 pl-2 text-left text-[13px] text-ink disabled:cursor-default"
+        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 py-1.5 pr-2 pl-2 text-left text-ink disabled:cursor-default"
       >
-        <span className="min-w-0 flex-1">
-          <span
-            className={`flex min-w-0 items-center gap-2 ${
-              onDelete ? "transition-[padding] duration-150 ease-out group-hover/chat:pr-5" : ""
-            }`}
-          >
-            <span className="min-w-0 flex-1 truncate">{row.title}</span>
+        <ChatLogo model={row.model} kind={row.kind} />
+        <span className={`min-w-0 flex-1 ${onDelete ? "transition-[padding] duration-150 ease-out group-hover/chat:pr-4" : ""}`}>
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] leading-4 font-medium">{row.title}</span>
             {age ? (
               <span
-                className="shrink-0 text-right text-[11px] leading-none tabular-nums text-muted"
+                className="shrink-0 text-[11px] leading-none tabular-nums text-muted"
                 title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
               >
                 {age}
               </span>
             ) : null}
-            {running ? (
-              <span
-                className="size-3 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
-                aria-label={preview || "Loading"}
-              />
-            ) : null}
           </span>
-          {showPreview ? (
-            <span className="mt-0.5 flex h-[14px] min-w-0 items-center gap-1.5 text-[11px] leading-[14px] text-muted">
-              <span className="min-w-0 truncate">{preview}</span>
-              {startedAt ? (
-                <RunningElapsed startedAt={startedAt} className="shrink-0 tabular-nums leading-[14px]" />
+          {place.worktree && place.branch.trim() ? (
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+              <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-ok" />
+              <span className="max-w-[46%] shrink-0 truncate text-ok" title={place.branch.trim()}>
+                {place.branch.trim()}
+              </span>
+              {caption ? (
+                <span className="min-w-0 truncate" title={caption}>
+                  {caption}
+                </span>
               ) : null}
             </span>
-          ) : todo ? (
-            <TodoMark badge={todo} />
+          ) : caption ? (
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+              <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0 opacity-70" />
+              <span className="min-w-0 truncate" title={caption}>
+                {caption}
+              </span>
+            </span>
           ) : null}
-          <ChatFooter place={place} model={row.model} kind={row.kind} preview={row.preview} title={row.title} />
         </span>
+        {running ? (
+          <span
+            className={`mt-0.5 size-3.5 shrink-0 self-center animate-spin rounded-full border border-muted/55 border-t-transparent ${
+              onDelete && !overlay && !placeholder ? "group-hover/chat:opacity-0" : ""
+            }`}
+            aria-label={preview || "Loading"}
+          />
+        ) : null}
       </button>
       {onDelete && !overlay && !placeholder ? (
         <button
           type="button"
           aria-label="Delete conversation"
           onClick={() => onDelete?.(rowId)}
-          className="absolute top-[7px] right-1.5 flex size-4 items-center justify-center text-muted opacity-0 transition-opacity duration-150 ease-out group-hover/chat:opacity-100 hover:text-ink"
+          className="absolute top-1/2 right-1.5 flex size-4 -translate-y-1/2 items-center justify-center text-muted opacity-0 transition-opacity duration-150 ease-out group-hover/chat:opacity-100 hover:text-ink"
         >
           <Symbol name="xmark" className="size-2.5 shrink-0" />
         </button>
@@ -498,114 +500,47 @@ function ChatContextMenu({
   );
 }
 
-function TodoMark({ badge }: { badge: TodoBadge }) {
-  if (badge.finished) {
-    return (
-      <span className="mt-0.5 flex h-[14px] items-center gap-1 text-[11px] leading-[14px] text-ok" title="Todos finished">
-        <Symbol name="checkmark" className="size-2.5" />
-        <span>
-          {badge.done}/{badge.total}
-        </span>
-      </span>
-    );
-  }
-  return (
-    <span className="mt-0.5 block h-[14px] truncate text-[11px] leading-[14px] text-muted" title="Todo progress">
-      {badge.done}/{badge.total}
-    </span>
-  );
+function conversationCaption({
+  running,
+  activity,
+  todo,
+  preview,
+  title,
+  place,
+}: {
+  running: boolean;
+  activity: string;
+  todo?: TodoBadge | null;
+  preview?: string | null;
+  title: string;
+  place: ChatPlace;
+}): string {
+  if (running && activity.trim()) return activity.trim();
+  if (todo) return `${todo.done}/${todo.total}`;
+  const line = (preview ?? "").replace(/\s+/g, " ").trim();
+  if (line && line.toLowerCase() !== title.trim().toLowerCase()) return line;
+  if (place.worktree) return "";
+  return place.branch.trim();
 }
 
-const ModelMark = memo(function ModelMark({ model }: { model?: string | null }) {
+const ChatLogo = memo(function ChatLogo({ model, kind }: { model?: string | null; kind?: string }) {
+  if ((kind ?? "").trim() === "terminal") {
+    return <Symbol name="terminal" className="size-5 shrink-0 text-muted" />;
+  }
   const id = model?.trim() ?? "";
-  if (!id) return null;
   const profile = providerProfile(id);
-  const name = formatModelName(id);
-  const mark = profile.id === "anthropic" ? "model-mark-claude" : profile.id === "minimax" ? "model-mark-minimax" : "model-mark-xai";
+  const name = id ? formatModelName(id) : profile.agentName;
+  const tone =
+    profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "group/minimax" : "usage-mark-xai";
   return (
-    <span
-      className={`model-mark group/model group/minimax relative mr-1 flex size-4 shrink-0 items-center justify-center text-muted transition-[margin] duration-150 ease-out group-hover/minimax:mr-0.5 ${mark}`}
-    >
-      <Symbol name={profile.symbol} className="size-3" />
+    <span className={`group/model relative flex size-5 shrink-0 items-center justify-center ${tone}`} data-colored="">
+      <Symbol name={profile.symbol} colored={profile.id === "minimax"} className="size-4" />
       <span
         role="tooltip"
-        className="model-tip pointer-events-none absolute top-1/2 right-full z-30 mr-1.5 -translate-y-1/2 rounded-md border px-1.5 py-0.5 text-[11px] whitespace-nowrap opacity-0 shadow-card transition-opacity duration-150 group-hover/model:opacity-100"
+        className="model-tip pointer-events-none absolute top-1/2 left-full z-50 ml-1.5 -translate-y-1/2 rounded-md border px-1.5 py-0.5 text-[11px] leading-none whitespace-nowrap opacity-0 shadow-card transition-opacity duration-150 group-hover/model:opacity-100"
       >
         {name}
       </span>
     </span>
   );
 });
-
-function ServerMark({ name }: { name: string }) {
-  return (
-    <span className="group/server relative flex size-4 items-center justify-center">
-      <Symbol name="server.rack" className="size-4 text-muted/80" />
-      <span
-        role="tooltip"
-        className="model-tip pointer-events-none absolute top-1/2 right-full z-30 mr-1.5 -translate-y-1/2 translate-x-1 rounded-md border px-1.5 py-0.5 text-[11px] leading-none font-normal whitespace-nowrap opacity-0 shadow-card transition duration-150 ease-out group-hover/server:translate-x-0 group-hover/server:opacity-100 motion-reduce:transition-none"
-      >
-        {name}
-      </span>
-    </span>
-  );
-}
-
-function PlaceMarks({ place, model, kind }: { place: ChatPlace; model?: string | null; kind?: string }) {
-  const serverName = serverMarkLabel(place);
-  return (
-    <span className="ml-auto flex shrink-0 items-center gap-1.5">
-      {serverName ? <ServerMark name={serverName} /> : null}
-      {kind === "terminal" ? (
-        <Symbol name="terminal" className="size-4 shrink-0 text-muted" />
-      ) : (
-        <span className="flex size-4 items-center justify-center [&_.model-mark]:mr-0 [&_.model-mark]:size-4 [&_svg]:!h-4 [&_svg]:!w-4">
-          <ModelMark model={model} />
-        </span>
-      )}
-    </span>
-  );
-}
-
-function ChatFooter({
-  place,
-  model,
-  kind,
-  preview,
-  title,
-}: {
-  place: ChatPlace;
-  model?: string | null;
-  kind?: string;
-  preview?: string | null;
-  title: string;
-}) {
-  const branch = place.branch.trim();
-  const tracking = [place.ahead ? `↑${place.ahead}` : "", place.behind ? `↓${place.behind}` : ""]
-    .filter(Boolean)
-    .join(" ");
-  const pr = place.pr ? (place.pr.open ? `#${place.pr.number}` : `#${place.pr.number} closed`) : "";
-  const line = (preview ?? "").replace(/\s+/g, " ").trim();
-  const caption = branch || !line || line.toLowerCase() === title.trim().toLowerCase() ? "" : line;
-  return (
-    <span className="mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[11px] leading-none text-muted">
-      <span className="flex min-w-0 flex-1 items-center gap-1.5" title={chatFooterLabel(place)}>
-        {caption ? <span className="min-w-0 flex-1 truncate">{caption}</span> : null}
-        {branch ? (
-          <span className="flex min-w-0 items-center gap-1">
-            <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-muted/70" />
-            <span className="min-w-0 truncate">{branch}</span>
-          </span>
-        ) : null}
-        {tracking ? <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted/80">{tracking}</span> : null}
-        {pr ? (
-          <span className="flex shrink-0 items-center gap-1">
-            <Symbol name="arrow.triangle.pull" className="size-3 shrink-0 text-muted/70" />
-            <span>{pr}</span>
-          </span>
-        ) : null}
-      </span>
-      <PlaceMarks place={place} model={model} kind={kind} />
-    </span>
-  );
-}

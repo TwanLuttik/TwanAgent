@@ -610,7 +610,7 @@ export function ProjectsNav({
           onPick={(kind) => void startNewChat(kind, activeFocus || undefined)}
         />
       </div>
-      <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2 pb-2">
+      <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2">
         {sidebarReady ? <AllProjectsList
           groups={shownGroups}
           focusPath={activeFocus}
@@ -657,7 +657,7 @@ export function ProjectsNav({
           worktreesFor={worktreesFor}
           onRemoveWorktree={removeWorktree}
           renderWorktree={(child, owner) => (
-            <div className="pl-4">
+            <div>
               <ProjectConversations
                 conversations={orderSidebarChats(
                   visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false),
@@ -704,7 +704,7 @@ export function ProjectsNav({
           )}
         /> : null}
       </div>
-      <div className="sidebar-dock relative z-20 mx-2 mt-3 mb-2 flex flex-col gap-0.5 px-1.5 py-1.5">
+      <div className="sidebar-dock relative z-20 mx-2 mb-2 flex flex-col gap-0.5 px-1.5 py-1.5">
         <ActivityDock
           items={visibleActivity}
           activeId={activeId}

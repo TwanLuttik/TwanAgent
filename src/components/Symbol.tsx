@@ -414,6 +414,12 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M13.2 5.4h5.4V10.8M18.6 5.4 11 13" {...stroke} />
     </>
   ),
+  "arrow.turn.down.right": (
+    <>
+      <path d="M6.4 5.6v6.4c0 1.6 1.3 2.9 2.9 2.9h8.4" {...stroke} />
+      <path d="M14.6 11.8 20.2 14.9 14.6 18" {...stroke} />
+    </>
+  ),
   copy: (
     <>
       <rect x="8.4" y="4.6" width="10.2" height="12.4" rx="1.6" {...stroke} />

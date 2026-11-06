@@ -7,6 +7,7 @@ import {
   parseAccent,
   parseHex,
   PRESETS,
+  randomCustomTheme,
   saveTheme,
   toCustom,
 } from "../theme.ts";
@@ -74,6 +75,24 @@ describe("generateTheme extras", () => {
     assert.notEqual(ink, canvas);
     assert.match(tokens.ink, /^#[0-9a-f]{6}$/);
     assert.ok(tokens.ink !== "#3f3f42");
+  });
+});
+
+describe("randomCustomTheme", () => {
+  it("builds a valid palette and keeps the requested mode", () => {
+    let n = 0;
+    const rand = () => {
+      n += 0.17;
+      return n % 1;
+    };
+    const theme = randomCustomTheme("dark", rand);
+    assert.equal(theme.id, "custom");
+    assert.equal(theme.mode, "dark");
+    assert.ok(parseAccent(theme.accent));
+    assert.ok(parseAccent(theme.canvas ?? ""));
+    assert.ok(parseAccent(theme.sidebar ?? ""));
+    const again = randomCustomTheme("dark", rand);
+    assert.notEqual(again.accent, theme.accent);
   });
 });
 

@@ -1,6 +1,6 @@
 export type ThemeMode = "light" | "dark";
 
-export type PresetId = "finder" | "paper" | "midnight" | "graphite" | "dusk";
+export type PresetId = "finder" | "paper" | "moss" | "rose" | "midnight" | "graphite" | "dusk" | "lagoon" | "ember";
 
 export type ThemeTokens = {
   canvas: string;
@@ -142,14 +142,82 @@ export const PRESETS: Record<PresetId, ThemeTokens> = {
     ...STATUS,
     ...DARK_CHROME,
   },
+  moss: {
+    canvas: "#f3f6f1",
+    sidebar: "#e4ebe3",
+    panel: "#eef3ec",
+    inset: "#dce5db",
+    line: "#c9d4c7",
+    ink: "#2c332b",
+    muted: "#6d786c",
+    accent: "#2f9e5a",
+    accentHover: "#24824a",
+    onAccent: "#ffffff",
+    select: "#d5eadc",
+    wash: "rgb(20 40 24 / 0.06)",
+    washStrong: "rgb(20 40 24 / 0.10)",
+    shadowCard: "0 8px 24px rgb(20 40 24 / 0.10)",
+    ...STATUS,
+  },
+  rose: {
+    canvas: "#fbf6f7",
+    sidebar: "#f3e6e9",
+    panel: "#f7eef0",
+    inset: "#eadde0",
+    line: "#e0cfd3",
+    ink: "#3d2e32",
+    muted: "#8a7076",
+    accent: "#e24b78",
+    accentHover: "#c43762",
+    onAccent: "#ffffff",
+    select: "#f6d5df",
+    wash: "rgb(60 20 32 / 0.05)",
+    washStrong: "rgb(60 20 32 / 0.09)",
+    shadowCard: "0 8px 24px rgb(60 20 32 / 0.10)",
+    ...STATUS,
+  },
+  lagoon: {
+    canvas: "#10181c",
+    sidebar: "#172226",
+    panel: "#141e22",
+    inset: "#243236",
+    line: "#355056",
+    ink: "#e7f2f4",
+    muted: "#8eaaaf",
+    accent: "#2ec4b6",
+    accentHover: "#5ad4c8",
+    onAccent: "#06211e",
+    select: "#16343a",
+    ...STATUS,
+    ...DARK_CHROME,
+  },
+  ember: {
+    canvas: "#1a1412",
+    sidebar: "#241c18",
+    panel: "#201a17",
+    inset: "#342822",
+    line: "#4a382e",
+    ink: "#f6efe9",
+    muted: "#b09a8c",
+    accent: "#ff7a45",
+    accentHover: "#ff9a70",
+    onAccent: "#2a1208",
+    select: "#3a241c",
+    ...STATUS,
+    ...DARK_CHROME,
+  },
 };
 
 export const PRESET_META: { id: PresetId; label: string; mode: ThemeMode }[] = [
   { id: "finder", label: "Finder", mode: "light" },
   { id: "paper", label: "Paper", mode: "light" },
+  { id: "moss", label: "Moss", mode: "light" },
+  { id: "rose", label: "Rose", mode: "light" },
   { id: "midnight", label: "Midnight", mode: "dark" },
   { id: "graphite", label: "Graphite", mode: "dark" },
   { id: "dusk", label: "Dusk", mode: "dark" },
+  { id: "lagoon", label: "Lagoon", mode: "dark" },
+  { id: "ember", label: "Ember", mode: "dark" },
 ];
 
 const PRESET_IDS = new Set<string>(PRESET_META.map((p) => p.id));
@@ -211,6 +279,40 @@ function usableAccent(rgb: Rgb, mode: ThemeMode): Rgb {
   if (mode === "light" && L > 0.65) return shift(rgb, -0.35);
   if (mode === "dark" && L < 0.2) return shift(rgb, 0.4);
   return rgb;
+}
+
+function hslToRgb(h: number, s: number, l: number): Rgb {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (hp < 1) [r, g, b] = [c, x, 0];
+  else if (hp < 2) [r, g, b] = [x, c, 0];
+  else if (hp < 3) [r, g, b] = [0, c, x];
+  else if (hp < 4) [r, g, b] = [0, x, c];
+  else if (hp < 5) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const m = l - c / 2;
+  return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
+}
+
+/** A fresh custom palette. Pass a mode to keep light or dark. */
+export function randomCustomTheme(
+  mode?: ThemeMode,
+  rand: () => number = Math.random,
+): Extract<ThemeSelection, { id: "custom" }> {
+  const chosen: ThemeMode = mode ?? (rand() < 0.5 ? "light" : "dark");
+  const hue = Math.floor(rand() * 360);
+  const light = chosen === "light";
+  return {
+    id: "custom",
+    mode: chosen,
+    accent: toHex(hslToRgb(hue, light ? 0.7 : 0.58, light ? 0.42 : 0.64)),
+    canvas: toHex(hslToRgb(hue, light ? 0.06 : 0.1, light ? 0.97 : 0.11)),
+    sidebar: toHex(hslToRgb(hue, light ? 0.08 : 0.12, light ? 0.93 : 0.15)),
+  };
 }
 
 export function surfacesFor(mode: ThemeMode): { canvas: string; sidebar: string } {

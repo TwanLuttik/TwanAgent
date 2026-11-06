@@ -130,7 +130,7 @@ export function SettingsView({
   const body = (
     <div className="flex min-h-0 flex-1">
       <div className="min-h-0 flex-1 overflow-auto px-8 py-6">
-        <div className="mx-auto grid w-full max-w-[640px] gap-5">
+        <div className="grid w-full max-w-[960px] gap-5">
           {tab === "appearance" && <AppearancePane />}
 
           {tab === "providers" && (

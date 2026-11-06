@@ -115,6 +115,30 @@ export function nestGroupedProjects<T extends { path: string }>(
   return { top, byGroup };
 }
 
+/** Sidebar order for the project menu. Group members sit under their group. */
+export function projectMenuRows<T extends { path: string; name: string }>(
+  projects: T[],
+  groups: ProjectGroupRow[],
+  query = "",
+): { row: T; depth: number }[] {
+  const nested = nestGroupedProjects(projects, groups);
+  const q = query.trim().toLowerCase();
+  const hit = (row: T) => !q || row.name.toLowerCase().includes(q) || row.path.toLowerCase().includes(q);
+  const out: { row: T; depth: number }[] = [];
+  for (const row of nested.top) {
+    const children = nested.byGroup.get(projectKey(row.path)) ?? [];
+    if (!children.length) {
+      if (hit(row)) out.push({ row, depth: 0 });
+      continue;
+    }
+    const matched = children.filter(hit);
+    if (!hit(row) && matched.length === 0) continue;
+    out.push({ row, depth: 0 });
+    for (const child of hit(row) ? children : matched) out.push({ row: child, depth: 1 });
+  }
+  return out;
+}
+
 /** Cmd/Ctrl toggles a project into the set. A plain click clears it. */
 export function toggleProjectSelection(current: string[], path: string, cmdKey: boolean): string[] {
   if (!cmdKey) return [];

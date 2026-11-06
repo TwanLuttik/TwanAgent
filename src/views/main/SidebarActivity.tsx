@@ -8,14 +8,12 @@ import { providerProfile } from "../../lib/provider";
 
 const TIP_EASE = [0.22, 1, 0.36, 1] as const;
 
-/** First word of an activity line, for the pill. "Skill personal-…" becomes "Skill". */
-function activityParts(preview: string): { badge: string; detail: string } {
+/** First word of an activity line, for the minimized pill. "Run tests…" becomes "Run". */
+function activityBadge(preview: string): string {
   const clean = preview.replace(/(…|\.\.\.)$/u, "").trim();
-  if (!clean) return { badge: "Running", detail: "" };
-  const space = clean.indexOf(" ");
-  const head = space === -1 ? clean : clean.slice(0, space);
-  const detail = space === -1 ? "" : clean.slice(space + 1).trim();
-  return { badge: head.length > 16 ? `${head.slice(0, 15)}…` : head, detail };
+  if (!clean) return "Running";
+  const head = clean.split(/\s+/)[0] ?? "Running";
+  return head.length > 16 ? `${head.slice(0, 15)}…` : head;
 }
 
 /** Running and finished chats, stacked on the top edge of the usage card. Finished sits under running. */
@@ -35,25 +33,18 @@ export function ActivityDock({
   const running = items.filter((item) => item.status === "running");
   const finished = items.filter((item) => item.status === "finished");
   if (!running.length && !finished.length) return null;
+  const one = running.length === 1 ? running[0] : null;
   return (
     <div className="absolute bottom-[calc(100%-2px)] left-3 z-30 flex flex-col items-start gap-1">
-      {running.length > 1 ? (
-        <RunningStack
-          items={running}
-          activeId={activeId}
-          previewFor={runningPreview}
-          startedAtFor={runningStartedAt}
-          onOpen={onOpen}
-        />
-      ) : running.length === 1 ? (
+      {running.length ? (
         <DockPill
           items={running}
           activeId={activeId}
-          label={activityParts(runningPreview(running[0]!.id)).badge}
-          ariaLabel={running[0]!.title}
-          clock={runningStartedAt(running[0]!.id)}
+          label={one ? activityBadge(runningPreview(one.id)) : `${running.length} running`}
+          ariaLabel={one ? one.title : `${running.length} running chats`}
+          clock={one ? runningStartedAt(one.id) : 0}
+          running
           previewFor={runningPreview}
-          startedAtFor={runningStartedAt}
           onOpen={onOpen}
         />
       ) : null}
@@ -65,7 +56,6 @@ export function ActivityDock({
           ariaLabel={finished.length === 1 ? finished[0]!.title : `${finished.length} finished chats`}
           clock={0}
           previewFor={() => ""}
-          startedAtFor={() => 0}
           onOpen={onOpen}
         />
       ) : null}
@@ -79,8 +69,8 @@ function DockPill({
   label,
   ariaLabel,
   clock,
+  running = false,
   previewFor,
-  startedAtFor,
   onOpen,
 }: {
   items: SidebarActivityItem[];
@@ -88,8 +78,8 @@ function DockPill({
   label: string;
   ariaLabel: string;
   clock: number;
+  running?: boolean;
   previewFor: (id: string) => string;
-  startedAtFor: (id: string) => number;
   onOpen: (path: string, id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -100,7 +90,7 @@ function DockPill({
   const model = badgeModel(items);
   function arm() {
     window.clearTimeout(openTimer.current);
-    openTimer.current = window.setTimeout(() => setOpen(true), 160);
+    openTimer.current = window.setTimeout(() => setOpen(true), 280);
   }
   function disarm() {
     window.clearTimeout(openTimer.current);
@@ -115,16 +105,24 @@ function DockPill({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 2 }}
             transition={{ duration: reduceMotion ? 0 : 0.15, ease: TIP_EASE }}
-            className="absolute bottom-full left-0 z-40 pb-2.5"
+            className="absolute bottom-full left-0 z-40 pb-1.5"
           >
-            <div role="tooltip" className="w-max max-w-[16rem] rounded-xl border border-line/50 bg-panel px-1 py-1 shadow-card">
+            <div
+              role="tooltip"
+              className="w-[15.5rem] rounded-2xl border border-line/55 bg-panel p-1 shadow-card"
+            >
+              {items.length > 1 ? (
+                <div className="px-2 pt-1 pb-0.5 text-[10px] font-medium text-muted">
+                  {running ? `${items.length} running` : `${items.length} finished`}
+                </div>
+              ) : null}
               {items.map((item) => (
                 <RunningTipRow
                   key={`${item.path}\t${item.id}`}
                   item={item}
                   selected={item.id === activeId}
                   preview={previewFor(item.id)}
-                  startedAt={startedAtFor(item.id)}
+                  running={running}
                   onOpen={onOpen}
                 />
               ))}
@@ -139,9 +137,15 @@ function DockPill({
         onClick={() => {
           if (only) onOpen(only.path, only.id);
         }}
-        className="flex h-[22px] max-w-[190px] items-center gap-1.5 rounded-full border border-line/60 bg-panel/90 px-2 shadow-card"
+        className={`flex h-[22px] max-w-[11rem] items-center gap-1.5 rounded-full border px-2 ${
+          open ? "border-line/70 bg-panel shadow-card" : "border-line/45 bg-panel/80"
+        }`}
       >
-        {model != null ? <ProviderMark model={model} /> : null}
+        {running ? (
+          <span className="size-3 shrink-0 animate-spin rounded-full border border-muted/55 border-t-transparent" />
+        ) : model != null ? (
+          <ProviderMark model={model} />
+        ) : null}
         <span className="min-w-0 truncate text-[11px] font-medium text-ink">{label}</span>
         {clock > 0 ? (
           <RunningElapsed startedAt={clock} className="shrink-0 text-[11px] tabular-nums text-muted" />
@@ -158,44 +162,14 @@ function badgeModel(running: SidebarActivityItem[]): string | null {
   return running.find((item) => item.model.trim())?.model ?? "";
 }
 
-function ProviderMark({ model }: { model: string }) {
+function ProviderMark({ model, large = false }: { model: string; large?: boolean }) {
   const profile = providerProfile(model);
-  const tone = profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "" : "text-ink";
-  return <Symbol name={profile.symbol} colored={profile.id === "minimax"} className={`size-3 shrink-0 ${tone}`} />;
-}
-
-function RunningStack({
-  items,
-  activeId,
-  previewFor,
-  startedAtFor,
-  onOpen,
-}: {
-  items: SidebarActivityItem[];
-  activeId: string;
-  previewFor: (id: string) => string;
-  startedAtFor: (id: string) => number;
-  onOpen: (path: string, id: string) => void;
-}) {
+  const tone = profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "" : "usage-mark-xai";
+  const size = large ? "size-4" : "size-3";
   return (
-    <div className="w-[13.75rem] rounded-xl border border-line/50 bg-panel/95 p-1 shadow-card">
-      <div className="flex items-center gap-1.5 px-1.5 pt-0.5 pb-1 text-[10px] font-medium text-muted">
-        <span className="size-2.5 shrink-0 animate-spin rounded-full border border-muted/45 border-t-transparent" />
-        {items.length} running
-      </div>
-      <div className="flex flex-col">
-        {items.map((item) => (
-          <RunningTipRow
-            key={`${item.path}\t${item.id}`}
-            item={item}
-            selected={item.id === activeId}
-            preview={previewFor(item.id)}
-            startedAt={startedAtFor(item.id)}
-            onOpen={onOpen}
-          />
-        ))}
-      </div>
-    </div>
+    <span className={`flex ${large ? "size-5" : "size-3"} shrink-0 items-center justify-center ${tone}`}>
+      <Symbol name={profile.symbol} colored={profile.id === "minimax"} className={`${size} shrink-0`} />
+    </span>
   );
 }
 
@@ -203,30 +177,40 @@ function RunningTipRow({
   item,
   selected,
   preview,
-  startedAt,
+  running = false,
   onOpen,
 }: {
   item: SidebarActivityItem;
   selected: boolean;
   preview: string;
-  startedAt: number;
+  running?: boolean;
   onOpen: (path: string, id: string) => void;
 }) {
-  const detail = activityParts(preview).detail;
-  const place = detail ? `${item.project} · ${detail}` : item.project;
+  const caption = preview.replace(/(…|\.\.\.)$/u, "").trim() || item.project;
   return (
     <button
       type="button"
       onClick={() => onOpen(item.path, item.id)}
-      className={`block w-full rounded-lg px-1.5 py-1 text-left ${selected ? "bg-wash" : "hover:bg-wash/80"}`}
+      className={`flex w-full items-start gap-2.5 rounded-xl px-2 py-1.5 text-left ${
+        selected ? "bg-wash" : "hover:bg-wash/80"
+      }`}
     >
-      <span className="flex items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate text-[12px] leading-4 text-ink">{item.title}</span>
-        {startedAt > 0 ? (
-          <RunningElapsed startedAt={startedAt} className="shrink-0 text-[10px] tabular-nums text-muted" />
-        ) : null}
+      <ProviderMark model={item.model} large />
+      <span className="min-w-0 flex-1">
+        <span className="block min-w-0 truncate text-[13px] leading-4 font-medium text-ink">{item.title}</span>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+          <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0 opacity-70" />
+          <span className="min-w-0 truncate" title={caption}>
+            {caption}
+          </span>
+        </span>
       </span>
-      <span className="block max-w-[13rem] truncate text-[11px] leading-4 text-muted">{place}</span>
+      {running ? (
+        <span
+          className="mt-0.5 size-3.5 shrink-0 self-center animate-spin rounded-full border border-muted/55 border-t-transparent"
+          aria-hidden
+        />
+      ) : null}
     </button>
   );
 }

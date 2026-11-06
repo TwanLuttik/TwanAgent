@@ -1,17 +1,20 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { filterProjectRows, folderName, projectKey, type ProjectRow } from "../../lib/core";
+import { projectMenuRows, type ProjectGroupRow } from "../../lib/all-projects";
+import { folderName, projectKey, type ProjectRow } from "../../lib/core";
 import { Symbol } from "../Symbol";
 import { MODEL_MENU_EASE } from "./menuEase";
 
 export function ProjectSelect({
   workspace,
   projects,
+  groups = [],
   onOpen,
   onNew,
 }: {
   workspace: string;
   projects: ProjectRow[];
+  groups?: ProjectGroupRow[];
   onOpen: (path: string) => void;
   onNew: () => void;
 }) {
@@ -22,7 +25,7 @@ export function ProjectSelect({
   const search = useRef<HTMLInputElement>(null);
   const [menuAbove, setMenuAbove] = useState(true);
   const needle = query.trim();
-  const shown = filterProjectRows(projects, query);
+  const shown = projectMenuRows(projects, groups, query);
   const current = projects.find((row) => projectKey(row.path) === projectKey(workspace));
   const label = current?.name || (workspace ? folderName(workspace) : "Project");
 
@@ -103,8 +106,9 @@ export function ProjectSelect({
             </div>
             <div className="min-h-0 flex-1 overflow-auto py-1">
               {shown.length ? (
-                shown.map((row) => {
+                shown.map(({ row, depth }) => {
                   const selected = projectKey(row.path) === projectKey(workspace);
+                  const child = depth > 0;
                   return (
                     <button
                       key={row.path}
@@ -116,15 +120,18 @@ export function ProjectSelect({
                         setOpen(false);
                         if (!selected) onOpen(row.path);
                       }}
-                      className={`flex h-8 w-full cursor-pointer items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
-                        selected ? "font-medium text-ink" : "text-ink/80"
-                      }`}
+                      className={`flex h-8 w-full cursor-pointer items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                        child ? "pr-2.5 pl-8" : "px-2.5"
+                      } ${row.remote ? "cloud-zebra" : ""} ${selected ? "font-medium text-ink" : child ? "text-ink/75" : "text-ink/80"}`}
                     >
-                      <Symbol name="folder.fill" className={`size-3.5 shrink-0 ${selected ? "text-accent" : "text-muted"}`} />
+                      <Symbol
+                        name="folder.fill"
+                        className={`shrink-0 ${child ? "size-3" : "size-3.5"} ${selected ? "text-accent" : "text-muted"}`}
+                      />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate">{row.name}</span>
                       </span>
-                      {row.remote ? <Symbol name="cloud.fill" className="size-3 shrink-0 text-[#3b82f6]" /> : null}
+                      {row.remote ? <Symbol name="server.rack" className="size-3.5 shrink-0 text-[#3b82f6]" /> : null}
                       <Symbol
                         name="checkmark"
                         className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${selected ? "opacity-100" : "opacity-0"}`}

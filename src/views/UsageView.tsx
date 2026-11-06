@@ -154,7 +154,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
 
   return (
     <div className="min-h-0 flex-1 overflow-auto px-6 py-6">
-      <div className="mx-auto grid w-full max-w-[920px] gap-10">
+      <div className="grid w-full max-w-[960px] gap-10">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
             <div className="text-[11px] font-medium tracking-[0.14em] text-muted uppercase">Usage</div>
