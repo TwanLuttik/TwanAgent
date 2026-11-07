@@ -499,6 +499,22 @@ fn remove_group_dir(root: &Path) -> Result<()> {
     }
 }
 
+/// Drop a symlink without following it.
+/// A Windows junction is a directory symlink. `DeleteFileW` denies those, so they
+/// have to go through `RemoveDirectoryW`, which unlinks the junction and leaves the target.
+fn remove_symlink(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTypeExt;
+        if path.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink_dir()) {
+            fs::remove_dir(path)?;
+            return Ok(());
+        }
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
 fn remove_entry_nofollow(path: &Path) -> Result<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -507,7 +523,7 @@ fn remove_entry_nofollow(path: &Path) -> Result<()> {
     };
     let file_type = meta.file_type();
     if file_type.is_symlink() {
-        fs::remove_file(path)?;
+        remove_symlink(path)?;
         return Ok(());
     }
     if meta.is_dir() {

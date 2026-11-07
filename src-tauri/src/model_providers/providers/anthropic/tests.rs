@@ -161,7 +161,7 @@ fn system_messages_leave_the_array_and_effort_is_optional() {
 }
 
 #[test]
-fn effort_and_journey_tool_are_included_when_asked() {
+fn effort_is_included_and_journey_tools_stay_out() {
     let body = to_messages_body(
         &serde_json::json!([{ "role": "user", "content": "go" }]),
         "claude-haiku-4-5",
@@ -188,7 +188,8 @@ fn effort_and_journey_tool_are_included_when_asked() {
         .iter()
         .filter_map(|row| row["name"].as_str())
         .collect();
-    assert!(names.contains(&"update_journey_knowledge"));
+    // Journeys are no longer sent, even when the caller asks for them.
+    assert!(!names.contains(&"update_journey_knowledge"));
 }
 
 #[test]
