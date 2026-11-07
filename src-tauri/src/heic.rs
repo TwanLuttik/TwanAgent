@@ -63,6 +63,7 @@ pub fn decode_heic(bytes: &[u8], max_edge: u32) -> Result<HeicDecoded> {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn heic_err() -> Error {
     Error::Other("Couldn’t read this HEIC image.".into())
 }
