@@ -1,4 +1,5 @@
 import { WorkspaceFileLinks } from "../../components/ChatMarkdown";
+import { CommandPalette } from "../../components/CommandPalette";
 import { DeleteProjectDialog, ProjectContextMenu } from "../../components/AllProjectsList";
 import { Flash } from "../../components/Flash";
 import { FolderDialog } from "../../components/FolderDialog";
@@ -11,6 +12,16 @@ import { useMain } from "./context";
 import { LandingScreen } from "./LandingScreen";
 
 export function MainShell() {
+  const { showLanding } = useMain();
+  return (
+    <>
+      <CommandPalette />
+      {showLanding ? <LandingScreen /> : <WorkspaceShell />}
+    </>
+  );
+}
+
+function WorkspaceShell() {
   const {
     applyWorkspace,
     deleteProjectFromSidebar,
@@ -25,13 +36,10 @@ export function MainShell() {
     setPendingDeleteProject,
     setProjectMenu,
     sidebarCollapsed,
-    showLanding,
     startNewChat,
     openWorkspaceFile,
     workspace,
   } = useMain();
-
-  if (showLanding) return <LandingScreen />;
 
   return (
     <WorkspaceFileLinks workspace={workspace || null} onOpenFile={openWorkspaceFile}>

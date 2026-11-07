@@ -52,8 +52,10 @@ export function ProjectSection({
 function GroupCard({ open, children }: { open: boolean; children: ReactNode }) {
   return (
     <div
-      className={`overflow-hidden rounded-2xl border transition-[background-color,border-color,margin] duration-200 ease-out motion-reduce:transition-none ${
-        open ? "mb-1 border-line/40 bg-wash/40 p-1" : "mb-0 border-transparent bg-transparent"
+      className={`overflow-hidden border transition-[background-color,border-color,border-radius,margin,padding] duration-200 ease-out motion-reduce:transition-none ${
+        open
+          ? "mb-1 rounded-[12px] border-line/40 bg-wash/40 p-1"
+          : "mb-0 rounded-[6px] border-transparent bg-transparent p-0"
       }`}
     >
       {children}

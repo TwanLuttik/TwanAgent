@@ -20,3 +20,7 @@ export function isNewChatHotkey(ev: HotkeyEvent, mac: boolean): boolean {
 export function isSettingsHotkey(ev: HotkeyEvent, mac: boolean): boolean {
   return isModHotkey(ev, mac, ",");
 }
+
+export function isCommandPaletteHotkey(ev: HotkeyEvent, mac: boolean): boolean {
+  return isModHotkey(ev, mac, "k");
+}
