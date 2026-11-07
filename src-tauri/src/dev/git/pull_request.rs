@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::worktree::{git_worktree_add, git_worktrees, GitWorktreeAdd};
 use super::{
-    clip, clip_bytes, drain, git_output, git_run, git_text, kill_git, set_nonblocking, GitTarget, GitText,
+    clip, clip_bytes, drain, git_output, git_run, git_text, kill_git, GitTarget, GitText,
 };
 use serde::{Deserialize, Serialize};
 
@@ -482,8 +482,8 @@ fn local_tool(root: &Path, program: &str, args: &[&str]) -> Result<String> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        set_nonblocking(stdout.as_raw_fd());
-        set_nonblocking(stderr.as_raw_fd());
+        super::set_nonblocking(stdout.as_raw_fd());
+        super::set_nonblocking(stderr.as_raw_fd());
     }
     let mut out_buf = Vec::new();
     let mut err_buf = Vec::new();
