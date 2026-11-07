@@ -82,6 +82,8 @@ pub struct StreamSession<'a> {
     last_usage: Option<DevChatUsage>,
     emitted_text: bool,
     emitted_reasoning: bool,
+    /// Deltas already flushed. The final message is compared with this plus anything still pending.
+    streamed_text: String,
     pending_delta: String,
     pending_reasoning: String,
     last_delta_emit: Option<Instant>,
@@ -98,6 +100,7 @@ impl<'a> StreamSession<'a> {
             last_usage: None,
             emitted_text: false,
             emitted_reasoning: false,
+            streamed_text: String::new(),
             pending_delta: String::new(),
             pending_reasoning: String::new(),
             last_delta_emit: None,
@@ -115,6 +118,13 @@ impl<'a> StreamSession<'a> {
 
     pub fn saw_text(&self) -> bool {
         self.emitted_text || !self.pending_delta.is_empty()
+    }
+
+    /// Text the deltas have produced, including a chunk that has not been flushed yet.
+    pub fn streamed_text(&self) -> String {
+        let mut all = self.streamed_text.clone();
+        all.push_str(&self.pending_delta);
+        all
     }
 
     pub fn saw_reasoning(&self) -> bool {
@@ -210,6 +220,7 @@ impl<'a> StreamSession<'a> {
             return;
         };
         self.emitted_text = true;
+        self.streamed_text.push_str(&text);
         // The coalesced buffer is one paint. The local turn wants each piece so a
         // reloaded window can append it instead of replacing the reply.
         for piece in split_progress(&text) {

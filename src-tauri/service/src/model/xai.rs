@@ -61,8 +61,9 @@ fn apply_line(data: &str, open: &mut OpenRound) {
         .and_then(Value::as_str)
         .is_some_and(|reason| !reason.is_empty());
     if finished {
-        if open.text.trim().is_empty() {
-            open.push_text(&xai::fallback_choice_text(choice));
+        // Deltas can stop short of the ending. The final message still has it.
+        if let Some(tail) = xai::unseen_reply_tail(&open.text, &xai::fallback_choice_text(choice)) {
+            open.push_text(&tail);
         }
         if open.reasoning.trim().is_empty() {
             open.push_reasoning(&xai::message_reasoning(choice));
@@ -124,6 +125,31 @@ mod tests {
         assert_eq!(done.tool_calls.len(), 1);
         assert_eq!(done.tool_calls[0].name, "read_file");
         assert_eq!(done.tool_calls[0].arguments, r#"{"path":"a.ts"}"#);
+    }
+
+    #[test]
+    fn a_final_message_keeps_the_ending_after_a_partial_delta() {
+        let mut open = OpenRound::default();
+        apply_line(r#"{"choices":[{"delta":{"content":"Hello"}}]}"#, &mut open);
+        assert_eq!(open.take_delta().as_deref(), Some("Hello"));
+        apply_line(
+            r#"{"choices":[{"delta":{},"finish_reason":"stop","message":{"role":"assistant","content":"Hello world."}}]}"#,
+            &mut open,
+        );
+        assert_eq!(open.take_delta().as_deref(), Some(" world."));
+        assert_eq!(open.finish().text, "Hello world.");
+    }
+
+    #[test]
+    fn a_final_message_does_not_repeat_text_the_deltas_already_sent() {
+        let mut open = OpenRound::default();
+        apply_line(r#"{"choices":[{"delta":{"content":"Hello world."}}]}"#, &mut open);
+        apply_line(
+            r#"{"choices":[{"delta":{},"finish_reason":"stop","message":{"content":"Hello world."}}]}"#,
+            &mut open,
+        );
+        assert_eq!(open.take_delta().as_deref(), Some("Hello world."));
+        assert_eq!(open.finish().text, "Hello world.");
     }
 
     #[test]

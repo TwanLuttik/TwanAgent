@@ -159,6 +159,27 @@ pub fn fallback_choice_text(choice: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// Text from the final `message` that the deltas never carried.
+///
+/// xAI sometimes ends the stream with the whole reply on `message` and an empty
+/// `delta`. When earlier deltas already hold a prefix of that reply, the ending
+/// is the part they left out. A different reply is left alone so it is not pasted
+/// on a second time.
+pub fn unseen_reply_tail(streamed: &str, fallback: &str) -> Option<String> {
+    if fallback.is_empty() {
+        return None;
+    }
+    if streamed.is_empty() {
+        return Some(fallback.to_string());
+    }
+    // The deltas already include this reply, or a longer one.
+    if streamed.starts_with(fallback) {
+        return None;
+    }
+    // The final message is the same reply with the ending the deltas never sent.
+    fallback.strip_prefix(streamed).filter(|tail| !tail.is_empty()).map(str::to_string)
+}
+
 /// One OpenAI tool-call fragment inside a `delta.tool_calls` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolFragment {
@@ -629,6 +650,16 @@ mod tests {
         });
         assert_eq!(message_reasoning(&choice), "Thought.");
         assert_eq!(fallback_choice_text(&choice), "Answer");
+    }
+
+    #[test]
+    fn a_final_message_keeps_the_ending_the_deltas_never_sent() {
+        assert_eq!(unseen_reply_tail("", "Saved."), Some("Saved.".into()));
+        assert_eq!(unseen_reply_tail("Saved.", "Saved."), None);
+        assert_eq!(unseen_reply_tail("Hello", "Hello world."), Some(" world.".into()));
+        assert_eq!(unseen_reply_tail("Hello world.", "Hello"), None);
+        assert_eq!(unseen_reply_tail("Hello", ""), None);
+        assert_eq!(unseen_reply_tail("Hello", "A different reply."), None);
     }
 
     #[test]

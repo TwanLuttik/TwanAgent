@@ -267,17 +267,14 @@ fn wait_round(
                 if let Some(next) = event.usage {
                     usage = Some(next);
                 }
-                if text.is_empty() {
-                    if let Some(full) = event.text.filter(|value| !value.is_empty()) {
-                        // Nothing streamed. The saved transcript has this reply, but
-                        // the page only hears deltas, so a missed save left a finished
-                        // turn with no text until the next reload.
-                        on_progress(RoundProgress {
-                            kind: "delta",
-                            text: full.clone(),
-                        });
-                        text = full;
-                    }
+                if let Some(tail) = event.text.filter(|value| !value.is_empty()) {
+                    // The page only hears deltas. The final message can hold the
+                    // ending those deltas never sent, so it has to be sent as one too.
+                    on_progress(RoundProgress {
+                        kind: "delta",
+                        text: tail.clone(),
+                    });
+                    text.push_str(&tail);
                 }
                 return CollectedRound {
                     text,
@@ -648,7 +645,7 @@ async fn stream_chat(
             if !session.has_tools() {
                 push_message_tools(session, &held.message_tools);
             }
-            fallback_done_text(session.saw_text(), &held.text)
+            twanagent_service::xai::unseen_reply_tail(&session.streamed_text(), &held.text)
         },
     )
     .await
@@ -748,14 +745,6 @@ fn parse_xai_data(data: &str, fallback: &Mutex<XaiFallback>) -> Vec<crate::model
         pieces.push(StreamPiece::Failed(message.to_string()));
     }
     pieces
-}
-
-fn fallback_done_text(emitted_text: bool, fallback: &str) -> Option<String> {
-    if emitted_text || fallback.is_empty() {
-        None
-    } else {
-        Some(fallback.to_string())
-    }
 }
 
 fn parse_usage(json: &serde_json::Value) -> Option<DevChatUsage> {
@@ -872,10 +861,10 @@ mod tests {
     }
 
     #[test]
-    fn fallback_done_text_only_when_nothing_was_streamed() {
-        assert_eq!(fallback_done_text(true, "Saved."), None);
-        assert_eq!(fallback_done_text(false, ""), None);
-        assert_eq!(fallback_done_text(false, "Saved."), Some("Saved.".into()));
+    fn the_final_message_keeps_an_ending_the_deltas_skipped() {
+        assert_eq!(twanagent_service::xai::unseen_reply_tail("Hello", "Hello world."), Some(" world.".into()));
+        assert_eq!(twanagent_service::xai::unseen_reply_tail("", "Saved."), Some("Saved.".into()));
+        assert_eq!(twanagent_service::xai::unseen_reply_tail("Saved.", "Saved."), None);
     }
 
     #[test]
