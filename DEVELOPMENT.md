@@ -129,7 +129,7 @@ A signed build checks GitHub releases when the sidebar opens. If a newer prerele
 
 The desktop version and the server version are two numbers.
 
-- Desktop: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the root `version` in `package-lock.json`. This is the GitHub tag, such as `v1.0.0-beta.12`.
+- Desktop: `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and the root `version` in `package-lock.json`. This is the GitHub tag, such as `v1.0.0-beta.13`.
 - Server: `src-tauri/service/Cargo.toml`. `twanagent-server --version` prints this. Bump it whenever the server binary changes, even when the desktop version stays put.
 
 One tag publishes both. Pushing `v*` runs `.github/workflows/release.yml`. The macOS job creates the GitHub release and attaches the universal app. The Windows job attaches the unsigned installer and `twanagent-server` for Windows. The server job attaches the macOS and Linux server binaries. The asset names carry the service crate version:
