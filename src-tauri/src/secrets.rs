@@ -1,5 +1,7 @@
+#[cfg(any(target_os = "macos", test))]
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(any(target_os = "macos", test))]
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "macos")]
@@ -201,7 +203,8 @@ fn write_account(service: &str, account: &str, value: &str) -> std::result::Resu
     #[cfg(not(any(target_os = "macos", windows)))]
     return unsupported_keychain(service, account, Some(value));
     // The verify read has to see the keychain, not a value remembered from before the write.
-    #[cfg(any(target_os = "macos", windows))]
+    // Only macOS caches keychain reads. Windows reads the credential store directly.
+    #[cfg(target_os = "macos")]
     forget_account(service, account);
     #[cfg(any(target_os = "macos", windows))]
     match read_account(service, account)? {
@@ -247,6 +250,7 @@ fn read_account_uncached(service: &str, account: &str) -> std::result::Result<Op
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone)]
 enum Remembered {
     Value(String),
@@ -254,15 +258,18 @@ enum Remembered {
     Denied(String),
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn keychain_memory() -> &'static Mutex<HashMap<String, Remembered>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Remembered>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn account_cache_key(service: &str, account: &str) -> String {
     format!("{service}\0{account}")
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn recall_account(service: &str, account: &str) -> Option<std::result::Result<Option<String>, String>> {
     let cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
     match cache.get(&account_cache_key(service, account))? {
@@ -272,6 +279,7 @@ fn recall_account(service: &str, account: &str) -> Option<std::result::Result<Op
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn remember_account(service: &str, account: &str, read: &std::result::Result<Option<String>, String>) {
     let remembered = match read {
         Ok(Some(value)) => Remembered::Value(value.clone()),
@@ -283,6 +291,7 @@ fn remember_account(service: &str, account: &str, read: &std::result::Result<Opt
     cache.insert(account_cache_key(service, account), remembered);
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn forget_account(service: &str, account: &str) {
     let mut cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
     cache.remove(&account_cache_key(service, account));
