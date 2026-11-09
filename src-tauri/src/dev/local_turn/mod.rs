@@ -2,10 +2,10 @@
 //! Reloading the window, or a React crash that remounts it, leaves the turn running.
 //! The new page asks which turns are still going and keeps painting their events.
 
-mod subagent;
-mod tools;
 mod context;
 mod drive;
+mod subagent;
+mod tools;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -99,7 +99,14 @@ fn turns() -> &'static Mutex<HashMap<String, Arc<LiveTurn>>> {
     TURNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn emit(app: &AppHandle, conversation_id: &str, kind: &str, text: Option<String>, tool: Option<DevToolCall>, saved: Option<Value>) {
+fn emit(
+    app: &AppHandle,
+    conversation_id: &str,
+    kind: &str,
+    text: Option<String>,
+    tool: Option<DevToolCall>,
+    saved: Option<Value>,
+) {
     let _ = app.emit(
         EVENT,
         DevChatEvent {
@@ -131,7 +138,11 @@ pub fn dev_local_turns() -> Vec<LocalTurnInfo> {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_local_turn_stop(conversation_id: String) {
-    let Some(turn) = turns().lock().ok().and_then(|map| map.get(&conversation_id).cloned()) else {
+    let Some(turn) = turns()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&conversation_id).cloned())
+    else {
         return;
     };
     turn.cancel.store(true, Ordering::Relaxed);
@@ -171,12 +182,19 @@ pub fn dev_local_turn_stop(conversation_id: String) {
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_local_turn_shell(conversation_id: String, command: String, allow: bool) -> Result<()> {
-    let turn = live(&conversation_id).ok_or_else(|| Error::Other("that chat is not waiting on a command".into()))?;
-    let mut waits = turn.shell.lock().map_err(|_| Error::Other("shell wait is busy".into()))?;
+    let turn = live(&conversation_id)
+        .ok_or_else(|| Error::Other("that chat is not waiting on a command".into()))?;
+    let mut waits = turn
+        .shell
+        .lock()
+        .map_err(|_| Error::Other("shell wait is busy".into()))?;
     if waits.is_empty() {
         return Err(Error::Other("that chat is not waiting on a command".into()));
     }
-    let index = waits.iter().position(|wait| wait.command == command).unwrap_or(0);
+    let index = waits
+        .iter()
+        .position(|wait| wait.command == command)
+        .unwrap_or(0);
     let at = index.min(waits.len() - 1);
     let wait = waits.remove(at);
     let _ = wait.tx.send(allow);
@@ -184,9 +202,17 @@ pub fn dev_local_turn_shell(conversation_id: String, command: String, allow: boo
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_local_turn_plan(conversation_id: String, decision: String, note: Option<String>) -> Result<()> {
-    let turn = live(&conversation_id).ok_or_else(|| Error::Other("that chat is not waiting on a plan".into()))?;
-    let mut waits = turn.plan.lock().map_err(|_| Error::Other("plan wait is busy".into()))?;
+pub fn dev_local_turn_plan(
+    conversation_id: String,
+    decision: String,
+    note: Option<String>,
+) -> Result<()> {
+    let turn = live(&conversation_id)
+        .ok_or_else(|| Error::Other("that chat is not waiting on a plan".into()))?;
+    let mut waits = turn
+        .plan
+        .lock()
+        .map_err(|_| Error::Other("plan wait is busy".into()))?;
     let Some(wait) = waits.pop() else {
         return Err(Error::Other("that chat is not waiting on a plan".into()));
     };
@@ -260,7 +286,10 @@ fn spawn_local_turn(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
         }
         emit(&app_for_turn, &id, "idle", None, None, None);
         if let Ok(mut map) = turns().lock() {
-            if map.get(&id).is_some_and(|slot| Arc::ptr_eq(slot, &live_turn)) {
+            if map
+                .get(&id)
+                .is_some_and(|slot| Arc::ptr_eq(slot, &live_turn))
+            {
                 map.remove(&id);
             }
         }
@@ -280,10 +309,20 @@ fn keep_partial(transcript: &mut Vec<Value>, round: &Round) {
     if round.text.trim().is_empty() && round.reasoning.trim().is_empty() {
         return;
     }
-    transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
+    transcript.push(assistant_value(
+        &round.text,
+        &round.reasoning,
+        &[],
+        &round.thinking,
+    ));
 }
 
-fn assistant_value(text: &str, reasoning: &str, tools: &[DevToolCall], thinking: &[crate::model_providers::ThinkingBlock]) -> Value {
+fn assistant_value(
+    text: &str,
+    reasoning: &str,
+    tools: &[DevToolCall],
+    thinking: &[crate::model_providers::ThinkingBlock],
+) -> Value {
     let mut message = json!({ "role": "assistant", "content": text });
     if !reasoning.trim().is_empty() {
         message["reasoning"] = Value::String(reasoning.trim().to_string());
@@ -348,12 +387,13 @@ fn record_round_usage(
     if usage.prompt_tokens == 0 && usage.completion_tokens == 0 {
         return;
     }
-    let title = crate::store::with_conn(&super::conv::conv_store_dir(data_dir, workspace), |conn| {
-        crate::store::get_conversation(conn, conversation_id).map(|row| row.title)
-    })
-    .ok()
-    .filter(|title| !title.trim().is_empty())
-    .unwrap_or_else(|| "Chat".into());
+    let title =
+        crate::store::with_conn(&super::conv::conv_store_dir(data_dir, workspace), |conn| {
+            crate::store::get_conversation(conn, conversation_id).map(|row| row.title)
+        })
+        .ok()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| "Chat".into());
     let _ = crate::usage::record(
         data_dir,
         crate::usage::UsageRecord {
@@ -584,7 +624,13 @@ mod tests {
         assert_eq!(rows[0].prompt_tokens, 1200);
         assert_eq!(rows[0].completion_tokens, 80);
         assert_eq!(rows[0].workspace_name, "billing");
-        record_round_usage(dir.path(), workspace.to_str().unwrap(), "c1", "MiniMax-M3", None);
+        record_round_usage(
+            dir.path(),
+            workspace.to_str().unwrap(),
+            "c1",
+            "MiniMax-M3",
+            None,
+        );
         assert_eq!(crate::usage::list_since(dir.path(), None).unwrap().len(), 1);
     }
 
@@ -631,7 +677,9 @@ mod tests {
         assert!(retryable_model_error("error decoding response body"));
         assert!(retryable_model_error("the model stream closed"));
         assert!(!retryable_model_error("Stopped."));
-        assert!(!retryable_model_error("Grok CLI login expired. Run grok login."));
+        assert!(!retryable_model_error(
+            "Grok CLI login expired. Run grok login."
+        ));
         assert!(!retryable_model_error("xAI rejected the API key."));
         assert!(!retryable_model_error(
             "This model's maximum context length was exceeded"

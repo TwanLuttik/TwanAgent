@@ -30,6 +30,7 @@ import { RunningElapsed } from "./RunningElapsed";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { subagentsForParent } from "../lib/subagent-parent";
+import { sidebarActivityIcon } from "../lib/core";
 import { formatModelName } from "../lib/usage";
 
 export function ConversationList({
@@ -398,6 +399,9 @@ const ConversationCard = memo(function ConversationCard({
     title: row.title,
     place,
   });
+  const activityIcon = running && caption ? sidebarActivityIcon(caption) : "";
+  const captionIcon =
+    activityIcon && activityIcon !== "arrow.turn.down.right" ? activityIcon : "arrow.turn.down.right";
   return (
     <div
       className={`group/chat relative z-0 flex items-center overflow-visible rounded-xl select-none hover:z-10 ${
@@ -470,14 +474,19 @@ const ConversationCard = memo(function ConversationCard({
                 {place.branch.trim()}
               </span>
               {caption ? (
-                <span className="min-w-0 truncate" title={caption}>
-                  {caption}
-                </span>
+                <>
+                  {activityIcon && activityIcon !== "arrow.turn.down.right" ? (
+                    <Symbol name={activityIcon} className="size-3 shrink-0" />
+                  ) : null}
+                  <span className="min-w-0 truncate" title={caption}>
+                    {caption}
+                  </span>
+                </>
               ) : null}
             </span>
           ) : caption ? (
             <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
-              <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0" />
+              <Symbol name={captionIcon} className="size-3 shrink-0" />
               <span className="min-w-0 truncate" title={caption}>
                 {caption}
               </span>

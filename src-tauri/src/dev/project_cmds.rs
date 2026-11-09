@@ -5,11 +5,8 @@ use std::path::Path;
 
 use tauri::{AppHandle, Manager, State};
 
+use crate::dev::git::{project_removal, remove_project_worktrees, GitTarget, ProjectRemoval};
 use crate::dev::off_main;
-use crate::dev::git::{
-    project_removal, remove_project_worktrees, GitTarget,
-    ProjectRemoval,
-};
 use crate::dev::paths::{expand_folder_path, path_string};
 use crate::dev::project_location::ProjectsLocation;
 use crate::dev::projects::{
@@ -42,7 +39,10 @@ pub fn dev_projects_location(state: State<'_, AppState>) -> ProjectsLocation {
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_list_projects(state: State<'_, AppState>) -> Result<Vec<FolderSuggestion>> {
     let data_dir = state.data_dir.clone();
-    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    let roots = [
+        state.projects_root.clone(),
+        state.legacy_projects_root.clone(),
+    ];
     off_main(move || Ok(list_projects_from(&data_dir, &roots))).await
 }
 
@@ -58,7 +58,10 @@ pub fn named_project_rows(
         if name.is_empty() {
             continue;
         }
-        let Some(row) = rows.iter_mut().find(|row| same_project_path(&row.path, &remote.mount_path)) else {
+        let Some(row) = rows
+            .iter_mut()
+            .find(|row| same_project_path(&row.path, &remote.mount_path))
+        else {
             continue;
         };
         row.name = name.to_string();
@@ -66,7 +69,10 @@ pub fn named_project_rows(
     rows
 }
 
-fn list_projects_from(data_dir: &std::path::Path, roots: &[std::path::PathBuf; 2]) -> Vec<FolderSuggestion> {
+fn list_projects_from(
+    data_dir: &std::path::Path,
+    roots: &[std::path::PathBuf; 2],
+) -> Vec<FolderSuggestion> {
     match crate::appdb::open(data_dir).and_then(|conn| {
         let rows = crate::appdb::list_projects(&conn)?;
         let remotes = crate::remote::config::list_remote_projects(&conn).unwrap_or_default();
@@ -110,9 +116,7 @@ fn is_linked_worktree(root: &Path) -> bool {
         return false;
     };
     rows.iter().any(|row| {
-        !row.main
-            && !row.bare
-            && std::fs::canonicalize(&row.path).ok().as_ref() == Some(&canon)
+        !row.main && !row.bare && std::fs::canonicalize(&row.path).ok().as_ref() == Some(&canon)
     })
 }
 
@@ -167,25 +171,33 @@ pub async fn dev_clone_repo(app: AppHandle, url: String, name: Option<String>) -
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_project_removal(state: State<'_, AppState>, path: String) -> Result<ProjectRemoval> {
+pub async fn dev_project_removal(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ProjectRemoval> {
     let data_dir = state.data_dir.clone();
-    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    let roots = [
+        state.projects_root.clone(),
+        state.legacy_projects_root.clone(),
+    ];
     off_main(move || {
         let root = expand_folder_path(&path)?;
         let target = GitTarget::local_in(&root, &[roots[0].clone(), roots[1].clone()], &data_dir)?;
-        Ok(project_removal(
-            &target,
-            &data_dir,
-            &[&roots[0], &roots[1]],
-        ))
+        Ok(project_removal(&target, &data_dir, &[&roots[0], &roots[1]]))
     })
     .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_delete_project_worktrees(state: State<'_, AppState>, path: String) -> Result<Vec<String>> {
+pub async fn dev_delete_project_worktrees(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<String>> {
     let data_dir = state.data_dir.clone();
-    let roots = [state.projects_root.clone(), state.legacy_projects_root.clone()];
+    let roots = [
+        state.projects_root.clone(),
+        state.legacy_projects_root.clone(),
+    ];
     off_main(move || {
         let root = expand_folder_path(&path)?;
         let target = GitTarget::local_in(&root, &[roots[0].clone(), roots[1].clone()], &data_dir)?;
@@ -222,7 +234,10 @@ pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()
         Ok(dest) => dest,
         Err(_) => {
             if let Some(root) = external.as_deref() {
-                let _ = std::fs::remove_dir_all(crate::dev::git::external_worktree_root(&state.data_dir, root));
+                let _ = std::fs::remove_dir_all(crate::dev::git::external_worktree_root(
+                    &state.data_dir,
+                    root,
+                ));
                 if root.is_dir() {
                     std::fs::remove_dir_all(root)?;
                 }
@@ -239,7 +254,9 @@ pub fn dev_delete_project(state: State<'_, AppState>, path: String) -> Result<()
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_list_project_groups(state: State<'_, AppState>) -> Result<Vec<crate::dev::group::GroupRow>> {
+pub async fn dev_list_project_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::dev::group::GroupRow>> {
     let data_dir = state.data_dir.clone();
     off_main(move || {
         crate::dev::group::load(&data_dir)?;
@@ -327,4 +344,3 @@ pub async fn dev_delete_project_group(state: State<'_, AppState>, path: String) 
     let _ = state.forget_workspace(&removed);
     Ok(())
 }
-

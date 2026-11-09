@@ -307,7 +307,9 @@ pub async fn read_cli_access_token_fresh(home: &Path) -> Option<String> {
         Some(fresh) => Some(fresh),
         // Keep the current access token until it is actually expired. A failed refresh
         // a few minutes early should not sign the account out.
-        None if !token_expired(value.get("expires_at").and_then(|item| item.as_i64())) => Some(token),
+        None if !token_expired(value.get("expires_at").and_then(|item| item.as_i64())) => {
+            Some(token)
+        }
         None => None,
     }
 }
@@ -376,9 +378,8 @@ fn read_profile_client_id(path: &Path) -> Option<String> {
 }
 
 pub(super) fn claude_cli_user_agent() -> String {
-    let version = cached_claude_version(claude_bin().as_deref()).or_else(|| {
-        home_dir().and_then(|home| claude_bin_version(&home))
-    });
+    let version = cached_claude_version(claude_bin().as_deref())
+        .or_else(|| home_dir().and_then(|home| claude_bin_version(&home)));
     match version {
         Some(version) => format!("claude-code/{version}"),
         None => "claude-code".into(),
@@ -448,12 +449,19 @@ async fn refresh_cli_credentials(path: &Path, refresh_token: &str) -> Option<Str
     }
     let fresh: serde_json::Value = response.json().await.ok()?;
     let access = access_token_of(&fresh)?;
-    let mut stored = serde_json::from_str::<serde_json::Value>(&fs::read_to_string(path).ok()?).ok()?;
+    let mut stored =
+        serde_json::from_str::<serde_json::Value>(&fs::read_to_string(path).ok()?).ok()?;
     let obj = stored.as_object_mut()?;
-    obj.insert("access_token".into(), serde_json::Value::String(access.clone()));
+    obj.insert(
+        "access_token".into(),
+        serde_json::Value::String(access.clone()),
+    );
     if let Some(next) = fresh.get("refresh_token").and_then(|item| item.as_str()) {
         if !next.trim().is_empty() {
-            obj.insert("refresh_token".into(), serde_json::Value::String(next.to_string()));
+            obj.insert(
+                "refresh_token".into(),
+                serde_json::Value::String(next.to_string()),
+            );
         }
     }
     if let Some(expires_at) = fresh.get("expires_at").and_then(|item| item.as_i64()) {
@@ -463,7 +471,10 @@ async fn refresh_cli_credentials(path: &Path, refresh_token: &str) -> Option<Str
             .duration_since(std::time::UNIX_EPOCH)
             .ok()?
             .as_secs() as i64;
-        obj.insert("expires_at".into(), serde_json::Value::from(now.saturating_add(expires_in)));
+        obj.insert(
+            "expires_at".into(),
+            serde_json::Value::from(now.saturating_add(expires_in)),
+        );
     }
     let text = serde_json::to_string_pretty(&stored).ok()?;
     fs::write(path, text).ok()?;
@@ -505,8 +516,8 @@ pub(super) fn cli_account_email(home: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::usage::claude_usage_tokens;
+    use super::*;
 
     #[test]
     fn claude_account_reads_credentials_and_oauth_email() {
@@ -550,7 +561,10 @@ mod tests {
             r#"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000}}"#,
         )
         .unwrap();
-        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
+        assert_eq!(
+            read_claude_access_token(dir.path()).as_deref(),
+            Some("file-token")
+        );
     }
 
     #[test]
@@ -567,8 +581,14 @@ mod tests {
             r#"{"access_token":"oauth-token","expires_at":1,"account_email":"ada@example.com","refresh_token":"refresh"}"#,
         )
         .unwrap();
-        assert_eq!(cli_account_email(dir.path()).as_deref(), Some("ada@example.com"));
-        assert_eq!(claude_oauth_client_id(&creds.join("default.json")), CLAUDE_OAUTH_CLIENT_ID);
+        assert_eq!(
+            cli_account_email(dir.path()).as_deref(),
+            Some("ada@example.com")
+        );
+        assert_eq!(
+            claude_oauth_client_id(&creds.join("default.json")),
+            CLAUDE_OAUTH_CLIENT_ID
+        );
         let root = dir.path().join(".config").join("anthropic");
         fs::create_dir_all(root.join("configs")).unwrap();
         fs::write(
@@ -591,7 +611,10 @@ mod tests {
             root.join("credentials").join("default.json")
         );
         // The access token is expired, but it stays a candidate so the caller can refresh it.
-        assert_eq!(claude_usage_tokens(dir.path()), vec!["oauth-token".to_string()]);
+        assert_eq!(
+            claude_usage_tokens(dir.path()),
+            vec!["oauth-token".to_string()]
+        );
         assert_eq!(read_claude_access_token(dir.path()), None);
         assert_eq!(
             cli_access_token(dir.path(), true).map(|(token, expired)| (token, expired)),
@@ -610,13 +633,19 @@ mod tests {
             r#"{"claudeAiOauth":{"accessToken":"file-token","expiresAt":4102444800000}}"#,
         )
         .unwrap();
-        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
+        assert_eq!(
+            read_claude_access_token(dir.path()).as_deref(),
+            Some("file-token")
+        );
         fs::write(
             home.join(".credentials.json"),
             r#"{"claudeAiOauth":{"accessToken":"file-token"}}"#,
         )
         .unwrap();
-        assert_eq!(read_claude_access_token(dir.path()).as_deref(), Some("file-token"));
+        assert_eq!(
+            read_claude_access_token(dir.path()).as_deref(),
+            Some("file-token")
+        );
     }
 
     #[test]

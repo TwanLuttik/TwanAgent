@@ -11,15 +11,15 @@ mod auth;
 mod usage;
 
 pub use auth::{
-    forget_mmx_version, minimax_cli_info, mmx_bin, mmx_home, mmx_version, resolve_minimax_auth_fresh,
-    resolve_minimax_auth_fresh_in, MinimaxAuth, MinimaxCliInfo,
+    forget_mmx_version, minimax_cli_info, mmx_bin, mmx_home, mmx_version,
+    resolve_minimax_auth_fresh, resolve_minimax_auth_fresh_in, MinimaxAuth, MinimaxCliInfo,
 };
 pub use usage::{
-    account_usage, balance_url, cached_account_usage, dev_minimax_account_usage,
-    dev_minimax_account_usage_cached, is_secret_api_key, parse_balance, parse_quota, quota_url,
-    AccountUsage, AccountUsageWindow, __cmd__dev_minimax_account_usage,
-    __cmd__dev_minimax_account_usage_cached, __tauri_command_name_dev_minimax_account_usage,
-    __tauri_command_name_dev_minimax_account_usage_cached,
+    __cmd__dev_minimax_account_usage, __cmd__dev_minimax_account_usage_cached,
+    __tauri_command_name_dev_minimax_account_usage,
+    __tauri_command_name_dev_minimax_account_usage_cached, account_usage, balance_url,
+    cached_account_usage, dev_minimax_account_usage, dev_minimax_account_usage_cached,
+    is_secret_api_key, parse_balance, parse_quota, quota_url, AccountUsage, AccountUsageWindow,
 };
 
 pub const PROVIDER_MINIMAX: &str = "minimax";
@@ -68,21 +68,23 @@ const MINIMAX_MODELS: &[(&str, &str, u64, u32, bool, &[&str])] = &[
 pub fn minimax_models() -> Vec<DevModel> {
     MINIMAX_MODELS
         .iter()
-        .map(|(id, name, window, _max_tokens, vision, efforts)| DevModel {
-            id: (*id).into(),
-            name: (*name).into(),
-            efforts: efforts
-                .iter()
-                .map(|id| DevEffort {
-                    id: (*id).into(),
-                    label: effort_label(id),
-                })
-                .collect(),
-            context_window: Some(*window),
-            context_windows: context_windows_for(id),
-            provider: PROVIDER_MINIMAX.into(),
-            capabilities: capabilities_for(*vision),
-        })
+        .map(
+            |(id, name, window, _max_tokens, vision, efforts)| DevModel {
+                id: (*id).into(),
+                name: (*name).into(),
+                efforts: efforts
+                    .iter()
+                    .map(|id| DevEffort {
+                        id: (*id).into(),
+                        label: effort_label(id),
+                    })
+                    .collect(),
+                context_window: Some(*window),
+                context_windows: context_windows_for(id),
+                provider: PROVIDER_MINIMAX.into(),
+                capabilities: capabilities_for(*vision),
+            },
+        )
         .collect()
 }
 
@@ -102,7 +104,16 @@ fn capabilities_for(vision: bool) -> Vec<String> {
     caps
 }
 
-pub fn minimax_model(id: &str) -> Option<&'static (&'static str, &'static str, u64, u32, bool, &'static [&'static str])> {
+pub fn minimax_model(
+    id: &str,
+) -> Option<&'static (
+    &'static str,
+    &'static str,
+    u64,
+    u32,
+    bool,
+    &'static [&'static str],
+)> {
     let id = id.trim();
     MINIMAX_MODELS.iter().find(|(row_id, ..)| *row_id == id)
 }

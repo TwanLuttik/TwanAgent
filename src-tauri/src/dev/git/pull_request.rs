@@ -7,9 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::worktree::{git_worktree_add, git_worktrees, GitWorktreeAdd};
-use super::{
-    clip, clip_bytes, drain, git_output, git_run, git_text, kill_git, GitTarget, GitText,
-};
+use super::{clip, clip_bytes, drain, git_output, git_run, git_text, kill_git, GitTarget, GitText};
 use serde::{Deserialize, Serialize};
 
 use crate::env_path::command_path;
@@ -200,7 +198,10 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
     if number == 0 {
         return None;
     }
-    let draft = value.get("isDraft").and_then(|v| v.as_bool()).unwrap_or(false);
+    let draft = value
+        .get("isDraft")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let raw_state = value.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let state = if raw_state.eq_ignore_ascii_case("merged") {
         "merged"
@@ -212,7 +213,11 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
         "open"
     };
     let title = clip_text(
-        value.get("title").and_then(|v| v.as_str()).unwrap_or("").trim(),
+        value
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim(),
         180,
     );
     let title = if title.is_empty() {
@@ -232,7 +237,11 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
         .unwrap_or("")
         .trim()
         .to_string();
-    let review = match value.get("reviewDecision").and_then(|v| v.as_str()).unwrap_or("") {
+    let review = match value
+        .get("reviewDecision")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+    {
         "APPROVED" => "approved",
         "CHANGES_REQUESTED" => "changes",
         "REVIEW_REQUIRED" => "review",
@@ -263,9 +272,16 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
                 short: hash.chars().take(7).collect(),
                 hash: hash.to_string(),
                 author,
-                at: row.get("authoredDate").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                at: row
+                    .get("authoredDate")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 subject: clip_text(
-                    row.get("messageHeadline").and_then(|v| v.as_str()).unwrap_or("").trim(),
+                    row.get("messageHeadline")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .trim(),
                     200,
                 ),
             });
@@ -274,12 +290,18 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
     let file_rows = value.get("files").and_then(|v| v.as_array());
     let mut changed = json_u32(&value, "changedFiles");
     if changed == 0 {
-        changed = file_rows.map(|rows| rows.len().min(u32::MAX as usize) as u32).unwrap_or(0);
+        changed = file_rows
+            .map(|rows| rows.len().min(u32::MAX as usize) as u32)
+            .unwrap_or(0);
     }
     let mut files = Vec::new();
     if let Some(rows) = file_rows {
         for row in rows.iter().take(80) {
-            let path = row.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let path = row
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if path.is_empty() {
                 continue;
             }
@@ -294,11 +316,33 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
         number,
         title,
         state: state.to_string(),
-        body: clip_text(value.get("body").and_then(|v| v.as_str()).unwrap_or("").trim(), 6_000),
+        body: clip_text(
+            value
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim(),
+            6_000,
+        ),
         author,
-        base: value.get("baseRefName").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
-        head: value.get("headRefName").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
-        url: value.get("url").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+        base: value
+            .get("baseRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        head: value
+            .get("headRefName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        url: value
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string(),
         additions: json_u32(&value, "additions"),
         deletions: json_u32(&value, "deletions"),
         changed,
@@ -312,7 +356,10 @@ pub fn parse_branch_pull_request(text: &str) -> Option<GitBranchPullRequest> {
 fn json_u32(value: &serde_json::Value, key: &str) -> u32 {
     value
         .get(key)
-        .and_then(|n| n.as_u64().or_else(|| n.as_i64().filter(|n| *n > 0).map(|n| n as u64)))
+        .and_then(|n| {
+            n.as_u64()
+                .or_else(|| n.as_i64().filter(|n| *n > 0).map(|n| n as u64))
+        })
         .unwrap_or(0)
         .min(u64::from(u32::MAX)) as u32
 }
@@ -330,7 +377,11 @@ fn clip_text(text: &str, max: usize) -> String {
 }
 
 fn count_checks(value: Option<&serde_json::Value>) -> GitPullRequestChecks {
-    let mut checks = GitPullRequestChecks { pass: 0, fail: 0, pending: 0 };
+    let mut checks = GitPullRequestChecks {
+        pass: 0,
+        fail: 0,
+        pending: 0,
+    };
     let Some(rows) = value.and_then(|v| v.as_array()) else {
         return checks;
     };
@@ -351,7 +402,13 @@ fn count_checks(value: Option<&serde_json::Value>) -> GitPullRequestChecks {
                 _ => checks.pending += 1,
             }
         } else {
-            match row.get("state").and_then(|v| v.as_str()).unwrap_or("").to_ascii_uppercase().as_str() {
+            match row
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_ascii_uppercase()
+                .as_str()
+            {
                 "SUCCESS" => checks.pass += 1,
                 "FAILURE" | "ERROR" => checks.fail += 1,
                 _ => checks.pending += 1,
@@ -401,7 +458,10 @@ pub fn parse_pull_request_states(text: &str) -> Option<HashMap<u32, PullRequestI
             .chars()
             .take(140)
             .collect();
-        let state = row.get("state").and_then(|state| state.as_str()).unwrap_or("");
+        let state = row
+            .get("state")
+            .and_then(|state| state.as_str())
+            .unwrap_or("");
         out.insert(
             number,
             PullRequestInfo {
@@ -428,7 +488,9 @@ pub fn git_pull_request_checkout(target: &GitTarget, number: u32) -> Result<GitW
         return Err(Error::Other("not a git repository".into()));
     }
     if listed.iter().any(|row| row.bare) {
-        return Err(Error::Other("a bare repository cannot grow a worktree".into()));
+        return Err(Error::Other(
+            "a bare repository cannot grow a worktree".into(),
+        ));
     }
     let remote = match git_text(target, &["remote", "get-url", "origin"]) {
         Ok(GitText::Output(text)) => text,
@@ -446,7 +508,10 @@ pub fn git_pull_request_checkout(target: &GitTarget, number: u32) -> Result<GitW
         return Err(Error::Other(format!("pull request {number} is not open")));
     }
     let branch = format!("pr/{number}");
-    if let Some(row) = listed.iter().find(|row| row.branch.as_deref() == Some(branch.as_str())) {
+    if let Some(row) = listed
+        .iter()
+        .find(|row| row.branch.as_deref() == Some(branch.as_str()))
+    {
         return Ok(GitWorktreeAdd {
             opened: row.path.clone(),
             worktrees: listed,
@@ -457,7 +522,7 @@ pub fn git_pull_request_checkout(target: &GitTarget, number: u32) -> Result<GitW
     git_worktree_add(target, &branch, false)
 }
 
-fn local_tool(root: &Path, program: &str, args: &[&str]) -> Result<String> {
+pub(super) fn local_tool(root: &Path, program: &str, args: &[&str]) -> Result<String> {
     if program.is_empty() || program.contains('/') || program.contains('\\') {
         return Err(Error::Other("invalid command".into()));
     }
@@ -470,7 +535,9 @@ fn local_tool(root: &Path, program: &str, args: &[&str]) -> Result<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|_| Error::Other(format!("{program} is not available")))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|_| Error::Other(format!("{program} is not available")))?;
     let mut stdout = child
         .stdout
         .take()
@@ -518,7 +585,11 @@ pub fn git_branch_pull_request(target: &GitTarget) -> Result<Option<GitBranchPul
     if target.remote.is_some() {
         return Ok(None);
     }
-    match local_tool(target.root.as_path(), "gh", &["pr", "view", "--json", BRANCH_PULL_REQUEST_FIELDS]) {
+    match local_tool(
+        target.root.as_path(),
+        "gh",
+        &["pr", "view", "--json", BRANCH_PULL_REQUEST_FIELDS],
+    ) {
         Ok(text) => Ok(parse_branch_pull_request(&text)),
         Err(_) => Ok(None),
     }

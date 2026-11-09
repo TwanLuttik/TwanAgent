@@ -1453,7 +1453,10 @@ export function MainView() {
             return;
           }
           const chatId = dropChatAt(event.payload.position.x, event.payload.position.y);
-          setFileDrag(chatId || false);
+          // A miss between the field and the thumbnails used to clear the hint, then
+          // the next move brought it back. That was the sway while looking for a drop.
+          if (chatId) setFileDrag(chatId);
+          else if (event.payload.type === "enter") setFileDrag(false);
           return;
         }
         if (event.payload.type === "leave") {

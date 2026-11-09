@@ -34,7 +34,11 @@ pub fn add_project(conn: &Connection, path: &Path) -> Result<FolderSuggestion> {
 }
 
 /// Like `add_project`, but a remote project keeps the name the user typed instead of the mount id.
-pub fn add_project_named(conn: &Connection, path: &Path, display_name: Option<&str>) -> Result<FolderSuggestion> {
+pub fn add_project_named(
+    conn: &Connection,
+    path: &Path,
+    display_name: Option<&str>,
+) -> Result<FolderSuggestion> {
     let canon = fs::canonicalize(path).map_err(|_| Error::Other("folder is missing".into()))?;
     if !canon.is_dir() {
         return Err(Error::Other("not a folder".into()));
@@ -62,17 +66,16 @@ pub fn add_project_named(conn: &Connection, path: &Path, display_name: Option<&s
             name,
         });
     }
-    let sort: i64 = conn.query_row("SELECT COALESCE(MIN(sort_order), 1) FROM projects", [], |row| {
-        row.get(0)
-    })?;
+    let sort: i64 = conn.query_row(
+        "SELECT COALESCE(MIN(sort_order), 1) FROM projects",
+        [],
+        |row| row.get(0),
+    )?;
     conn.execute(
         "INSERT INTO projects (path, name, added_at, sort_order) VALUES (?1, ?2, ?3, ?4)",
         params![stored, name, now_iso(), sort - 1],
     )?;
-    Ok(FolderSuggestion {
-        path: stored,
-        name,
-    })
+    Ok(FolderSuggestion { path: stored, name })
 }
 
 fn find_project(conn: &Connection, path: &str) -> Result<Option<FolderSuggestion>> {
@@ -100,7 +103,10 @@ pub fn reorder_projects(conn: &Connection, paths: &[String]) -> Result<Vec<Folde
     let mut ordered = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for path in paths {
-        let Some(row) = existing.iter().find(|row| path_key(&row.path) == path_key(path)) else {
+        let Some(row) = existing
+            .iter()
+            .find(|row| path_key(&row.path) == path_key(path))
+        else {
             continue;
         };
         if seen.insert(path_key(&row.path)) {
@@ -124,7 +130,9 @@ pub fn reorder_projects(conn: &Connection, paths: &[String]) -> Result<Vec<Folde
 }
 
 pub(super) fn project_key(path: &str) -> String {
-    path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+    path.replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
 /// The same key the sidebar index stores, so a caller outside this module can match a row.
@@ -182,7 +190,11 @@ pub fn remove_project(conn: &Connection, path: &str) -> Result<bool> {
 
 /// One-time import of folders that used to define the sidebar, so nothing already added disappears.
 /// Later deletes stay deleted: the default folder is scanned only until this flag is set.
-pub fn import_legacy_projects(conn: &Connection, roots: &[&Path], opened: &[String]) -> Result<usize> {
+pub fn import_legacy_projects(
+    conn: &Connection,
+    roots: &[&Path],
+    opened: &[String],
+) -> Result<usize> {
     if get_setting(conn, LEGACY_IMPORTED_KEY)?.as_deref() == Some("1") {
         return Ok(0);
     }

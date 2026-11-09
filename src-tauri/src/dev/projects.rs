@@ -325,7 +325,9 @@ fn drain_clone(file: &mut impl std::io::Read, buf: &mut Vec<u8>) {
         }
         match file.read(&mut chunk) {
             Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&chunk[..n.min(200_000_usize.saturating_sub(buf.len()))]),
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n.min(200_000_usize.saturating_sub(buf.len()))])
+            }
             Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(err) if err.kind() == ErrorKind::WouldBlock => break,
             Err(_) => break,

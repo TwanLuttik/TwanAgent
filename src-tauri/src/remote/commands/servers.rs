@@ -8,7 +8,13 @@ use crate::error::{Error, Result};
 use crate::state::AppState;
 
 /// Run a command and give it bytes on stdin. The bytes are not part of the command line.
-fn require_stdin(work: &ServerWork, machine: &Machine, command: &str, stdin: &[u8], timeout_secs: u64) -> Result<String> {
+fn require_stdin(
+    work: &ServerWork,
+    machine: &Machine,
+    command: &str,
+    stdin: &[u8],
+    timeout_secs: u64,
+) -> Result<String> {
     let secret = super::machine_secret(machine);
     let session = work.ssh_pool.session(machine, secret.as_deref())?;
     let made = session.exec_with_stdin(
@@ -21,7 +27,10 @@ fn require_stdin(work: &ServerWork, machine: &Machine, command: &str, stdin: &[u
         &mut |_| {},
     )?;
     if made.timed_out {
-        return Err(Error::Other(format!("timed out talking to {}", machine.host)));
+        return Err(Error::Other(format!(
+            "timed out talking to {}",
+            machine.host
+        )));
     }
     if made.exit_code.is_some_and(|code| code != 0) {
         let detail = made.stderr.trim();
@@ -34,7 +43,10 @@ fn require_stdin(work: &ServerWork, machine: &Machine, command: &str, stdin: &[u
     Ok(made.stdout)
 }
 
-pub(super) fn agent_server_by_id(conn: &rusqlite::Connection, id: &str) -> Result<super::super::agent_server::AgentServer> {
+pub(super) fn agent_server_by_id(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<super::super::agent_server::AgentServer> {
     let rows = super::super::agent_server::list_servers(conn, |_| false)?;
     rows.into_iter()
         .find(|row| row.id == id)
@@ -56,18 +68,32 @@ fn offline_status() -> super::super::agent_server::ServerInstallStatus {
     }
 }
 
-fn status_for(work: &ServerWork, server: &super::super::agent_server::AgentServer) -> Result<super::super::agent_server::ServerInstallStatus> {
+fn status_for(
+    work: &ServerWork,
+    server: &super::super::agent_server::AgentServer,
+) -> Result<super::super::agent_server::ServerInstallStatus> {
     // Port 22 first. A pairing or version read is SSH, and it only runs when the machine answers.
     if !super::machine_reachable(&server.host, server.port) {
         return Ok(offline_status());
     }
     let machine = super::machine_for_server(work, server)?;
-    let stdout = super::require_exec(work, &machine, &super::super::agent_server::version_check_script(), 20)?;
+    let stdout = super::require_exec(
+        work,
+        &machine,
+        &super::super::agent_server::version_check_script(),
+        20,
+    )?;
     let mut status = super::super::agent_server::parse_version_check(&stdout);
     // The offer is the file this Mac would copy, probed from `uname`. A crate that is newer
     // than its last build must not tell the row an update is ready.
     if status.installed {
-        let probed = super::require_exec(work, &machine, &super::super::agent_server::target_probe_script(), 15).unwrap_or_default();
+        let probed = super::require_exec(
+            work,
+            &machine,
+            &super::super::agent_server::target_probe_script(),
+            15,
+        )
+        .unwrap_or_default();
         let mut lines = probed.lines();
         let arch = lines.next().unwrap_or("").trim();
         let os = lines.next().unwrap_or("").trim();
@@ -93,7 +119,11 @@ fn stored_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> 
     // the keychain first asks for the login password whenever this build's signature
     // is not on the item yet.
     let token: Option<String> = conn
-        .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
+        .query_row(
+            "SELECT token FROM agent_servers WHERE id = ?1",
+            [server_id],
+            |row| row.get(0),
+        )
         .optional()?
         .flatten();
     if let Some(token) = token.filter(|value| super::super::agent_server::valid_token(value)) {
@@ -104,7 +134,9 @@ fn stored_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> 
             return Ok(token);
         }
     }
-    Err(Error::Other("Pair this server before sending a message.".into()))
+    Err(Error::Other(
+        "Pair this server before sending a message.".into(),
+    ))
 }
 
 fn token_hash_matches(hashes: &[String], token: &str) -> bool {
@@ -123,8 +155,16 @@ pub struct InstallProgress {
 
 /// `1.0.0-beta.3` matches a sidecar that says `twanagent-server 1.0.0-beta.3`.
 fn version_matches(reported: &str, built: &str) -> bool {
-    let reported = reported.trim().strip_prefix("twanagent-server").unwrap_or(reported).trim();
-    let built = built.trim().strip_prefix("twanagent-server").unwrap_or(built).trim();
+    let reported = reported
+        .trim()
+        .strip_prefix("twanagent-server")
+        .unwrap_or(reported)
+        .trim();
+    let built = built
+        .trim()
+        .strip_prefix("twanagent-server")
+        .unwrap_or(built)
+        .trim();
     !built.is_empty() && reported == built
 }
 
@@ -146,13 +186,19 @@ fn copy_binary(
     server_id: &str,
     machine: &Machine,
 ) -> Result<super::super::agent_server::ServerInstallStatus> {
-    let probe = super::require_exec(work, machine, &super::super::agent_server::target_probe_script(), 15)?;
+    let probe = super::require_exec(
+        work,
+        machine,
+        &super::super::agent_server::target_probe_script(),
+        15,
+    )?;
     let mut lines = probe.lines();
     let arch = lines.next().unwrap_or("").trim();
     let os = lines.next().unwrap_or("").trim();
     let path = super::super::agent_server::binary_for_target(arch, os)?;
     emit_install(app, server_id, "reading", 0, 0);
-    let bytes = std::fs::read(&path).map_err(|err| Error::Other(format!("could not read {}: {err}", path.display())))?;
+    let bytes = std::fs::read(&path)
+        .map_err(|err| Error::Other(format!("could not read {}: {err}", path.display())))?;
     let built = super::super::agent_server::binary_version(&bytes);
     if built.is_empty() {
         return Err(Error::Other(format!(
@@ -189,12 +235,19 @@ fn copy_binary(
         },
         &payload,
         &mut |sent| {
-            let file_sent = if wire == 0 { 0 } else { sent.saturating_mul(total) / wire };
+            let file_sent = if wire == 0 {
+                0
+            } else {
+                sent.saturating_mul(total) / wire
+            };
             emit_install(app, server_id, "copying", file_sent.min(total), total);
         },
     )?;
     if copied.timed_out {
-        return Err(Error::Other(format!("timed out copying the program to {}", machine.host)));
+        return Err(Error::Other(format!(
+            "timed out copying the program to {}",
+            machine.host
+        )));
     }
     if copied.exit_code != Some(0) || !copied.stdout.contains("installed") {
         let detail = copied.stderr.trim();
@@ -206,7 +259,13 @@ fn copy_binary(
     }
     emit_install(app, server_id, "installing", total, total);
     // `--version` runs the program that is already in memory. Replacing the file does not change it.
-    let on_disk = super::require_exec(work, machine, &super::super::agent_server::file_version_script(), 20).unwrap_or_default();
+    let on_disk = super::require_exec(
+        work,
+        machine,
+        &super::super::agent_server::file_version_script(),
+        20,
+    )
+    .unwrap_or_default();
     let reported = on_disk
         .split_whitespace()
         .nth(1)
@@ -220,7 +279,9 @@ fn copy_binary(
             if reported.is_empty() { "nothing" } else { reported }
         )));
     }
-    let mut status = super::super::agent_server::parse_version_check(&format!("status installed twanagent-server {built}\n"));
+    let mut status = super::super::agent_server::parse_version_check(&format!(
+        "status installed twanagent-server {built}\n"
+    ));
     status.protocol = twanagent_service::PROTOCOL_VERSION;
     let wanted = super::super::agent_server::server_version();
     // The file copied is the newest build on this Mac. When that build is older than this app,
@@ -240,7 +301,12 @@ fn write_token(work: &ServerWork, machine: &Machine, server_id: &str) -> Result<
 }
 
 /// `replace` is a first pairing or a rotation. `add` keeps the tokens already on the machine.
-fn write_token_mode(work: &ServerWork, machine: &Machine, server_id: &str, mode: &str) -> Result<()> {
+fn write_token_mode(
+    work: &ServerWork,
+    machine: &Machine,
+    server_id: &str,
+    mode: &str,
+) -> Result<()> {
     let conn = super::work_db(work)?;
     let token = super::super::agent_server::new_token();
     let script = super::super::agent_server::install_script(mode)?;
@@ -269,7 +335,12 @@ pub(super) fn provider_keys_on_server(
     if !super::machine_reachable(&machine.host, machine.port) {
         return Ok(saved);
     }
-    let stdout = super::require_exec(work, machine, super::super::agent_server::provider_keys_present_script(), 15)?;
+    let stdout = super::require_exec(
+        work,
+        machine,
+        super::super::agent_server::provider_keys_present_script(),
+        15,
+    )?;
     let names = super::super::agent_server::parse_provider_keys(Some(stdout.trim()));
     if let Some(server) = server {
         if names != saved {
@@ -280,7 +351,8 @@ pub(super) fn provider_keys_on_server(
 }
 
 fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_service::ProviderKeys {
-    let wanted: std::collections::HashSet<&str> = providers.iter().map(|name| name.trim()).collect();
+    let wanted: std::collections::HashSet<&str> =
+        providers.iter().map(|name| name.trim()).collect();
     let pick = |name: &str, value: Option<String>| {
         if wanted.contains(name) {
             value.unwrap_or_default()
@@ -289,7 +361,10 @@ fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_servi
         }
     };
     twanagent_service::ProviderKeys {
-        xai: pick("xai", crate::secrets::resolve_xai_key_on_disk(&work.data_dir)),
+        xai: pick(
+            "xai",
+            crate::secrets::resolve_xai_key_on_disk(&work.data_dir),
+        ),
         anthropic: pick(
             "anthropic",
             crate::secrets::resolve_anthropic_key_on_disk(&work.data_dir),
@@ -347,7 +422,9 @@ pub struct ServerStorage {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_list_agent_servers(state: State<'_, AppState>) -> Result<Vec<super::super::agent_server::AgentServer>> {
+pub async fn dev_list_agent_servers(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::super::agent_server::AgentServer>> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
@@ -373,25 +450,39 @@ pub struct ServerProject {
 /// Folders under the home projects directories on this machine.
 /// The sidebar list only has projects this Mac created, so a folder from another client would be missing.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_server_projects(state: State<'_, AppState>, id: String) -> Result<Vec<super::ServerProject>> {
+pub async fn dev_server_projects(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<super::ServerProject>> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
         let server = agent_server_by_id(&conn, &id)?;
         let machine = super::machine_for_server(&work, &server)?;
         let saved = config::list_remote_projects(&conn)?;
-        let stdout = super::require_exec(&work, &machine, &super::super::files::remote_projects_command(), 20)?;
+        let stdout = super::require_exec(
+            &work,
+            &machine,
+            &super::super::files::remote_projects_command(),
+            20,
+        )?;
         Ok(super::server_projects_from(&stdout, &machine.id, &saved))
     })
     .await
 }
 
-pub(crate) fn server_projects_from(stdout: &str, machine_id: &str, saved: &[config::RemoteProject]) -> Vec<super::ServerProject> {
+pub(crate) fn server_projects_from(
+    stdout: &str,
+    machine_id: &str,
+    saved: &[config::RemoteProject],
+) -> Vec<super::ServerProject> {
     super::super::files::parse_remote_projects(stdout)
         .into_iter()
         .filter_map(|path| {
             let name = path.rsplit('/').find(|part| !part.is_empty())?.to_string();
-            let known = saved.iter().any(|row| row.machine_id == machine_id && row.remote_path == path);
+            let known = saved
+                .iter()
+                .any(|row| row.machine_id == machine_id && row.remote_path == path);
             Some(super::ServerProject {
                 name,
                 remote_path: path,
@@ -416,7 +507,10 @@ pub async fn dev_server_git(state: State<'_, AppState>, id: String) -> Result<su
 
 /// Install git with the server's package manager. Does nothing when git is already there.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_install_server_git(state: State<'_, AppState>, id: String) -> Result<super::ServerGit> {
+pub async fn dev_install_server_git(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::ServerGit> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
@@ -434,7 +528,12 @@ pub async fn dev_install_server_git(state: State<'_, AppState>, id: String) -> R
 }
 
 fn git_on(work: &ServerWork, machine: &Machine) -> Result<super::ServerGit> {
-    let stdout = super::require_exec(work, machine, "command -v git >/dev/null 2>&1 && git --version || true", 15)?;
+    let stdout = super::require_exec(
+        work,
+        machine,
+        "command -v git >/dev/null 2>&1 && git --version || true",
+        15,
+    )?;
     Ok(super::ServerGit {
         installed: stdout.to_ascii_lowercase().contains("git version"),
     })
@@ -454,11 +553,18 @@ pub async fn dev_probe_agent_server(
         let machine = config::list_machines(&conn)?
             .into_iter()
             .find(|row| row.host.eq_ignore_ascii_case(host.trim()) && row.port == port)
-            .ok_or_else(|| Error::NotFound("sign in to this server again before checking".into()))?;
+            .ok_or_else(|| {
+                Error::NotFound("sign in to this server again before checking".into())
+            })?;
         if !super::machine_reachable(&machine.host, machine.port) {
             return Ok(offline_status());
         }
-        let stdout = super::require_exec(&work, &machine, &super::super::agent_server::version_check_script(), 20)?;
+        let stdout = super::require_exec(
+            &work,
+            &machine,
+            &super::super::agent_server::version_check_script(),
+            20,
+        )?;
         Ok(super::super::agent_server::parse_version_check(&stdout))
     })
     .await
@@ -536,7 +642,11 @@ fn install_agent_server(
     key_path: Option<String>,
     secret: Option<String>,
 ) -> Result<super::super::agent_server::AgentServer> {
-    let method = AuthMethod::parse(if auth.trim().is_empty() { "agent" } else { &auth })?;
+    let method = AuthMethod::parse(if auth.trim().is_empty() {
+        "agent"
+    } else {
+        &auth
+    })?;
     let secret = secret.filter(|value| !value.trim().is_empty());
     let method = if secret.is_none() {
         config::auth_without_secret(method, key_path.as_deref())
@@ -549,7 +659,11 @@ fn install_agent_server(
     // so two servers can both be called Office without one login replacing the other.
     // The machine name is also a lookup key. Reusing the bare host would retarget
     // a different port that was already saved under that name.
-    let machine_name = if port == 22 { host.clone() } else { format!("{host}:{port}") };
+    let machine_name = if port == 22 {
+        host.clone()
+    } else {
+        format!("{host}:{port}")
+    };
     let machine = config::upsert_machine(
         &conn,
         NewMachine {
@@ -572,9 +686,14 @@ fn install_agent_server(
         }
     }
     let known = KnownHosts::load(&work.data_dir);
-    let trusted = known.rows.iter().any(|row| row.host == machine.host && row.port == machine.port);
+    let trusted = known
+        .rows
+        .iter()
+        .any(|row| row.host == machine.host && row.port == machine.port);
     if !trusted {
-        return Err(Error::Other("Confirm the host key before installing on this server.".into()));
+        return Err(Error::Other(
+            "Confirm the host key before installing on this server.".into(),
+        ));
     }
     // Connecting saves the machine. The program is copied only when it is missing.
     // A token already on the machine is the pairing. Replacing it would drop the one the server uses.
@@ -593,7 +712,11 @@ fn install_agent_server(
         super::super::agent_server::insert_server(
             &conn,
             super::super::agent_server::NewAgentServer {
-                name: if label.is_empty() { host } else { label.to_string() },
+                name: if label.is_empty() {
+                    host
+                } else {
+                    label.to_string()
+                },
                 user: machine.user.clone(),
                 host: machine.host.clone(),
                 port: machine.port,
@@ -645,7 +768,10 @@ pub async fn dev_rename_agent_server(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_pair_agent_server(state: State<'_, AppState>, id: String) -> Result<super::super::agent_server::AgentServer> {
+pub async fn dev_pair_agent_server(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::super::agent_server::AgentServer> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
@@ -682,7 +808,12 @@ pub async fn dev_remove_agent_server(
         if wipe {
             if let Ok(server) = agent_server_by_id(&conn, &id) {
                 if let Ok(machine) = super::machine_for_server(&work, &server) {
-                    let _ = super::require_exec(&work, &machine, &super::super::agent_server::forget_token_script(false), 20);
+                    let _ = super::require_exec(
+                        &work,
+                        &machine,
+                        &super::super::agent_server::forget_token_script(false),
+                        20,
+                    );
                 }
             }
         }
@@ -694,7 +825,10 @@ pub async fn dev_remove_agent_server(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_server_storage(state: State<'_, AppState>, id: String) -> Result<super::ServerStorage> {
+pub async fn dev_server_storage(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::ServerStorage> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
@@ -720,7 +854,10 @@ find \"$data\" -name 'store.db' -type f -exec du -sk {} + 2>/dev/null | awk '{s+
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_server_provider_keys(state: State<'_, AppState>, id: String) -> Result<super::ServerProviderKeys> {
+pub fn dev_server_provider_keys(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::ServerProviderKeys> {
     let conn = super::open_db(&state)?;
     let names = super::super::agent_server::server_provider_keys(&conn, &id)?;
     Ok(keys_view(&names))
@@ -751,13 +888,23 @@ fn copy_provider_keys(
 ) -> Result<super::ServerProviderKeys> {
     let keys = provider_keys_for(work, providers);
     let payload = super::super::agent_server::provider_keys_payload(&keys)?;
-    let stdout = require_stdin(work, machine, super::super::agent_server::provider_keys_script(), &payload, 20)?;
+    let stdout = require_stdin(
+        work,
+        machine,
+        super::super::agent_server::provider_keys_script(),
+        &payload,
+        20,
+    )?;
     if !stdout.lines().any(|line| line.trim() == "copied") {
         let detail = stdout.trim();
         return Err(Error::Other(if detail.is_empty() {
             format!("the keys did not land on {}", machine.host)
         } else {
-            format!("the keys did not land on {}: {}", machine.host, detail.chars().take(240).collect::<String>())
+            format!(
+                "the keys did not land on {}: {}",
+                machine.host,
+                detail.chars().take(240).collect::<String>()
+            )
         }));
     }
     let replaced = super::super::agent_server::parse_replaced_providers(&stdout);

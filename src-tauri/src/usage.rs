@@ -54,10 +54,7 @@ fn db_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn db_folder(data_dir: &Path) -> PathBuf {
-    db_path(data_dir)
-        .parent()
-        .unwrap_or(data_dir)
-        .to_path_buf()
+    db_path(data_dir).parent().unwrap_or(data_dir).to_path_buf()
 }
 
 pub fn open_db_folder(data_dir: &Path) -> Result<()> {
@@ -87,7 +84,8 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 
 pub fn db_info(data_dir: &Path) -> UsageDbInfo {
     let path = db_path(data_dir);
-    let bytes = file_len(&path) + file_len(&sidecar(&path, "-wal")) + file_len(&sidecar(&path, "-shm"));
+    let bytes =
+        file_len(&path) + file_len(&sidecar(&path, "-wal")) + file_len(&sidecar(&path, "-shm"));
     UsageDbInfo {
         path: path.display().to_string(),
         bytes,
@@ -149,7 +147,10 @@ fn open(data_dir: &Path) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS usage_events_conversation ON usage_events(conversation_id);
         ",
     )?;
-    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER",
+        [],
+    );
     ensure_cache_column(&conn)?;
     Ok(conn)
 }
@@ -160,7 +161,10 @@ fn ensure_cache_column(conn: &Connection) -> Result<()> {
         [],
     );
     // A row copied from a server. Empty for a turn recorded on this machine.
-    let _ = conn.execute("ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     Ok(())
 }
 
@@ -473,7 +477,11 @@ pub fn cloud_usage(data_dir: &Path) -> Result<Vec<CloudUsageProject>> {
         project.chats.push(CloudUsageChat {
             project_path,
             project_name: project.project_name.clone(),
-            conversation_id: if conversation.id.is_empty() { conversation_id } else { conversation.id },
+            conversation_id: if conversation.id.is_empty() {
+                conversation_id
+            } else {
+                conversation.id
+            },
             title: conversation.title,
             model: conversation.model.unwrap_or_default(),
             updated_at: conversation.updated_at,
@@ -482,14 +490,23 @@ pub fn cloud_usage(data_dir: &Path) -> Result<Vec<CloudUsageProject>> {
         });
     }
     let mut out: Vec<_> = grouped.into_values().collect();
-    out.sort_by(|a, b| b.chats.len().cmp(&a.chats.len()).then_with(|| a.project_name.cmp(&b.project_name)));
+    out.sort_by(|a, b| {
+        b.chats
+            .len()
+            .cmp(&a.chats.len())
+            .then_with(|| a.project_name.cmp(&b.project_name))
+    });
     Ok(out)
 }
 
-fn cloud_project_names(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, (String, bool)>> {
+fn cloud_project_names(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, (String, bool)>> {
     let mut names = std::collections::HashMap::new();
     let mut projects = conn.prepare("SELECT path, name FROM projects")?;
-    let project_rows = projects.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let project_rows = projects.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     for row in project_rows {
         let (path, name) = row?;
         names.insert(crate::appdb::project_key_public(&path), name);
@@ -500,14 +517,22 @@ fn cloud_project_names(conn: &rusqlite::Connection) -> Result<std::collections::
         if name.is_empty() {
             continue;
         }
-        names.insert(crate::appdb::project_key_public(&remote.mount_path), name.to_string());
+        names.insert(
+            crate::appdb::project_key_public(&remote.mount_path),
+            name.to_string(),
+        );
     }
     let mut clouds = conn.prepare("SELECT project_path, cloud FROM sidebar_projects")?;
-    let cloud_rows = clouds.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+    let cloud_rows = clouds.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
     let mut out = std::collections::HashMap::new();
     for row in cloud_rows {
         let (path, cloud) = row?;
-        let name = names.get(&path).cloned().unwrap_or_else(|| folder_name(&path));
+        let name = names
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| folder_name(&path));
         out.insert(path, (name, cloud == 1));
     }
     Ok(out)
@@ -590,7 +615,10 @@ mod tests {
         let mut over = rec("/proj/alpha", 100, 5);
         over.conversation_id = "c2".into();
         over.cache_read_tokens = 9_000;
-        assert_eq!(record(dir.path(), over).unwrap().unwrap().cache_read_tokens, 100);
+        assert_eq!(
+            record(dir.path(), over).unwrap().unwrap().cache_read_tokens,
+            100
+        );
     }
 
     #[test]

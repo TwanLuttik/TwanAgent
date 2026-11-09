@@ -117,7 +117,7 @@ export function PopChoice({
       role="menuitemradio"
       aria-checked={selected}
       onClick={onPick}
-      className={`flex w-full items-center gap-2 px-2.5 text-left transition-colors duration-150 hover:bg-wash ${
+      className={`flex w-full cursor-pointer items-center gap-2 px-2.5 text-left transition-colors duration-150 hover:bg-wash ${
         detail ? "py-1.5" : "h-7"
       } ${selected ? "font-medium text-ink" : "text-ink/80"}`}
     >

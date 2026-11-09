@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::auth::{resolve_minimax_auth_fresh, REGIONS};
 use super::PROVIDER_MINIMAX;
-use super::auth::{REGIONS, resolve_minimax_auth_fresh};
 
 /// One allowance window on the connected MiniMax account. `used_percent` is how much of the
 /// window is spent, matching the Claude row. `mmx quota show` reports the remainder instead.
@@ -72,7 +72,12 @@ fn json_f64(value: &serde_json::Value) -> Option<f64> {
 
 /// Percent still left in one quota window, 0–100. This is what `mmx quota show` prints as Left.
 /// A remaining percent wins. Counts are the fallback. A model the plan does not include is `None`.
-fn remaining_percent(usage: f64, total: f64, remaining_percent: Option<f64>, status: Option<i64>) -> Option<f64> {
+fn remaining_percent(
+    usage: f64,
+    total: f64,
+    remaining_percent: Option<f64>,
+    status: Option<i64>,
+) -> Option<f64> {
     if status == Some(3) && remaining_percent.is_none() && total <= 0.0 {
         return None;
     }
@@ -99,7 +104,11 @@ fn window_label(span_ms: i64, weekly: bool) -> &'static str {
     if span_ms > 0 {
         return "Now";
     }
-    if weekly { "Week" } else { "Now" }
+    if weekly {
+        "Week"
+    } else {
+        "Now"
+    }
 }
 
 fn reset_from_ms(end_ms: i64) -> Option<String> {
@@ -138,23 +147,50 @@ pub fn parse_quota(body: &str) -> Vec<AccountUsageWindow> {
             .map(str::trim)
             .filter(|item| !item.is_empty())
             .unwrap_or("plan");
-        let interval_total = json_f64(row.get("current_interval_total_count").unwrap_or(&serde_json::Value::Null)).unwrap_or(0.0);
-        let weekly_total = json_f64(row.get("current_weekly_total_count").unwrap_or(&serde_json::Value::Null)).unwrap_or(0.0);
-        let interval_status = row.get("current_interval_status").and_then(|item| item.as_i64());
-        let weekly_status = row.get("current_weekly_status").and_then(|item| item.as_i64());
-        if interval_status == Some(3) && weekly_status == Some(3) && interval_total <= 0.0 && weekly_total <= 0.0 {
+        let interval_total = json_f64(
+            row.get("current_interval_total_count")
+                .unwrap_or(&serde_json::Value::Null),
+        )
+        .unwrap_or(0.0);
+        let weekly_total = json_f64(
+            row.get("current_weekly_total_count")
+                .unwrap_or(&serde_json::Value::Null),
+        )
+        .unwrap_or(0.0);
+        let interval_status = row
+            .get("current_interval_status")
+            .and_then(|item| item.as_i64());
+        let weekly_status = row
+            .get("current_weekly_status")
+            .and_then(|item| item.as_i64());
+        if interval_status == Some(3)
+            && weekly_status == Some(3)
+            && interval_total <= 0.0
+            && weekly_total <= 0.0
+        {
             continue;
         }
-        let start = row.get("start_time").and_then(|item| item.as_i64()).unwrap_or(0);
-        let end = row.get("end_time").and_then(|item| item.as_i64()).unwrap_or(0);
+        let start = row
+            .get("start_time")
+            .and_then(|item| item.as_i64())
+            .unwrap_or(0);
+        let end = row
+            .get("end_time")
+            .and_then(|item| item.as_i64())
+            .unwrap_or(0);
         let span = end.saturating_sub(start);
         let current_label = window_label(span, false);
         // One plan row is the account, so the bar says 5h instead of "general 5h".
         let label_name = if only { "" } else { name };
         if let Some(left) = remaining_percent(
-            json_f64(row.get("current_interval_usage_count").unwrap_or(&serde_json::Value::Null)).unwrap_or(0.0),
+            json_f64(
+                row.get("current_interval_usage_count")
+                    .unwrap_or(&serde_json::Value::Null),
+            )
+            .unwrap_or(0.0),
             interval_total,
-            row.get("current_interval_remaining_percent").and_then(json_f64),
+            row.get("current_interval_remaining_percent")
+                .and_then(json_f64),
             interval_status,
         ) {
             let label = if label_name.is_empty() {
@@ -164,11 +200,19 @@ pub fn parse_quota(body: &str) -> Vec<AccountUsageWindow> {
             };
             windows.push(quota_window(&format!("{name}:current"), &label, left, end));
         }
-        let week_end = row.get("weekly_end_time").and_then(|item| item.as_i64()).unwrap_or(0);
+        let week_end = row
+            .get("weekly_end_time")
+            .and_then(|item| item.as_i64())
+            .unwrap_or(0);
         if let Some(left) = remaining_percent(
-            json_f64(row.get("current_weekly_usage_count").unwrap_or(&serde_json::Value::Null)).unwrap_or(0.0),
+            json_f64(
+                row.get("current_weekly_usage_count")
+                    .unwrap_or(&serde_json::Value::Null),
+            )
+            .unwrap_or(0.0),
             weekly_total,
-            row.get("current_weekly_remaining_percent").and_then(json_f64),
+            row.get("current_weekly_remaining_percent")
+                .and_then(json_f64),
             weekly_status,
         ) {
             let label = if label_name.is_empty() {
@@ -176,7 +220,12 @@ pub fn parse_quota(body: &str) -> Vec<AccountUsageWindow> {
             } else {
                 format!("{label_name} Week")
             };
-            windows.push(quota_window(&format!("{name}:week"), &label, left, week_end));
+            windows.push(quota_window(
+                &format!("{name}:week"),
+                &label,
+                left,
+                week_end,
+            ));
         }
     }
     windows
@@ -229,12 +278,16 @@ fn store_account_usage(data_dir: &std::path::Path, usage: &AccountUsage) {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_minimax_account_usage_cached(state: tauri::State<'_, crate::state::AppState>) -> Option<AccountUsage> {
+pub fn dev_minimax_account_usage_cached(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Option<AccountUsage> {
     cached_account_usage(&state.data_dir)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_minimax_account_usage(state: tauri::State<'_, crate::state::AppState>) -> Result<AccountUsage, String> {
+pub async fn dev_minimax_account_usage(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<AccountUsage, String> {
     let data_dir = state.data_dir.clone();
     let usage = account_usage().await;
     store_account_usage(&data_dir, &usage);
@@ -259,10 +312,11 @@ pub async fn account_usage() -> AccountUsage {
         usage.windows = parse_quota(&body);
     }
     if is_secret_api_key(&auth.token) {
-        if let Some((cents, currency)) = minimax_get(&client, &balance_url(&auth.base_url), &auth.token)
-            .await
-            .as_deref()
-            .and_then(parse_balance)
+        if let Some((cents, currency)) =
+            minimax_get(&client, &balance_url(&auth.base_url), &auth.token)
+                .await
+                .as_deref()
+                .and_then(parse_balance)
         {
             usage.balance_cents = Some(cents);
             usage.balance_currency = Some(currency);
@@ -347,10 +401,17 @@ mod tests {
         assert!((windows[1].used_percent - 80.0).abs() < 0.01);
         let general = r#"{"base_resp":{"status_code":0},"model_remains":[{"model_name":"general","start_time":1791695116008,"end_time":1791713116008,"current_interval_total_count":0,"current_interval_usage_count":0,"current_interval_remaining_percent":99,"current_interval_status":1,"current_weekly_total_count":0,"current_weekly_usage_count":0,"current_weekly_remaining_percent":99,"current_weekly_status":1,"weekly_end_time":1792263899676}]}"#;
         let live = parse_quota(general);
-        assert_eq!(live.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), ["5h", "Week"]);
+        assert_eq!(
+            live.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["5h", "Week"]
+        );
         assert!((live[0].used_percent - 99.0).abs() < 0.01);
         assert!((live[1].used_percent - 99.0).abs() < 0.01);
-        assert!(!quota_body_ok(r#"{"base_resp":{"status_code":1004,"status_msg":"login fail"}}"#));
+        assert!(!quota_body_ok(
+            r#"{"base_resp":{"status_code":1004,"status_msg":"login fail"}}"#
+        ));
         assert!(quota_body_ok(general));
         assert!(parse_quota("nope").is_empty());
         assert!(parse_quota(r#"{"model_remains":[]}"#).is_empty());

@@ -99,10 +99,15 @@ pub fn validate_host(raw: &str) -> Result<String> {
     let host = raw.trim().to_string();
     // `<machine>@orb` is the OrbStack SSH login. `~/.orbstack/ssh/config` resolves it.
     // A raw address for that VM is on a bridge this Mac cannot route to.
-    let orb = host.strip_suffix("@orb").map(str::trim).filter(|name| !name.is_empty());
+    let orb = host
+        .strip_suffix("@orb")
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
     let check = orb.unwrap_or(host.as_str());
     if check.is_empty()
-        || check.chars().any(|c| c.is_whitespace() || c.is_control() || c == '/' || c == '@')
+        || check
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '/' || c == '@')
     {
         return Err(Error::Other("SSH host is invalid".into()));
     }
@@ -452,7 +457,10 @@ pub fn delete_remote_project(conn: &Connection, id: &str) -> Result<Option<Remot
 
 /// Drop the remote row when its project leaves the sidebar. The folder on the
 /// server stays. A later open of that same path creates a new mount.
-pub fn delete_remote_project_by_mount(conn: &Connection, mount: &Path) -> Result<Option<RemoteProject>> {
+pub fn delete_remote_project_by_mount(
+    conn: &Connection,
+    mount: &Path,
+) -> Result<Option<RemoteProject>> {
     let Some(existing) = remote_project_by_mount(conn, mount)? else {
         return Ok(None);
     };
@@ -506,7 +514,10 @@ mod tests {
             ssh_login("dev", "devbox@orb"),
             ("dev@devbox".into(), "orb".into())
         );
-        assert_eq!(ssh_login("dev", "10.0.0.2"), ("dev".into(), "10.0.0.2".into()));
+        assert_eq!(
+            ssh_login("dev", "10.0.0.2"),
+            ("dev".into(), "10.0.0.2".into())
+        );
         assert!(validate_port(0).is_err());
         assert_eq!(validate_port(2222).unwrap(), 2222);
         assert!(validate_remote_path("relative").is_err());
@@ -611,11 +622,17 @@ mod tests {
         assert_eq!(project.remote_path, "/srv/apps/billing");
         let found = remote_project_by_mount(&conn, &mount).unwrap().unwrap();
         assert_eq!(found.id, project.id);
-        assert!(remote_project_by_mount(&conn, dir.path()).unwrap().is_none());
+        assert!(remote_project_by_mount(&conn, dir.path())
+            .unwrap()
+            .is_none());
         assert!(insert_remote_project(&conn, "missing", "x", "/srv/x", &mount).is_err());
-        let removed = delete_remote_project_by_mount(&conn, &mount).unwrap().unwrap();
+        let removed = delete_remote_project_by_mount(&conn, &mount)
+            .unwrap()
+            .unwrap();
         assert_eq!(removed.id, project.id);
-        assert!(delete_remote_project_by_mount(&conn, &mount).unwrap().is_none());
+        assert!(delete_remote_project_by_mount(&conn, &mount)
+            .unwrap()
+            .is_none());
         assert!(list_remote_projects(&conn).unwrap().is_empty());
     }
 }

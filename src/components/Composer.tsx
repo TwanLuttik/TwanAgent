@@ -20,7 +20,7 @@ import { commandRunVisible, useCommandRun } from "../lib/command-run";
 import { todosAreOpen, type AgentTodo } from "../lib/todo";
 import type { Model } from "../lib/tauri";
 import { CommandRunPill } from "./CommandRunPill";
-import { ContextUsageChip } from "./ContextUsageChip";
+import { ContextUsageChip, ContextUsageReadout } from "./ContextUsageChip";
 import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { TodoSteps } from "./TodoSteps";
@@ -50,6 +50,8 @@ export function Composer({
   showProject = true,
   onOpenProject,
   onOpenWorktree,
+  worktreeLocked = false,
+  showWorkspaceName = true,
   onCreateWorktree,
   suggestedWorktree = "",
   onOpenPullRequest,
@@ -100,6 +102,10 @@ export function Composer({
   onOpenProject?: (path: string) => void;
   /** Switch the open folder to another checkout of the same repo. */
   onOpenWorktree?: (path: string) => void;
+  /** A saved chat keeps its checkout. The worktree name stays, without a menu. */
+  worktreeLocked?: boolean;
+  /** False when the worktree bar already shows this folder, so the name is not repeated. */
+  showWorkspaceName?: boolean;
   /** Create a checkout. An empty name means the model should name it from the first message. */
   onCreateWorktree?: (branch: string) => void;
   /** Fetch an open pull request into a worktree, then open that folder. */
@@ -152,6 +158,7 @@ export function Composer({
   const micRef = useRef<HTMLButtonElement>(null);
   const [usageHover, setUsageHover] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [micMenu, setMicMenu] = useState(false);
@@ -381,15 +388,38 @@ export function Composer({
     onAddImages?.(list);
   }
 
+  function acceptsFileDrag(ev: DragEvent<HTMLDivElement>): boolean {
+    return [...ev.dataTransfer.types].includes("Files");
+  }
+
+  // Enter and leave also fire for children. Clearing on the first leave made the
+  // highlight sway while the pointer moved across the images already in the field.
+  function onDragEnter(ev: DragEvent<HTMLDivElement>) {
+    if (!acceptsFileDrag(ev)) return;
+    ev.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
+  }
+
   function onDragOver(ev: DragEvent<HTMLDivElement>) {
-    if (![...ev.dataTransfer.types].includes("Files")) return;
+    if (!acceptsFileDrag(ev)) return;
     ev.preventDefault();
     ev.dataTransfer.dropEffect = "copy";
+    if (dragDepth.current === 0) dragDepth.current = 1;
     setDragOver(true);
+  }
+
+  function onDragLeave() {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    const depth = dragDepth.current;
+    requestAnimationFrame(() => {
+      if (dragDepth.current === depth) setDragOver(depth > 0);
+    });
   }
 
   function onDrop(ev: DragEvent<HTMLDivElement>) {
     ev.preventDefault();
+    dragDepth.current = 0;
     setDragOver(false);
     takeImageFiles(attachmentFilesFromDrop(ev.dataTransfer.files) as File[]);
   }
@@ -523,15 +553,14 @@ export function Composer({
           <CommandRunPill key={commandRun.id} run={commandRun} />
         </div>
       ) : null}
+      <div className="relative">
       <div
         className={`relative border bg-panel transition-colors duration-200 ease-out focus-within:border-accent/30 ${
           dragOver ? "border-accent/55" : "border-line/35"
         } ${compact ? "rounded-2xl" : "rounded-[22px] shadow-card"}`}
-        onDragEnter={onDragOver}
+        onDragEnter={onDragEnter}
         onDragOver={onDragOver}
-        onDragLeave={(ev) => {
-          if (!ev.currentTarget.contains(ev.relatedTarget as Node)) setDragOver(false);
-        }}
+        onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
         <AnimatePresence initial={false}>
@@ -549,7 +578,7 @@ export function Composer({
           ) : null}
         </AnimatePresence>
         {usage && usageWindow ? (
-          <ContextUsageChip usage={usage} windowSize={usageWindow} expanded={usageHover} />
+          <ContextUsageChip usage={usage} windowSize={usageWindow} />
         ) : null}
         {images.length ? (
           <div className={compact ? "px-3.5 pt-2.5" : "px-4 pt-3"}>
@@ -650,7 +679,7 @@ export function Composer({
             />
           ) : null}
           <div className="min-w-0 flex-1" />
-          {!showProject && workspace ? (
+          {!showProject && workspace && showWorkspaceName ? (
             <span
               title={workspace}
               className="pointer-events-none max-w-[9rem] select-none truncate px-1.5 text-[11px] text-muted"
@@ -688,7 +717,7 @@ export function Composer({
               disabled={transcribing}
               aria-label={recording ? "Stop dictation" : "Dictate"}
               title={recording ? "Stop dictation" : transcribing ? "Transcribing" : "Dictate. Right-click to choose a microphone."}
-              className={`flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-wash ${
+              className={`flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md hover:bg-wash ${
                 recording ? "text-accent" : "text-muted hover:text-ink"
               } disabled:opacity-60`}
             >
@@ -718,7 +747,7 @@ export function Composer({
               onClick={onStop}
               aria-label="Stop"
               title="Stop"
-              className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-err text-white hover:bg-err/90"
+              className="ml-0.5 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-err text-white hover:bg-err/90"
             >
               <Symbol name="stop.fill" className="size-2.5" />
             </button>
@@ -728,17 +757,22 @@ export function Composer({
             disabled={!canSend}
             aria-label={busy ? "Queue" : "Send"}
             title={busy ? "Queue" : "Send"}
-            className="ml-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:bg-wash-strong disabled:text-muted disabled:opacity-70"
+            className="ml-0.5 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-accent text-on-accent hover:bg-accent-hover disabled:cursor-default disabled:bg-wash-strong disabled:text-muted disabled:opacity-70"
           >
             <Symbol name="arrow.up" className="size-3.5" />
           </button>
         </div>
+      </div>
+      {usage && usageWindow ? (
+        <ContextUsageReadout usage={usage} windowSize={usageWindow} expanded={usageHover} />
+      ) : null}
       </div>
       {onOpenWorktree ? (
         <WorktreeBar
           workspace={workspace}
           suggested={suggestedWorktree}
           onOpen={onOpenWorktree}
+          locked={worktreeLocked}
           onCreate={onCreateWorktree}
           onOpenPullRequest={onOpenPullRequest}
           checkingOut={checkingOutPullRequest}

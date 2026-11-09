@@ -164,7 +164,10 @@ fn resolve_ssh(host: &str) -> Option<SocketAddr> {
     } else {
         format!("{host}:22")
     };
-    with_port.to_socket_addrs().ok()?.find(|addr| addr.port() == 22)
+    with_port
+        .to_socket_addrs()
+        .ok()?
+        .find(|addr| addr.port() == 22)
 }
 
 /// Hostnames from `~/.ssh/config`. These are the servers the user already uses,
@@ -206,7 +209,11 @@ pub fn parse_ssh_config_hosts(text: &str) -> Vec<(String, String)> {
             if host.is_empty() || host.contains('*') {
                 continue;
             }
-            let label = if alias.is_empty() { host.clone() } else { alias.clone() };
+            let label = if alias.is_empty() {
+                host.clone()
+            } else {
+                alias.clone()
+            };
             if seen.insert(host.to_ascii_lowercase()) {
                 out.push((host, label));
             }
@@ -386,7 +393,11 @@ mod tests {
 
     #[test]
     fn slash24_skips_self_network_and_broadcast() {
-        let hosts = hosts_to_scan(Ipv4Addr::new(192, 168, 1, 20), 24, Ipv4Addr::new(192, 168, 1, 20));
+        let hosts = hosts_to_scan(
+            Ipv4Addr::new(192, 168, 1, 20),
+            24,
+            Ipv4Addr::new(192, 168, 1, 20),
+        );
         assert!(hosts.contains(&Ipv4Addr::new(192, 168, 1, 1)));
         assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 20)));
         assert!(!hosts.contains(&Ipv4Addr::new(192, 168, 1, 0)));
@@ -455,7 +466,9 @@ second-box              running  ubuntu  resolute  arm64\n",
     #[test]
     fn wide_prefix_stays_inside_one_slash24() {
         let hosts = hosts_to_scan(Ipv4Addr::new(10, 1, 2, 5), 16, Ipv4Addr::new(10, 1, 2, 5));
-        assert!(hosts.iter().all(|ip| ip.octets()[0] == 10 && ip.octets()[1] == 1 && ip.octets()[2] == 2));
+        assert!(hosts
+            .iter()
+            .all(|ip| ip.octets()[0] == 10 && ip.octets()[1] == 1 && ip.octets()[2] == 2));
         assert!(hosts.len() <= 254);
     }
 }

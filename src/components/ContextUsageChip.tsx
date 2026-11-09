@@ -16,6 +16,25 @@ const TONE_FILL: Record<UsageTone, string> = {
 export function ContextUsageChip({
   usage,
   windowSize,
+}: {
+  usage: ChatUsage;
+  windowSize: number;
+}) {
+  const snap = contextUsageSnapshot(usage, windowSize);
+
+  return (
+    <div className="pointer-events-none absolute -inset-px z-10 overflow-hidden rounded-[inherit]" aria-hidden>
+      {snap.percent > 0 ? (
+        <div className={`h-[2px] ${TONE_FILL[snap.tone]}`} style={{ width: `${snap.percent}%` }} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Sits outside the composer's rounded box. A label inside that corner was painted twice. */
+export function ContextUsageReadout({
+  usage,
+  windowSize,
   expanded,
 }: {
   usage: ChatUsage;
@@ -28,31 +47,19 @@ export function ContextUsageChip({
 
   return (
     <div
-      className="pointer-events-none absolute -inset-px z-10 overflow-hidden rounded-[inherit]"
+      className={`pointer-events-none absolute top-2 right-8 z-10 transition-opacity duration-150 ${
+        expanded ? "opacity-100" : "opacity-0"
+      }`}
       role="status"
       aria-label={label}
       title={title}
     >
-      <div className="h-[2px] w-full">
-        {snap.percent > 0 ? (
-          <div
-            className={`h-full ${TONE_FILL[snap.tone]}`}
-            style={{ width: `${snap.percent}%` }}
-          />
-        ) : null}
-      </div>
-      <div
-        className={`flex justify-end px-3.5 pt-1.5 transition-opacity duration-150 ${
-          expanded ? "opacity-100" : "opacity-0"
-        }`}
-      >
-        <span className="whitespace-nowrap text-[11px] leading-none tabular-nums" aria-hidden={!expanded}>
-          <span className={`font-medium ${TONE_TEXT[snap.tone]}`}>{snap.percent}%</span>
-          <span className="text-muted/70">
-            {` · ${formatTokenCount(snap.used)} / ${formatTokenCount(snap.window)}`}
-          </span>
+      <span className="whitespace-nowrap text-[11px] leading-none tabular-nums" aria-hidden={!expanded}>
+        <span className={`font-medium ${TONE_TEXT[snap.tone]}`}>{snap.percent}%</span>
+        <span className="text-muted/70">
+          {` · ${formatTokenCount(snap.used)} / ${formatTokenCount(snap.window)}`}
         </span>
-      </div>
+      </span>
     </div>
   );
 }

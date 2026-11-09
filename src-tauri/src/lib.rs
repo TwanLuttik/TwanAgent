@@ -1,15 +1,16 @@
-mod model_providers;
 mod access;
 mod appdb;
-mod remote;
 mod dev;
 mod env_path;
 mod error;
+mod model_providers;
+mod remote;
 
 pub use model_providers::anthropic;
 pub use model_providers::grok_cli;
 pub use model_providers::minimax;
 mod attachment;
+mod command_surface;
 mod heic;
 mod image;
 mod paths;
@@ -23,7 +24,6 @@ mod store;
 mod update;
 mod usage;
 mod web_search;
-mod command_surface;
 mod window;
 mod workspace;
 
@@ -153,6 +153,8 @@ pub fn run() {
             dev::commands::git_cmds::dev_git_pull_requests_cached,
             dev::commands::git_cmds::dev_git_pull_request_checkout,
             dev::commands::git_cmds::dev_git_branch_pull_request,
+            dev::commands::git_cmds::dev_git_actions_cached,
+            dev::commands::git_cmds::dev_git_actions,
             dev::commands::git_cmds::dev_git_worktree_add,
             dev::commands::git_cmds::dev_git_worktree_rename,
             dev::commands::git_cmds::dev_git_worktree_remove,

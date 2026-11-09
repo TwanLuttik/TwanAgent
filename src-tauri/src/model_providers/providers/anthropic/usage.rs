@@ -2,12 +2,12 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::PROVIDER_ANTHROPIC;
 use super::auth::{
     claude_cli_user_agent, cli_access_token, cli_account_email, read_claude_access_token,
     read_claude_account, read_cli_access_token_fresh,
 };
 use super::cli::home_dir;
+use super::PROVIDER_ANTHROPIC;
 
 fn account_usage_cache_key() -> &'static str {
     PROVIDER_ANTHROPIC
@@ -42,12 +42,16 @@ fn store_account_usage(data_dir: &std::path::Path, usage: &AccountUsage) {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_account_usage_cached(state: tauri::State<'_, crate::state::AppState>) -> Option<AccountUsage> {
+pub fn dev_account_usage_cached(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Option<AccountUsage> {
     cached_account_usage(&state.data_dir)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_account_usage(state: tauri::State<'_, crate::state::AppState>) -> Result<AccountUsage, String> {
+pub async fn dev_account_usage(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<AccountUsage, String> {
     let data_dir = state.data_dir.clone();
     let usage = account_usage().await;
     store_account_usage(&data_dir, &usage);
@@ -151,14 +155,22 @@ pub fn parse_account_usage(body: &str) -> Vec<AccountUsageWindow> {
         ("seven_day_opus", "Opus"),
         ("seven_day_sonnet", "Sonnet"),
     ] {
-        if let Some(window) = root.get(id).and_then(|value| usage_window(id, label, value)) {
+        if let Some(window) = root
+            .get(id)
+            .and_then(|value| usage_window(id, label, value))
+        {
             windows.push(window);
         }
     }
     if let Some(extra) = json
         .get("extra_usage")
         .or_else(|| root.get("extra_usage"))
-        .filter(|value| value.get("is_enabled").and_then(|item| item.as_bool()).unwrap_or(false))
+        .filter(|value| {
+            value
+                .get("is_enabled")
+                .and_then(|item| item.as_bool())
+                .unwrap_or(false)
+        })
         .and_then(|value| usage_window("extra", "Extra", value))
     {
         windows.push(extra);
@@ -166,7 +178,10 @@ pub fn parse_account_usage(body: &str) -> Vec<AccountUsageWindow> {
     if windows.is_empty() {
         if let Some(rows) = root.get("limits").and_then(|value| value.as_array()) {
             for row in rows {
-                let kind = row.get("kind").and_then(|item| item.as_str()).unwrap_or("session");
+                let kind = row
+                    .get("kind")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("session");
                 let label = limit_label(kind, row);
                 if let Some(window) = usage_window(kind, &label, row) {
                     windows.push(window);
@@ -220,7 +235,10 @@ pub fn parse_api_org(body: &str) -> Option<(String, Option<String>)> {
         if !api && org.get("billing_type").and_then(|item| item.as_str()) != Some("prepaid") {
             continue;
         }
-        let uuid = org.get("uuid").and_then(|item| item.as_str()).map(str::trim)?;
+        let uuid = org
+            .get("uuid")
+            .and_then(|item| item.as_str())
+            .map(str::trim)?;
         if uuid.is_empty() {
             continue;
         }
@@ -313,7 +331,11 @@ pub(super) fn claude_usage_tokens(home: &Path) -> Vec<String> {
     tokens
 }
 
-async fn usage_from_token(client: &reqwest::Client, token: &str, label: String) -> (AccountUsage, OauthGet) {
+async fn usage_from_token(
+    client: &reqwest::Client,
+    token: &str,
+    label: String,
+) -> (AccountUsage, OauthGet) {
     let usage_body = oauth_get(client, CLAUDE_USAGE_URL, token).await;
     let mut usage = AccountUsage {
         provider: PROVIDER_ANTHROPIC.into(),
@@ -345,7 +367,8 @@ async fn usage_from_token(client: &reqwest::Client, token: &str, label: String) 
         return (usage, OauthGet::Ok(account));
     };
     usage.credit_status = status.filter(|item| item == "available" || item == "exhausted");
-    let credits_url = format!("https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits");
+    let credits_url =
+        format!("https://api.anthropic.com/api/oauth/organizations/{org}/prepaid/credits");
     match oauth_get(client, &credits_url, token).await {
         OauthGet::Ok(body) => {
             if let Some((cents, currency)) = parse_prepaid_balance(&body) {
@@ -425,7 +448,10 @@ mod tests {
         assert_eq!(windows[0].id, "five_hour");
         assert_eq!(windows[0].label, "5h");
         assert!((windows[0].used_percent - 42.5).abs() < 0.01);
-        assert_eq!(windows[0].resets_at.as_deref(), Some("2026-07-20T18:00:00Z"));
+        assert_eq!(
+            windows[0].resets_at.as_deref(),
+            Some("2026-07-20T18:00:00Z")
+        );
         assert_eq!(windows[1].label, "7d");
         assert!((windows[1].used_percent - 11.0).abs() < 0.01);
         assert!(parse_account_usage("nope").is_empty());
@@ -437,17 +463,34 @@ mod tests {
         assert!((windows[0].used_percent - 18.0).abs() < 0.01);
         assert_eq!(windows[0].resets_at.as_deref(), Some("1780000000000"));
         assert_eq!(windows.iter().filter(|row| row.id == "extra").count(), 1);
-        assert!((windows.iter().find(|row| row.id == "extra").unwrap().used_percent - 64.0).abs() < 0.01);
+        assert!(
+            (windows
+                .iter()
+                .find(|row| row.id == "extra")
+                .unwrap()
+                .used_percent
+                - 64.0)
+                .abs()
+                < 0.01
+        );
         let limits = r#"{"limits":[{"kind":"session","percent":7,"resets_at":"2026-07-20T18:00:00Z"},{"kind":"weekly_scoped","percent":3,"resets_at":"2026-07-26T00:00:00Z","scope":{"model":{"display_name":"Opus"}}}]}"#;
         let rows = parse_account_usage(limits);
-        assert_eq!(rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), ["5h", "Opus"]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["5h", "Opus"]
+        );
         assert_eq!(
             parse_prepaid_balance(r#"{"amount":1250,"currency":"USD"}"#),
             Some((1250, "USD".into()))
         );
         assert_eq!(parse_prepaid_balance(r#"{"currency":"USD"}"#), None);
         let account = r#"{"memberships":[{"organization":{"uuid":"chat-org","capabilities":["chat"],"free_credits_status":null}},{"organization":{"uuid":"api-org","billing_type":"prepaid","capabilities":["api"],"free_credits_status":"available"}}]}"#;
-        assert_eq!(parse_api_org(account), Some(("api-org".into(), Some("available".into()))));
+        assert_eq!(
+            parse_api_org(account),
+            Some(("api-org".into(), Some("available".into())))
+        );
         assert_eq!(parse_api_org(r#"{"memberships":[]}"#), None);
     }
 }

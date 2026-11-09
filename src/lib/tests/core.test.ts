@@ -46,6 +46,7 @@ import {
   toolTrailTypeCounts,
   toolTrailKind,
   toolTrailParts,
+  sidebarActivityIcon,
   toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
@@ -1357,6 +1358,12 @@ describe("tool trail collapse", () => {
     assert.equal(toolTrailTypeIcon("Chat"), "messages");
     assert.equal(toolTrailTypeIcon("Chats"), "messages");
     assert.equal(toolTrailTypeIcon("MCP"), "cable.connector");
+    assert.equal(toolTrailTypeIcon("Editing"), "pencil");
+    assert.equal(sidebarActivityIcon("Read src/main.tsx"), "doc.text.magnifyingglass");
+    assert.equal(sidebarActivityIcon("List src-tauri/service/src/model"), "folder");
+    assert.equal(sidebarActivityIcon("Editing mod.rs"), "pencil");
+    assert.equal(sidebarActivityIcon("Thinking…"), "arrow.turn.down.right");
+    assert.equal(sidebarActivityIcon("The context readout in the prompt"), "arrow.turn.down.right");
   });
 
   it("keeps special tool types intact when grouping", () => {

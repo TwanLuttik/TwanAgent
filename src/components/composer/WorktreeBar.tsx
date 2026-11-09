@@ -20,6 +20,7 @@ export function WorktreeBar({
   onCreate,
   onOpenPullRequest,
   checkingOut = 0,
+  locked = false,
 }: {
   workspace: string;
   suggested: string;
@@ -27,6 +28,8 @@ export function WorktreeBar({
   onCreate?: (branch: string) => void;
   onOpenPullRequest?: (number: number) => void;
   checkingOut?: number;
+  /** An existing chat stays on this checkout. The name stays, the menu does not. */
+  locked?: boolean;
 }) {
   const [tick, setTick] = useState(0);
   const [open, setOpen] = useState(false);
@@ -87,6 +90,22 @@ export function WorktreeBar({
     setDraft("");
     onCreate(name);
   }
+  const mark = (
+    <Symbol
+      name={currentPull ? "arrow.triangle.pull" : "arrow.triangle.branch"}
+      className={`size-3 shrink-0 ${current.main && !currentPull ? "text-muted" : "text-accent"}`}
+    />
+  );
+  if (locked) {
+    return (
+      <div className="mt-1 flex items-center px-1">
+        <span title={current.path} className="flex h-6 max-w-full items-center gap-1.5 px-1.5 text-[11px] text-muted">
+          {mark}
+          <span className="min-w-0 truncate">{label}</span>
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="mt-1 flex items-center px-1">
       <button
@@ -107,10 +126,7 @@ export function WorktreeBar({
         {checkingOut ? (
           <span className="size-3 shrink-0 animate-spin rounded-full border border-current/40 border-t-transparent" aria-label="Checking out" />
         ) : (
-          <Symbol
-            name={currentPull ? "arrow.triangle.pull" : "arrow.triangle.branch"}
-            className={`size-3 shrink-0 ${current.main && !currentPull ? "text-muted" : "text-accent"}`}
-          />
+          mark
         )}
         <span className="min-w-0 truncate">{checkingOut ? "Checking out…" : label}</span>
         <Symbol name="chevron.down" className="size-2.5 shrink-0 opacity-70" />

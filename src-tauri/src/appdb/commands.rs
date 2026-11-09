@@ -2,7 +2,9 @@
 
 use tauri::{AppHandle, Manager, State};
 
-use super::{add_project, get_setting, list_projects, open, remove_project, reorder_projects, set_setting};
+use super::{
+    add_project, get_setting, list_projects, open, remove_project, reorder_projects, set_setting,
+};
 use crate::dev::{expand_folder_path, FolderSuggestion};
 use crate::error::Result;
 use crate::state::AppState;
@@ -37,7 +39,8 @@ pub fn dev_app_remove_project(state: State<'_, AppState>, path: String) -> Resul
     let removed = remove_project(&conn, &path)?;
     // The sidebar forgets the project. The remote row must go with it, or usage
     // sync keeps asking a machine the list no longer shows.
-    let _ = crate::remote::config::delete_remote_project_by_mount(&conn, std::path::Path::new(&path));
+    let _ =
+        crate::remote::config::delete_remote_project_by_mount(&conn, std::path::Path::new(&path));
     Ok(removed)
 }
 

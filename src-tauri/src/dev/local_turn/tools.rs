@@ -15,7 +15,9 @@ pub(super) fn search(app: &AppHandle, data_dir: &Path, arguments: &str) -> Resul
     let data_dir = data_dir.to_path_buf();
     let arguments = arguments.to_string();
     let stream = uuid::Uuid::new_v4().to_string();
-    tauri::async_runtime::block_on(crate::web_search::search(&app, &data_dir, &stream, &arguments))
+    tauri::async_runtime::block_on(crate::web_search::search(
+        &app, &data_dir, &stream, &arguments,
+    ))
 }
 
 pub(super) fn run_shell(
@@ -44,13 +46,21 @@ pub(super) fn run_shell(
     if let Ok(mut commands) = live.commands.lock() {
         commands.push(command_id.clone());
     }
-    emit_command(app, conversation_id, "command-start", &command_id, command, description);
+    emit_command(
+        app,
+        conversation_id,
+        "command-start",
+        &command_id,
+        command,
+        description,
+    );
     let app_chunks = app.clone();
     let id = conversation_id.to_string();
     let chunk_id = command_id.clone();
-    let outcome = super::super::cmd::run_command_streaming(workspace, command, &command_id, move |chunk| {
-        emit_command(&app_chunks, &id, "command", &chunk_id, chunk, "");
-    });
+    let outcome =
+        super::super::cmd::run_command_streaming(workspace, command, &command_id, move |chunk| {
+            emit_command(&app_chunks, &id, "command", &chunk_id, chunk, "");
+        });
     if let Ok(mut commands) = live.commands.lock() {
         commands.retain(|running| running != &command_id);
     }
@@ -62,14 +72,28 @@ pub(super) fn run_shell(
             Err(err) => format!("Error: {err}"),
         }
     };
-    emit_command(app, conversation_id, "command-exit", &command_id, &reported, "");
+    emit_command(
+        app,
+        conversation_id,
+        "command-exit",
+        &command_id,
+        &reported,
+        "",
+    );
     if stopped_flag(&live.cancel) {
         return Ok("Skipped: stopped.".into());
     }
     outcome
 }
 
-fn emit_command(app: &AppHandle, conversation_id: &str, kind: &str, command_id: &str, text: &str, description: &str) {
+fn emit_command(
+    app: &AppHandle,
+    conversation_id: &str,
+    kind: &str,
+    command_id: &str,
+    text: &str,
+    description: &str,
+) {
     emit(
         app,
         conversation_id,
@@ -84,7 +108,12 @@ fn emit_command(app: &AppHandle, conversation_id: &str, kind: &str, command_id: 
     );
 }
 
-fn ask_shell(app: &AppHandle, conversation_id: &str, command: &str, live: &LiveTurn) -> Result<bool> {
+fn ask_shell(
+    app: &AppHandle,
+    conversation_id: &str,
+    command: &str,
+    live: &LiveTurn,
+) -> Result<bool> {
     let (tx, rx) = std::sync::mpsc::channel();
     if let Ok(mut waits) = live.shell.lock() {
         waits.push(ShellWait {
@@ -92,11 +121,23 @@ fn ask_shell(app: &AppHandle, conversation_id: &str, command: &str, live: &LiveT
             tx,
         });
     }
-    emit(app, conversation_id, "shell", Some(command.to_string()), None, None);
+    emit(
+        app,
+        conversation_id,
+        "shell",
+        Some(command.to_string()),
+        None,
+        None,
+    );
     Ok(rx.recv_timeout(Duration::from_secs(600)).unwrap_or(false))
 }
 
-pub(super) fn ask_plan(app: &AppHandle, conversation_id: &str, name: &str, live: &LiveTurn) -> String {
+pub(super) fn ask_plan(
+    app: &AppHandle,
+    conversation_id: &str,
+    name: &str,
+    live: &LiveTurn,
+) -> String {
     let prompt = if name == "enter_plan_mode" {
         json!({ "kind": "enter" })
     } else {
@@ -106,7 +147,14 @@ pub(super) fn ask_plan(app: &AppHandle, conversation_id: &str, name: &str, live:
     if let Ok(mut waits) = live.plan.lock() {
         waits.push(PlanWait { tx });
     }
-    emit(app, conversation_id, "plan", Some(prompt.to_string()), None, None);
+    emit(
+        app,
+        conversation_id,
+        "plan",
+        Some(prompt.to_string()),
+        None,
+        None,
+    );
     let Ok(answer) = rx.recv_timeout(Duration::from_secs(600)) else {
         return "Skipped: stopped.".into();
     };
@@ -167,11 +215,24 @@ pub(super) fn list_group_chats(
     args: &serde_json::Map<String, Value>,
     current_id: &str,
 ) -> Result<String> {
-    let archived = args.get("archived").and_then(Value::as_bool).unwrap_or(false);
+    let archived = args
+        .get("archived")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if let Some(layout) = super::super::group::layout(workspace) {
-        return super::super::group_chats::list_member_chats(data_dir, &layout, str_arg(args, "alias"), archived);
+        return super::super::group_chats::list_member_chats(
+            data_dir,
+            &layout,
+            str_arg(args, "alias"),
+            archived,
+        );
     }
-    super::super::group_chats::list_project_chats(data_dir, store_key(workspace, workspace_key).as_str(), archived, current_id)
+    super::super::group_chats::list_project_chats(
+        data_dir,
+        store_key(workspace, workspace_key).as_str(),
+        archived,
+        current_id,
+    )
 }
 
 pub(super) fn read_group_chat(
@@ -181,9 +242,18 @@ pub(super) fn read_group_chat(
     args: &serde_json::Map<String, Value>,
 ) -> Result<String> {
     if let Some(layout) = super::super::group::layout(workspace) {
-        return super::super::group_chats::read_member_chat(data_dir, &layout, str_arg(args, "alias"), str_arg(args, "id"));
+        return super::super::group_chats::read_member_chat(
+            data_dir,
+            &layout,
+            str_arg(args, "alias"),
+            str_arg(args, "id"),
+        );
     }
-    super::super::group_chats::read_project_chat(data_dir, store_key(workspace, workspace_key).as_str(), str_arg(args, "id"))
+    super::super::group_chats::read_project_chat(
+        data_dir,
+        store_key(workspace, workspace_key).as_str(),
+        str_arg(args, "id"),
+    )
 }
 
 pub(super) fn create_group_chat(
@@ -256,7 +326,10 @@ fn created_chat_line(created: &super::super::group_chats::CreatedChat) -> String
     if created.alias.is_empty() {
         format!("{}\t{}", created.summary.id, created.summary.title)
     } else {
-        format!("{}\t{}\t{}", created.alias, created.summary.id, created.summary.title)
+        format!(
+            "{}\t{}\t{}",
+            created.alias, created.summary.id, created.summary.title
+        )
     }
 }
 
@@ -295,11 +368,20 @@ pub(super) fn capability_roots(workspace: &Path) -> Vec<std::path::PathBuf> {
     }
 }
 
-pub(super) fn commit_files(workspace: &Path, data_dir: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
+pub(super) fn commit_files(
+    workspace: &Path,
+    data_dir: &Path,
+    args: &serde_json::Map<String, Value>,
+) -> Result<String> {
     let paths: Vec<String> = args
         .get("paths")
         .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     if let Some(layout) = super::super::group::layout(workspace) {
         return super::super::group_git::commit_one(&layout, str_arg(args, "message"), &paths);
@@ -321,7 +403,10 @@ pub(super) fn commit_files(workspace: &Path, data_dir: &Path, args: &serde_json:
     Ok(format!("Committed {hash}"))
 }
 
-pub(super) fn git_target(workspace: &Path, data_dir: &Path) -> Result<super::super::git::GitTarget> {
+pub(super) fn git_target(
+    workspace: &Path,
+    data_dir: &Path,
+) -> Result<super::super::git::GitTarget> {
     super::super::git::GitTarget::local_in(workspace, &[], data_dir)
 }
 
@@ -405,7 +490,12 @@ mod tests {
     fn long_tool_text_keeps_head_and_tail() {
         let short = "a".repeat(TOOL_TEXT_CAP);
         assert_eq!(cap_tool_text(&short), short);
-        let long = format!("{}{}{}", "H".repeat(TOOL_TEXT_HEAD), "M".repeat(5_000), "T".repeat(TOOL_TEXT_TAIL));
+        let long = format!(
+            "{}{}{}",
+            "H".repeat(TOOL_TEXT_HEAD),
+            "M".repeat(5_000),
+            "T".repeat(TOOL_TEXT_TAIL)
+        );
         let capped = cap_tool_text(&long);
         let omitted = long.chars().count() - TOOL_TEXT_HEAD - TOOL_TEXT_TAIL;
         let marker = format!("\n… omitted {omitted} characters …\n");
@@ -422,16 +512,27 @@ mod tests {
         let key = crate::dev::paths::path_string(project.path());
         let prompt = group_prompt(project.path());
         assert!(prompt.contains("other chats"), "{prompt}");
-        assert!(prompt.contains("Do not call them at the start of a conversation"), "{prompt}");
-        assert!(!prompt.contains("Use list_chats and read_chat to read them"), "{prompt}");
+        assert!(
+            prompt.contains("Do not call them at the start of a conversation"),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("Use list_chats and read_chat to read them"),
+            "{prompt}"
+        );
         assert!(prompt.contains("user asked for another chat"), "{prompt}");
 
         let tools = turn_tools(project.path(), "conv");
         let read = tools
             .iter()
-            .find(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some("read_chat"))
+            .find(|tool| {
+                tool.pointer("/function/name").and_then(Value::as_str) == Some("read_chat")
+            })
             .expect("read_chat");
-        let required = read.pointer("/function/parameters/required").and_then(Value::as_array).unwrap();
+        let required = read
+            .pointer("/function/parameters/required")
+            .and_then(Value::as_array)
+            .unwrap();
         assert!(required.iter().any(|name| name.as_str() == Some("id")));
         assert!(!required.iter().any(|name| name.as_str() == Some("alias")));
 
@@ -458,7 +559,14 @@ mod tests {
         )
         .unwrap();
         let args = serde_json::Map::new();
-        let listed = list_group_chats(data.path(), project.path(), &key, &args, &current.summary.id).unwrap();
+        let listed = list_group_chats(
+            data.path(),
+            project.path(),
+            &key,
+            &args,
+            &current.summary.id,
+        )
+        .unwrap();
         assert!(listed.contains(&other.summary.id), "{listed}");
         assert!(listed.contains("Login bug"), "{listed}");
         assert!(!listed.contains(&current.summary.id), "{listed}");

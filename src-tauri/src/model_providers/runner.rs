@@ -142,7 +142,11 @@ impl<'a> StreamSession<'a> {
                 }
             }
             StreamPiece::Reasoning(text) => {
-                if note_coalesced(&mut self.pending_reasoning, &text, &mut self.last_reasoning_emit) {
+                if note_coalesced(
+                    &mut self.pending_reasoning,
+                    &text,
+                    &mut self.last_reasoning_emit,
+                ) {
                     self.flush_reasoning();
                     self.last_reasoning_emit = Some(Instant::now());
                 }
@@ -164,7 +168,10 @@ impl<'a> StreamSession<'a> {
                     prompt_tokens,
                     completion_tokens,
                     if cache_read_tokens == u64::MAX {
-                        self.last_usage.as_ref().map(|row| row.cache_read_tokens).unwrap_or(0)
+                        self.last_usage
+                            .as_ref()
+                            .map(|row| row.cache_read_tokens)
+                            .unwrap_or(0)
                     } else {
                         cache_read_tokens
                     },
@@ -208,9 +215,17 @@ impl<'a> StreamSession<'a> {
             stream_id: self.stream_id.into(),
             kind: "done".into(),
             text,
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             usage: self.last_usage.clone(),
-            thinking: if thinking.is_empty() { None } else { Some(thinking) },
+            thinking: if thinking.is_empty() {
+                None
+            } else {
+                Some(thinking)
+            },
             conversation: None,
         });
     }
@@ -310,7 +325,11 @@ fn absorb_piece(session: &mut StreamSession, piece: StreamPiece) -> Result<bool>
     }
 }
 
-fn feed_pieces(session: &mut StreamSession, parse: &mut impl FnMut(&str) -> Vec<StreamPiece>, data: &str) -> Result<bool> {
+fn feed_pieces(
+    session: &mut StreamSession,
+    parse: &mut impl FnMut(&str) -> Vec<StreamPiece>,
+    data: &str,
+) -> Result<bool> {
     let mut stop = false;
     for piece in parse(data) {
         if absorb_piece(session, piece)? {
@@ -357,7 +376,9 @@ pub async fn consume_sse(
         let next = timeout(Duration::from_millis(100), stream.next()).await;
         let chunk = match next {
             Ok(Some(chunk)) => chunk,
-            Ok(None) => return finish_session(&mut session, &mut parse, &mut on_stop, &raw, saw_sse),
+            Ok(None) => {
+                return finish_session(&mut session, &mut parse, &mut on_stop, &raw, saw_sse)
+            }
             Err(_) => {
                 if cancel.load(Ordering::Relaxed) {
                     session.stopped();

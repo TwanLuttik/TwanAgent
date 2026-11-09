@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn native_source_drops_trailing_slash() {
         #[cfg(windows)]
-        assert_eq!(native_source(r"C:\Users\<user>\Docs\"), r"C:\Users\<user>\Docs");
+        assert_eq!(
+            native_source(r"C:\Users\<user>\Docs\"),
+            r"C:\Users\<user>\Docs"
+        );
         #[cfg(not(windows))]
         assert_eq!(native_source("/home/<user>/Docs/"), "/home/<user>/Docs");
         assert_eq!(

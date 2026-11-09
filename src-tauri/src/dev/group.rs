@@ -94,7 +94,9 @@ fn canonical_dir(path: &Path) -> Result<PathBuf> {
 }
 
 pub fn layout(root: &Path) -> Option<GroupLayout> {
-    let key = fs::canonicalize(root).ok().map(|path| path_key(&path_string(&path)))?;
+    let key = fs::canonicalize(root)
+        .ok()
+        .map(|path| path_key(&path_string(&path)))?;
     lock_cache().get(&key).map(|slot| slot.layout.clone())
 }
 
@@ -113,7 +115,11 @@ pub fn hit(workspace: &Path, rel: &str) -> Result<Option<GroupHit>> {
 }
 
 /// Both paths must stay inside one member. The returned strings are relative to that member.
-pub fn same_member(layout: &GroupLayout, from: &str, to: &str) -> Result<(PathBuf, String, String, String)> {
+pub fn same_member(
+    layout: &GroupLayout,
+    from: &str,
+    to: &str,
+) -> Result<(PathBuf, String, String, String)> {
     let from_hit = layout.split(from)?;
     let to_hit = layout.split(to)?;
     match (from_hit, to_hit) {
@@ -245,7 +251,12 @@ pub fn list_groups(data_dir: &Path) -> Result<Vec<GroupRow>> {
     Ok(layouts.into_iter().map(row_from_layout).collect())
 }
 
-pub fn create_group(data_dir: &Path, projects_root: &Path, name: &str, paths: &[PathBuf]) -> Result<GroupRow> {
+pub fn create_group(
+    data_dir: &Path,
+    projects_root: &Path,
+    name: &str,
+    paths: &[PathBuf],
+) -> Result<GroupRow> {
     if paths.len() < 2 {
         return Err(Error::Other("pick at least two projects".into()));
     }
@@ -274,7 +285,9 @@ pub fn create_group(data_dir: &Path, projects_root: &Path, name: &str, paths: &[
     }
     for path in &canon {
         if same_dir(&dest, path) || is_under(&dest, path) || is_under(path, &dest) {
-            return Err(Error::Other("the group folder would overlap a project".into()));
+            return Err(Error::Other(
+                "the group folder would overlap a project".into(),
+            ));
         }
     }
     fs::create_dir(&dest)?;
@@ -352,12 +365,17 @@ pub fn add_member(data_dir: &Path, group: &Path, path: &Path) -> Result<GroupMem
     let existing = members_of(&conn, &stored_group)?;
     for member in &existing {
         let member_path = PathBuf::from(&member.path);
-        if is_under(&folder, &member_path) || is_under(&member_path, &folder) || same_dir(&folder, &member_path) {
+        if is_under(&folder, &member_path)
+            || is_under(&member_path, &folder)
+            || same_dir(&folder, &member_path)
+        {
             return Err(Error::Other("one folder is inside another".into()));
         }
     }
     if is_under(&root, &folder) || is_under(&folder, &root) {
-        return Err(Error::Other("the group folder would overlap a project".into()));
+        return Err(Error::Other(
+            "the group folder would overlap a project".into(),
+        ));
     }
     let mut used: HashSet<String> = existing.iter().map(|member| member.alias.clone()).collect();
     let alias = next_alias(&folder_name(&folder), &mut used);
@@ -439,7 +457,10 @@ pub fn is_group(data_dir: &Path, path: &str) -> bool {
         return false;
     };
     let Ok(folder) = fs::canonicalize(path) else {
-        return find_group_path(&conn, Path::new(path)).ok().flatten().is_some();
+        return find_group_path(&conn, Path::new(path))
+            .ok()
+            .flatten()
+            .is_some();
     };
     find_group_path(&conn, &folder).ok().flatten().is_some()
 }
@@ -506,7 +527,10 @@ fn remove_symlink(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::FileTypeExt;
-        if path.symlink_metadata().is_ok_and(|meta| meta.file_type().is_symlink_dir()) {
+        if path
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_symlink_dir())
+        {
             fs::remove_dir(path)?;
             return Ok(());
         }
@@ -630,10 +654,11 @@ fn read_groups(data_dir: &Path) -> Result<Vec<GroupLayout>> {
 }
 
 fn layouts_from(conn: &rusqlite::Connection) -> Result<Vec<GroupLayout>> {
-    let mut stmt = conn.prepare(
-        "SELECT path, name FROM project_groups ORDER BY created_at ASC, path ASC",
-    )?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut stmt =
+        conn.prepare("SELECT path, name FROM project_groups ORDER BY created_at ASC, path ASC")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = Vec::new();
     for row in rows {
         let (path, name) = row?;
@@ -642,7 +667,11 @@ fn layouts_from(conn: &rusqlite::Connection) -> Result<Vec<GroupLayout>> {
             continue;
         }
         let members = member_layouts(conn, &path)?;
-        out.push(GroupLayout { root, name, members });
+        out.push(GroupLayout {
+            root,
+            name,
+            members,
+        });
     }
     Ok(out)
 }
@@ -798,7 +827,11 @@ mod tests {
             }
             GroupPath::Root => panic!("expected web"),
         }
-        assert!(layout.split("../secret").unwrap_err().to_string().contains("outside"));
+        assert!(layout
+            .split("../secret")
+            .unwrap_err()
+            .to_string()
+            .contains("outside"));
         assert!(layout.split("notes.txt").is_err());
     }
 
@@ -808,7 +841,13 @@ mod tests {
         let projects = temp_dir();
         let left = temp_dir();
         let right = temp_dir();
-        let err = create_group(data.path(), projects.path(), "apps", &[left.path().to_path_buf()]).unwrap_err();
+        let err = create_group(
+            data.path(),
+            projects.path(),
+            "apps",
+            &[left.path().to_path_buf()],
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("two"));
 
         let parent = temp_dir();
@@ -835,7 +874,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            created.members.iter().map(|member| member.alias.as_str()).collect::<Vec<_>>(),
+            created
+                .members
+                .iter()
+                .map(|member| member.alias.as_str())
+                .collect::<Vec<_>>(),
             ["api", "api-2"]
         );
         let err = create_group(
@@ -868,7 +911,12 @@ mod tests {
         )
         .unwrap();
         let group = PathBuf::from(&created.path);
-        assert!(group.join("api").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(group
+            .join("api")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         delete_group(data.path(), &group).unwrap();
         assert!(!group.exists());
         assert_eq!(fs::read_to_string(api.join("keep.txt")).unwrap(), "safe");

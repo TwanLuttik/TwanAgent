@@ -97,7 +97,9 @@ fn last_message_line(conn: &Connection, id: &str) -> Result<String> {
             |row| row.get(0),
         )
         .optional()?;
-    Ok(text.map(|value| clip_sidebar_line(&value)).unwrap_or_default())
+    Ok(text
+        .map(|value| clip_sidebar_line(&value))
+        .unwrap_or_default())
 }
 
 fn last_message_lines(conn: &Connection) -> Result<std::collections::HashMap<String, String>> {
@@ -109,7 +111,9 @@ fn last_message_lines(conn: &Connection) -> Result<std::collections::HashMap<Str
             WHERE role IN ('user', 'assistant') AND content IS NOT NULL AND length(trim(content)) > 0
          ) WHERE n = 1",
     )?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = std::collections::HashMap::new();
     for row in rows {
         let (id, content) = row?;
@@ -325,7 +329,11 @@ fn save_conversation_in_tx(conn: &Connection, conv: &Conversation) -> Result<()>
     insert_conversation(conn, conv, sort)
 }
 
-pub fn set_conversation_compaction(conn: &Connection, id: &str, compaction: &DevCompaction) -> Result<()> {
+pub fn set_conversation_compaction(
+    conn: &Connection,
+    id: &str,
+    compaction: &DevCompaction,
+) -> Result<()> {
     let raw = serde_json::to_string(compaction)?;
     let n = conn.execute(
         "UPDATE conversations SET compaction = ?1 WHERE id = ?2",
@@ -353,7 +361,10 @@ pub fn delete_conversation(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn reorder_conversations(conn: &Connection, ids: &[String]) -> Result<Vec<ConversationSummary>> {
+pub fn reorder_conversations(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<ConversationSummary>> {
     if ids.is_empty() {
         return list_conversation_summaries(conn);
     }

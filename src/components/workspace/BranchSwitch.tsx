@@ -102,8 +102,8 @@ export function BranchSwitch({
           open ? "bg-wash text-ink" : "text-ink"
         }`}
       >
-        <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate font-medium">{switching ? "Switching…" : label}</span>
+        <Symbol name="arrow.triangle.branch" className="size-3.5 shrink-0 text-muted" />
+        <span className="min-w-0 flex-1 truncate">{switching ? "Switching…" : label}</span>
         {ahead > 0 ? <span className="shrink-0 text-[10px] font-medium text-ok">↑{ahead}</span> : null}
         {behind > 0 ? <span className="shrink-0 text-[10px] font-medium text-warn">↓{behind}</span> : null}
         {canOpen ? <Symbol name="chevron.down" className={`size-2.5 shrink-0 text-muted transition-transform duration-150 ${open ? "rotate-180" : ""}`} /> : null}

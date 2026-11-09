@@ -16,8 +16,8 @@ export function GitSectionTabs({
 }) {
   const tabs: GitSection[] = hasRequest ? ["changes", "commits", "request"] : ["changes", "commits"];
   return (
-    <div className="flex h-9 shrink-0 items-end justify-between gap-2 border-b border-line/45 px-1.5">
-      <div role="tablist" aria-label="Git" className="flex min-w-0 items-end">
+    <div className="flex h-8 shrink-0 items-end justify-between gap-2 px-2">
+      <div role="tablist" aria-label="Git" className="flex min-w-0 items-center gap-0.5">
         {tabs.map((id) => {
           const active = section === id;
           return (
@@ -27,9 +27,7 @@ export function GitSectionTabs({
               role="tab"
               aria-selected={active}
               onClick={() => onSelect(id)}
-              className={`-mb-px border-b-2 px-2.5 pb-1.5 text-[13px] font-medium ${
-                active ? "border-accent text-ink" : "border-transparent text-muted hover:text-ink"
-              }`}
+              className={`rounded-md px-2 py-1 text-[13px] ${active ? "text-ink" : "text-muted hover:text-ink"}`}
             >
               {gitSectionLabel(id)}
             </button>
@@ -66,25 +64,20 @@ export function CommitList({
         const when = relativeCommitTime(row.at);
         const author = row.author.trim() || "Unknown";
         return (
-          <div key={row.hash} className="border-b border-line/30">
+          <div key={row.hash}>
             <button
               type="button"
               onClick={() => onOpen(row.hash)}
-              className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left ${open ? "bg-wash" : "hover:bg-wash/70"}`}
+              className={`flex w-full items-baseline gap-3 px-3 py-2 text-left ${open ? "bg-wash" : "hover:bg-wash"}`}
             >
-              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-wash text-[10px] font-semibold text-muted">
-                {author.slice(0, 1).toUpperCase()}
-              </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] font-medium leading-5 text-ink">{row.subject || "Commit"}</span>
-                <span className="mt-0.5 block truncate text-[12px] text-muted">
+                <span className="block truncate text-[13px] leading-5 text-ink">{row.subject || "Commit"}</span>
+                <span className="block truncate text-[12px] text-muted">
                   {author}
                   {when ? ` · ${when}` : ""}
                 </span>
               </span>
-              <span className="mt-0.5 shrink-0 rounded-full border border-line/70 px-1.5 py-0.5 font-mono text-[10px] text-muted">
-                {row.short}
-              </span>
+              <span className="shrink-0 font-mono text-[11px] text-muted">{row.short}</span>
             </button>
             {open && detail ? (
               <pre className="mx-3 mb-2.5 max-h-48 overflow-auto rounded-[8px] bg-wash px-2.5 py-2 font-mono text-[10px] leading-snug whitespace-pre-wrap text-ink/80">
@@ -99,10 +92,10 @@ export function CommitList({
 }
 
 function statePill(state: string): { label: string; className: string } {
-  if (state === "merged") return { label: "Merged", className: "bg-accent/15 text-accent" };
-  if (state === "closed") return { label: "Closed", className: "bg-err/15 text-err" };
-  if (state === "draft") return { label: "Draft", className: "bg-wash text-muted" };
-  return { label: "Open", className: "bg-ok/15 text-ok" };
+  if (state === "merged") return { label: "Merged", className: "text-accent" };
+  if (state === "closed") return { label: "Closed", className: "text-err" };
+  if (state === "draft") return { label: "Draft", className: "text-muted" };
+  return { label: "Open", className: "text-ok" };
 }
 
 function checksLabel(checks: GitBranchPullRequest["checks"]): { text: string; className: string } | null {
@@ -150,7 +143,7 @@ export function PullRequestView({
     <div className="min-h-0 flex-1 overflow-auto pb-3">
       <div className="px-3 pt-3">
         <div className="flex items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${pill.className}`}>{pill.label}</span>
+          <span className={`text-[12px] font-medium ${pill.className}`}>{pill.label}</span>
           <span className="min-w-0 truncate text-[12px] text-muted">
             #{request.number}
             {request.author ? ` · ${request.author}` : ""}
@@ -160,15 +153,11 @@ export function PullRequestView({
         {request.head || request.base ? (
           <p className="mt-2 flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-muted">
             {request.head ? (
-              <span className="max-w-[10rem] truncate rounded-full bg-wash px-1.5 py-0.5 font-mono text-[11px] text-ink">
-                {request.head}
-              </span>
+              <span className="max-w-[10rem] truncate font-mono text-[11px] text-ink">{request.head}</span>
             ) : null}
             <span aria-hidden>→</span>
             {request.base ? (
-              <span className="max-w-[10rem] truncate rounded-full bg-wash px-1.5 py-0.5 font-mono text-[11px] text-ink">
-                {request.base}
-              </span>
+              <span className="max-w-[10rem] truncate font-mono text-[11px] text-ink">{request.base}</span>
             ) : null}
           </p>
         ) : null}
@@ -188,7 +177,7 @@ export function PullRequestView({
           <button
             type="button"
             onClick={() => onOpenUrl(request.url)}
-            className="mt-3 rounded-full border border-line/70 px-3 py-1 text-[12px] font-medium text-ink hover:bg-wash"
+            className="mt-3 text-[12px] text-muted hover:text-ink"
           >
             View on GitHub
           </button>
@@ -218,7 +207,7 @@ export function PullRequestView({
 function FileRow({ file }: { file: GitPullRequestFile }) {
   const { dir, name } = fileName(file.path);
   return (
-    <div className="flex items-center gap-2 border-b border-line/25 px-3 py-2">
+    <div className="flex items-center gap-2 px-3 py-1.5">
       <span className="min-w-0 flex-1 truncate text-[13px]" title={file.path}>
         {dir ? <span className="text-muted">{dir}</span> : null}
         <span className="text-ink">{name}</span>

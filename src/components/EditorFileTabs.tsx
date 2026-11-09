@@ -20,7 +20,7 @@ export function EditorFileTabs({
 }) {
   return (
     <div
-      className="no-scrollbar flex min-w-0 flex-1 items-stretch overflow-x-auto"
+      className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
       role="tablist"
       aria-label="Open files"
     >
@@ -85,10 +85,8 @@ function EditorFileTab({
   return (
     <div
       ref={ref}
-      className={`group relative flex max-w-[15rem] min-w-[7.5rem] shrink-0 items-center border-r border-line ${
-        selected
-          ? "bg-canvas text-ink"
-          : "bg-transparent text-muted hover:bg-wash hover:text-ink"
+      className={`group relative flex h-7 max-w-[16rem] min-w-0 shrink-0 items-center rounded-md ${
+        selected ? "bg-canvas text-ink shadow-sm" : "text-muted hover:bg-wash hover:text-ink"
       } ${warnClose ? "ring-1 ring-inset ring-warn/70" : ""}`}
       onMouseDown={(ev) => {
         if (ev.button === 1) ev.preventDefault();
@@ -109,11 +107,12 @@ function EditorFileTab({
         aria-selected={selected}
         title={tabTooltip({ path, preview, changes, warnClose, folder })}
         onClick={() => onFile(path)}
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 pr-1 pl-2.5 text-left"
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-1 pr-1 pl-2 text-left"
       >
         <FileIcon name={path} className="size-3.5 shrink-0" />
-        <span className={`min-w-0 flex-1 truncate text-[12px] leading-none ${preview ? "italic" : ""}`}>
-          {label}
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className={`truncate text-[12px] leading-none ${preview ? "italic" : ""}`}>{label}</span>
+          {folder ? <span className="truncate text-[11px] leading-none text-muted">{folder}</span> : null}
         </span>
         {changes ? (
           <span className="shrink-0 rounded px-1 text-[9px] font-medium tracking-wide text-ok uppercase">
@@ -128,7 +127,7 @@ function EditorFileTab({
           ev.stopPropagation();
           onCloseFile(path);
         }}
-        className={`mr-1.5 flex size-5 shrink-0 items-center justify-center rounded-[5px] hover:bg-wash-strong hover:text-ink ${
+        className={`mr-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-[5px] hover:bg-wash-strong hover:text-ink ${
           selected || dirty ? "text-muted" : "text-muted opacity-0 group-hover:opacity-100"
         }`}
       >

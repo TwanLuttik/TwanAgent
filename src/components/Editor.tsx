@@ -282,7 +282,7 @@ export function Editor({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
-      <div className="flex h-9 shrink-0 items-stretch border-b border-line bg-sidebar/70">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-line/70 bg-sidebar/45 px-2">
         <EditorFileTabs
           editor={editor}
           dirtyFiles={dirtyFiles}
@@ -355,16 +355,16 @@ export function Editor({
       ) : (
         <div className="min-h-0 flex-1 px-4 py-3 text-[12px] text-muted">Opening…</div>
       )}
-      <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-1 text-[11px] text-muted">
-        <span className="min-w-0 truncate">
+      <div className="flex h-7 shrink-0 items-center gap-2 border-t border-line/70 bg-sidebar/40 px-3 text-[11px] text-muted">
+        <span className="min-w-0 truncate font-mono">
           {isAllDiffPath(path) ? "All changes" : (mcpSourceFromPath(path) ?? skillSourceFromPath(path) ?? path)}
         </span>
-        <span className="ml-auto shrink-0">
+        <span className="ml-auto shrink-0 rounded-md bg-wash px-1.5 py-0.5 font-mono text-[10px] tracking-wide uppercase">
           {fileView === "diff"
             ? "Git changes"
             : media
               ? mediaMeta?.label ?? ""
-              : `${languageForPath(path) ?? "text"}${dirty ? " · Unsaved" : ""}`}
+              : `${languageForPath(path) ?? "text"}${dirty ? " · unsaved" : ""}`}
         </span>
       </div>
     </div>

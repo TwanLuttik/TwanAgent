@@ -128,7 +128,9 @@ pub async fn cached_update(
     installed: Option<&str>,
     latest: impl std::future::Future<Output = Option<String>>,
 ) -> Option<CliUpdate> {
-    let installed = installed.map(str::trim).filter(|version| !version.is_empty())?;
+    let installed = installed
+        .map(str::trim)
+        .filter(|version| !version.is_empty())?;
     let saved = read_cache(data_dir, id);
     if let Some(hit) = fresh_cache(saved.as_ref(), installed, now_secs()) {
         return Some(hit);
@@ -332,7 +334,10 @@ pub async fn claude_update(
     cached_update(data_dir, &id, installed, claude_latest_for(bin)).await
 }
 
-pub async fn minimax_update(data_dir: &std::path::Path, installed: Option<&str>) -> Option<CliUpdate> {
+pub async fn minimax_update(
+    data_dir: &std::path::Path,
+    installed: Option<&str>,
+) -> Option<CliUpdate> {
     cached_update(data_dir, "minimax", installed, minimax_latest()).await
 }
 
@@ -357,7 +362,10 @@ pub fn update_output_tail(stdout: &str, stderr: &str) -> String {
     if line.chars().count() <= CAP {
         line.to_string()
     } else {
-        let end = line.chars().skip(line.chars().count() - CAP).collect::<String>();
+        let end = line
+            .chars()
+            .skip(line.chars().count() - CAP)
+            .collect::<String>();
         format!("…{end}")
     }
 }
@@ -394,7 +402,11 @@ pub fn run_cli_update(program: &std::path::Path, args: &[&str]) -> Result<(), St
 
 /// A directory that holds `node`, for an npm CLI. Homebrew's versioned formulas come first.
 fn node_bin_dir() -> Option<String> {
-    for extra in ["/opt/homebrew/opt/node@22/bin", "/opt/homebrew/bin", "/usr/local/bin"] {
+    for extra in [
+        "/opt/homebrew/opt/node@22/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ] {
         if std::path::Path::new(extra).join("node").is_file() {
             return Some(extra.to_string());
         }
@@ -402,10 +414,15 @@ fn node_bin_dir() -> Option<String> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
     for rel in [".nvm/versions/node", ".local/share/fnm/node-versions"] {
         let root = home.join(rel);
-        let found = std::fs::read_dir(&root).ok()?.filter_map(Result::ok).find_map(|entry| {
-            let bin = entry.path().join("bin");
-            bin.join("node").is_file().then(|| bin.display().to_string())
-        });
+        let found = std::fs::read_dir(&root)
+            .ok()?
+            .filter_map(Result::ok)
+            .find_map(|entry| {
+                let bin = entry.path().join("bin");
+                bin.join("node")
+                    .is_file()
+                    .then(|| bin.display().to_string())
+            });
         if found.is_some() {
             return found;
         }
@@ -415,6 +432,7 @@ fn node_bin_dir() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
     use std::path::Path;
 
@@ -442,9 +460,17 @@ mod tests {
             available: "1.0.58".into(),
             checked_at: 1_000,
         };
-        assert_eq!(fresh_cache(Some(&saved), "1.0.55", 1_000).as_ref(), Some(&saved));
         assert_eq!(
-            fresh_cache(Some(&saved), "1.0.55", 1_000 + CACHE_TTL.as_secs() as i64 - 1).as_ref(),
+            fresh_cache(Some(&saved), "1.0.55", 1_000).as_ref(),
+            Some(&saved)
+        );
+        assert_eq!(
+            fresh_cache(
+                Some(&saved),
+                "1.0.55",
+                1_000 + CACHE_TTL.as_secs() as i64 - 1
+            )
+            .as_ref(),
             Some(&saved)
         );
         assert!(fresh_cache(Some(&saved), "1.0.55", 1_000 + CACHE_TTL.as_secs() as i64).is_none());
@@ -455,7 +481,10 @@ mod tests {
     #[test]
     fn grok_channel_follows_the_cli_config() {
         assert_eq!(grok_channel("[cli]\nchannel = \"alpha\"\n"), "alpha");
-        assert_eq!(grok_channel("[cli]\nchannel = \"enterprise\"\n"), "enterprise");
+        assert_eq!(
+            grok_channel("[cli]\nchannel = \"enterprise\"\n"),
+            "enterprise"
+        );
         assert_eq!(grok_channel("[cli]\nchannel = \"nope\"\n"), "stable");
         assert_eq!(grok_channel(""), "stable");
         assert_eq!(
@@ -468,7 +497,10 @@ mod tests {
     fn channel_and_npm_bodies_become_one_version() {
         assert_eq!(parse_channel_version("1.0.58\n").as_deref(), Some("1.0.58"));
         assert_eq!(parse_channel_version("2.1.299").as_deref(), Some("2.1.299"));
-        assert_eq!(parse_channel_version("1.0.0-beta.2").as_deref(), Some("1.0.0-beta.2"));
+        assert_eq!(
+            parse_channel_version("1.0.0-beta.2").as_deref(),
+            Some("1.0.0-beta.2")
+        );
         assert!(parse_channel_version("missing").is_none());
         assert!(parse_channel_version("").is_none());
         assert_eq!(
@@ -482,15 +514,23 @@ mod tests {
     #[test]
     fn a_homebrew_cask_is_not_behind_the_native_channel() {
         assert_eq!(
-            homebrew_cask_name(Path::new("/opt/homebrew/Caskroom/claude-code/2.1.311/claude")).as_deref(),
+            homebrew_cask_name(Path::new(
+                "/opt/homebrew/Caskroom/claude-code/2.1.311/claude"
+            ))
+            .as_deref(),
             Some("claude-code")
         );
         assert_eq!(
-            homebrew_cask_name(Path::new("/home/linuxbrew/.linuxbrew/Caskroom/claude-code@latest/2.1.319/claude"))
-                .as_deref(),
+            homebrew_cask_name(Path::new(
+                "/home/linuxbrew/.linuxbrew/Caskroom/claude-code@latest/2.1.319/claude"
+            ))
+            .as_deref(),
             Some("claude-code@latest")
         );
-        assert_eq!(homebrew_cask_name(Path::new("/tmp/twanagent-not-a-cask/claude")), None);
+        assert_eq!(
+            homebrew_cask_name(Path::new("/tmp/twanagent-not-a-cask/claude")),
+            None
+        );
         assert_eq!(
             parse_brew_cask_version(r#"{"token":"claude-code","version":"2.1.311"}"#).as_deref(),
             Some("2.1.311")
@@ -501,10 +541,15 @@ mod tests {
             claude_channel_version(Some("2.1.311"), Some("2.1.319")).as_deref(),
             Some("2.1.311")
         );
-        assert_eq!(claude_channel_version(None, Some("2.1.319")).as_deref(), Some("2.1.319"));
+        assert_eq!(
+            claude_channel_version(None, Some("2.1.319")).as_deref(),
+            Some("2.1.319")
+        );
         assert_eq!(claude_cache_id(None), "claude");
         assert_eq!(
-            claude_cache_id(Some(Path::new("/opt/homebrew/Caskroom/claude-code/2.1.311/claude"))),
+            claude_cache_id(Some(Path::new(
+                "/opt/homebrew/Caskroom/claude-code/2.1.311/claude"
+            ))),
             "claude.brew.claude-code"
         );
         assert!(newer_version("2.1.311", "2.1.311").is_empty());
@@ -514,7 +559,11 @@ mod tests {
     #[test]
     fn a_homebrew_symlink_resolves_to_its_cask() {
         let dir = tempfile::tempdir().unwrap();
-        let cask = dir.path().join("Caskroom").join("claude-code").join("2.1.311");
+        let cask = dir
+            .path()
+            .join("Caskroom")
+            .join("claude-code")
+            .join("2.1.311");
         fs::create_dir_all(&cask).unwrap();
         let bin = cask.join("claude");
         fs::write(&bin, b"").unwrap();
@@ -529,7 +578,10 @@ mod tests {
             update_output_tail("downloading\ninstalled 2.1.309\n", ""),
             "installed 2.1.309"
         );
-        assert_eq!(update_output_tail("", "\nEACCES: permission denied\n"), "EACCES: permission denied");
+        assert_eq!(
+            update_output_tail("", "\nEACCES: permission denied\n"),
+            "EACCES: permission denied"
+        );
         assert_eq!(update_output_tail("   \n", "  "), "The CLI update failed.");
         let long = "x".repeat(300);
         assert!(update_output_tail(&long, "").starts_with('…'));

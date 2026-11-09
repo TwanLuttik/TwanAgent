@@ -39,11 +39,17 @@ mod platform {
 
     pub fn save(data_dir: &Path, root: &Path, rows: &[StoredBookmark]) -> Result<()> {
         let path = root.to_string_lossy().into_owned();
-        if rows.iter().any(|row| same_path(&row.path, &path) && !row.data.is_empty()) {
+        if rows
+            .iter()
+            .any(|row| same_path(&row.path, &path) && !row.data.is_empty())
+        {
             return Ok(());
         }
         let bookmark = Bookmark::create(root).map_err(|err| {
-            Error::Other(format!("could not keep access to {}: {err}", root.display()))
+            Error::Other(format!(
+                "could not keep access to {}: {err}",
+                root.display()
+            ))
         })?;
         let mut next: Vec<StoredBookmark> = rows
             .iter()
@@ -52,7 +58,10 @@ mod platform {
             .collect();
         next.push(StoredBookmark {
             path: crate::paths::native_source(&path),
-            data: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bookmark.as_bytes()),
+            data: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                bookmark.as_bytes(),
+            ),
         });
         next.sort_by(|a, b| a.path.cmp(&b.path));
         super::write_rows(data_dir, &next)
@@ -87,7 +96,10 @@ mod platform {
                                 fresh.as_bytes(),
                             ),
                             Err(err) => {
-                                eprintln!("could not refresh folder access for {}: {err}", resolved.display());
+                                eprintln!(
+                                    "could not refresh folder access for {}: {err}",
+                                    resolved.display()
+                                );
                                 row.data.clone()
                             }
                         }
@@ -135,10 +147,7 @@ mod platform {
     }
 
     fn same_dir(left: &Path, right: &Path) -> bool {
-        same_path(
-            &left.to_string_lossy(),
-            &right.to_string_lossy(),
-        )
+        same_path(&left.to_string_lossy(), &right.to_string_lossy())
     }
 
     fn same_path(left: &str, right: &str) -> bool {

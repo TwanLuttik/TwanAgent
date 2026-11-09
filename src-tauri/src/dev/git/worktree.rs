@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::projects;
 use super::{
-    git_branches, git_run, git_text, sanitize_git_branch, GitTarget, GitText, GitWorktree, WORKTREE_DIR,
-    WORKTREE_EXCLUDE,
+    git_branches, git_run, git_text, sanitize_git_branch, GitTarget, GitText, GitWorktree,
+    WORKTREE_DIR, WORKTREE_EXCLUDE,
 };
 use crate::error::{Error, Result};
 
@@ -95,7 +95,9 @@ pub fn worktree_destination(home: &WorktreeHome, branch: &str) -> Result<PathBuf
     let branch = sanitize_git_branch(branch)?;
     let name = worktree_folder_name(&branch)?;
     if home.inside && name == WORKTREE_DIR {
-        return Err(Error::Other("worktree folder would nest inside itself".into()));
+        return Err(Error::Other(
+            "worktree folder would nest inside itself".into(),
+        ));
     }
     Ok(home.root.join(name))
 }
@@ -109,7 +111,9 @@ pub fn worktree_home(main_path: &Path, app_roots: &[&Path], data_dir: &Path) -> 
     let owned = app_roots.iter().any(|root| {
         let root_real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         crate::paths::is_under(&main_real, &root_real)
-            && main_real.parent().is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
+            && main_real
+                .parent()
+                .is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
     });
     if owned {
         return WorktreeHome {
@@ -131,7 +135,8 @@ pub fn external_worktree_root(data_dir: &Path, main_path: &Path) -> PathBuf {
         .filter(|name| !name.is_empty() && name != "." && name != "..")
         .unwrap_or_else(|| "project".into());
     let folder = projects::sanitize_project_name(&name).unwrap_or_else(|_| "project".into());
-    let id = crate::dev::paths::workspace_id(&crate::paths::native_source(&main_path.to_string_lossy()));
+    let id =
+        crate::dev::paths::workspace_id(&crate::paths::native_source(&main_path.to_string_lossy()));
     data_dir.join(WORKTREE_DIR).join(format!("{folder}-{id}"))
 }
 
@@ -166,15 +171,13 @@ fn worktree_folder_name(branch: &str) -> Result<String> {
 
 fn same_checkout(left: &str, right: &Path) -> bool {
     let Ok(canon) = fs::canonicalize(right) else {
-        return crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
-            &right.to_string_lossy(),
-        ));
+        return crate::paths::native_source(left)
+            .eq_ignore_ascii_case(&crate::paths::native_source(&right.to_string_lossy()));
     };
-    crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
-        &canon.to_string_lossy(),
-    )) || crate::paths::native_source(left).eq_ignore_ascii_case(&crate::paths::native_source(
-        &right.to_string_lossy(),
-    ))
+    crate::paths::native_source(left)
+        .eq_ignore_ascii_case(&crate::paths::native_source(&canon.to_string_lossy()))
+        || crate::paths::native_source(left)
+            .eq_ignore_ascii_case(&crate::paths::native_source(&right.to_string_lossy()))
 }
 
 fn main_worktree_path(rows: &[GitWorktree]) -> Result<PathBuf> {
@@ -207,9 +210,14 @@ pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Resul
         return Err(Error::Other("not a git repository".into()));
     }
     if listed.iter().any(|row| row.bare) {
-        return Err(Error::Other("a bare repository cannot grow a worktree".into()));
+        return Err(Error::Other(
+            "a bare repository cannot grow a worktree".into(),
+        ));
     }
-    if listed.iter().any(|row| row.branch.as_deref() == Some(branch.as_str())) {
+    if listed
+        .iter()
+        .any(|row| row.branch.as_deref() == Some(branch.as_str()))
+    {
         return Err(Error::Conflict(format!("{branch} is already checked out")));
     }
     let main = main_worktree_path(&listed)?;
@@ -221,7 +229,9 @@ pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Resul
     if dest.exists() {
         return Err(Error::Conflict(format!(
             "{} already exists",
-            dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            dest.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
         )));
     }
     if let Some(parent) = dest.parent() {
@@ -236,14 +246,21 @@ pub fn git_worktree_add(target: &GitTarget, branch: &str, create: bool) -> Resul
         .iter()
         .any(|name| name == &branch);
     let added = if create && !branch_exists {
-        git_run(target, &["worktree", "add", "-b", &branch, &dest_str, "HEAD"])
+        git_run(
+            target,
+            &["worktree", "add", "-b", &branch, &dest_str, "HEAD"],
+        )
     } else if branch_exists {
         git_run(target, &["worktree", "add", &dest_str, &branch])
     } else {
         Err(Error::Other(format!("branch {branch} does not exist")))
     };
     if let Err(err) = added {
-        if dest.exists() && fs::read_dir(&dest).ok().is_some_and(|mut rows| rows.next().is_none()) {
+        if dest.exists()
+            && fs::read_dir(&dest)
+                .ok()
+                .is_some_and(|mut rows| rows.next().is_none())
+        {
             let _ = fs::remove_dir(&dest);
         }
         return Err(err);
@@ -266,14 +283,21 @@ pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Resu
     }
     let branch = sanitize_git_branch(branch)?;
     let listed = git_worktrees(target)?;
-    let Some(row) = listed.iter().find(|row| same_checkout(&row.path, Path::new(path))) else {
-        return Err(Error::Other("that worktree is not in this repository".into()));
+    let Some(row) = listed
+        .iter()
+        .find(|row| same_checkout(&row.path, Path::new(path)))
+    else {
+        return Err(Error::Other(
+            "that worktree is not in this repository".into(),
+        ));
     };
     if row.main {
         return Err(Error::Other("the main checkout cannot be renamed".into()));
     }
     if row.detached || row.branch.as_deref().is_none_or(str::is_empty) {
-        return Err(Error::Other("a detached worktree has no branch to rename".into()));
+        return Err(Error::Other(
+            "a detached worktree has no branch to rename".into(),
+        ));
     }
     let current = row.branch.clone().unwrap_or_default();
     let here = row.path.clone();
@@ -288,7 +312,10 @@ pub fn git_worktree_rename(target: &GitTarget, path: &str, branch: &str) -> Resu
             opened: here,
         });
     }
-    if listed.iter().any(|item| item.path != row.path && item.branch.as_deref() == Some(branch.as_str())) {
+    if listed
+        .iter()
+        .any(|item| item.path != row.path && item.branch.as_deref() == Some(branch.as_str()))
+    {
         return Err(Error::Conflict(format!("{branch} is already checked out")));
     }
     let main = main_worktree_path(&listed)?;
@@ -392,7 +419,12 @@ fn write_size_cache(data_dir: &Path, path: &str, entry: &SizeCacheEntry) {
 fn mtime_secs(path: &Path) -> Option<u64> {
     let meta = fs::metadata(path).ok()?;
     let modified = meta.modified().ok()?;
-    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs())
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
 }
 
 /// Directory mtimes under `path`. A nested path in `skip` is left out, matching the size walk.
@@ -403,7 +435,10 @@ fn dir_stamps(path: &Path, skip: &[&str]) -> Vec<(String, u64)> {
         }
         let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let text = crate::paths::native_source(&canon.to_string_lossy());
-        if skip.iter().any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text)) {
+        if skip
+            .iter()
+            .any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text))
+        {
             return;
         }
         let Some(stamp) = mtime_secs(path) else {
@@ -415,7 +450,11 @@ fn dir_stamps(path: &Path, skip: &[&str]) -> Vec<(String, u64)> {
         };
         for entry in entries.flatten() {
             let child = entry.path();
-            if child.symlink_metadata().ok().is_some_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) {
+            if child
+                .symlink_metadata()
+                .ok()
+                .is_some_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+            {
                 walk(&child, skip, out);
             }
         }
@@ -429,7 +468,10 @@ fn dir_stamps(path: &Path, skip: &[&str]) -> Vec<(String, u64)> {
 
 fn stamps_match(saved: &[(String, u64)], fresh: &[(String, u64)]) -> bool {
     saved.len() == fresh.len()
-        && saved.iter().zip(fresh).all(|(left, right)| left.0.eq_ignore_ascii_case(&right.0) && left.1 == right.1)
+        && saved
+            .iter()
+            .zip(fresh)
+            .all(|(left, right)| left.0.eq_ignore_ascii_case(&right.0) && left.1 == right.1)
 }
 
 /// The cached size when every directory mtime still matches. Otherwise walk once and remember it.
@@ -442,7 +484,14 @@ fn cached_dir_size(data_dir: &Path, path: &Path, skip: &[&str]) -> u64 {
         }
     }
     let bytes = dir_size_except(path, skip);
-    write_size_cache(data_dir, &key, &SizeCacheEntry { bytes, stamps: fresh });
+    write_size_cache(
+        data_dir,
+        &key,
+        &SizeCacheEntry {
+            bytes,
+            stamps: fresh,
+        },
+    );
     bytes
 }
 
@@ -454,7 +503,9 @@ pub fn project_removal(target: &GitTarget, data_dir: &Path, app_roots: &[&Path])
     let app_managed = app_roots.iter().any(|root| {
         let root_real = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         crate::paths::is_under(&here, &root_real)
-            && here.parent().is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
+            && here
+                .parent()
+                .is_some_and(|parent| crate::paths::same_dir(parent, &root_real))
     });
     let listed = git_worktrees(target).unwrap_or_default();
     let linked: Vec<&GitWorktree> = listed.iter().filter(|row| !row.main && !row.bare).collect();
@@ -556,7 +607,10 @@ fn dir_size_except(path: &Path, skip: &[&str]) -> u64 {
             }
             let canon = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
             let text = crate::paths::native_source(&canon.to_string_lossy());
-            if skip.iter().any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text)) {
+            if skip
+                .iter()
+                .any(|item| crate::paths::native_source(item).eq_ignore_ascii_case(&text))
+            {
                 return;
             }
         }
@@ -615,7 +669,8 @@ fn file_identity(meta: &fs::Metadata) -> Option<u64> {
 }
 
 fn app_data_size(data_dir: &Path, workspace: &Path) -> u64 {
-    let id = crate::dev::paths::workspace_id(&crate::paths::native_source(&workspace.to_string_lossy()));
+    let id =
+        crate::dev::paths::workspace_id(&crate::paths::native_source(&workspace.to_string_lossy()));
     dir_size(&data_dir.join("dev").join(id))
 }
 
@@ -627,17 +682,23 @@ pub fn git_worktree_remove(target: &GitTarget, path: &str) -> Result<Vec<GitWork
         ));
     }
     let listed = git_worktrees(target)?;
-    let Some(row) = listed.iter().find(|row| same_checkout(&row.path, Path::new(path))) else {
-        return Err(Error::Other("that worktree is not in this repository".into()));
+    let Some(row) = listed
+        .iter()
+        .find(|row| same_checkout(&row.path, Path::new(path)))
+    else {
+        return Err(Error::Other(
+            "that worktree is not in this repository".into(),
+        ));
     };
     if row.main {
         return Err(Error::Other("the main checkout cannot be removed".into()));
     }
     if same_checkout(&row.path, &target.root) {
-        return Err(Error::Other("switch away from this worktree before removing it".into()));
+        return Err(Error::Other(
+            "switch away from this worktree before removing it".into(),
+        ));
     }
     let remove_path = row.path.clone();
     git_run(target, &["worktree", "remove", "--", &remove_path])?;
     git_worktrees(target)
 }
-

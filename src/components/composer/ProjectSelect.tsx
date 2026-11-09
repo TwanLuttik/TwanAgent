@@ -20,12 +20,16 @@ export function ProjectSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [cursor, setCursor] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const [menuAbove, setMenuAbove] = useState(true);
   const needle = query.trim();
   const shown = projectMenuRows(projects, groups, query);
+  const count = shown.length + 1;
+  const cursorIndex = count === 0 ? 0 : Math.max(0, Math.min(cursor, count - 1));
   const current = projects.find((row) => projectKey(row.path) === projectKey(workspace));
   const label = current?.name || (workspace ? folderName(workspace) : "Project");
 
@@ -54,6 +58,26 @@ export function ProjectSelect({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    list.current?.querySelector<HTMLElement>("[data-cursor='true']")?.scrollIntoView({ block: "nearest" });
+  }, [open, cursorIndex]);
+
+  function placeCursor(next: number) {
+    const size = shown.length + 1;
+    setCursor(((next % size) + size) % size);
+  }
+
+  function pick(index: number) {
+    setOpen(false);
+    if (index >= shown.length) {
+      onNew();
+      return;
+    }
+    const path = shown[index]?.row.path;
+    if (path && projectKey(path) !== projectKey(workspace)) onOpen(path);
+  }
+
   return (
     <div className="relative max-w-[38%]" ref={ref}>
       <button
@@ -66,10 +90,13 @@ export function ProjectSelect({
           setOpen((next) => {
             if (next) return false;
             setQuery("");
+            const rows = projectMenuRows(projects, groups, "");
+            const index = rows.findIndex(({ row }) => projectKey(row.path) === projectKey(workspace));
+            setCursor(index >= 0 ? index : 0);
             return true;
           });
         }}
-        className={`flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+        className={`flex w-full cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
           open ? "bg-wash text-ink" : "text-muted hover:text-ink"
         }`}
       >
@@ -95,34 +122,54 @@ export function ProjectSelect({
               <input
                 ref={search}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  setCursor(0);
+                }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") event.preventDefault();
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    placeCursor(cursorIndex + 1);
+                  } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    placeCursor(cursorIndex - 1);
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    pick(cursorIndex);
+                  } else if (event.key === "Escape" && query) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setQuery("");
+                    setCursor(0);
+                  }
                 }}
                 placeholder="Search projects"
                 aria-label="Search projects"
                 className="h-9 min-w-0 flex-1 bg-transparent text-[12px] text-ink outline-none placeholder:text-muted"
               />
             </div>
-            <div className="min-h-0 flex-1 overflow-auto py-1">
+            <div ref={list} className="min-h-0 flex-1 overflow-auto px-1 py-1">
               {shown.length ? (
-                shown.map(({ row, depth }) => {
+                shown.map(({ row, depth }, index) => {
                   const selected = projectKey(row.path) === projectKey(workspace);
+                  const pointed = index === cursorIndex;
                   const child = depth > 0;
+                  const where = row.server?.machineName || row.server?.host;
                   return (
                     <button
                       key={row.path}
                       type="button"
                       role="menuitemradio"
                       aria-checked={selected}
-                      title={row.path}
-                      onClick={() => {
-                        setOpen(false);
-                        if (!selected) onOpen(row.path);
-                      }}
-                      className={`flex h-8 w-full cursor-pointer items-center gap-2 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
-                        child ? "pr-2.5 pl-8" : "px-2.5"
-                      } ${row.remote ? "cloud-zebra" : ""} ${selected ? "font-medium text-ink" : child ? "text-ink/75" : "text-ink/80"}`}
+                      data-cursor={pointed ? "true" : undefined}
+                      title={where ? `${where} · ${row.path}` : row.path}
+                      onMouseEnter={() => setCursor(index)}
+                      onClick={() => pick(index)}
+                      className={`flex h-8 w-full cursor-pointer items-center gap-2 rounded-md text-left text-[12px] transition-colors duration-150 ${
+                        child ? "pr-2 pl-7" : "px-2"
+                      } ${
+                        selected ? "bg-accent/10 font-medium text-ink" : pointed ? "bg-wash text-ink" : child ? "text-ink/75 hover:bg-wash" : "text-ink/80 hover:bg-wash"
+                      }`}
                     >
                       <Symbol
                         name="folder.fill"
@@ -131,7 +178,9 @@ export function ProjectSelect({
                       <span className="min-w-0 flex-1">
                         <span className="block truncate">{row.name}</span>
                       </span>
-                      {row.remote ? <Symbol name="server.rack" className="size-3.5 shrink-0 text-[#3b82f6]" /> : null}
+                      {row.remote ? (
+                        <Symbol name="server.rack" className="size-3 shrink-0 text-muted" />
+                      ) : null}
                       <Symbol
                         name="checkmark"
                         className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${selected ? "opacity-100" : "opacity-0"}`}
@@ -147,11 +196,12 @@ export function ProjectSelect({
               <button
                 type="button"
                 role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onNew();
-                }}
-                className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[12px] text-ink/80 transition-colors duration-150 hover:bg-wash"
+                data-cursor={cursorIndex === shown.length ? "true" : undefined}
+                onMouseEnter={() => setCursor(shown.length)}
+                onClick={() => pick(shown.length)}
+                className={`flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors duration-150 ${
+                  cursorIndex === shown.length ? "bg-wash text-ink" : "text-ink/80 hover:bg-wash"
+                }`}
               >
                 <Symbol name="plus" className="size-3.5 shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate">New project</span>

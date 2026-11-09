@@ -194,19 +194,29 @@ impl RemoteFiles {
             },
         )?;
         if out.exit_code.is_some_and(|code| code != 0) {
-            let err = if out.stderr.is_empty() { out.stdout } else { out.stderr };
+            let err = if out.stderr.is_empty() {
+                out.stdout
+            } else {
+                out.stderr
+            };
             return Err(Error::Other(err.trim().chars().take(300).collect()));
         }
         Ok(out.stdout)
     }
 
     fn grep(&self, pattern: &str, rel: &str, glob: &str) -> Result<String> {
-        let command = crate::remote::files::remote_grep_command(&self.project.remote_path, pattern, rel, glob)?;
+        let command = crate::remote::files::remote_grep_command(
+            &self.project.remote_path,
+            pattern,
+            rel,
+            glob,
+        )?;
         self.exec_at("/", &command)
     }
 
     fn glob(&self, pattern: &str, rel: &str) -> Result<String> {
-        let command = crate::remote::files::remote_glob_command(&self.project.remote_path, pattern, rel)?;
+        let command =
+            crate::remote::files::remote_glob_command(&self.project.remote_path, pattern, rel)?;
         self.exec_at("/", &command)
     }
 
@@ -320,4 +330,3 @@ impl RemoteFiles {
             .collect())
     }
 }
-

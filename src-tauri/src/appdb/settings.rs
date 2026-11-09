@@ -41,6 +41,34 @@ pub fn get_pull_requests(conn: &Connection, repo: &str) -> Result<Option<String>
     .map_err(Error::from)
 }
 
+/// The last Actions list for one GitHub `owner/repo`, and when it was saved.
+pub fn get_actions(conn: &Connection, repo: &str) -> Result<Option<(String, String)>> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT payload, updated_at FROM action_runs WHERE repo = ?1",
+        [repo],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Error::from)
+}
+
+pub fn set_actions(conn: &Connection, repo: &str, payload: &str) -> Result<()> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return Err(Error::Other("actions repo is empty".into()));
+    }
+    conn.execute(
+        "INSERT INTO action_runs (repo, payload, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(repo) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+        params![repo, payload, now_iso()],
+    )?;
+    Ok(())
+}
+
 pub fn set_pull_requests(conn: &Connection, repo: &str, payload: &str) -> Result<()> {
     let repo = repo.trim();
     if repo.is_empty() {
@@ -70,7 +98,9 @@ pub fn set_account_usage(conn: &Connection, provider: &str, payload: &str) -> Re
 /// Old path to current path. A moved project keeps its `store.db` through this list.
 pub fn project_path_moves(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = Vec::new();
     for row in rows {
         let (path, raw) = row?;
@@ -88,7 +118,9 @@ pub fn project_path_moves(conn: &Connection) -> Result<Vec<(String, String)>> {
 pub fn previous_paths_for(conn: &Connection, path: &str) -> Result<Vec<String>> {
     let key = path_key(path);
     let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = Vec::new();
     for row in rows {
         let (current, raw) = row?;
@@ -121,7 +153,9 @@ pub fn remember_project_move(conn: &Connection, name: &str, to: &str, from: &str
     for row in rows {
         let (path, _, raw) = row?;
         let stored: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
-        if path_key(&path) == path_key(to) || stored.iter().any(|item| path_key(item) == path_key(from)) {
+        if path_key(&path) == path_key(to)
+            || stored.iter().any(|item| path_key(item) == path_key(from))
+        {
             match_path = Some(path);
             previous = stored;
             break;
@@ -146,7 +180,9 @@ pub fn remember_project_move(conn: &Connection, name: &str, to: &str, from: &str
 pub fn forget_project_paths(conn: &Connection, path: &str) -> Result<Vec<String>> {
     let key = path_key(path);
     let mut stmt = conn.prepare("SELECT path, previous_paths FROM project_path_history")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut related = vec![path.to_string()];
     let mut drop_paths = Vec::new();
     for row in rows {

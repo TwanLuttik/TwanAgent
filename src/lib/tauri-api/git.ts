@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ActionRun } from "../github-actions";
 
 export type GitChange = {
   path: string;
@@ -174,6 +175,22 @@ export function gitPullRequestsCached(workspace: string): Promise<GitPullRequest
 /** Fetch one open pull request into a sibling worktree and return that checkout. */
 export function gitBranchPullRequest(workspace: string): Promise<GitBranchPullRequest | null> {
   return invoke("dev_git_branch_pull_request", { workspace });
+}
+
+/** Recent Actions runs for this repo, and when they were fetched. Null when it is not GitHub. */
+export type GitActionsSnapshot = {
+  runs: ActionRun[];
+  fetched_at: string;
+};
+
+/** The list saved after the last refresh. Null until one has landed, or when this is not GitHub. */
+export function gitActionsCached(workspace: string): Promise<GitActionsSnapshot | null> {
+  return invoke("dev_git_actions_cached", { workspace });
+}
+
+/** One `gh run list`. A failure rejects and leaves the saved list in place. */
+export function gitActions(workspace: string): Promise<GitActionsSnapshot | null> {
+  return invoke("dev_git_actions", { workspace });
 }
 
 export function gitPullRequestCheckout(workspace: string, number: number): Promise<GitWorktreeAdd> {

@@ -2,7 +2,8 @@
 //! Paths that cross the group boundary are `alias/file`.
 
 use super::git::{
-    git_commit, git_diff, git_discard, git_file_at, git_stage, git_status_with, git_unstage, GitTarget,
+    git_commit, git_diff, git_discard, git_file_at, git_stage, git_status_with, git_unstage,
+    GitTarget,
 };
 use super::group::{GroupLayout, GroupPath};
 use super::types::GitChange;
@@ -125,9 +126,7 @@ fn one_member(layout: &GroupLayout, paths: &[String]) -> Result<Scoped> {
                 }
                 if let Some(prev) = &alias {
                     if !prev.eq_ignore_ascii_case(&next) {
-                        return Err(Error::Other(
-                            "a change cannot span two repositories".into(),
-                        ));
+                        return Err(Error::Other("a change cannot span two repositories".into()));
                     }
                 }
                 alias = Some(next);
@@ -200,8 +199,16 @@ mod tests {
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     fn repo(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -224,7 +231,13 @@ mod tests {
         let projects = temp_dir();
         let (api_keep, api) = repo("api");
         let (web_keep, web) = repo("web");
-        let created = create_group(data.path(), projects.path(), "apps", &[api.clone(), web.clone()]).unwrap();
+        let created = create_group(
+            data.path(),
+            projects.path(),
+            "apps",
+            &[api.clone(), web.clone()],
+        )
+        .unwrap();
         let layout = crate::dev::group::layout(std::path::Path::new(&created.path)).unwrap();
         let rows = status(&layout, false).unwrap();
         let paths: Vec<_> = rows.iter().map(|row| row.path.as_str()).collect();
@@ -234,11 +247,7 @@ mod tests {
         assert!(text.contains("a/api/file.txt"), "{text}");
         assert!(text.contains("a/web/file.txt"), "{text}");
 
-        let err = stage(
-            &layout,
-            &["api/file.txt".into(), "web/file.txt".into()],
-        )
-        .unwrap_err();
+        let err = stage(&layout, &["api/file.txt".into(), "web/file.txt".into()]).unwrap_err();
         assert!(err.to_string().contains("two repositories"));
         let still = status(&layout, false).unwrap();
         assert!(still.iter().all(|row| !row.staged));

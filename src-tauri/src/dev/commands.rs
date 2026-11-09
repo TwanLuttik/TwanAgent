@@ -12,9 +12,9 @@ pub mod project_cmds;
 #[path = "shell_cmds.rs"]
 pub mod shell_cmds;
 
-pub use project_cmds::same_project_path;
 #[cfg(test)]
 pub use project_cmds::named_project_rows;
+pub use project_cmds::same_project_path;
 
 /// Git and file reads block. Run them off the webview thread so a refresh does not freeze the UI.
 pub(crate) async fn off_main<T: Send + 'static>(
@@ -27,5 +27,3 @@ pub(crate) async fn off_main<T: Send + 'static>(
         ))),
     }
 }
-
-

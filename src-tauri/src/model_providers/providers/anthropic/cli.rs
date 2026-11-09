@@ -38,7 +38,10 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(all(windows, test))]
 fn same_windows_path(found: &Path, expected: &Path) -> bool {
     fn key(path: &Path) -> String {
-        path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
     }
     if key(found) == key(expected) {
         return true;
@@ -107,7 +110,11 @@ fn claude_version_cache() -> &'static std::sync::Mutex<Option<String>> {
 
 /// `claude --version` is a process spawn. A detected version is reused; a miss is tried again.
 pub(super) fn cached_claude_version(bin: Option<&Path>) -> Option<String> {
-    if let Some(found) = claude_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+    if let Some(found) = claude_version_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+    {
         return Some(found);
     }
     let version = bin.and_then(claude_version)?;
@@ -130,7 +137,9 @@ pub fn claude_cli_info() -> ClaudeCliInfo {
     let account = home_dir().and_then(|home| read_claude_account(&home));
     ClaudeCliInfo {
         installed: bin.is_some(),
-        path: bin.map(|path| path.display().to_string()).unwrap_or_default(),
+        path: bin
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
         version,
         logged_in: account.as_ref().map(|row| row.0).unwrap_or(false),
         email: account.and_then(|row| row.1),
@@ -167,7 +176,8 @@ mod tests {
         let short = format!(r"{system}\System32");
         assert_eq!(which_in("twanagent-which-probe.cmd", &short), None);
         let merged = crate::env_path::merge_command_path(
-            &short, &[dir.path().to_string_lossy().into_owned()],
+            &short,
+            &[dir.path().to_string_lossy().into_owned()],
         );
         let found = which_in("twanagent-which-probe.cmd", &merged).expect("where finds the probe");
         // `where` prints the short 8.3 path. The temp directory is the long name.
@@ -181,7 +191,11 @@ mod tests {
         std::env::set_var("HOME", dir.path());
         let local = dir.path().join(".claude").join("local");
         fs::create_dir_all(&local).unwrap();
-        let bin = local.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+        let bin = local.join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        });
         fs::write(&bin, b"").unwrap();
         #[cfg(unix)]
         {

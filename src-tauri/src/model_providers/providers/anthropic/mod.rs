@@ -2,8 +2,9 @@ use serde::Serialize;
 
 use crate::grok_cli::{effort_label, DevEffort, DevModel};
 use crate::model_providers::event::{
-    apply_thinking, apply_tool, finished_thinking as shared_finished_thinking, finished_tools as shared_finished_tools,
-    merge_usage as merge_stream_usage, ThinkingBlock, StreamPiece,
+    apply_thinking, apply_tool, finished_thinking as shared_finished_thinking,
+    finished_tools as shared_finished_tools, merge_usage as merge_stream_usage, StreamPiece,
+    ThinkingBlock,
 };
 
 mod auth;
@@ -11,17 +12,18 @@ mod cli;
 mod usage;
 
 pub use auth::{
-    refresh_claude_cli_login, read_claude_access_token, read_claude_account, read_cli_access_token,
-    read_cli_access_token_fresh, resolve_claude_auth, resolve_claude_auth_fresh,
-    resolve_claude_auth_fresh_in, ClaudeAuth, CLAUDE_OAUTH_CLIENT_ID, CLAUDE_OAUTH_TOKEN_URL,
-    CLAUDE_PROFILE_CLIENT_ID,
+    read_claude_access_token, read_claude_account, read_cli_access_token,
+    read_cli_access_token_fresh, refresh_claude_cli_login, resolve_claude_auth,
+    resolve_claude_auth_fresh, resolve_claude_auth_fresh_in, ClaudeAuth, CLAUDE_OAUTH_CLIENT_ID,
+    CLAUDE_OAUTH_TOKEN_URL, CLAUDE_PROFILE_CLIENT_ID,
 };
 pub use cli::{claude_bin, claude_cli_info, claude_version, forget_claude_version, ClaudeCliInfo};
 pub use usage::{
-    account_usage, cached_account_usage, dev_account_usage, dev_account_usage_cached, parse_account_usage,
-    parse_api_org, parse_prepaid_balance, AccountUsage, AccountUsageWindow, CLAUDE_ACCOUNT_URL, CLAUDE_USAGE_URL,
-    __cmd__dev_account_usage, __cmd__dev_account_usage_cached, __tauri_command_name_dev_account_usage,
-    __tauri_command_name_dev_account_usage_cached,
+    __cmd__dev_account_usage, __cmd__dev_account_usage_cached,
+    __tauri_command_name_dev_account_usage, __tauri_command_name_dev_account_usage_cached,
+    account_usage, cached_account_usage, dev_account_usage, dev_account_usage_cached,
+    parse_account_usage, parse_api_org, parse_prepaid_balance, AccountUsage, AccountUsageWindow,
+    CLAUDE_ACCOUNT_URL, CLAUDE_USAGE_URL,
 };
 
 pub const PROVIDER_ANTHROPIC: &str = "anthropic";
@@ -133,7 +135,15 @@ pub fn claude_models() -> Vec<DevModel> {
         .collect()
 }
 
-pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u64, u32, &'static [&'static str])> {
+pub fn claude_model(
+    id: &str,
+) -> Option<&'static (
+    &'static str,
+    &'static str,
+    u64,
+    u32,
+    &'static [&'static str],
+)> {
     let id = id.trim();
     CLAUDE_MODELS.iter().find(|(row_id, ..)| *row_id == id)
 }
@@ -184,7 +194,11 @@ pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
         {
             continue;
         }
-        let Some(id) = row.get("id").and_then(|value| value.as_str()).map(str::trim) else {
+        let Some(id) = row
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+        else {
             continue;
         };
         if !is_claude_model(id) || models.iter().any(|model: &DevModel| model.id == id) {
@@ -197,16 +211,23 @@ pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| known.map(|row| (*row.1).to_string()).unwrap_or_else(|| id.to_string()));
+            .unwrap_or_else(|| {
+                known
+                    .map(|row| (*row.1).to_string())
+                    .unwrap_or_else(|| id.to_string())
+            });
         let window = row
             .get("max_input_tokens")
             .and_then(|value| value.as_u64())
             .filter(|value| *value > 0)
             .or_else(|| known.map(|row| row.2));
-        let efforts = effort_levels(row.get("capabilities").and_then(|value| value.get("effort")))
-            .map(|levels| efforts_for(&levels))
-            .or_else(|| known.map(|row| efforts_for(row.4)))
-            .unwrap_or_else(|| efforts_for(efforts_for_line(id)));
+        let efforts = effort_levels(
+            row.get("capabilities")
+                .and_then(|value| value.get("effort")),
+        )
+        .map(|levels| efforts_for(&levels))
+        .or_else(|| known.map(|row| efforts_for(row.4)))
+        .unwrap_or_else(|| efforts_for(efforts_for_line(id)));
         models.push(DevModel {
             id: id.to_string(),
             name,
@@ -217,7 +238,10 @@ pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
             capabilities: model_capabilities(row.get("capabilities"), known.is_some()),
         });
     }
-    let has_more = json.get("has_more").and_then(|value| value.as_bool()).unwrap_or(false);
+    let has_more = json
+        .get("has_more")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let last_id = json
         .get("last_id")
         .and_then(|value| value.as_str())
@@ -228,7 +252,11 @@ pub fn parse_models_page(body: &str) -> (Vec<DevModel>, Option<String>, bool) {
 }
 
 fn bundled_capabilities(id: &str) -> Vec<String> {
-    let mut caps = vec!["vision".to_string(), "pdf".to_string(), "effort".to_string()];
+    let mut caps = vec![
+        "vision".to_string(),
+        "pdf".to_string(),
+        "effort".to_string(),
+    ];
     if supports_adaptive_thinking(id) || manual_thinking_budget(id, Some("high")).is_some() {
         caps.insert(1, "thinking".to_string());
     }
@@ -244,7 +272,16 @@ fn supported(value: Option<&serde_json::Value>) -> bool {
 
 fn model_capabilities(caps: Option<&serde_json::Value>, known: bool) -> Vec<String> {
     let Some(caps) = caps else {
-        return if known { vec!["vision".into(), "thinking".into(), "pdf".into(), "effort".into()] } else { Vec::new() };
+        return if known {
+            vec![
+                "vision".into(),
+                "thinking".into(),
+                "pdf".into(),
+                "effort".into(),
+            ]
+        } else {
+            Vec::new()
+        };
     };
     let mut out = Vec::new();
     if supported(caps.get("image_input")) {
@@ -271,7 +308,11 @@ fn effort_levels(effort: Option<&serde_json::Value>) -> Option<Vec<&str>> {
         .copied()
         .filter(|id| supported(effort.get(*id)))
         .collect::<Vec<_>>();
-    if levels.is_empty() { None } else { Some(levels) }
+    if levels.is_empty() {
+        None
+    } else {
+        Some(levels)
+    }
 }
 
 fn efforts_for_line(id: &str) -> &'static [&'static str] {
@@ -449,12 +490,18 @@ pub fn parse_sse_data(data: &str) -> Option<StreamPiece> {
         SseEvent::ToolDelta { index, partial } => StreamPiece::ToolDelta { index, partial },
         SseEvent::ThinkingStart { index } => StreamPiece::ThinkingStart { index },
         SseEvent::RedactedThinking { index, data } => StreamPiece::RedactedThinking { index, data },
-        SseEvent::ThinkingSignature { index, signature } => StreamPiece::ThinkingSignature { index, signature },
+        SseEvent::ThinkingSignature { index, signature } => {
+            StreamPiece::ThinkingSignature { index, signature }
+        }
         SseEvent::Stop => StreamPiece::Stop,
     })
 }
 
-pub fn merge_usage(prev: Option<(u64, u64)>, prompt_tokens: u64, completion_tokens: u64) -> (u64, u64) {
+pub fn merge_usage(
+    prev: Option<(u64, u64)>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> (u64, u64) {
     merge_stream_usage(prev, prompt_tokens, completion_tokens)
 }
 

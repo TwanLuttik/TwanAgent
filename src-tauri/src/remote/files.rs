@@ -17,7 +17,9 @@ pub fn remote_join(root: &str, rel: &str) -> Result<String> {
     }
     let path = Path::new(rel);
     if path.is_absolute() {
-        return Err(Error::Other("path must be relative to the workspace".into()));
+        return Err(Error::Other(
+            "path must be relative to the workspace".into(),
+        ));
     }
     let mut parts: Vec<String> = root
         .split('/')
@@ -41,7 +43,9 @@ pub fn remote_join(root: &str, rel: &str) -> Result<String> {
                 parts.pop();
             }
             _ => {
-                return Err(Error::Other("path must be relative to the workspace".into()));
+                return Err(Error::Other(
+                    "path must be relative to the workspace".into(),
+                ));
             }
         }
     }
@@ -58,7 +62,9 @@ pub fn remote_write_script(root: &str, rel: &str) -> Result<String> {
     let remote = remote_join(root, rel)?;
     let quoted = super::ssh::shell_single_quote(&remote);
     // The braces keep the pipe attached to cat. Without them, mkdir eats the bytes and the file is empty.
-    Ok(format!("{{ mkdir -p \"$(dirname {quoted})\" && cat > {quoted}; }}"))
+    Ok(format!(
+        "{{ mkdir -p \"$(dirname {quoted})\" && cat > {quoted}; }}"
+    ))
 }
 
 /// Pipe base64-decoded file bytes into `script`. The command string never contains the raw contents.
@@ -116,7 +122,10 @@ pub fn remote_glob_command(root: &str, pattern: &str, rel: &str) -> Result<Strin
 
 /// Base64, same reason as the project listing: an exec channel closes stdin, so a heredoc never runs.
 fn remote_search_script(program: &str) -> String {
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        program.as_bytes(),
+    );
     // The decoded program is python's -c argument. Find's output stays on stdin.
     // A pipe into python would swallow that output, because the decoder would own stdin.
     format!(
@@ -331,8 +340,14 @@ for root in roots:
 for path in seen:
     print(path)
 "#;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, PROGRAM.as_bytes());
-    format!("printf %s {} | base64 -d | python3 -", super::ssh::shell_single_quote(&encoded))
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        PROGRAM.as_bytes(),
+    );
+    format!(
+        "printf %s {} | base64 -d | python3 -",
+        super::ssh::shell_single_quote(&encoded)
+    )
 }
 
 /// One absolute directory per line. Anything that is not an absolute path is dropped.
@@ -423,7 +438,11 @@ pub fn remote_delete_command(root: &str, rels: &[String]) -> Result<String> {
         ));
         removes.push(format!("rm -rf {quoted}"));
     }
-    Ok(format!("{} && {}", checks.join(" && "), removes.join(" && ")))
+    Ok(format!(
+        "{} && {}",
+        checks.join(" && "),
+        removes.join(" && ")
+    ))
 }
 
 pub fn remote_mkdir_command(root: &str, parent: &str, name: &str) -> Result<(String, String)> {
@@ -447,7 +466,10 @@ pub fn parse_remote_tree(text: &str) -> Vec<(String, bool)> {
             continue;
         };
         let path = path.trim().trim_matches('/');
-        if path.is_empty() || path.contains('\0') || path.split('/').any(|part| HEAVY_DIR_NAMES.contains(&part)) {
+        if path.is_empty()
+            || path.contains('\0')
+            || path.split('/').any(|part| HEAVY_DIR_NAMES.contains(&part))
+        {
             continue;
         }
         let dir = kind == "d";
@@ -539,7 +561,11 @@ fn top_level_rels(rels: &[String]) -> Result<Vec<String>> {
     paths.sort();
     Ok(paths
         .iter()
-        .filter(|rel| !paths.iter().any(|other| *other != **rel && is_within(rel, other)))
+        .filter(|rel| {
+            !paths
+                .iter()
+                .any(|other| *other != **rel && is_within(rel, other))
+        })
         .cloned()
         .collect())
 }
@@ -548,7 +574,9 @@ pub fn parse_remote_list(text: &str, rel: &str) -> Vec<(String, bool)> {
     let prefix = rel.trim_matches('/');
     text.lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && *line != "." && *line != "./" && *line != ".." && *line != "../")
+        .filter(|line| {
+            !line.is_empty() && *line != "." && *line != "./" && *line != ".." && *line != "../"
+        })
         .map(|line| {
             let dir = line.ends_with('/');
             let name = line.trim_end_matches('/').to_string();
@@ -606,7 +634,11 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("src/app.ts"), "export const answer = 42;\n").unwrap();
-        std::fs::write(root.join("node_modules/pkg/skip.ts"), "export const answer = 1;\n").unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/skip.ts"),
+            "export const answer = 1;\n",
+        )
+        .unwrap();
         let root_s = root.to_string_lossy().replace('\\', "/");
         let ran = std::process::Command::new("sh")
             .arg("-c")
@@ -614,7 +646,11 @@ mod tests {
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&ran.stdout);
-        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         assert!(text.contains("src/app.ts:1:"), "{text}");
         assert!(!text.contains("node_modules"));
         std::fs::write(root.join("src/café.ts"), "export const answer = 7;\n").unwrap();
@@ -624,7 +660,11 @@ mod tests {
             .output()
             .unwrap();
         let unicode_text = String::from_utf8_lossy(&unicode.stdout);
-        assert!(unicode.status.success(), "{}", String::from_utf8_lossy(&unicode.stderr));
+        assert!(
+            unicode.status.success(),
+            "{}",
+            String::from_utf8_lossy(&unicode.stderr)
+        );
         assert!(unicode_text.contains("src/café.ts:"), "{unicode_text}");
         let missed = std::process::Command::new("sh")
             .arg("-c")
@@ -632,17 +672,31 @@ mod tests {
             .output()
             .unwrap();
         let missed_text = String::from_utf8_lossy(&missed.stdout);
-        assert!(missed.status.success(), "{}", String::from_utf8_lossy(&missed.stderr));
-        assert!(missed_text.contains("No matches for \"missing-symbol\" in src."), "{missed_text}");
+        assert!(
+            missed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&missed.stderr)
+        );
+        assert!(
+            missed_text.contains("No matches for \"missing-symbol\" in src."),
+            "{missed_text}"
+        );
         assert!(missed_text.contains("File glob: *.ts."), "{missed_text}");
-        assert!(missed_text.contains("not a regular expression"), "{missed_text}");
+        assert!(
+            missed_text.contains("not a regular expression"),
+            "{missed_text}"
+        );
         let listed = std::process::Command::new("sh")
             .arg("-c")
             .arg(remote_glob_command(&root_s, "**/*.ts", "").unwrap())
             .output()
             .unwrap();
         let paths = String::from_utf8_lossy(&listed.stdout);
-        assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+        assert!(
+            listed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
         assert!(paths.contains("src/app.ts"), "{paths}");
         assert!(!paths.contains("node_modules"));
     }
@@ -661,7 +715,10 @@ mod tests {
         assert!(write.contains("cat > '/home/me/testX2/test.txt'"));
         assert!(remote_read_command("/srv/billing", "../etc/passwd").is_err());
         let rows = parse_remote_list("src/\nREADME.md\n./\n../\n", "");
-        assert_eq!(rows, vec![("src".into(), true), ("README.md".into(), false)]);
+        assert_eq!(
+            rows,
+            vec![("src".into(), true), ("README.md".into(), false)]
+        );
     }
 
     #[test]
@@ -680,8 +737,11 @@ mod tests {
             .and_then(|rest| rest.split_once("' | base64 -d | "))
             .map(|(b64, _)| b64)
             .expect("base64 payload");
-        assert!(encoded.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')));
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap();
+        assert!(encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')));
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap();
         assert_eq!(decoded, payload.as_bytes());
 
         let empty = remote_write_shell("", &script);
@@ -692,7 +752,10 @@ mod tests {
     #[test]
     fn remote_projects_keep_absolute_folders_only() {
         let command = remote_projects_command();
-        assert!(!command.contains("<<"), "a heredoc never receives its body on an exec channel");
+        assert!(
+            !command.contains("<<"),
+            "a heredoc never receives its body on an exec channel"
+        );
         assert!(command.contains("base64 -d | python3 -"));
         let encoded = command
             .strip_prefix("printf %s '")
@@ -727,8 +790,12 @@ mod tests {
             "m1",
             &saved,
         );
-        assert!(marked.iter().any(|row| row.remote_path == "/home/dev/projects/notes" && !row.saved));
-        assert!(marked.iter().any(|row| row.remote_path == "/home/dev/projects/billing" && row.saved));
+        assert!(marked
+            .iter()
+            .any(|row| row.remote_path == "/home/dev/projects/notes" && !row.saved));
+        assert!(marked
+            .iter()
+            .any(|row| row.remote_path == "/home/dev/projects/billing" && row.saved));
     }
 
     #[test]
@@ -738,7 +805,8 @@ mod tests {
         assert!(command.contains("-name 'node_modules'"));
         assert!(command.contains("-name '.git'"));
         assert!(command.contains("-prune"));
-        let rows = parse_remote_tree("d\tsrc\nf\tsrc/a.rs\nd\tnode_modules\nf\tREADME.md\n?\tbad\n");
+        let rows =
+            parse_remote_tree("d\tsrc\nf\tsrc/a.rs\nd\tnode_modules\nf\tREADME.md\n?\tbad\n");
         assert_eq!(
             rows,
             vec![
@@ -760,7 +828,9 @@ mod tests {
         assert_eq!(made, "src/box");
         assert!(mkdir.contains("mkdir -p '/srv/billing/src/box'"));
 
-        let delete = remote_delete_command("/srv/billing", &["src/box".into(), "src/box/a.rs".into()]).unwrap();
+        let delete =
+            remote_delete_command("/srv/billing", &["src/box".into(), "src/box/a.rs".into()])
+                .unwrap();
         assert!(delete.contains("rm -rf '/srv/billing/src/box'"));
         assert!(!delete.contains("src/box/a.rs"));
         assert!(remote_delete_command("/srv/billing", &["".into()]).is_err());

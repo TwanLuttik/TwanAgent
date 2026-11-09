@@ -58,7 +58,7 @@ function ImageThumb({ image, onOpen }: { image: ChatImage; onOpen: () => void })
     return (
       <div
         aria-label={image.name || "Image"}
-        className="h-14 w-14 animate-pulse rounded-md border border-line/50 bg-wash"
+        className="h-14 w-14 rounded-md border border-line/50 bg-wash"
       />
     );
   }

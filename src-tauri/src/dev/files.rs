@@ -440,7 +440,9 @@ pub fn move_path(workspace: &Path, from: &str, to: &str) -> Result<String> {
     }
     let dest = resolve_in_workspace(workspace, to_rel)?;
     if dest.exists() {
-        return Err(Error::Other("something with that name already exists".into()));
+        return Err(Error::Other(
+            "something with that name already exists".into(),
+        ));
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -501,7 +503,9 @@ pub fn create_dir(workspace: &Path, parent: &str, name: &str) -> Result<String> 
     let name = file_name_of(name)?;
     if super::group::layout(workspace).is_some() {
         let rel = join_rel(parent.trim().trim_matches('/'), &name);
-        let Some(super::group::GroupHit::Member { root, rel, alias }) = super::group::hit(workspace, &rel)? else {
+        let Some(super::group::GroupHit::Member { root, rel, alias }) =
+            super::group::hit(workspace, &rel)?
+        else {
             return Err(Error::Other(
                 "path must be inside a repository in the group".into(),
             ));
@@ -517,7 +521,9 @@ pub fn create_dir(workspace: &Path, parent: &str, name: &str) -> Result<String> 
     let rel = join_rel(parent.trim().trim_matches('/'), &name);
     let path = resolve_in_workspace(workspace, &rel)?;
     if path.exists() {
-        return Err(Error::Other("something with that name already exists".into()));
+        return Err(Error::Other(
+            "something with that name already exists".into(),
+        ));
     }
     fs::create_dir_all(&path)?;
     bump_tree_generation();
@@ -571,9 +577,23 @@ pub fn grep(workspace: &Path, pattern: &str, rel: &str, glob_pattern: &str) -> R
     let mut hits = Vec::new();
     let mut truncated = false;
     if start.is_file() {
-        scan_search_file(&root, &start, &needle, glob_pattern, &mut hits, &mut truncated);
+        scan_search_file(
+            &root,
+            &start,
+            &needle,
+            glob_pattern,
+            &mut hits,
+            &mut truncated,
+        );
     } else if start.is_dir() {
-        walk_grep(&root, &start, &needle, glob_pattern, &mut hits, &mut truncated)?;
+        walk_grep(
+            &root,
+            &start,
+            &needle,
+            glob_pattern,
+            &mut hits,
+            &mut truncated,
+        )?;
     } else {
         return Err(Error::Other("path was not found".into()));
     }
@@ -602,7 +622,11 @@ pub fn glob(workspace: &Path, pattern: &str, rel: &str) -> Result<String> {
     let mut truncated = false;
     walk_glob(&root, &start, pattern, &mut hits, &mut truncated)?;
     hits.sort();
-    Ok(search_text(&hits, truncated || hits.len() >= SEARCH_FILES, "No files."))
+    Ok(search_text(
+        &hits,
+        truncated || hits.len() >= SEARCH_FILES,
+        "No files.",
+    ))
 }
 
 fn walk_grep(
@@ -646,7 +670,14 @@ fn walk_grep(
     Ok(())
 }
 
-fn scan_search_file(root: &Path, path: &Path, needle: &str, glob_pattern: &str, hits: &mut Vec<String>, truncated: &mut bool) {
+fn scan_search_file(
+    root: &Path,
+    path: &Path,
+    needle: &str,
+    glob_pattern: &str,
+    hits: &mut Vec<String>,
+    truncated: &mut bool,
+) {
     if hits.len() >= SEARCH_MATCHES {
         *truncated = true;
         return;
@@ -669,7 +700,13 @@ fn scan_search_file(root: &Path, path: &Path, needle: &str, glob_pattern: &str, 
     }
 }
 
-fn walk_glob(root: &Path, dir: &Path, pattern: &str, hits: &mut Vec<String>, truncated: &mut bool) -> Result<()> {
+fn walk_glob(
+    root: &Path,
+    dir: &Path,
+    pattern: &str,
+    hits: &mut Vec<String>,
+    truncated: &mut bool,
+) -> Result<()> {
     if hits.len() >= SEARCH_FILES {
         *truncated = true;
         return Ok(());
@@ -704,7 +741,11 @@ fn walk_glob(root: &Path, dir: &Path, pattern: &str, hits: &mut Vec<String>, tru
 
 fn search_rel(root: &Path, path: &Path) -> String {
     crate::paths::relative_to(root, path)
-        .unwrap_or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default())
+        .unwrap_or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        })
         .replace('\\', "/")
 }
 
@@ -712,12 +753,20 @@ fn search_clip(line: &str) -> String {
     let trimmed = line.trim();
     let mut chars = trimmed.chars();
     let taken: String = chars.by_ref().take(SEARCH_SNIPPET).collect();
-    if chars.next().is_some() { format!("{taken}…") } else { taken }
+    if chars.next().is_some() {
+        format!("{taken}…")
+    } else {
+        taken
+    }
 }
 
 /// Names the pattern and glob so a miss is not mistaken for a skipped file type.
 fn grep_empty(pattern: &str, path: &str, glob: &str) -> String {
-    let where_text = if path.is_empty() { "the workspace" } else { path };
+    let where_text = if path.is_empty() {
+        "the workspace"
+    } else {
+        path
+    };
     let mut text = format!("No matches for \"{pattern}\" in {where_text}.");
     if glob.is_empty() {
         text.push_str(" Searched every text file. .ts, .tsx, and other source files are included.");
@@ -848,7 +897,11 @@ fn delete_group_paths(workspace: &Path, rels: &[String]) -> Result<()> {
     paths.dedup();
     let tops: Vec<String> = paths
         .iter()
-        .filter(|rel| !paths.iter().any(|other| *other != **rel && is_within(rel, other)))
+        .filter(|rel| {
+            !paths
+                .iter()
+                .any(|other| *other != **rel && is_within(rel, other))
+        })
         .cloned()
         .collect();
     if tops.is_empty() {
@@ -880,7 +933,12 @@ fn grep_group(pattern: &str, glob_pattern: &str, hit: super::group::GroupHit) ->
                     break;
                 }
                 let text = grep(&member.path, pattern, "", glob_pattern)?;
-                push_prefixed_hits(&mut hits, &mut truncated, &text, &format!("{}/", member.alias));
+                push_prefixed_hits(
+                    &mut hits,
+                    &mut truncated,
+                    &text,
+                    &format!("{}/", member.alias),
+                );
             }
             Ok(search_text(
                 &hits,
@@ -906,7 +964,12 @@ fn glob_group(pattern: &str, hit: super::group::GroupHit) -> Result<String> {
                     break;
                 }
                 let text = glob(&member.path, pattern, "")?;
-                push_prefixed_hits(&mut hits, &mut truncated, &text, &format!("{}/", member.alias));
+                push_prefixed_hits(
+                    &mut hits,
+                    &mut truncated,
+                    &text,
+                    &format!("{}/", member.alias),
+                );
             }
             hits.sort();
             Ok(search_text(&hits, truncated, "No files."))
@@ -1053,7 +1116,10 @@ mod tests {
         let dir = temp_ws();
         write_file(dir.path(), "src/a.txt", "a").unwrap();
         fs::create_dir_all(dir.path().join("src/keep")).unwrap();
-        assert_eq!(rename_path(dir.path(), "src/a.txt", "b.txt").unwrap(), "src/b.txt");
+        assert_eq!(
+            rename_path(dir.path(), "src/a.txt", "b.txt").unwrap(),
+            "src/b.txt"
+        );
         assert!(dir.path().join("src/b.txt").is_file());
         let made = create_dir(dir.path(), "src", "box").unwrap();
         assert_eq!(made, "src/box");
@@ -1091,17 +1157,26 @@ mod tests {
         let created = tree_snapshot(dir.path()).unwrap();
         assert_ne!(first.signature, created.signature);
         write_file(dir.path(), "src/a.txt", "edited contents").unwrap();
-        assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
+        assert_eq!(
+            tree_snapshot(dir.path()).unwrap().signature,
+            created.signature
+        );
         fs::create_dir_all(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join("node_modules/pkg.js"), "x").unwrap();
         fs::create_dir_all(dir.path().join("worktrees/feat-login")).unwrap();
         fs::write(dir.path().join("worktrees/feat-login/README.md"), "x").unwrap();
-        assert_eq!(tree_snapshot(dir.path()).unwrap().signature, created.signature);
+        assert_eq!(
+            tree_snapshot(dir.path()).unwrap().signature,
+            created.signature
+        );
         rename_path(dir.path(), "src/a.txt", "b.txt").unwrap();
         let renamed = tree_snapshot(dir.path()).unwrap();
         assert_ne!(renamed.signature, created.signature);
         delete_paths(dir.path(), &["src/b.txt".into()]).unwrap();
-        assert_ne!(tree_snapshot(dir.path()).unwrap().signature, renamed.signature);
+        assert_ne!(
+            tree_snapshot(dir.path()).unwrap().signature,
+            renamed.signature
+        );
     }
 
     #[test]
@@ -1117,7 +1192,10 @@ mod tests {
         let edited = tree_snapshot(dir.path()).unwrap();
         assert_eq!(edited.signature, first.signature);
         write_file(dir.path(), "src/b.txt", "b").unwrap();
-        assert_ne!(tree_snapshot(dir.path()).unwrap().signature, first.signature);
+        assert_ne!(
+            tree_snapshot(dir.path()).unwrap().signature,
+            first.signature
+        );
     }
 
     #[test]
@@ -1132,7 +1210,12 @@ mod tests {
         );
         let file = rows.iter().find(|row| row.name == "a.txt").unwrap();
         assert!(file.modified.unwrap_or(0) > 0);
-        assert!(rows.iter().find(|row| row.name == "b").unwrap().modified.is_none());
+        assert!(rows
+            .iter()
+            .find(|row| row.name == "b")
+            .unwrap()
+            .modified
+            .is_none());
     }
 
     #[test]
@@ -1141,7 +1224,11 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
         fs::write(dir.path().join("src/app.ts"), "export const answer = 42;\n").unwrap();
-        fs::write(dir.path().join("node_modules/pkg/skip.ts"), "export const answer = 1;\n").unwrap();
+        fs::write(
+            dir.path().join("node_modules/pkg/skip.ts"),
+            "export const answer = 1;\n",
+        )
+        .unwrap();
         let found = grep(dir.path(), "answer", "", "*.ts").unwrap();
         assert!(found.contains("src/app.ts:1:"));
         assert!(!found.contains("node_modules"));
@@ -1149,7 +1236,10 @@ mod tests {
         assert!(paths.contains("src/app.ts"));
         assert!(!paths.contains("node_modules"));
         let none = grep(dir.path(), "missing", "src", "*.ts").unwrap();
-        assert!(none.contains("No matches for \"missing\" in src."), "{none}");
+        assert!(
+            none.contains("No matches for \"missing\" in src."),
+            "{none}"
+        );
         assert!(none.contains("File glob: *.ts."), "{none}");
         assert!(none.contains("not a regular expression"), "{none}");
         fs::write(dir.path().join("src/café.ts"), "export const answer = 7;\n").unwrap();
@@ -1187,13 +1277,21 @@ mod tests {
         )
         .unwrap();
         let group = Path::new(&created.path);
-        assert_eq!(read_file(group, "api/src/lib.rs").unwrap(), "fn api_only() {}\n");
+        assert_eq!(
+            read_file(group, "api/src/lib.rs").unwrap(),
+            "fn api_only() {}\n"
+        );
         assert!(read_file(group, "../secret").is_err());
         assert!(write_file(group, "notes.txt", "nope").is_err());
         assert!(!group.join("notes.txt").exists());
         write_file(group, "web/src/new.txt", "hi").unwrap();
         assert_eq!(fs::read_to_string(web.join("src/new.txt")).unwrap(), "hi");
-        assert!(group.join("web").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(group
+            .join("web")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         let found = grep(group, "api_only", "", "").unwrap();
         assert!(found.contains("api/src/lib.rs:"), "{found}");
         assert!(!found.contains("web/src"));
@@ -1202,7 +1300,10 @@ mod tests {
         assert!(paths.contains("web/src/lib.rs"), "{paths}");
         let listed = list_dir(group, "").unwrap();
         assert_eq!(
-            listed.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            listed
+                .iter()
+                .map(|row| row.name.as_str())
+                .collect::<Vec<_>>(),
             ["api", "web"]
         );
         fs::write(group.join("stray.txt"), "hidden").unwrap();

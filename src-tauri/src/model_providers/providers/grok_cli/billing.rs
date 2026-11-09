@@ -87,12 +87,16 @@ fn store_account_usage(data_dir: &Path, usage: &AccountUsage) {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_xai_account_usage_cached(state: tauri::State<'_, crate::state::AppState>) -> Option<AccountUsage> {
+pub fn dev_xai_account_usage_cached(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Option<AccountUsage> {
     cached_account_usage(&state.data_dir)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_xai_account_usage(state: tauri::State<'_, crate::state::AppState>) -> Result<AccountUsage, String> {
+pub async fn dev_xai_account_usage(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<AccountUsage, String> {
     let data_dir = state.data_dir.clone();
     let usage = account_usage().await;
     store_account_usage(&data_dir, &usage);
@@ -111,7 +115,11 @@ fn cent_val(value: &serde_json::Value) -> Option<i64> {
     let raw = value.get("val").unwrap_or(value);
     raw.as_i64()
         .or_else(|| raw.as_u64().and_then(|n| i64::try_from(n).ok()))
-        .or_else(|| raw.as_f64().filter(|n| n.is_finite()).map(|n| n.round() as i64))
+        .or_else(|| {
+            raw.as_f64()
+                .filter(|n| n.is_finite())
+                .map(|n| n.round() as i64)
+        })
 }
 
 /// 0–100. A value strictly below 1 is a fraction. 1 and above are already a percent,
@@ -121,7 +129,11 @@ fn usage_percent(value: &serde_json::Value) -> Option<f64> {
     if number < 0.0 {
         return None;
     }
-    let scaled = if number > 0.0 && number < 1.0 { number * 100.0 } else { number };
+    let scaled = if number > 0.0 && number < 1.0 {
+        number * 100.0
+    } else {
+        number
+    };
     Some(scaled.min(100.0))
 }
 
@@ -174,7 +186,10 @@ pub fn parse_billing(body: &str) -> (Vec<AccountUsageWindow>, Option<i64>) {
             let Some(used) = row.get("usagePercent").and_then(usage_percent) else {
                 continue;
             };
-            let product = row.get("product").and_then(|item| item.as_str()).unwrap_or("pool");
+            let product = row
+                .get("product")
+                .and_then(|item| item.as_str())
+                .unwrap_or("pool");
             windows.push(AccountUsageWindow {
                 id: product.to_string(),
                 label: product_label(product).into(),
@@ -183,7 +198,10 @@ pub fn parse_billing(body: &str) -> (Vec<AccountUsageWindow>, Option<i64>) {
             });
         }
     } else if let (Some(limit), Some(used)) = (
-        config.get("monthlyLimit").and_then(cent_val).filter(|n| *n > 0),
+        config
+            .get("monthlyLimit")
+            .and_then(cent_val)
+            .filter(|n| *n > 0),
         config.get("used").and_then(cent_val),
     ) {
         let percent = ((used as f64 / limit as f64) * 100.0).clamp(0.0, 100.0);
@@ -194,7 +212,10 @@ pub fn parse_billing(body: &str) -> (Vec<AccountUsageWindow>, Option<i64>) {
             resets_at,
         });
     }
-    let balance = config.get("prepaidBalance").and_then(cent_val).filter(|n| *n >= 0);
+    let balance = config
+        .get("prepaidBalance")
+        .and_then(cent_val)
+        .filter(|n| *n >= 0);
     (windows, balance)
 }
 
@@ -220,14 +241,28 @@ fn product_label(product: &str) -> String {
             out.extend(chars.flat_map(|ch| ch.to_lowercase()));
         }
     }
-    if out.is_empty() { "Week".into() } else { out }
+    if out.is_empty() {
+        "Week".into()
+    } else {
+        out
+    }
 }
 
 /// Plan name from `GET /v1/settings`. Empty when the payload has none.
 pub fn parse_subscription_tier(body: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
-    for key in ["subscription_tier_display", "subscriptionTierDisplay", "subscription_tier", "subscriptionTier"] {
-        if let Some(name) = json.get(key).and_then(|item| item.as_str()).map(str::trim).filter(|item| !item.is_empty()) {
+    for key in [
+        "subscription_tier_display",
+        "subscriptionTierDisplay",
+        "subscription_tier",
+        "subscriptionTier",
+    ] {
+        if let Some(name) = json
+            .get(key)
+            .and_then(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
             return Some(name.to_string());
         }
     }
@@ -345,14 +380,20 @@ async fn refresh_oauth(refresh_token: &str) -> Option<RefreshedLogin> {
         .map(str::trim)
         .filter(|item| !item.is_empty())
         .map(str::to_string);
-    let expires_at = fresh.get("expires_in").and_then(|item| item.as_i64()).and_then(|secs| {
-        if secs <= 0 {
-            return None;
-        }
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs() as i64;
-        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(now.saturating_add(secs), 0)?;
-        Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-    });
+    let expires_at = fresh
+        .get("expires_in")
+        .and_then(|item| item.as_i64())
+        .and_then(|secs| {
+            if secs <= 0 {
+                return None;
+            }
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs() as i64;
+            let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(now.saturating_add(secs), 0)?;
+            Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        });
     Some(RefreshedLogin {
         access_token,
         refresh_token: refresh,
@@ -364,12 +405,21 @@ fn write_refreshed_login(path: &Path, slot: &str, fresh: &RefreshedLogin) -> Opt
     let raw = fs::read_to_string(path).ok()?;
     let mut stored: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let entry = stored.get_mut(slot)?.as_object_mut()?;
-    entry.insert("key".into(), serde_json::Value::String(fresh.access_token.clone()));
+    entry.insert(
+        "key".into(),
+        serde_json::Value::String(fresh.access_token.clone()),
+    );
     if let Some(refresh) = &fresh.refresh_token {
-        entry.insert("refresh_token".into(), serde_json::Value::String(refresh.clone()));
+        entry.insert(
+            "refresh_token".into(),
+            serde_json::Value::String(refresh.clone()),
+        );
     }
     if let Some(expires) = &fresh.expires_at {
-        entry.insert("expires_at".into(), serde_json::Value::String(expires.clone()));
+        entry.insert(
+            "expires_at".into(),
+            serde_json::Value::String(expires.clone()),
+        );
     }
     let text = serde_json::to_string_pretty(&stored).ok()?;
     fs::write(path, text).ok()
@@ -416,7 +466,9 @@ pub async fn account_usage() -> AccountUsage {
     let Some(home) = grok_home() else {
         return empty_usage(false, "Grok");
     };
-    let email = best_cli_login(&home).map(|login| login.email).filter(|email| email.contains('@'));
+    let email = best_cli_login(&home)
+        .map(|login| login.email)
+        .filter(|email| email.contains('@'));
     let Some(token) = refresh_cli_login(&home).await else {
         return empty_usage(false, email.unwrap_or_else(|| "Grok".into()));
     };
@@ -440,7 +492,9 @@ pub async fn account_usage() -> AccountUsage {
                 BillingGet::Unauthorized => {
                     return empty_usage(false, email.unwrap_or_else(|| "Grok".into()));
                 }
-                BillingGet::Failed => return empty_usage(true, email.unwrap_or_else(|| "Grok".into())),
+                BillingGet::Failed => {
+                    return empty_usage(true, email.unwrap_or_else(|| "Grok".into()))
+                }
             }
         }
         BillingGet::Failed => return empty_usage(true, email.unwrap_or_else(|| "Grok".into())),
@@ -494,11 +548,19 @@ mod tests {
         assert_eq!(windows[0].id, "credits");
         assert_eq!(windows[0].label, "Week");
         assert!((windows[0].used_percent - 42.5).abs() < 0.01);
-        assert_eq!(windows[0].resets_at.as_deref(), Some("2026-06-08T00:00:00Z"));
+        assert_eq!(
+            windows[0].resets_at.as_deref(),
+            Some("2026-06-08T00:00:00Z")
+        );
         assert_eq!(balance, Some(1250));
         let products = r#"{"config":{"productUsage":[{"product":"PRODUCT_GROK_BUILD","usagePercent":12},{"product":"GrokChat","usagePercent":0.18}],"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-06-08T00:00:00Z"}}}"#;
         let (rows, none) = parse_billing(products);
-        assert_eq!(rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), ["Build", "Chat"]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Build", "Chat"]
+        );
         assert!((rows[1].used_percent - 18.0).abs() < 0.01);
         assert_eq!(none, None);
         let monthly = r#"{"config":{"monthlyLimit":{"val":2000},"used":{"val":500},"billingPeriodEnd":"2026-07-01T00:00:00Z"}}"#;

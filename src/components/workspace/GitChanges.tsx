@@ -1,8 +1,7 @@
 import { gitLineStats, type GitChangeTreeNode } from "../../lib/core";
 import type { GitChange } from "../../lib/tauri";
-import { FileIcon } from "../FileIcon";
 import { Symbol } from "../Symbol";
-import { GitLineStats, statusChip, statusMark } from "./gitBits";
+import { GitLineStats, statusMark, statusTone } from "./gitBits";
 
 export function changeLabel(row: GitChange): string {
   if (row.original && row.original !== row.path) return `${row.original} → ${row.path}`;
@@ -51,11 +50,10 @@ export function ChangeTree({
       <button
         type="button"
         onClick={() => onToggle(node.path)}
-        className="flex w-full items-center gap-1 rounded-[6px] py-[3px] pr-2 text-left text-[12px] text-ink/90 select-none hover:bg-wash"
+        className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[12px] text-muted select-none hover:bg-wash hover:text-ink"
         style={{ paddingLeft: 8 + depth * 12 }}
       >
-        <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-3 text-muted" />
-        <Symbol name="folder.fill" className="size-3.5 text-ok" />
+        <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-2.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">{node.name}</span>
       </button>
       {open
@@ -99,8 +97,8 @@ export function ChangeFileRow({
 }) {
   return (
     <div
-      className={`group/change flex w-full items-center gap-1 rounded-[6px] py-[2px] pr-1 text-left text-[12px] select-none ${
-        selected ? "bg-wash-strong" : "hover:bg-wash"
+      className={`group/change relative flex w-full items-center rounded-md py-1 pr-2 text-left text-[13px] select-none ${
+        selected ? "bg-wash" : "hover:bg-wash"
       }`}
       style={{ paddingLeft: pad }}
     >
@@ -108,38 +106,39 @@ export function ChangeFileRow({
         type="button"
         onClick={() => onOpen(row, "preview")}
         onDoubleClick={() => onOpen(row, "pin")}
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-[2px] text-left"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
       >
-        <span className={`flex size-3.5 shrink-0 items-center justify-center rounded-[3px] text-[9px] font-semibold ${statusChip(row.status)}`}>
-          {statusMark(row.status)}
-        </span>
-        <FileIcon name={row.path} className="size-3.5 text-muted" />
-        <span className="min-w-0 flex-1 truncate text-ink/90" title={row.original ? `${row.original} → ${row.path}` : row.path}>
+        <span className={`w-3 shrink-0 text-center text-[11px] font-medium ${statusTone(row.status)}`}>{statusMark(row.status)}</span>
+        <span className="min-w-0 flex-1 truncate text-ink" title={row.original ? `${row.original} → ${row.path}` : row.path}>
           {label}
         </span>
-        {row.staged ? <span className="shrink-0 rounded bg-accent/12 px-1 text-[9px] font-medium text-accent">staged</span> : null}
-        <GitLineStats {...gitLineStats(row)} />
+        {row.staged ? <span className="shrink-0 text-[11px] text-accent">staged</span> : null}
+        <span className="transition-opacity group-hover/change:opacity-0">
+          <GitLineStats {...gitLineStats(row)} />
+        </span>
       </button>
-      <button
-        type="button"
-        title={row.staged && !row.unstaged ? "Unstage" : "Stage"}
-        aria-label={row.staged && !row.unstaged ? "Unstage" : "Stage"}
-        onClick={() => (row.staged && !row.unstaged ? onUnstage([row.path]) : onStage([row.path]))}
-        className="hidden size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink group-hover/change:flex"
-      >
-        <Symbol name={row.staged && !row.unstaged ? "xmark" : "plus"} className="size-3" />
-      </button>
-      <button
-        type="button"
-        title="Discard"
-        aria-label="Discard"
-        onClick={() => {
-          if (window.confirm(`Discard changes in ${row.path}?`)) onDiscard([row.path]);
-        }}
-        className="hidden size-5 shrink-0 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-err group-hover/change:flex"
-      >
-        <Symbol name="arrow.2.circlepath" className="size-3" />
-      </button>
+      <span className="absolute top-1/2 right-1 hidden -translate-y-1/2 items-center group-hover/change:flex">
+        <button
+          type="button"
+          title={row.staged && !row.unstaged ? "Unstage" : "Stage"}
+          aria-label={row.staged && !row.unstaged ? "Unstage" : "Stage"}
+          onClick={() => (row.staged && !row.unstaged ? onUnstage([row.path]) : onStage([row.path]))}
+          className="flex size-5 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-ink"
+        >
+          <Symbol name={row.staged && !row.unstaged ? "xmark" : "plus"} className="size-3" />
+        </button>
+        <button
+          type="button"
+          title="Discard"
+          aria-label="Discard"
+          onClick={() => {
+            if (window.confirm(`Discard changes in ${row.path}?`)) onDiscard([row.path]);
+          }}
+          className="flex size-5 items-center justify-center rounded text-muted hover:bg-wash-strong hover:text-err"
+        >
+          <Symbol name="arrow.2.circlepath" className="size-3" />
+        </button>
+      </span>
     </div>
   );
 }

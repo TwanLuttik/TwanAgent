@@ -4,9 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::paths::workspace_id;
-use super::types::{Conversation, ConversationSummary, Journey, SidebarItem};
 #[cfg(test)]
 use super::types::default_conversation_kind;
+use super::types::{Conversation, ConversationSummary, Journey, SidebarItem};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 use crate::store;
@@ -97,7 +97,10 @@ fn remember_sidebar(state: &AppState, workspace: &str) {
         return;
     };
     let conversations = load_summaries(&state.data_dir, workspace);
-    let journeys = store::with_conn(&conv_store_dir(&state.data_dir, workspace), store::list_journeys);
+    let journeys = store::with_conn(
+        &conv_store_dir(&state.data_dir, workspace),
+        store::list_journeys,
+    );
     let (Ok(conversations), Ok(journeys)) = (conversations, journeys) else {
         return;
     };
@@ -121,8 +124,8 @@ pub(crate) fn index_saved_conversation(data_dir: &Path, workspace: &str, id: &st
     let cached = crate::appdb::sidebar_cached(&app, workspace)?;
     if !cached && !cloud {
         let conversations = load_summaries(data_dir, workspace)?;
-        let journeys =
-            store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys).unwrap_or_default();
+        let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys)
+            .unwrap_or_default();
         return crate::appdb::replace_sidebar(&app, workspace, &conversations, &journeys);
     }
     let summary = store::with_conn(&conv_store_dir(data_dir, workspace), |conn| {
@@ -202,11 +205,17 @@ pub(crate) fn summary_from(c: Conversation) -> ConversationSummary {
 #[cfg(test)]
 fn last_line_from_messages(messages: &[serde_json::Value]) -> String {
     for message in messages.iter().rev() {
-        let role = message.get("role").and_then(|value| value.as_str()).unwrap_or("");
+        let role = message
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         if role != "user" && role != "assistant" {
             continue;
         }
-        let content = message.get("content").and_then(|value| value.as_str()).unwrap_or("");
+        let content = message
+            .get("content")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         let line = crate::store::clip_sidebar_line(content);
         if !line.is_empty() {
             return line;
@@ -236,7 +245,9 @@ fn remote_workspace(state: &AppState, workspace: &str) -> bool {
 /// Every project whose chats are already in the index, in sidebar order.
 /// One read, so launch paints the list once instead of growing it project by project.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_sidebar_snapshot(state: State<'_, AppState>) -> Result<Vec<super::types::SidebarProject>> {
+pub async fn dev_sidebar_snapshot(
+    state: State<'_, AppState>,
+) -> Result<Vec<super::types::SidebarProject>> {
     let data_dir = state.data_dir.clone();
     crate::dev::commands::off_main(move || {
         let conn = crate::appdb::open(&data_dir)?;
@@ -252,7 +263,10 @@ pub async fn dev_list_conversations(
 ) -> Result<Vec<ConversationSummary>> {
     let data_dir = state.data_dir.clone();
     let remote = remote_workspace(&state, &workspace);
-    crate::dev::commands::off_main(move || list_conversations_blocking(&data_dir, &workspace, remote)).await
+    crate::dev::commands::off_main(move || {
+        list_conversations_blocking(&data_dir, &workspace, remote)
+    })
+    .await
 }
 
 fn list_conversations_blocking(
@@ -266,7 +280,10 @@ fn list_conversations_blocking(
         // A cloud cache written before the server answered can still hold an empty
         // "New chat" from the local mount. That row is not a cloud chat.
         if remote {
-            return Ok(rows.into_iter().filter(|row| !is_local_cloud_draft(row)).collect());
+            return Ok(rows
+                .into_iter()
+                .filter(|row| !is_local_cloud_draft(row))
+                .collect());
         }
         return Ok(rows);
     }
@@ -274,7 +291,8 @@ fn list_conversations_blocking(
         return Ok(Vec::new());
     }
     let rows = load_summaries(data_dir, workspace)?;
-    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys).unwrap_or_default();
+    let journeys = store::with_conn(&conv_store_dir(data_dir, workspace), store::list_journeys)
+        .unwrap_or_default();
     let _ = crate::appdb::replace_sidebar(&conn, workspace, &rows, &journeys);
     Ok(rows)
 }
@@ -313,7 +331,9 @@ pub fn dev_save_conversation(
     remember_saved_conversation(&state, &workspace, &conversation);
     // Hand back the place the database kept. The payload's sort_order is often the default zero.
     let mut conversation = conversation;
-    if let Ok(summary) = store::with_conn(&dir, |conn| store::conversation_summary(conn, &conversation.id)) {
+    if let Ok(summary) = store::with_conn(&dir, |conn| {
+        store::conversation_summary(conn, &conversation.id)
+    }) {
         conversation.sort_order = summary.sort_order;
         conversation.journey_id = summary.journey_id;
         conversation.archived = summary.archived;
@@ -362,7 +382,9 @@ pub fn dev_archive_conversation(
     archived: bool,
 ) -> Result<()> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    store::with_conn(&dir, |conn| store::set_conversation_archived(conn, &id, archived))?;
+    store::with_conn(&dir, |conn| {
+        store::set_conversation_archived(conn, &id, archived)
+    })?;
     remember_sidebar(&state, &workspace);
     Ok(())
 }
@@ -380,10 +402,14 @@ pub fn dev_delete_conversation(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_list_journeys(state: State<'_, AppState>, workspace: String) -> Result<Vec<Journey>> {
+pub async fn dev_list_journeys(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Vec<Journey>> {
     let data_dir = state.data_dir.clone();
     let remote = remote_workspace(&state, &workspace);
-    crate::dev::commands::off_main(move || list_journeys_blocking(&data_dir, &workspace, remote)).await
+    crate::dev::commands::off_main(move || list_journeys_blocking(&data_dir, &workspace, remote))
+        .await
 }
 
 fn list_journeys_blocking(data_dir: &Path, workspace: &str, remote: bool) -> Result<Vec<Journey>> {
@@ -407,7 +433,9 @@ pub fn dev_create_journey(
     conversation_id: String,
 ) -> Result<Journey> {
     let dir = conv_store_dir(&state.data_dir, &workspace);
-    let journey = store::with_conn(&dir, |conn| store::create_journey(conn, &dir, &conversation_id))?;
+    let journey = store::with_conn(&dir, |conn| {
+        store::create_journey(conn, &dir, &conversation_id)
+    })?;
     remember_sidebar(&state, &workspace);
     Ok(journey)
 }
@@ -740,7 +768,10 @@ mod tests {
         crate::appdb::replace_sidebar_source(
             &crate::appdb::open(data).unwrap(),
             ws,
-            &[super::summary_from(other), super::summary_from(kept.clone())],
+            &[
+                super::summary_from(other),
+                super::summary_from(kept.clone()),
+            ],
             &[],
             true,
         )

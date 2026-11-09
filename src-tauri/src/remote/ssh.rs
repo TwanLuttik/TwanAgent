@@ -22,7 +22,10 @@ pub struct KnownHost {
 pub enum HostKeyDecision {
     Trusted,
     Unknown(KnownHost),
-    Changed { stored: KnownHost, presented: KnownHost },
+    Changed {
+        stored: KnownHost,
+        presented: KnownHost,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +76,10 @@ impl KnownHosts {
     pub fn decide(&self, presented: &KnownHost) -> HostKeyDecision {
         match self.find(presented.host.as_str(), presented.port) {
             None => HostKeyDecision::Unknown(presented.clone()),
-            Some(stored) if stored.fingerprint == presented.fingerprint && stored.key_type == presented.key_type => {
+            Some(stored)
+                if stored.fingerprint == presented.fingerprint
+                    && stored.key_type == presented.key_type =>
+            {
                 HostKeyDecision::Trusted
             }
             Some(stored) => HostKeyDecision::Changed {
@@ -96,7 +102,9 @@ impl KnownHosts {
     }
 
     fn find(&self, host: &str, port: u16) -> Option<&KnownHost> {
-        self.rows.iter().find(|row| row.host == host && row.port == port)
+        self.rows
+            .iter()
+            .find(|row| row.host == host && row.port == port)
     }
 }
 
@@ -122,7 +130,11 @@ pub trait SshSession: Send + Sync {
     fn exec_channel(&self, request: &ExecRequest) -> Result<ExecResult>;
     fn alive(&self) -> bool;
     /// Run a command whose stdout arrives as it is written. Stderr is kept until the end.
-    fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+    fn exec_stream(
+        &self,
+        request: &ExecRequest,
+        on_stdout: &mut dyn FnMut(&[u8]),
+    ) -> Result<ExecResult> {
         let result = self.exec_channel(request)?;
         if !result.stdout.is_empty() {
             on_stdout(result.stdout.as_bytes());
@@ -143,7 +155,11 @@ pub trait SshSession: Send + Sync {
 }
 
 pub trait SshConnector: Send + Sync {
-    fn connect(&self, machine: &Machine, secret: Option<&str>) -> Result<(Box<dyn SshSession>, KnownHost)>;
+    fn connect(
+        &self,
+        machine: &Machine,
+        secret: Option<&str>,
+    ) -> Result<(Box<dyn SshSession>, KnownHost)>;
 }
 
 #[derive(Clone)]
@@ -176,7 +192,11 @@ impl Pool {
     }
 
     /// Connect and return the presented host key without storing the session.
-    pub fn probe(&self, machine: &Machine, secret: Option<&str>) -> Result<(Arc<dyn SshSession>, KnownHost)> {
+    pub fn probe(
+        &self,
+        machine: &Machine,
+        secret: Option<&str>,
+    ) -> Result<(Arc<dyn SshSession>, KnownHost)> {
         let (session, host) = self.connector.connect(machine, secret)?;
         Ok((Arc::from(session), host))
     }
@@ -189,7 +209,8 @@ impl Pool {
 
     pub fn is_alive(&self, machine_id: &str) -> bool {
         let map = self.sessions.lock().unwrap_or_else(|err| err.into_inner());
-        map.get(machine_id).is_some_and(|pooled| pooled.session.alive())
+        map.get(machine_id)
+            .is_some_and(|pooled| pooled.session.alive())
     }
 
     pub fn session(&self, machine: &Machine, secret: Option<&str>) -> Result<Arc<dyn SshSession>> {
@@ -249,11 +270,7 @@ pub fn remote_shell_command(cwd: &str, command: &str) -> Result<String> {
     if command.contains('\0') {
         return Err(Error::Other("command is invalid".into()));
     }
-    Ok(format!(
-        "cd {} && {}",
-        shell_single_quote(&cwd),
-        command
-    ))
+    Ok(format!("cd {} && {}", shell_single_quote(&cwd), command))
 }
 
 pub fn shell_single_quote(value: &str) -> String {
@@ -334,7 +351,11 @@ mod tests {
     }
 
     impl SshConnector for FakeConnector {
-        fn connect(&self, machine: &Machine, _secret: Option<&str>) -> Result<(Box<dyn SshSession>, KnownHost)> {
+        fn connect(
+            &self,
+            machine: &Machine,
+            _secret: Option<&str>,
+        ) -> Result<(Box<dyn SshSession>, KnownHost)> {
             let n = self.connects.fetch_add(1, Ordering::SeqCst) + 1;
             let alive = self.die_after != Some(n);
             Ok((
@@ -452,7 +473,10 @@ mod tests {
             fingerprint: "SHA256:two".into(),
             ..first
         };
-        assert!(matches!(hosts.decide(&changed), HostKeyDecision::Changed { .. }));
+        assert!(matches!(
+            hosts.decide(&changed),
+            HostKeyDecision::Changed { .. }
+        ));
     }
 
     #[test]

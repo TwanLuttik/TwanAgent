@@ -112,7 +112,9 @@ fn runtime_appends_claude_without_replacing_the_grok_default() {
         .iter()
         .map(|row| (row.id.as_str(), row.provider.as_str()))
         .collect();
-    assert!(providers.iter().any(|(id, provider)| *id == "grok-4.5" && *provider == "xai"));
+    assert!(providers
+        .iter()
+        .any(|(id, provider)| *id == "grok-4.5" && *provider == "xai"));
     assert!(!providers.iter().any(|(id, _)| id.starts_with("claude-")));
     assert!(!providers.iter().any(|(id, _)| id.starts_with("other-")));
 }

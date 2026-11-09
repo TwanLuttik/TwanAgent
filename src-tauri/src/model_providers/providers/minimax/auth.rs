@@ -13,8 +13,16 @@ const REFRESH_BUFFER_MS: i64 = 5 * 60 * 1000;
 
 /// Global first. CN is the other host the CLI knows.
 pub(super) const REGIONS: &[(&str, &str, &str)] = &[
-    ("global", "https://api.minimax.io", "https://account.minimax.io"),
-    ("cn", "https://api.minimax.cn", "https://account.minimaxi.com"),
+    (
+        "global",
+        "https://api.minimax.io",
+        "https://account.minimax.io",
+    ),
+    (
+        "cn",
+        "https://api.minimax.cn",
+        "https://account.minimaxi.com",
+    ),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +103,10 @@ fn which(name: &str) -> Option<PathBuf> {
 #[cfg(all(windows, test))]
 fn same_windows_path(found: &Path, expected: &Path) -> bool {
     fn key(path: &Path) -> String {
-        path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_ascii_lowercase()
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
     }
     if key(found) == key(expected) {
         return true;
@@ -243,10 +254,16 @@ fn region_row(region: &str) -> Option<(&'static str, &'static str, &'static str)
 }
 
 fn api_base(region: &str, base_url: Option<&str>, resource_url: Option<&str>) -> String {
-    if let Some(base) = base_url.map(str::trim).filter(|item| item.starts_with("http")) {
+    if let Some(base) = base_url
+        .map(str::trim)
+        .filter(|item| item.starts_with("http"))
+    {
         return base.trim_end_matches('/').to_string();
     }
-    if let Some(base) = resource_url.map(str::trim).filter(|item| item.starts_with("http")) {
+    if let Some(base) = resource_url
+        .map(str::trim)
+        .filter(|item| item.starts_with("http"))
+    {
         return base.trim_end_matches('/').to_string();
     }
     region_row(region)
@@ -289,7 +306,11 @@ pub async fn resolve_minimax_auth_fresh_in(data_dir: &Path) -> Option<MinimaxAut
         }
         let fresh = refresh_oauth(&oauth).await?;
         let _ = write_oauth(&home, &config, &fresh);
-        let base = api_base(&fresh.region, config.base_url.as_deref(), fresh.resource_url.as_deref());
+        let base = api_base(
+            &fresh.region,
+            config.base_url.as_deref(),
+            fresh.resource_url.as_deref(),
+        );
         return Some(MinimaxAuth {
             token: fresh.access_token,
             base_url: base,
@@ -307,7 +328,11 @@ fn mmx_version_cache() -> &'static std::sync::Mutex<Option<String>> {
 /// Login state for settings. Does not refresh and does not return the token.
 /// `mmx --version` is a process spawn. A detected version is reused; a miss is tried again.
 fn cached_mmx_version(bin: Option<&Path>) -> Option<String> {
-    if let Some(found) = mmx_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+    if let Some(found) = mmx_version_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+    {
         return Some(found);
     }
     let version = bin.and_then(mmx_version)?;
@@ -335,7 +360,9 @@ pub fn minimax_cli_info() -> MinimaxCliInfo {
         || crate::secrets::resolve_minimax_key_on_disk(&crate::state::app_data_dir()).is_some();
     MinimaxCliInfo {
         installed: bin.is_some(),
-        path: bin.map(|path| path.display().to_string()).unwrap_or_default(),
+        path: bin
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
         version,
         logged_in,
         email: None,
@@ -355,7 +382,9 @@ fn token_needs_refresh(expires_at: &str) -> bool {
 }
 
 async fn refresh_oauth(oauth: &MmxOAuth) -> Option<MmxOAuth> {
-    let host = region_row(&oauth.region).map(|(_, _, account)| account).unwrap_or(REGIONS[0].2);
+    let host = region_row(&oauth.region)
+        .map(|(_, _, account)| account)
+        .unwrap_or(REGIONS[0].2);
     let url = format!("{host}/oauth2/token");
     let body = [
         ("grant_type", "refresh_token"),
@@ -396,7 +425,8 @@ fn parse_refresh(body: &serde_json::Value, previous: &MmxOAuth) -> Option<MmxOAu
         .filter(|item| !item.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| previous.refresh_token.clone());
-    let expires_at = expires_from_refresh(body.get("expired_in")).unwrap_or_else(|| previous.expires_at.clone());
+    let expires_at =
+        expires_from_refresh(body.get("expired_in")).unwrap_or_else(|| previous.expires_at.clone());
     let resource_url = body
         .get("resource_url")
         .and_then(|item| item.as_str())
@@ -427,24 +457,44 @@ fn write_oauth(home: &Path, previous: &MmxConfig, oauth: &MmxOAuth) -> Result<()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
         .filter(|value| value.is_object())
         .unwrap_or_else(|| serde_json::json!({}));
-    let obj = stored.as_object_mut().ok_or_else(|| "config is not an object".to_string())?;
+    let obj = stored
+        .as_object_mut()
+        .ok_or_else(|| "config is not an object".to_string())?;
     let mut oauth_value = obj
         .get("oauth")
         .cloned()
         .filter(|value| value.is_object())
         .unwrap_or_else(|| serde_json::json!({}));
     if let Some(row) = oauth_value.as_object_mut() {
-        row.insert("access_token".into(), serde_json::Value::String(oauth.access_token.clone()));
-        row.insert("refresh_token".into(), serde_json::Value::String(oauth.refresh_token.clone()));
-        row.insert("expires_at".into(), serde_json::Value::String(oauth.expires_at.clone()));
-        row.insert("region".into(), serde_json::Value::String(oauth.region.clone()));
+        row.insert(
+            "access_token".into(),
+            serde_json::Value::String(oauth.access_token.clone()),
+        );
+        row.insert(
+            "refresh_token".into(),
+            serde_json::Value::String(oauth.refresh_token.clone()),
+        );
+        row.insert(
+            "expires_at".into(),
+            serde_json::Value::String(oauth.expires_at.clone()),
+        );
+        row.insert(
+            "region".into(),
+            serde_json::Value::String(oauth.region.clone()),
+        );
         if let Some(url) = &oauth.resource_url {
-            row.insert("resource_url".into(), serde_json::Value::String(url.clone()));
+            row.insert(
+                "resource_url".into(),
+                serde_json::Value::String(url.clone()),
+            );
         }
     }
     obj.insert("oauth".into(), oauth_value);
     if !obj.contains_key("region") {
-        obj.insert("region".into(), serde_json::Value::String(previous.region.clone()));
+        obj.insert(
+            "region".into(),
+            serde_json::Value::String(previous.region.clone()),
+        );
     }
     let text = serde_json::to_string_pretty(&stored).map_err(|err| err.to_string())?;
     if let Some(parent) = path.parent() {
@@ -467,7 +517,8 @@ mod tests {
         let short = format!(r"{system}\System32");
         assert_eq!(which_in("twanagent-mmx-probe.cmd", &short), None);
         let merged = crate::env_path::merge_command_path(
-            &short, &[dir.path().to_string_lossy().into_owned()],
+            &short,
+            &[dir.path().to_string_lossy().into_owned()],
         );
         let found = which_in("twanagent-mmx-probe.cmd", &merged).expect("where finds the probe");
         // `where` prints the short 8.3 path. The temp directory is the long name.
@@ -490,7 +541,10 @@ mod tests {
         assert!(config.api_key.is_none());
         let oauth = config.oauth.unwrap();
         assert_eq!(oauth.access_token, "oat-token");
-        assert_eq!(oauth.resource_url.as_deref(), Some("https://api.minimax.io"));
+        assert_eq!(
+            oauth.resource_url.as_deref(),
+            Some("https://api.minimax.io")
+        );
         assert_eq!(
             api_base(&oauth.region, None, oauth.resource_url.as_deref()),
             "https://api.minimax.io"

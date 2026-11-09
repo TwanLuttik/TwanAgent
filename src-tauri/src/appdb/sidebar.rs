@@ -59,7 +59,11 @@ pub fn upsert_sidebar_conversation(
             row.title,
             row.created_at,
             row.updated_at,
-            if row.kind.is_empty() { "chat".to_string() } else { row.kind.clone() },
+            if row.kind.is_empty() {
+                "chat".to_string()
+            } else {
+                row.kind.clone()
+            },
             row.journey_id,
             row.sort_order,
             row.effort,
@@ -82,8 +86,14 @@ pub fn replace_sidebar_source(
 ) -> Result<()> {
     let key = project_key(project);
     let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key])?;
-    tx.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key])?;
+    tx.execute(
+        "DELETE FROM sidebar_conversations WHERE project_path = ?1",
+        [&key],
+    )?;
+    tx.execute(
+        "DELETE FROM sidebar_journeys WHERE project_path = ?1",
+        [&key],
+    )?;
     for row in conversations {
         tx.execute(
             "INSERT INTO sidebar_conversations (
@@ -96,7 +106,11 @@ pub fn replace_sidebar_source(
                 row.title,
                 row.created_at,
                 row.updated_at,
-                if row.kind.is_empty() { "chat".to_string() } else { row.kind.clone() },
+                if row.kind.is_empty() {
+                    "chat".to_string()
+                } else {
+                    row.kind.clone()
+                },
                 row.journey_id,
                 row.sort_order,
                 row.effort,
@@ -147,7 +161,10 @@ pub fn sidebar_is_cloud(conn: &Connection, project: &str) -> Result<bool> {
 }
 
 /// A cloud transcript by conversation id. The id is enough: these ids are not reused across projects.
-pub fn sidebar_transcript_by_id(conn: &Connection, id: &str) -> Result<Option<crate::dev::Conversation>> {
+pub fn sidebar_transcript_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<crate::dev::Conversation>> {
     let id = id.trim();
     if id.is_empty() {
         return Ok(None);
@@ -166,7 +183,11 @@ pub fn sidebar_transcript_by_id(conn: &Connection, id: &str) -> Result<Option<cr
 }
 
 /// The last transcript the GUI loaded for a cloud chat. Empty when this chat was never opened here.
-pub fn sidebar_transcript(conn: &Connection, project: &str, id: &str) -> Result<Option<crate::dev::Conversation>> {
+pub fn sidebar_transcript(
+    conn: &Connection,
+    project: &str,
+    id: &str,
+) -> Result<Option<crate::dev::Conversation>> {
     let body: Option<String> = conn
         .query_row(
             "SELECT body FROM sidebar_transcripts WHERE project_path = ?1 AND id = ?2",
@@ -180,7 +201,11 @@ pub fn sidebar_transcript(conn: &Connection, project: &str, id: &str) -> Result<
     Ok(Some(serde_json::from_str(&body)?))
 }
 
-pub fn save_sidebar_transcript(conn: &Connection, project: &str, conversation: &crate::dev::Conversation) -> Result<()> {
+pub fn save_sidebar_transcript(
+    conn: &Connection,
+    project: &str,
+    conversation: &crate::dev::Conversation,
+) -> Result<()> {
     let body = serde_json::to_string(conversation)?;
     conn.execute(
         "INSERT INTO sidebar_transcripts (project_path, id, body) VALUES (?1, ?2, ?3)
@@ -191,7 +216,10 @@ pub fn save_sidebar_transcript(conn: &Connection, project: &str, conversation: &
 }
 
 /// Every saved transcript for one project, keyed by chat id. Used to paint a cloud chat on click.
-pub fn sidebar_transcripts(conn: &Connection, project: &str) -> Result<Vec<crate::dev::Conversation>> {
+pub fn sidebar_transcripts(
+    conn: &Connection,
+    project: &str,
+) -> Result<Vec<crate::dev::Conversation>> {
     let key = project_key(project);
     let mut stmt = conn.prepare("SELECT body FROM sidebar_transcripts WHERE project_path = ?1")?;
     let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
@@ -211,7 +239,8 @@ pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProj
          FROM sidebar_conversations ORDER BY project_path ASC, sort_order ASC, id ASC",
     )?;
     let chat_rows = chats.query_map([], conversation_summary_row)?;
-    let mut by_chat: std::collections::HashMap<String, Vec<crate::dev::ConversationSummary>> = std::collections::HashMap::new();
+    let mut by_chat: std::collections::HashMap<String, Vec<crate::dev::ConversationSummary>> =
+        std::collections::HashMap::new();
     for row in chat_rows {
         let (key, summary) = row?;
         by_chat.entry(key).or_default().push(summary);
@@ -221,13 +250,16 @@ pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProj
          FROM sidebar_journeys ORDER BY project_path ASC, sort_order ASC, id ASC",
     )?;
     let journey_rows = journeys_stmt.query_map([], journey_row)?;
-    let mut by_journey: std::collections::HashMap<String, Vec<crate::dev::Journey>> = std::collections::HashMap::new();
+    let mut by_journey: std::collections::HashMap<String, Vec<crate::dev::Journey>> =
+        std::collections::HashMap::new();
     for row in journey_rows {
         let (key, journey) = row?;
         by_journey.entry(key).or_default().push(journey);
     }
     let mut cached = conn.prepare("SELECT project_path, cloud FROM sidebar_projects")?;
-    let cached_rows = cached.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? == 1)))?;
+    let cached_rows = cached.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? == 1))
+    })?;
     let mut cloud_by_path = std::collections::HashMap::new();
     for row in cached_rows {
         let (key, cloud) = row?;
@@ -259,7 +291,9 @@ fn is_local_cloud_draft(row: &crate::dev::ConversationSummary) -> bool {
     title.is_empty() || title == "New chat"
 }
 
-fn conversation_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, crate::dev::ConversationSummary)> {
+fn conversation_summary_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(String, crate::dev::ConversationSummary)> {
     let window: Option<i64> = row.get(10)?;
     Ok((
         row.get(0)?,
@@ -299,7 +333,10 @@ fn journey_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, crate::dev:
 pub fn sidebar_for(
     conn: &Connection,
     project: &str,
-) -> Result<(Vec<crate::dev::ConversationSummary>, Vec<crate::dev::Journey>)> {
+) -> Result<(
+    Vec<crate::dev::ConversationSummary>,
+    Vec<crate::dev::Journey>,
+)> {
     let key = project_key(project);
     let mut chats = conn.prepare(
         "SELECT id, title, created_at, updated_at, kind, journey_id, sort_order, effort, model, context_window, permission, archived, preview
@@ -353,9 +390,21 @@ pub fn sidebar_for(
 /// so leaving it brings the conversations back after the folder is created again.
 pub fn clear_sidebar(conn: &Connection, path: &str) -> Result<()> {
     let key = project_key(path);
-    conn.execute("DELETE FROM sidebar_conversations WHERE project_path = ?1", [&key])?;
-    conn.execute("DELETE FROM sidebar_journeys WHERE project_path = ?1", [&key])?;
-    conn.execute("DELETE FROM sidebar_transcripts WHERE project_path = ?1", [&key])?;
-    conn.execute("DELETE FROM sidebar_projects WHERE project_path = ?1", [&key])?;
+    conn.execute(
+        "DELETE FROM sidebar_conversations WHERE project_path = ?1",
+        [&key],
+    )?;
+    conn.execute(
+        "DELETE FROM sidebar_journeys WHERE project_path = ?1",
+        [&key],
+    )?;
+    conn.execute(
+        "DELETE FROM sidebar_transcripts WHERE project_path = ?1",
+        [&key],
+    )?;
+    conn.execute(
+        "DELETE FROM sidebar_projects WHERE project_path = ?1",
+        [&key],
+    )?;
     Ok(())
 }

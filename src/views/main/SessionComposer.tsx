@@ -6,6 +6,7 @@ import {
   provisionalWorktreeName,
   publishWorktreeList,
   subscribeWorktreeLists,
+  worktreeChoices,
   worktreeListsFor,
   worktreeNameForChat,
   worktreeNameFromPrompt,
@@ -14,7 +15,7 @@ import {
 import { contextWindowForModel } from "../../lib/context";
 import { providerProfile, providerReadyFor } from "../../lib/provider";
 import { fileToBase64, imagesForChat, setImagesForChat } from "../../lib/image";
-import type { ChatImage } from "../../lib/core";
+import { folderName, type ChatImage } from "../../lib/core";
 import { dictationFilename, insertTranscript } from "../../lib/speech";
 import { todosFromMessages } from "../../lib/todo";
 import { chatHasRunningTurn, composerSettingsForChat, draftForChat } from "../../lib/turn";
@@ -172,6 +173,8 @@ export const SessionComposer = memo(function SessionComposer({
       projects={allProjectGroups}
       projectGroups={projectGroups}
       showProject={projectOpen}
+      worktreeLocked={Boolean(boundId) && !projectOpen}
+      showWorkspaceName={workspaceNameVisible(workspace, Boolean(boundId) && !projectOpen)}
       onOpenProject={(path) => {
         if (!boundId) assignDraftProject(path);
         else applyWorkspace(path);
@@ -229,3 +232,11 @@ export const SessionComposer = memo(function SessionComposer({
     />
   );
 });
+
+/** The composer folder name repeats a linked checkout, whose branch is already on the worktree bar. */
+function workspaceNameVisible(workspace: string, locked: boolean): boolean {
+  if (!locked || !workspace) return true;
+  const current = worktreeChoices(workspace, worktreeListsFor(workspace)).current;
+  if (!current || current.main) return true;
+  return folderName(workspace).toLowerCase() !== current.branch.toLowerCase();
+}

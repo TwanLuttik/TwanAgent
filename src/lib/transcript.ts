@@ -254,13 +254,19 @@ export function toolTrailTypeIcon(type: string): string {
   if (type === "Search") return "magnifyingglass";
   if (type === "Find") return "magnifyingglass";
   if (type === "Write") return "square.and.arrow.down";
-  if (type === "Edit") return "pencil";
+  if (type === "Edit" || type === "Editing") return "pencil";
   if (type === "List") return "folder";
   if (type === "Chats" || type === "Chat") return "messages";
   if (type === "Create") return "plus";
   if (type === "Skill") return "book";
   if (type === "MCP") return "cable.connector";
   return "ellipsis";
+}
+
+/** Sidebar activity mark. Known tools use the conversation icon; other lines keep the turn arrow. */
+export function sidebarActivityIcon(label: string): string {
+  const icon = toolTrailTypeIcon(toolTrailKind(label));
+  return icon === "ellipsis" ? "arrow.turn.down.right" : icon;
 }
 
 export function isLiveToolTrail(items: TranscriptItem[], index: number, busy: boolean): boolean {

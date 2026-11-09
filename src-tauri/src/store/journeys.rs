@@ -4,9 +4,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{
-    get_conversation, knowledge_path, list_conversation_summaries, max_sort, now_iso,
-};
+use super::{get_conversation, knowledge_path, list_conversation_summaries, max_sort, now_iso};
 use crate::dev::{Conversation, Journey, SidebarItem};
 use crate::error::{Error, Result};
 

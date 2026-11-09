@@ -18,7 +18,11 @@ const MAX_CLIP_SECONDS: f32 = 60.0;
 const SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPT_CAP: usize = 8_000;
 
-const HF_HOSTS: &[&str] = &["huggingface.co", "cdn-lfs.huggingface.co", "cdn-lfs-us-1.huggingface.co"];
+const HF_HOSTS: &[&str] = &[
+    "huggingface.co",
+    "cdn-lfs.huggingface.co",
+    "cdn-lfs-us-1.huggingface.co",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeechModel {
@@ -112,7 +116,9 @@ pub fn catalog_model(id: &str) -> Option<&'static SpeechModel> {
 }
 
 pub fn normalize_model_id(id: &str) -> &'static str {
-    catalog_model(id).map(|model| model.id).unwrap_or(DEFAULT_ID)
+    catalog_model(id)
+        .map(|model| model.id)
+        .unwrap_or(DEFAULT_ID)
 }
 
 pub fn speech_dir(data_dir: &Path) -> PathBuf {
@@ -212,7 +218,11 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
-pub async fn download_model(data_dir: &Path, id: &str, on_progress: impl Fn(u64, u64)) -> Result<PathBuf> {
+pub async fn download_model(
+    data_dir: &Path,
+    id: &str,
+    on_progress: impl Fn(u64, u64),
+) -> Result<PathBuf> {
     let model = catalog_model(id).ok_or_else(|| Error::Other("Unknown voice model.".into()))?;
     let path = model_path(data_dir, model.id)?;
     if model_status(data_dir, model.id)? == ModelStatus::Ready {
@@ -244,7 +254,9 @@ pub async fn download_model(data_dir: &Path, id: &str, on_progress: impl Fn(u64,
         received += chunk.len() as u64;
         if received > model.bytes {
             let _ = fs::remove_file(&partial);
-            return Err(Error::Other("The voice model download was larger than expected.".into()));
+            return Err(Error::Other(
+                "The voice model download was larger than expected.".into(),
+            ));
         }
         on_progress(received, model.bytes);
     }
@@ -466,7 +478,10 @@ fn transcribe_pcm(engine: &SpeechEngine, data_dir: &Path, pcm: &[f32]) -> Result
     }
     let path = model_path(data_dir, model.id)?;
     let mut slot = engine.loaded.lock().unwrap_or_else(|err| err.into_inner());
-    let reload = slot.as_ref().map(|loaded| loaded.id != model.id).unwrap_or(true);
+    let reload = slot
+        .as_ref()
+        .map(|loaded| loaded.id != model.id)
+        .unwrap_or(true);
     if reload {
         let ctx = whisper_rs::WhisperContext::new_with_params(
             path.to_string_lossy().as_ref(),
@@ -478,12 +493,15 @@ fn transcribe_pcm(engine: &SpeechEngine, data_dir: &Path, pcm: &[f32]) -> Result
             ctx,
         });
     }
-    let loaded = slot.as_ref().ok_or_else(|| Error::Other("Could not load the voice model.".into()))?;
+    let loaded = slot
+        .as_ref()
+        .ok_or_else(|| Error::Other("Could not load the voice model.".into()))?;
     let mut state = loaded
         .ctx
         .create_state()
         .map_err(|err| Error::Other(format!("Could not transcribe: {err}")))?;
-    let mut params = whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+    let mut params =
+        whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
     params.set_translate(false);
     params.set_single_segment(true);
     params.set_print_special(false);
@@ -606,7 +624,8 @@ fn embedded_plist_has_microphone(path: &std::path::Path) -> bool {
     let Ok(data) = std::fs::read(path) else {
         return false;
     };
-    if data.len() < 32 || u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])) != 0xFEEDFACF {
+    if data.len() < 32 || u32::from_le_bytes(data[0..4].try_into().unwrap_or([0; 4])) != 0xFEEDFACF
+    {
         return false;
     }
     let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap_or([0; 4])) as usize;
@@ -618,15 +637,23 @@ fn embedded_plist_has_microphone(path: &std::path::Path) -> bool {
         let cmd = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
         let cmdsize = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
         if cmd == 0x19 && data.get(offset + 8..offset + 14) == Some(b"__TEXT") {
-            let nsects = u32::from_le_bytes(data[offset + 64..offset + 68].try_into().unwrap_or([0; 4])) as usize;
+            let nsects =
+                u32::from_le_bytes(data[offset + 64..offset + 68].try_into().unwrap_or([0; 4]))
+                    as usize;
             let mut sect = offset + 72;
             for _ in 0..nsects {
                 let name = data.get(sect..sect + 16).unwrap_or_default();
                 if name.starts_with(b"__info_plist") {
-                    let size = u64::from_le_bytes(data[sect + 40..sect + 48].try_into().unwrap_or([0; 8])) as usize;
-                    let fileoff = u32::from_le_bytes(data[sect + 48..sect + 52].try_into().unwrap_or([0; 4])) as usize;
+                    let size =
+                        u64::from_le_bytes(data[sect + 40..sect + 48].try_into().unwrap_or([0; 8]))
+                            as usize;
+                    let fileoff =
+                        u32::from_le_bytes(data[sect + 48..sect + 52].try_into().unwrap_or([0; 4]))
+                            as usize;
                     let blob = data.get(fileoff..fileoff + size).unwrap_or_default();
-                    return blob.windows(b"NSMicrophoneUsageDescription".len()).any(|w| w == b"NSMicrophoneUsageDescription");
+                    return blob
+                        .windows(b"NSMicrophoneUsageDescription".len())
+                        .any(|w| w == b"NSMicrophoneUsageDescription");
                 }
                 sect += 80;
             }
@@ -642,12 +669,22 @@ pub fn dev_speech_models(state: State<'_, AppState>) -> Result<Vec<SpeechModelIn
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_speech_download(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<SpeechModelInfo> {
+pub async fn dev_speech_download(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<SpeechModelInfo> {
     let model = catalog_model(&id).ok_or_else(|| Error::Other("Unknown voice model.".into()))?;
     {
-        let mut active = state.speech.downloads.lock().unwrap_or_else(|err| err.into_inner());
+        let mut active = state
+            .speech
+            .downloads
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         if !active.insert(model.id.into()) {
-            return Err(Error::Other("That voice model is already downloading.".into()));
+            return Err(Error::Other(
+                "That voice model is already downloading.".into(),
+            ));
         }
     }
     let data_dir = state.data_dir.clone();
@@ -759,14 +796,23 @@ mod tests {
     #[test]
     fn status_is_missing_partial_or_ready() {
         let data = tempfile::tempdir().unwrap();
-        assert_eq!(model_status(data.path(), "tiny.en").unwrap(), ModelStatus::Missing);
+        assert_eq!(
+            model_status(data.path(), "tiny.en").unwrap(),
+            ModelStatus::Missing
+        );
         let path = model_path(data.path(), "tiny.en").unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(partial_path(&path), b"part").unwrap();
-        assert_eq!(model_status(data.path(), "tiny.en").unwrap(), ModelStatus::Partial);
+        assert_eq!(
+            model_status(data.path(), "tiny.en").unwrap(),
+            ModelStatus::Partial
+        );
         let mut file = File::create(&path).unwrap();
         file.write_all(&vec![0u8; 32]).unwrap();
-        assert_eq!(model_status(data.path(), "tiny.en").unwrap(), ModelStatus::Partial);
+        assert_eq!(
+            model_status(data.path(), "tiny.en").unwrap(),
+            ModelStatus::Partial
+        );
         fs::remove_file(&path).unwrap();
         fs::remove_file(partial_path(&path)).unwrap();
         let expected = catalog_model("tiny.en").unwrap().bytes;

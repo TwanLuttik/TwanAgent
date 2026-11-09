@@ -85,14 +85,20 @@ pub fn target_probe_script() -> String {
 pub fn binary_version(bytes: &[u8]) -> String {
     let marker = b"twanagent-server ";
     let mut from = 0;
-    while let Some(at) = bytes[from..].windows(marker.len()).position(|window| window == marker) {
+    while let Some(at) = bytes[from..]
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
         let start = from + at + marker.len();
         let rest = &bytes[start..];
         let end = rest
             .iter()
             .position(|byte| !(byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-'))
             .unwrap_or(rest.len());
-        let text = String::from_utf8_lossy(&rest[..end]).trim_matches('-').trim().to_string();
+        let text = String::from_utf8_lossy(&rest[..end])
+            .trim_matches('-')
+            .trim()
+            .to_string();
         if text.starts_with(|ch: char| ch.is_ascii_digit()) {
             return text;
         }
@@ -166,7 +172,9 @@ fn newest_binary(paths: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
 }
 
 fn binary_rank(path: &std::path::Path) -> (Vec<u64>, u8, u64, bool, std::time::SystemTime) {
-    let version = std::fs::read(path).map(|bytes| binary_version(&bytes)).unwrap_or_default();
+    let version = std::fs::read(path)
+        .map(|bytes| binary_version(&bytes))
+        .unwrap_or_default();
     let (numbers, pre) = split_version(&version);
     // A release with no prerelease tag is newer than any beta of the same numbers.
     let (pre_rank, pre_num) = match pre {
@@ -175,7 +183,10 @@ fn binary_rank(path: &std::path::Path) -> (Vec<u64>, u8, u64, bool, std::time::S
         None => (1u8, 0),
     };
     let release = path.components().any(|part| part.as_os_str() == "release");
-    let modified = path.metadata().and_then(|meta| meta.modified()).unwrap_or(std::time::UNIX_EPOCH);
+    let modified = path
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
     (numbers, pre_rank, pre_num, release, modified)
 }
 
@@ -197,8 +208,16 @@ pub fn server_update_available(installed: &str) -> bool {
 }
 
 pub fn update_against(installed: &str, offer: &str) -> bool {
-    let installed = installed.trim().strip_prefix("twanagent-server").unwrap_or(installed).trim();
-    let offer = offer.trim().strip_prefix("twanagent-server").unwrap_or(offer).trim();
+    let installed = installed
+        .trim()
+        .strip_prefix("twanagent-server")
+        .unwrap_or(installed)
+        .trim();
+    let offer = offer
+        .trim()
+        .strip_prefix("twanagent-server")
+        .unwrap_or(offer)
+        .trim();
     if installed.is_empty() || installed == "unknown" || offer.is_empty() {
         return false;
     }
@@ -210,7 +229,9 @@ pub fn copyable_version(arch: &str, os: &str) -> String {
     let Ok(path) = binary_for_target(arch, os) else {
         return String::new();
     };
-    std::fs::read(&path).map(|bytes| binary_version(&bytes)).unwrap_or_default()
+    std::fs::read(&path)
+        .map(|bytes| binary_version(&bytes))
+        .unwrap_or_default()
 }
 
 /// Numeric pieces, then the prerelease tag. `1.0.0-beta.1` is older than `1.0.0-beta.2`.
@@ -322,7 +343,11 @@ pub fn parse_version_check(stdout: &str) -> ServerInstallStatus {
         let update = server_update_available(&version);
         return ServerInstallStatus {
             installed: true,
-            available: if update { server_version().into() } else { String::new() },
+            available: if update {
+                server_version().into()
+            } else {
+                String::new()
+            },
             update,
             version,
             path,
@@ -413,7 +438,10 @@ base64 -d < \"$f.b64\" > \"$f.py\" && python3 \"$f.py\" < \"$f.json\"; s=$?; rm 
 pub fn provider_keys_payload(keys: &twanagent_service::ProviderKeys) -> Result<Vec<u8>> {
     let trimmed = keys.trimmed();
     let program = provider_keys_program(&trimmed);
-    let program_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
+    let program_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        program.as_bytes(),
+    );
     let body = serde_json::to_vec_pretty(&trimmed).map_err(|err| Error::Other(err.to_string()))?;
     let mut out = program_b64.into_bytes();
     out.extend_from_slice(b"\n\n");
@@ -462,12 +490,19 @@ for name in replaced:
 fn provider_key_fingerprints(keys: &twanagent_service::ProviderKeys) -> String {
     use sha2::{Digest, Sha256};
     let mut map = serde_json::Map::new();
-    for (name, value) in [("xai", &keys.xai), ("anthropic", &keys.anthropic), ("minimax", &keys.minimax)] {
+    for (name, value) in [
+        ("xai", &keys.xai),
+        ("anthropic", &keys.anthropic),
+        ("minimax", &keys.minimax),
+    ] {
         let value = value.trim();
         if value.is_empty() {
             continue;
         }
-        map.insert(name.into(), hex::encode(Sha256::digest(value.as_bytes())).into());
+        map.insert(
+            name.into(),
+            hex::encode(Sha256::digest(value.as_bytes())).into(),
+        );
     }
     serde_json::Value::Object(map).to_string()
 }
@@ -481,7 +516,12 @@ pub fn parse_replaced_providers(stdout: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|name| ORDER.contains(name))
         .collect();
-    ORDER.iter().copied().filter(|name| found.contains(name)).map(str::to_string).collect()
+    ORDER
+        .iter()
+        .copied()
+        .filter(|name| found.contains(name))
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn valid_token(token: &str) -> bool {
@@ -550,14 +590,24 @@ pub fn insert_server(conn: &Connection, draft: NewAgentServer) -> Result<AgentSe
     let host = validate_host(&draft.host)?;
     let port = validate_port(draft.port)?;
     if server_by_host(conn, &host, port)?.is_some() {
-        return Err(Error::Conflict(format!("{host} is already a TwanAgent server")));
+        return Err(Error::Conflict(format!(
+            "{host} is already a TwanAgent server"
+        )));
     }
     let id = Uuid::new_v4().to_string();
     let installed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     conn.execute(
         "INSERT INTO agent_servers (id, name, user, host, port, machine_id, installed_at, token)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
-        params![id, name, user, host, port as i64, draft.machine_id, installed_at],
+        params![
+            id,
+            name,
+            user,
+            host,
+            port as i64,
+            draft.machine_id,
+            installed_at
+        ],
     )?;
     Ok(AgentServer {
         id,
@@ -607,7 +657,10 @@ pub fn list_servers(conn: &Connection, paired: impl Fn(&str) -> bool) -> Result<
 /// The label shown in the server list. The host and login stay as they were.
 pub fn rename_server(conn: &Connection, id: &str, name: &str) -> Result<()> {
     let name = validate_name(name)?;
-    let changed = conn.execute("UPDATE agent_servers SET name = ?1 WHERE id = ?2", params![name, id])?;
+    let changed = conn.execute(
+        "UPDATE agent_servers SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
     if changed == 0 {
         return Err(Error::NotFound("server not found".into()));
     }
@@ -679,15 +732,27 @@ PY"#
 /// Which provider keys were copied to this server. The key text is not stored here.
 pub fn server_provider_keys(conn: &Connection, id: &str) -> Result<Vec<String>> {
     let raw: Option<String> = conn
-        .query_row("SELECT provider_keys FROM agent_servers WHERE id = ?1", [id], |row| row.get(0))
+        .query_row(
+            "SELECT provider_keys FROM agent_servers WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
         .optional()?
         .flatten();
     Ok(parse_provider_keys(raw.as_deref()))
 }
 
-pub fn set_server_provider_keys(conn: &Connection, id: &str, providers: &[String]) -> Result<Vec<String>> {
+pub fn set_server_provider_keys(
+    conn: &Connection,
+    id: &str,
+    providers: &[String],
+) -> Result<Vec<String>> {
     let names = normalize_provider_keys(providers);
-    let stored = if names.is_empty() { None } else { Some(names.join(",")) };
+    let stored = if names.is_empty() {
+        None
+    } else {
+        Some(names.join(","))
+    };
     let changed = conn.execute(
         "UPDATE agent_servers SET provider_keys = ?1 WHERE id = ?2",
         params![stored, id],
@@ -710,7 +775,8 @@ pub fn parse_provider_keys(raw: Option<&str>) -> Vec<String> {
 
 fn normalize_provider_keys(providers: &[String]) -> Vec<String> {
     const ORDER: &[&str] = &["xai", "anthropic", "minimax"];
-    let wanted: std::collections::HashSet<&str> = providers.iter().map(|name| name.trim()).collect();
+    let wanted: std::collections::HashSet<&str> =
+        providers.iter().map(|name| name.trim()).collect();
     ORDER
         .iter()
         .filter(|name| wanted.contains(**name))
@@ -720,7 +786,9 @@ fn normalize_provider_keys(providers: &[String]) -> Vec<String> {
 
 pub fn delete_server(conn: &Connection, id: &str) -> Result<Option<String>> {
     let existing = conn
-        .query_row("SELECT id FROM agent_servers WHERE id = ?1", [id], |row| row.get::<_, String>(0))
+        .query_row("SELECT id FROM agent_servers WHERE id = ?1", [id], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()?;
     let Some(id) = existing else {
         return Ok(None);
@@ -739,7 +807,11 @@ pub fn token_matches(stored: Option<&str>, presented: &str) -> bool {
     if stored.len() != presented.len() {
         return false;
     }
-    stored.bytes().zip(presented.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    stored
+        .bytes()
+        .zip(presented.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 #[cfg(test)]
@@ -761,12 +833,14 @@ mod tests {
         assert!(!broken.installed);
         assert!(broken.paired);
         assert!(broken.online);
-        let found = parse_version_check(" status installed twanagent-server 1.0.0-beta.1\npaired no\n");
+        let found =
+            parse_version_check(" status installed twanagent-server 1.0.0-beta.1\npaired no\n");
         assert!(found.installed);
         assert!(found.online);
         assert!(!found.paired);
         assert_eq!(found.version, "twanagent-server 1.0.0-beta.1");
-        let paired = parse_version_check("status installed twanagent-server 1.0.0-beta.3\npaired yes\n");
+        let paired =
+            parse_version_check("status installed twanagent-server 1.0.0-beta.3\npaired yes\n");
         assert!(paired.installed);
         assert!(paired.paired);
         let token_only = parse_version_check("status missing\npaired yes\n");
@@ -786,9 +860,15 @@ mod tests {
         );
         assert!(binary_version(b"twanagent-server live").is_empty());
         assert!(server_update_available("twanagent-server 1.0.0-beta.0"));
-        assert!(!server_update_available(&format!("twanagent-server {}", server_version())));
+        assert!(!server_update_available(&format!(
+            "twanagent-server {}",
+            server_version()
+        )));
         assert!(!server_version().contains('\0'));
-        let current = parse_version_check(&format!("status installed twanagent-server {}\n", server_version()));
+        let current = parse_version_check(&format!(
+            "status installed twanagent-server {}\n",
+            server_version()
+        ));
         assert!(!current.update);
         assert!(current.available.is_empty());
         assert_ne!(SERVER_VERSION, env!("CARGO_PKG_VERSION"));
@@ -803,7 +883,9 @@ mod tests {
     fn linux_arm_does_not_ask_for_the_mac_binary() {
         let err = binary_for_target("i686", "Linux").unwrap_err().to_string();
         assert!(err.contains("arm64 and x86_64"));
-        let other = binary_for_target("aarch64", "FreeBSD").unwrap_err().to_string();
+        let other = binary_for_target("aarch64", "FreeBSD")
+            .unwrap_err()
+            .to_string();
         assert!(other.contains("macOS and Linux"));
     }
 
@@ -907,7 +989,10 @@ mod tests {
         assert_eq!(found.host, "10.0.0.5");
         assert!(rename_server(&conn, &saved.id, "   ").is_err());
         assert!(rename_server(&conn, "missing", "Office").is_err());
-        assert_eq!(server_by_host(&conn, "10.0.0.5", 22).unwrap().unwrap().name, "Office");
+        assert_eq!(
+            server_by_host(&conn, "10.0.0.5", 22).unwrap().unwrap().name,
+            "Office"
+        );
     }
 
     #[test]
@@ -956,9 +1041,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(stored, vec!["xai", "minimax"]);
-        assert_eq!(server_provider_keys(&conn, &saved.id).unwrap(), vec!["xai", "minimax"]);
-        assert_eq!(parse_provider_keys(Some("anthropic,ssh")), vec!["anthropic"]);
-        assert_eq!(parse_provider_keys(Some("minimax\nxai\n")), vec!["xai", "minimax"]);
+        assert_eq!(
+            server_provider_keys(&conn, &saved.id).unwrap(),
+            vec!["xai", "minimax"]
+        );
+        assert_eq!(
+            parse_provider_keys(Some("anthropic,ssh")),
+            vec!["anthropic"]
+        );
+        assert_eq!(
+            parse_provider_keys(Some("minimax\nxai\n")),
+            vec!["xai", "minimax"]
+        );
     }
 
     #[test]

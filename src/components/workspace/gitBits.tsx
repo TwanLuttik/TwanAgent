@@ -5,12 +5,9 @@ export function GitLineStats({ additions, deletions }: { additions: number; dele
     deletions > 0 ? `-${deletions}` : "",
   ].filter(Boolean);
   return (
-    <span
-      className="flex shrink-0 items-baseline gap-1 font-mono text-[10px] leading-none tabular-nums"
-      title={parts.join(" ")}
-    >
+    <span className="flex shrink-0 items-baseline gap-1.5 font-mono text-[11px] leading-none tabular-nums" title={parts.join(" ")}>
       {additions > 0 ? <span className="text-ok">+{additions}</span> : null}
-      {deletions > 0 ? <span className="text-err">-{deletions}</span> : null}
+      {deletions > 0 ? <span className="text-err">−{deletions}</span> : null}
     </span>
   );
 }
@@ -39,6 +36,13 @@ export function statusMark(status: string): string {
   if (status === "renamed") return "R";
   if (status === "conflict") return "!";
   return "M";
+}
+
+export function statusTone(status: string): string {
+  if (status === "added" || status === "untracked") return "text-ok";
+  if (status === "deleted" || status === "conflict") return "text-err";
+  if (status === "renamed") return "text-accent";
+  return "text-warn";
 }
 
 export function statusChip(status: string): string {

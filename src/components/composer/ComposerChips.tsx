@@ -106,7 +106,7 @@ export function ChipSelect({
         title={title}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className={`flex items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+        className={`flex cursor-pointer items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
           open ? "bg-wash text-ink" : "text-muted hover:text-ink"
         }`}
       >
@@ -156,7 +156,7 @@ export function PlanToggle({
       aria-pressed={on}
       title={title}
       onClick={onToggle}
-      className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+      className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
         on ? "bg-accent/15 text-accent" : "text-muted hover:text-ink"
       }`}
     >

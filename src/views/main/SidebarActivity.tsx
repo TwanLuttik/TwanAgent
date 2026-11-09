@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { RunningElapsed } from "../../components/RunningElapsed";
 import { Symbol } from "../../components/Symbol";
 import type { SidebarActivityItem } from "../../lib/all-projects";
-import type { ChatMessage } from "../../lib/core";
+import { sidebarActivityIcon, type ChatMessage } from "../../lib/core";
 import { providerProfile } from "../../lib/provider";
 
 const TIP_EASE = [0.22, 1, 0.36, 1] as const;
@@ -181,6 +181,7 @@ function RunningTipRow({
   onOpen: (path: string, id: string) => void;
 }) {
   const caption = preview.replace(/(…|\.\.\.)$/u, "").trim() || item.project;
+  const activityIcon = preview.trim() ? sidebarActivityIcon(caption) : "arrow.turn.down.right";
   return (
     <button
       type="button"
@@ -193,7 +194,7 @@ function RunningTipRow({
       <span className="min-w-0 flex-1">
         <span className="block min-w-0 truncate text-[13px] leading-4 font-medium text-ink">{item.title}</span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-ink">
-          <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0" />
+          <Symbol name={activityIcon} className="size-3 shrink-0" />
           <span className="min-w-0 truncate" title={caption}>
             {caption}
           </span>

@@ -154,10 +154,7 @@ fn toml_header(line: &str) -> Option<String> {
 }
 
 fn unquote(value: &str) -> &str {
-    value
-        .trim()
-        .trim_matches(|c| c == '"' || c == '\'')
-        .trim()
+    value.trim().trim_matches(|c| c == '"' || c == '\'').trim()
 }
 
 fn http_url(value: Option<&str>) -> Option<String> {
@@ -174,7 +171,12 @@ fn discover(resource_url: &str) -> Result<AuthServer> {
         .send()
         .map_err(|err| Error::Other(format!("could not reach {resource_url}: {err}")))?;
     let mut metadata_urls = resource_metadata_urls(&probe);
-    let mut scopes = scopes_from_header(probe.headers().get("www-authenticate").and_then(|v| v.to_str().ok()));
+    let mut scopes = scopes_from_header(
+        probe
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok()),
+    );
     let origin = origin_of(resource_url)?;
     metadata_urls.push(format!(
         "{origin}/.well-known/oauth-protected-resource{}",
@@ -262,7 +264,11 @@ fn fetch_auth_server(
         else {
             continue;
         };
-        let Some(token_endpoint) = body.get("token_endpoint").and_then(|v| v.as_str()).map(str::to_string) else {
+        let Some(token_endpoint) = body
+            .get("token_endpoint")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         let advertised = body
@@ -278,7 +284,11 @@ fn fetch_auth_server(
                 .filter(|scope| advertised.iter().any(|row| row == *scope))
                 .cloned()
                 .collect();
-            if wanted.is_empty() { advertised } else { wanted }
+            if wanted.is_empty() {
+                advertised
+            } else {
+                wanted
+            }
         };
         return Ok(Some(AuthServer {
             issuer: body
@@ -303,7 +313,8 @@ fn fetch_auth_server(
 fn register_client(meta: &AuthServer, redirect: &str) -> Result<ClientCreds> {
     let Some(endpoint) = meta.registration_endpoint.as_deref() else {
         return Err(Error::Other(
-            "this MCP server does not support sign-in from TwanAgent (no client registration)".into(),
+            "this MCP server does not support sign-in from TwanAgent (no client registration)"
+                .into(),
         ));
     };
     let body = json!({
@@ -398,13 +409,24 @@ fn exchange_code(
     if !status.is_success() {
         return Err(Error::Other(oauth_error(&payload, "sign-in was rejected")));
     }
-    if payload.get("access_token").and_then(|v| v.as_str()).is_none() {
-        return Err(Error::Other("sign-in finished without an access token".into()));
+    if payload
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
+        return Err(Error::Other(
+            "sign-in finished without an access token".into(),
+        ));
     }
     Ok(payload)
 }
 
-fn save_credential(server: &RemoteMcp, meta: &AuthServer, creds: &ClientCreds, token: &Value) -> Result<()> {
+fn save_credential(
+    server: &RemoteMcp,
+    meta: &AuthServer,
+    creds: &ClientCreds,
+    token: &Value,
+) -> Result<()> {
     let key = format!("{}:{}", server.name, server.url);
     let mut stored = super::mcp::read_credentials_map()?;
     let mut entry = Map::new();
@@ -426,10 +448,7 @@ fn save_credential(server: &RemoteMcp, meta: &AuthServer, creds: &ClientCreds, t
         .unwrap_or_else(|| meta.scopes.iter().cloned().map(Value::String).collect());
     entry.insert("granted_scopes".into(), Value::Array(granted));
     entry.insert("issuer".into(), Value::String(meta.issuer.clone()));
-    entry.insert(
-        "token_received_at".into(),
-        Value::Number(now_secs().into()),
-    );
+    entry.insert("token_received_at".into(), Value::Number(now_secs().into()));
     let mut response = token.as_object().cloned().unwrap_or_default();
     response.insert("resource".into(), Value::String(server.url.clone()));
     entry.insert("token_response".into(), Value::Object(response));
@@ -539,7 +558,9 @@ fn open_browser(url: &str) -> Result<()> {
     };
     match status {
         Ok(code) if code.success() => Ok(()),
-        Ok(_) => Err(Error::Other(format!("could not open the browser. Sign in at {url}"))),
+        Ok(_) => Err(Error::Other(format!(
+            "could not open the browser. Sign in at {url}"
+        ))),
         Err(err) => Err(Error::Other(format!("could not open the browser: {err}"))),
     }
 }
@@ -554,7 +575,8 @@ fn resource_metadata_urls(response: &reqwest::blocking::Response) -> Vec<String>
     };
     let mut urls = Vec::new();
     for (key, value) in auth_params(raw) {
-        if key.eq_ignore_ascii_case("resource_metadata") && (value.starts_with("https://") || value.starts_with("http://"))
+        if key.eq_ignore_ascii_case("resource_metadata")
+            && (value.starts_with("https://") || value.starts_with("http://"))
         {
             urls.push(value);
         }
@@ -616,7 +638,9 @@ fn percent_decode(value: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 out.push(byte);
                 i += 3;
                 continue;
@@ -632,7 +656,9 @@ fn enc(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -658,7 +684,11 @@ fn origin_of(url: &str) -> Result<String> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
         .ok_or_else(|| Error::Other(format!("not an http URL: {url}")))?;
-    let scheme = if url.starts_with("https://") { "https" } else { "http" };
+    let scheme = if url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     if host.is_empty() {
         return Err(Error::Other(format!("not an http URL: {url}")));
@@ -772,7 +802,10 @@ url = "https://mcp.notion.com/mcp"
 
     #[test]
     fn origin_and_path_split_the_mcp_url() {
-        assert_eq!(origin_of("https://mcp.linear.app/mcp").unwrap(), "https://mcp.linear.app");
+        assert_eq!(
+            origin_of("https://mcp.linear.app/mcp").unwrap(),
+            "https://mcp.linear.app"
+        );
         assert_eq!(path_of("https://mcp.linear.app/mcp"), "/mcp");
         assert_eq!(path_of("https://mcp.linear.app"), "");
     }

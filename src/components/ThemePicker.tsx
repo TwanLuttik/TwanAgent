@@ -8,6 +8,9 @@ import {
   parseAccent,
   PRESET_META,
   PRESETS,
+  exportThemeText,
+  importThemeText,
+  themeShare,
   randomCustomTheme,
   setTheme,
   surfacesFor,
@@ -300,6 +303,76 @@ export function ThemePicker({
           />
         </div>
       )}
+      <ThemeShare text={exportThemeText(themeShare(value))} onImport={(next) => choose(next)} />
+    </div>
+  );
+}
+
+function ThemeShare({ text, onImport }: { text: string; onImport: (next: ThemeSelection) => void }) {
+  const [draft, setDraft] = useState(text);
+  const [note, setNote] = useState("");
+  const editing = useRef(false);
+
+  useEffect(() => {
+    if (editing.current) return;
+    setDraft(text);
+  }, [text]);
+
+  function copy() {
+    const line = draft.trim() || text;
+    void navigator.clipboard.writeText(line).then(() => {
+      setNote("Copied");
+      window.setTimeout(() => setNote(""), 1200);
+    });
+  }
+
+  function apply() {
+    const next = importThemeText(draft);
+    if (!next) {
+      setNote("That text is not a theme.");
+      return;
+    }
+    editing.current = false;
+    onImport(next);
+    setNote("Imported");
+    window.setTimeout(() => setNote(""), 1200);
+  }
+
+  return (
+    <div className="grid gap-1.5">
+      <span className="text-[11px] font-semibold tracking-wide text-muted uppercase">Share</span>
+      <textarea
+        value={draft}
+        spellCheck={false}
+        rows={2}
+        aria-label="Theme text"
+        onFocus={() => {
+          editing.current = true;
+        }}
+        onChange={(event) => {
+          editing.current = true;
+          setDraft(event.target.value);
+          if (note) setNote("");
+        }}
+        className="min-h-14 w-full resize-none rounded-md border border-line bg-canvas px-2.5 py-1.5 font-mono text-[12px] leading-5 text-ink outline-none focus:border-accent"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={copy}
+          className="h-7 cursor-pointer rounded-md border border-line px-2.5 text-[12px] text-ink hover:bg-wash"
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          onClick={apply}
+          className="h-7 cursor-pointer rounded-md border border-line px-2.5 text-[12px] text-ink hover:bg-wash"
+        >
+          Import
+        </button>
+        {note ? <span className="text-[12px] text-muted">{note}</span> : null}
+      </div>
     </div>
   );
 }

@@ -376,6 +376,61 @@ export function modeOf(sel: ThemeSelection): ThemeMode {
   return PRESET_META.find((p) => p.id === sel.id)?.mode ?? "light";
 }
 
+export type ThemeShare = {
+  mode: ThemeMode;
+  accent: string;
+  canvas: string;
+  sidebar: string;
+};
+
+/** One line someone can paste into a chat. `twanagent-theme dark #836ed8 #1a191f #23222b`. */
+export function exportThemeText(theme: ThemeShare): string {
+  return `twanagent-theme ${theme.mode} ${theme.accent} ${theme.canvas} ${theme.sidebar}`;
+}
+
+/**
+ * Read a shared theme. Accepts the one-line form, `key: value` lines, or JSON
+ * with mode, accent, and background or canvas, plus sidebar.
+ */
+export function importThemeText(raw: string): Extract<ThemeSelection, { id: "custom" }> | null {
+  const text = raw.trim();
+  if (!text) return null;
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as { mode?: unknown; accent?: unknown; canvas?: unknown; background?: unknown; sidebar?: unknown };
+      return themeFromFields(parsed.mode, parsed.accent, parsed.canvas ?? parsed.background, parsed.sidebar);
+    } catch {
+      return null;
+    }
+  }
+  if (/^[a-z]+\s*:/im.test(text) && !/^twanagent-theme\b/i.test(text)) {
+    const fields: Record<string, string> = {};
+    for (const line of text.split(/\n+/)) {
+      const split = line.indexOf(":");
+      if (split < 0) continue;
+      fields[line.slice(0, split).trim().toLowerCase()] = line.slice(split + 1).trim();
+    }
+    return themeFromFields(fields.mode, fields.accent, fields.canvas ?? fields.background, fields.sidebar);
+  }
+  const parts = text.replace(/^twanagent-theme\s+/i, "").split(/[\s,]+/).filter(Boolean);
+  if (parts.length < 4) return null;
+  return themeFromFields(parts[0], parts[1], parts[2], parts[3]);
+}
+
+function themeFromFields(
+  mode: unknown,
+  accent: unknown,
+  canvas: unknown,
+  sidebar: unknown,
+): Extract<ThemeSelection, { id: "custom" }> | null {
+  if (mode !== "light" && mode !== "dark") return null;
+  const accentHex = parseAccent(String(accent ?? ""));
+  const canvasHex = parseAccent(String(canvas ?? ""));
+  const sidebarHex = parseAccent(String(sidebar ?? ""));
+  if (!accentHex || !canvasHex || !sidebarHex) return null;
+  return { id: "custom", mode, accent: accentHex, canvas: canvasHex, sidebar: sidebarHex };
+}
+
 export function toCustom(sel: ThemeSelection): Extract<ThemeSelection, { id: "custom" }> {
   if (sel.id === "custom") return sel;
   const preset = PRESETS[sel.id];
@@ -386,6 +441,18 @@ export function toCustom(sel: ThemeSelection): Extract<ThemeSelection, { id: "cu
     accent: preset.accent,
     canvas: preset.canvas,
     sidebar: preset.sidebar,
+  };
+}
+
+/** Colors worth sending to someone else, including a preset written as a custom theme. */
+export function themeShare(sel: ThemeSelection): ThemeShare {
+  const theme = toCustom(sel);
+  const surfaces = surfacesFor(theme.mode);
+  return {
+    mode: theme.mode,
+    accent: theme.accent,
+    canvas: theme.canvas ?? surfaces.canvas,
+    sidebar: theme.sidebar ?? surfaces.sidebar,
   };
 }
 

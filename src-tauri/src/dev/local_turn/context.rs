@@ -5,12 +5,11 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 
+use super::drive::stream_round;
 use super::subagent::{emit_subagent, forget_stream};
 use super::tools::{group_prompt, strip_capability_lines};
-use super::drive::stream_round;
 use super::{
-    emit_saved, record_round_usage, save, stopped, stopped_flag, LiveTurn,
-    CONTEXT_LIMIT_MESSAGE,
+    emit_saved, record_round_usage, save, stopped, stopped_flag, LiveTurn, CONTEXT_LIMIT_MESSAGE,
 };
 
 pub(super) fn build_prompt(
@@ -78,12 +77,21 @@ pub(super) fn context_failure_text(message: &str) -> &str {
 }
 
 /// The next prompt is measured from the last stored round, not from the webview.
-pub(super) fn load_budget(data_dir: &Path, workspace: &str, id: &str) -> (u64, Option<super::super::types::DevCompaction>) {
+pub(super) fn load_budget(
+    data_dir: &Path,
+    workspace: &str,
+    id: &str,
+) -> (u64, Option<super::super::types::DevCompaction>) {
     let dir = super::super::conv::conv_store_dir(data_dir, workspace);
-    let Ok(row) = crate::store::with_conn(&dir, |conn| crate::store::get_conversation(conn, id)) else {
+    let Ok(row) = crate::store::with_conn(&dir, |conn| crate::store::get_conversation(conn, id))
+    else {
         return (0, None);
     };
-    let tokens = row.context_usage.as_ref().map(|usage| usage.prompt_tokens).unwrap_or(0);
+    let tokens = row
+        .context_usage
+        .as_ref()
+        .map(|usage| usage.prompt_tokens)
+        .unwrap_or(0);
     (tokens, row.compaction)
 }
 
@@ -227,7 +235,11 @@ fn fold_up_to(
             FoldStep::Stopped => return FoldStep::Stopped,
         }
     }
-    if folded { FoldStep::Folded } else { FoldStep::None }
+    if folded {
+        FoldStep::Folded
+    } else {
+        FoldStep::None
+    }
 }
 
 fn fold_once(
@@ -315,7 +327,15 @@ fn fold_once(
     *prompt_tokens = 0;
     *compaction = Some(next);
     if let Some(state) = compaction.as_ref() {
-        persist_fold(app, data_dir, workspace_key, id, transcript, state, child_id);
+        persist_fold(
+            app,
+            data_dir,
+            workspace_key,
+            id,
+            transcript,
+            state,
+            child_id,
+        );
     }
     FoldStep::Folded
 }
@@ -331,7 +351,13 @@ fn persist_fold(
     child_id: Option<&str>,
 ) {
     if let Some(child_id) = child_id {
-        emit_subagent(app, id, "update", child_id, json!({ "messages": transcript }));
+        emit_subagent(
+            app,
+            id,
+            "update",
+            child_id,
+            json!({ "messages": transcript }),
+        );
         return;
     }
     let cleared = super::super::types::DevChatUsage {
@@ -386,7 +412,8 @@ mod tests {
             archived: false,
         };
         let store = crate::dev::conv::conv_store_dir(dir.path(), ws);
-        crate::store::with_conn(&store, |conn| crate::store::save_conversation(conn, &row)).unwrap();
+        crate::store::with_conn(&store, |conn| crate::store::save_conversation(conn, &row))
+            .unwrap();
         let (tokens, compaction) = load_budget(dir.path(), ws, "c1");
         assert_eq!(tokens, 400_000);
         let compaction = compaction.expect("summary");
@@ -410,15 +437,29 @@ mod tests {
             json!({ "role": "assistant", "content": "", "tool_calls": [{ "id": "4", "name": "read_file", "arguments": "{}" }] }),
             json!({ "role": "tool", "tool_call_id": "4", "content": "last-file" }),
         ];
-        let state = crate::dev::compact::commit_fold(&mut stored, "Read the first files.", 5).unwrap();
-        let prompt = build_prompt(Path::new("workspace"), &stored, Some(&state), "", "ask", "grok-4.7", false, "chat");
+        let state =
+            crate::dev::compact::commit_fold(&mut stored, "Read the first files.", 5).unwrap();
+        let prompt = build_prompt(
+            Path::new("workspace"),
+            &stored,
+            Some(&state),
+            "",
+            "ask",
+            "grok-4.7",
+            false,
+            "chat",
+        );
         let rendered = serde_json::to_string(&prompt).unwrap();
         assert!(rendered.contains("Read the first files."));
         assert!(!rendered.contains("private thought"));
         assert!(!rendered.contains("Conversation compacted"));
         assert!(!rendered.contains("first-file"));
         assert!(rendered.contains("last-file"));
-        assert!(prompt.iter().any(|msg| msg["tool_calls"][0]["id"].as_str() == Some("4")));
-        assert!(prompt.iter().all(|msg| msg["tool_calls"][0]["id"].as_str() != Some("1")));
+        assert!(prompt
+            .iter()
+            .any(|msg| msg["tool_calls"][0]["id"].as_str() == Some("4")));
+        assert!(prompt
+            .iter()
+            .all(|msg| msg["tool_calls"][0]["id"].as_str() != Some("1")));
     }
 }

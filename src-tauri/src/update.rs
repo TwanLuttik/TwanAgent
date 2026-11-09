@@ -14,8 +14,8 @@ use std::time::Duration;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter, State};
 use tar::Archive;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
@@ -55,7 +55,9 @@ impl UpdateGate {
             return Err(Error::Other("An update is already downloading.".into()));
         }
         *busy = true;
-        Ok(BusyGuard { busy: self.busy.clone() })
+        Ok(BusyGuard {
+            busy: self.busy.clone(),
+        })
     }
 }
 
@@ -101,7 +103,10 @@ fn download_host_ok(host: &str) -> bool {
 /// `v1.0.0-beta.2+abc` and `1.0.0-beta.2` compare as the same release.
 pub fn version_core(raw: &str) -> &str {
     let trimmed = raw.trim().trim_start_matches('v').trim_start_matches('V');
-    trimmed.split_once('+').map(|(core, _)| core).unwrap_or(trimmed)
+    trimmed
+        .split_once('+')
+        .map(|(core, _)| core)
+        .unwrap_or(trimmed)
 }
 
 /// Numeric compare with prerelease rules: `1.0.0` is newer than `1.0.0-beta.2`.
@@ -130,10 +135,17 @@ fn cmp_versions(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 fn split_prerelease(raw: &str) -> (Vec<u64>, Option<&str>) {
-    let (num, pre) = raw.split_once('-').map(|(n, p)| (n, Some(p))).unwrap_or((raw, None));
+    let (num, pre) = raw
+        .split_once('-')
+        .map(|(n, p)| (n, Some(p)))
+        .unwrap_or((raw, None));
     let parts = num
         .split('.')
-        .map(|part| part.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+        })
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse::<u64>().ok())
         .collect();
@@ -248,7 +260,10 @@ fn parse_release(value: &serde_json::Value) -> Option<Release> {
         .and_then(|body| body.as_str())
         .unwrap_or("")
         .to_string();
-    let draft = value.get("draft").and_then(|draft| draft.as_bool()).unwrap_or(false);
+    let draft = value
+        .get("draft")
+        .and_then(|draft| draft.as_bool())
+        .unwrap_or(false);
     let asset = value
         .get("assets")
         .and_then(|assets| assets.as_array())
@@ -267,7 +282,11 @@ fn parse_asset(value: &serde_json::Value) -> Option<ReleaseAsset> {
     if !asset_name_ok(&name) {
         return None;
     }
-    let url = value.get("browser_download_url")?.as_str()?.trim().to_string();
+    let url = value
+        .get("browser_download_url")?
+        .as_str()?
+        .trim()
+        .to_string();
     if !download_url_ok(&url) {
         return None;
     }
@@ -388,7 +407,9 @@ pub async fn download_archive(
         received += chunk.len() as u64;
         if received > MAX_ARCHIVE_BYTES {
             let _ = fs::remove_file(&partial);
-            return Err(Error::Other("The update download was larger than expected.".into()));
+            return Err(Error::Other(
+                "The update download was larger than expected.".into(),
+            ));
         }
         on_progress(received, update.bytes.max(received));
     }
@@ -397,7 +418,9 @@ pub async fn download_archive(
     let digest = hex::encode(hasher.finalize());
     if !update.sha256.is_empty() && !digest.eq_ignore_ascii_case(&update.sha256) {
         let _ = fs::remove_file(&partial);
-        return Err(Error::Other("The update download did not match GitHub.".into()));
+        return Err(Error::Other(
+            "The update download did not match GitHub.".into(),
+        ));
     }
     if update.bytes > 0 && received != update.bytes {
         let _ = fs::remove_file(&partial);
@@ -437,20 +460,25 @@ pub fn unpack_app(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
         .entries()
         .map_err(|_| Error::Other("Could not read the update archive.".into()))?;
     for entry in entries {
-        let mut entry = entry.map_err(|_| Error::Other("Could not read the update archive.".into()))?;
+        let mut entry =
+            entry.map_err(|_| Error::Other("Could not read the update archive.".into()))?;
         let rel = entry
             .path()
             .map_err(|_| Error::Other("Could not read the update archive.".into()))?
             .into_owned();
         if !tar_path_ok(&rel) {
             let _ = fs::remove_dir_all(&app_root);
-            return Err(Error::Other("The update archive has an unexpected file.".into()));
+            return Err(Error::Other(
+                "The update archive has an unexpected file.".into(),
+            ));
         }
         let size = entry.size();
         unpacked = unpacked.saturating_add(size);
         if unpacked > MAX_UNPACKED_BYTES {
             let _ = fs::remove_dir_all(&app_root);
-            return Err(Error::Other("The update archive is larger than expected.".into()));
+            return Err(Error::Other(
+                "The update archive is larger than expected.".into(),
+            ));
         }
         let dest = dest_dir.join(&rel);
         if let Some(parent) = dest.parent() {
@@ -462,7 +490,9 @@ pub fn unpack_app(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
         }
         if !entry.header().entry_type().is_file() {
             let _ = fs::remove_dir_all(&app_root);
-            return Err(Error::Other("The update archive has an unexpected file.".into()));
+            return Err(Error::Other(
+                "The update archive has an unexpected file.".into(),
+            ));
         }
         let mut out = File::create(&dest)?;
         std::io::copy(&mut entry, &mut out)
@@ -478,7 +508,9 @@ pub fn unpack_app(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
     let binary = app_root.join("Contents").join("MacOS").join("twanagent");
     if !binary.is_file() {
         let _ = fs::remove_dir_all(&app_root);
-        return Err(Error::Other("The update archive did not contain TwanAgent.".into()));
+        return Err(Error::Other(
+            "The update archive did not contain TwanAgent.".into(),
+        ));
     }
     Ok(app_root)
 }
@@ -509,7 +541,10 @@ pub fn installed_bundle(exe: &Path) -> Option<PathBuf> {
 }
 
 pub fn install_bundle(downloaded: &Path, installed: &Path) -> Result<()> {
-    if downloaded.file_name().is_none_or(|name| name != "TwanAgent.app") {
+    if downloaded
+        .file_name()
+        .is_none_or(|name| name != "TwanAgent.app")
+    {
         return Err(Error::Other("The update is not a TwanAgent app.".into()));
     }
     if !downloaded.join("Contents/MacOS/twanagent").is_file() {
@@ -617,7 +652,8 @@ pub async fn app_update_install(
     if !version_is_newer(&update.version, current) {
         return Err(Error::Other("That version is already installed.".into()));
     }
-    let exe = std::env::current_exe().map_err(|_| Error::Other("Could not find this app.".into()))?;
+    let exe =
+        std::env::current_exe().map_err(|_| Error::Other("Could not find this app.".into()))?;
     let Some(bundle) = installed_bundle(&exe) else {
         return Err(Error::Other(
             "Install TwanAgent from the app before updating it.".into(),
@@ -643,9 +679,12 @@ pub async fn app_update_install(
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn app_update_relaunch() -> Result<()> {
-    let exe = std::env::current_exe().map_err(|_| Error::Other("Could not find this app.".into()))?;
+    let exe =
+        std::env::current_exe().map_err(|_| Error::Other("Could not find this app.".into()))?;
     let Some(bundle) = installed_bundle(&exe) else {
-        return Err(Error::Other("Install TwanAgent from the app before updating it.".into()));
+        return Err(Error::Other(
+            "Install TwanAgent from the app before updating it.".into(),
+        ));
     };
     relaunch(&bundle)
 }
@@ -661,7 +700,10 @@ mod tests {
         assert!(version_is_newer("1.0.0-beta.10", "1.0.0-beta.2"));
         assert!(!version_is_newer("1.0.0-beta.2", "1.0.0-beta.2"));
         assert!(!version_is_newer("1.0.0-beta.1", "v1.0.0-beta.2+2672518"));
-        assert!(!version_is_newer("1.0.0-beta.2+aaaaaaa", "1.0.0-beta.2+bbbbbbb"));
+        assert!(!version_is_newer(
+            "1.0.0-beta.2+aaaaaaa",
+            "1.0.0-beta.2+bbbbbbb"
+        ));
         assert!(version_is_newer("1.1.0", "1.0.9"));
         assert!(!version_is_newer("0.9.0", "1.0.0-beta.1"));
     }
@@ -669,7 +711,9 @@ mod tests {
     #[test]
     fn only_the_macos_app_archive_is_an_update() {
         assert!(asset_name_ok("TwanAgent_1.0.0-beta.1_universal.app.tar.gz"));
-        assert!(asset_name_ok("TwanAgent_1.0.0-beta.2+2672518_universal.app.tar.gz"));
+        assert!(asset_name_ok(
+            "TwanAgent_1.0.0-beta.2+2672518_universal.app.tar.gz"
+        ));
         assert!(!asset_name_ok("TwanAgent_1.0.0-beta.1_aarch64.dmg"));
         assert!(!asset_name_ok("../TwanAgent_1.0.0.app.tar.gz"));
         assert!(!asset_name_ok("notes.txt"));
@@ -684,7 +728,9 @@ mod tests {
             "https://release-assets.githubusercontent.com/github-production-release-asset/1"
         ));
         assert!(!download_url_ok("http://github.com/TwanLuttik/TwanAgent/x"));
-        assert!(!download_url_ok("https://evil.example/TwanAgent.app.tar.gz"));
+        assert!(!download_url_ok(
+            "https://evil.example/TwanAgent.app.tar.gz"
+        ));
         assert!(!download_url_ok("https://github.com.evil.test/x"));
     }
 
@@ -740,13 +786,19 @@ mod tests {
             header.set_size(0);
             header.set_cksum();
             builder
-                .append_link(&mut header, "TwanAgent.app/Contents/MacOS/escape", "../../escape")
+                .append_link(
+                    &mut header,
+                    "TwanAgent.app/Contents/MacOS/escape",
+                    "../../escape",
+                )
                 .unwrap();
             builder.finish().unwrap();
         }
         let raw = fs::read(&tar_path).unwrap();
-        let mut encoder =
-            flate2::write::GzEncoder::new(File::create(&archive).unwrap(), flate2::Compression::fast());
+        let mut encoder = flate2::write::GzEncoder::new(
+            File::create(&archive).unwrap(),
+            flate2::Compression::fast(),
+        );
         encoder.write_all(&raw).unwrap();
         encoder.finish().unwrap();
         let out = dir.path().join("out");
@@ -810,7 +862,8 @@ mod tests {
             builder.finish().unwrap();
         }
         let raw = fs::read(&tar_path).unwrap();
-        let mut encoder = flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
+        let mut encoder =
+            flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
         encoder.write_all(&raw).unwrap();
         encoder.finish().unwrap();
         let _ = fs::remove_file(tar_path);

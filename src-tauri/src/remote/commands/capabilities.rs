@@ -22,7 +22,10 @@ pub struct RemoteCapabilities {
 
 /// The paired TwanAgent server for this workspace, when the project lives on one.
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_workspace_server_id(state: State<'_, AppState>, workspace: String) -> Result<Option<String>> {
+pub fn dev_workspace_server_id(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Option<String>> {
     let root = state.require_workspace(&workspace)?;
     let Some(project) = super::super::project_for_workspace(&state, &root)? else {
         return Ok(None);
@@ -30,7 +33,10 @@ pub fn dev_workspace_server_id(state: State<'_, AppState>, workspace: String) ->
     let conn = super::open_db(&state)?;
     let machine = config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    Ok(super::super::agent_server::server_by_host(&conn, &machine.host, machine.port)?.map(|server| server.id))
+    Ok(
+        super::super::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+            .map(|server| server.id),
+    )
 }
 
 /// MCP and skills for the machine that owns this workspace. Local projects return nothing.
@@ -52,7 +58,10 @@ pub async fn dev_workspace_capabilities(
 
 /// MCP configs, signed-in names, and skills that live on this server. Not this Mac.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_server_capabilities(state: State<'_, AppState>, id: String) -> Result<super::RemoteCapabilities> {
+pub async fn dev_server_capabilities(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::RemoteCapabilities> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
@@ -66,21 +75,30 @@ pub async fn dev_server_capabilities(state: State<'_, AppState>, id: String) -> 
 fn read_capabilities(work: &ServerWork, machine: &Machine) -> Result<super::RemoteCapabilities> {
     let script = capabilities_command();
     let stdout = super::require_exec(work, machine, &script, 30)?;
-    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).map_err(|err| Error::Other(err.to_string()))?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).map_err(|err| Error::Other(err.to_string()))?;
     let mcp = parsed
         .get("mcp")
         .and_then(|value| value.as_object())
         .map(|map| {
             [".grok/config.toml", ".cursor/mcp.json", ".claude.json"]
                 .into_iter()
-                .filter_map(|rel| map.get(rel).and_then(|value| value.as_str()).map(|text| format!("{rel}\n{text}")))
+                .filter_map(|rel| {
+                    map.get(rel)
+                        .and_then(|value| value.as_str())
+                        .map(|text| format!("{rel}\n{text}"))
+                })
                 .collect()
         })
         .unwrap_or_default();
     let auth = parsed
         .get("auth")
         .and_then(|value| value.as_array())
-        .map(|rows| rows.iter().filter_map(|row| row.as_str().map(str::to_string)).collect())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let skills = parsed
         .get("skills")
@@ -126,15 +144,20 @@ pub async fn dev_sync_server_capabilities(
 }
 
 fn local_capability_bundle() -> Result<serde_json::Value> {
-    let home = crate::dev::paths::home_dir().ok_or_else(|| Error::Other("home folder is unknown".into()))?;
+    let home = crate::dev::paths::home_dir()
+        .ok_or_else(|| Error::Other("home folder is unknown".into()))?;
     let mut mcp = serde_json::Map::new();
     for rel in crate::dev::mcp::USER_MCP_FILES {
         if let Ok(text) = crate::dev::mcp::read_user_mcp(rel) {
             mcp.insert((*rel).to_string(), serde_json::Value::String(text));
         }
     }
-    let creds = std::fs::read_to_string(crate::grok_cli::grok_home().unwrap_or_else(|| home.join(".grok")).join("mcp_credentials.json"))
-        .unwrap_or_else(|_| "{}".into());
+    let creds = std::fs::read_to_string(
+        crate::grok_cli::grok_home()
+            .unwrap_or_else(|| home.join(".grok"))
+            .join("mcp_credentials.json"),
+    )
+    .unwrap_or_else(|_| "{}".into());
     let grok = crate::grok_cli::grok_home().unwrap_or_else(|| home.join(".grok"));
     let skills = crate::dev::skills::collect_skill_files(&home, &grok, None);
     let mut copied = Vec::new();
@@ -221,8 +244,14 @@ if os.path.isdir(plugins):
             add(os.path.join(skill_root, name, "SKILL.md"), "plugin")
 print(json.dumps({"mcp": mcp, "auth": auth, "skills": skills}))
 "#;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, PROGRAM.as_bytes());
-    format!("printf %s {} | base64 -d | python3 -", super::super::ssh::shell_single_quote(&encoded))
+    let encoded = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        PROGRAM.as_bytes(),
+    );
+    format!(
+        "printf %s {} | base64 -d | python3 -",
+        super::super::ssh::shell_single_quote(&encoded)
+    )
 }
 
 fn capability_copy_script(bundle: &serde_json::Value) -> Result<String> {
@@ -269,7 +298,10 @@ for row in data.get("skills", []):
         handle.write(row.get("contents") if isinstance(row.get("contents"), str) else "")
 print("copied")
 "#;
-    let program_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, program.as_bytes());
+    let program_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        program.as_bytes(),
+    );
     Ok(format!(
         "printf %s {} | base64 -d | python3 -c \"import base64,sys; exec(base64.b64decode('{}'))\"",
         super::super::ssh::shell_single_quote(&encoded),

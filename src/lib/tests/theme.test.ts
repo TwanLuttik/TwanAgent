@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it, beforeEach } from "node:test";
 import {
+  exportThemeText,
   generateTheme,
+  importThemeText,
   loadTheme,
   loadStoredCustom,
   parseAccent,
@@ -32,6 +34,30 @@ function mockStorage() {
   };
   Object.defineProperty(globalThis, "localStorage", { value: localStorage, configurable: true });
 }
+
+describe("theme share text", () => {
+  const theme = { mode: "dark" as const, accent: "#836ed8", canvas: "#1a191f", sidebar: "#23222b" };
+
+  it("writes one line another person can paste", () => {
+    assert.equal(exportThemeText(theme), "twanagent-theme dark #836ed8 #1a191f #23222b");
+  });
+
+  it("reads that line back into a custom theme", () => {
+    assert.deepEqual(importThemeText(exportThemeText(theme)), { id: "custom", ...theme });
+  });
+
+  it("reads labeled lines and json", () => {
+    const labeled = "mode: dark\naccent: #836ed8\nbackground: #1a191f\nsidebar: #23222b";
+    const json = JSON.stringify({ mode: "dark", accent: "#836ed8", canvas: "#1a191f", sidebar: "#23222b" });
+    assert.deepEqual(importThemeText(labeled), { id: "custom", ...theme });
+    assert.deepEqual(importThemeText(json), { id: "custom", ...theme });
+  });
+
+  it("rejects a line that is missing a color", () => {
+    assert.equal(importThemeText("twanagent-theme dark #836ed8"), null);
+    assert.equal(importThemeText("not a theme"), null);
+  });
+});
 
 describe("generateTheme extras", () => {
   it("keeps finder neutrals when only an accent is set", () => {

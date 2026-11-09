@@ -403,7 +403,9 @@ fn import_location_json(data_dir: &Path) {
     let mut copied = true;
     for project in &file.projects {
         for from in &project.previous_paths {
-            if crate::appdb::remember_project_move(&conn, &project.name, &project.path, from).is_err() {
+            if crate::appdb::remember_project_move(&conn, &project.name, &project.path, from)
+                .is_err()
+            {
                 copied = false;
             }
         }
@@ -606,11 +608,19 @@ mod tests {
         )
         .unwrap();
         relocate_project_records(data.path(), &old, &next).unwrap();
-        assert_eq!(load_conversations(data.path(), &next).unwrap()[0].title, "Moved");
-        assert_eq!(load_conversations(data.path(), &old).unwrap()[0].title, "Moved");
+        assert_eq!(
+            load_conversations(data.path(), &next).unwrap()[0].title,
+            "Moved"
+        );
+        assert_eq!(
+            load_conversations(data.path(), &old).unwrap()[0].title,
+            "Moved"
+        );
         let conn = crate::appdb::open(data.path()).unwrap();
         let rows = crate::appdb::list_projects(&conn).unwrap();
-        assert!(rows.iter().any(|row| path_key(&row.path) == path_key(&next)));
+        assert!(rows
+            .iter()
+            .any(|row| path_key(&row.path) == path_key(&next)));
         assert!(!rows.iter().any(|row| path_key(&row.path) == path_key(&old)));
         let usage = crate::usage::list_since(data.path(), None).unwrap();
         assert_eq!(usage[0].workspace_path, next);
@@ -667,12 +677,20 @@ mod tests {
         drop_project_chats(data.path(), &path).unwrap();
         assert!(load_conversations(data.path(), &path).unwrap().is_empty());
         let conn = crate::appdb::open(data.path()).unwrap();
-        assert!(crate::appdb::sidebar_for(&conn, &path).unwrap().0.is_empty());
-        assert!(crate::appdb::sidebar_for(&conn, &path.to_ascii_lowercase()).unwrap().0.is_empty());
+        assert!(crate::appdb::sidebar_for(&conn, &path)
+            .unwrap()
+            .0
+            .is_empty());
+        assert!(crate::appdb::sidebar_for(&conn, &path.to_ascii_lowercase())
+            .unwrap()
+            .0
+            .is_empty());
         assert!(!crate::appdb::sidebar_cached(&conn, &path).unwrap());
         assert!(!crate::appdb::sidebar_cached(&conn, &path.to_ascii_lowercase()).unwrap());
         assert!(crate::appdb::list_projects(&conn).unwrap().is_empty());
-        assert!(crate::usage::list_since(data.path(), None).unwrap().is_empty());
+        assert!(crate::usage::list_since(data.path(), None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

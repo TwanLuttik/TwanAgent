@@ -40,7 +40,9 @@ fn schema_ready(conn: &Connection) -> Result<bool> {
         return Ok(false);
     }
     let version: Option<i64> = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .optional()?
         .flatten();
     Ok(version == Some(SCHEMA_VERSION))
@@ -156,6 +158,21 @@ fn ensure_compat(conn: &Connection) -> Result<()> {
     migrate_remote_tables(conn)?;
     migrate_sidebar_cache(conn)?;
     migrate_project_groups(conn)?;
+    migrate_action_runs(conn)?;
+    Ok(())
+}
+
+/// The last Actions run list for a GitHub repo. One row per `owner/repo`.
+fn migrate_action_runs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS action_runs (
+            repo TEXT PRIMARY KEY,
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    )?;
     Ok(())
 }
 

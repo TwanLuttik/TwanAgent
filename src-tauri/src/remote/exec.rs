@@ -16,11 +16,21 @@ pub struct CommandOutput {
 }
 
 pub trait ExecBackend {
-    fn exec(&self, machine: &Machine, secret: Option<&str>, request: &ExecRequest) -> Result<ExecResult>;
+    fn exec(
+        &self,
+        machine: &Machine,
+        secret: Option<&str>,
+        request: &ExecRequest,
+    ) -> Result<ExecResult>;
 }
 
 impl ExecBackend for Pool {
-    fn exec(&self, machine: &Machine, secret: Option<&str>, request: &ExecRequest) -> Result<ExecResult> {
+    fn exec(
+        &self,
+        machine: &Machine,
+        secret: Option<&str>,
+        request: &ExecRequest,
+    ) -> Result<ExecResult> {
         Pool::exec(self, machine, secret, request)
     }
 }
@@ -105,7 +115,12 @@ mod tests {
     }
 
     impl ExecBackend for Rec {
-        fn exec(&self, _machine: &Machine, _secret: Option<&str>, request: &ExecRequest) -> Result<ExecResult> {
+        fn exec(
+            &self,
+            _machine: &Machine,
+            _secret: Option<&str>,
+            request: &ExecRequest,
+        ) -> Result<ExecResult> {
             self.calls.lock().unwrap().push(request.clone());
             Ok(ExecResult {
                 stdout: "ok".into(),
@@ -148,7 +163,13 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         };
         let mount = Path::new("/tmp/mounts/p");
-        let out = run_workspace_command(mount, "npm test", Some((&machine, &project, None)), &backend).unwrap();
+        let out = run_workspace_command(
+            mount,
+            "npm test",
+            Some((&machine, &project, None)),
+            &backend,
+        )
+        .unwrap();
         assert!(out.remote);
         assert_eq!(out.text, "ok");
         let calls = backend.calls.lock().unwrap();
@@ -166,7 +187,11 @@ mod tests {
         let backend = Rec {
             calls: Mutex::new(Vec::new()),
         };
-        let command = if cfg!(windows) { "type note.txt" } else { "cat note.txt" };
+        let command = if cfg!(windows) {
+            "type note.txt"
+        } else {
+            "cat note.txt"
+        };
         let out = run_workspace_command(dir.path(), command, None, &backend).unwrap();
         assert!(!out.remote);
         assert!(out.text.contains("hi"));

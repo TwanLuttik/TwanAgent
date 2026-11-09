@@ -4,8 +4,8 @@ use std::time::Duration;
 use russh::client::{self, AuthResult, Handler};
 use russh::keys::{decode_secret_key, key::PrivateKeyWithHashAlg, load_secret_key};
 use russh::ChannelMsg;
-use tokio::io::AsyncWriteExt;
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 use super::config::Machine;
@@ -48,7 +48,11 @@ impl SshSession for LiveSession {
         true
     }
 
-    fn exec_stream(&self, request: &ExecRequest, on_stdout: &mut dyn FnMut(&[u8])) -> Result<ExecResult> {
+    fn exec_stream(
+        &self,
+        request: &ExecRequest,
+        on_stdout: &mut dyn FnMut(&[u8]),
+    ) -> Result<ExecResult> {
         self.exec_with_stdin(request, &[], &mut |_| {})
             .map(|result| {
                 if !result.stdout.is_empty() {
@@ -117,7 +121,9 @@ async fn run_exec_stream(
     let channel = match handle.channel_open_session().await {
         Ok(channel) => channel,
         Err(err) => {
-            let _ = tx.send(StreamPiece::Failed(format!("could not open SSH channel: {err}")));
+            let _ = tx.send(StreamPiece::Failed(format!(
+                "could not open SSH channel: {err}"
+            )));
             return;
         }
     };
@@ -160,19 +166,24 @@ async fn run_exec_stream(
             return;
         }
         let end = (sent + 32 * 1024).min(stdin.len());
-        match tokio::time::timeout(Duration::from_secs(30), writer.write_all(&stdin[sent..end])).await {
+        match tokio::time::timeout(Duration::from_secs(30), writer.write_all(&stdin[sent..end]))
+            .await
+        {
             Ok(Ok(())) => {
                 sent = end;
                 let _ = tx.send(StreamPiece::Sent(sent as u64));
             }
             Ok(Err(err)) => {
-                let _ = tx.send(StreamPiece::Failed(format!("the copy stopped while sending the program: {err}")));
+                let _ = tx.send(StreamPiece::Failed(format!(
+                    "the copy stopped while sending the program: {err}"
+                )));
                 reading.abort();
                 return;
             }
             Err(_) => {
                 let _ = tx.send(StreamPiece::Failed(
-                    "the copy stopped while sending the program. The server stopped accepting it.".into(),
+                    "the copy stopped while sending the program. The server stopped accepting it."
+                        .into(),
                 ));
                 reading.abort();
                 return;
@@ -200,7 +211,11 @@ async fn run_exec_stream(
 pub struct LiveConnector;
 
 impl SshConnector for LiveConnector {
-    fn connect(&self, machine: &Machine, secret: Option<&str>) -> Result<(Box<dyn SshSession>, KnownHost)> {
+    fn connect(
+        &self,
+        machine: &Machine,
+        secret: Option<&str>,
+    ) -> Result<(Box<dyn SshSession>, KnownHost)> {
         let machine = machine.clone();
         let secret = secret.map(str::to_string);
         block_on(async move {
@@ -225,7 +240,8 @@ async fn connect_live(
     };
     // System ssh applies ~/.ssh/config, keys, and ProxyJump. A raw TCP connect does not.
     let (ssh_user, ssh_host) = super::config::ssh_login(&machine.user, &machine.host);
-    let mut handle = connect_with_system_ssh(config, &ssh_user, &ssh_host, machine.port, handler).await?;
+    let mut handle =
+        connect_with_system_ssh(config, &ssh_user, &ssh_host, machine.port, handler).await?;
     authenticate(&mut handle, machine, &auth).await?;
     let presented = presented_slot
         .lock()
@@ -389,7 +405,10 @@ async fn authenticate(
                     .map_err(|e| Error::Other(format!("could not read private key: {e}")))?
             };
             handle
-                .authenticate_publickey(&machine.user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
+                .authenticate_publickey(
+                    &machine.user,
+                    PrivateKeyWithHashAlg::new(Arc::new(key), None),
+                )
                 .await
                 .map_err(|e| Error::Other(format!("SSH login failed: {e}")))?
         }
@@ -428,7 +447,10 @@ fn default_private_key() -> Result<russh::keys::PrivateKey> {
 fn host_from_key(key: &russh::keys::PublicKey) -> KnownHost {
     let bytes = key.to_bytes().unwrap_or_default();
     let digest = Sha256::digest(&bytes);
-    let fingerprint = format!("SHA256:{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD_NO_PAD, digest));
+    let fingerprint = format!(
+        "SHA256:{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD_NO_PAD, digest)
+    );
     KnownHost {
         host: String::new(),
         port: 0,
@@ -459,7 +481,11 @@ mod tests {
 
     #[test]
     fn fingerprint_is_sha256_of_the_key_bytes() {
-        let key = russh::keys::PrivateKey::random(&mut rand::rngs::OsRng, russh::keys::Algorithm::Ed25519).unwrap();
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rngs::OsRng,
+            russh::keys::Algorithm::Ed25519,
+        )
+        .unwrap();
         let host = host_from_key(&key.public_key());
         assert!(host.fingerprint.starts_with("SHA256:"));
         assert!(!host.key_type.is_empty());

@@ -169,9 +169,10 @@ pub async fn collect_chat_round(
         return Err(err);
     }
     let stream_id_for_wait = stream_id.clone();
-    let round = tokio::task::spawn_blocking(move || wait_round(&stream_id_for_wait, rx, on_progress))
-        .await
-        .map_err(|err| Error::Other(format!("model round failed: {err}")))?;
+    let round =
+        tokio::task::spawn_blocking(move || wait_round(&stream_id_for_wait, rx, on_progress))
+            .await
+            .map_err(|err| Error::Other(format!("model round failed: {err}")))?;
     if let Ok(mut map) = round_slots().lock() {
         map.remove(&stream_id);
     }
@@ -219,7 +220,10 @@ fn wait_round(
                         error: Some("Stopped.".into()),
                     };
                 }
-                let gone = streams().lock().ok().is_some_and(|map| !map.contains_key(stream_id));
+                let gone = streams()
+                    .lock()
+                    .ok()
+                    .is_some_and(|map| !map.contains_key(stream_id));
                 if gone && started.elapsed() > Duration::from_millis(500) {
                     return CollectedRound {
                         text,
@@ -247,13 +251,19 @@ fn wait_round(
             "delta" => {
                 if let Some(chunk) = event.text.clone() {
                     text.push_str(&chunk);
-                    on_progress(RoundProgress { kind: "delta", text: chunk });
+                    on_progress(RoundProgress {
+                        kind: "delta",
+                        text: chunk,
+                    });
                 }
             }
             "reasoning" => {
                 if let Some(chunk) = event.text.clone() {
                     reasoning.push_str(&chunk);
-                    on_progress(RoundProgress { kind: "reasoning", text: chunk });
+                    on_progress(RoundProgress {
+                        kind: "reasoning",
+                        text: chunk,
+                    });
                 }
             }
             "usage" => usage = event.usage.or(usage),
@@ -299,7 +309,6 @@ fn wait_round(
         }
     }
 }
-
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_web_search(
@@ -372,7 +381,11 @@ pub async fn dev_chat_start(
     let pdf_documents = provider == crate::model_providers::registry::ProviderId::Anthropic;
     let data_dir = state.data_dir.clone();
     let messages = crate::state::run_blocking(move || {
-        Ok(crate::attachment::expand_messages(&data_dir, messages, pdf_documents))
+        Ok(crate::attachment::expand_messages(
+            &data_dir,
+            messages,
+            pdf_documents,
+        ))
     })
     .await?;
     // A local turn already registered this stream's cancel flag. Keep that one so Stop
@@ -471,7 +484,9 @@ async fn stream_anthropic(
         &merge_tools(
             super::tool_schema::tools_json_for(
                 include_journey,
-                crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Anthropic),
+                crate::model_providers::registry::plan_mode(
+                    crate::model_providers::registry::ProviderId::Anthropic,
+                ),
             ),
             &extra_tools,
         ),
@@ -527,7 +542,9 @@ async fn stream_minimax(
         &merge_tools(
             super::tool_schema::tools_json_for(
                 include_journey,
-                crate::model_providers::registry::plan_mode(crate::model_providers::registry::ProviderId::Minimax),
+                crate::model_providers::registry::plan_mode(
+                    crate::model_providers::registry::ProviderId::Minimax,
+                ),
             ),
             &extra_tools,
         ),
@@ -577,7 +594,10 @@ async fn stream_chat(
         &model,
         effort.as_deref(),
         &messages,
-        &merge_tools(super::tool_schema::tools_json(include_journey), &extra_tools),
+        &merge_tools(
+            super::tool_schema::tools_json(include_journey),
+            &extra_tools,
+        ),
     );
     // SSE breaks when the body is gzip-decoded mid-stream: reqwest then reports
     // "error decoding response body" and the turn stops after the last tool.
@@ -624,7 +644,11 @@ async fn stream_chat(
         cancel,
         move |data| parse_xai_data(data, &parse_slot),
         move |session| {
-            let held = stop_slot.lock().ok().map(|slot| slot.clone()).unwrap_or_default();
+            let held = stop_slot
+                .lock()
+                .ok()
+                .map(|slot| slot.clone())
+                .unwrap_or_default();
             // The local turn reads the round channel, not `dev-chat`. Emitting only
             // there dropped final-message reasoning and the turn looked empty.
             if !session.saw_reasoning() && !held.reasoning.is_empty() {
@@ -658,7 +682,10 @@ struct XaiFallback {
     message_tools: Vec<twanagent_service::xai::ToolFragment>,
 }
 
-fn push_message_tools(session: &mut crate::model_providers::runner::StreamSession, calls: &[twanagent_service::xai::ToolFragment]) {
+fn push_message_tools(
+    session: &mut crate::model_providers::runner::StreamSession,
+    calls: &[twanagent_service::xai::ToolFragment],
+) {
     use crate::model_providers::event::StreamPiece;
     for call in calls {
         if call.name.is_empty() {
@@ -678,7 +705,10 @@ fn push_message_tools(session: &mut crate::model_providers::runner::StreamSessio
     }
 }
 
-fn parse_xai_data(data: &str, fallback: &Mutex<XaiFallback>) -> Vec<crate::model_providers::event::StreamPiece> {
+fn parse_xai_data(
+    data: &str,
+    fallback: &Mutex<XaiFallback>,
+) -> Vec<crate::model_providers::event::StreamPiece> {
     use crate::model_providers::event::StreamPiece;
     let Ok(json) = serde_json::from_str::<serde_json::Value>(data) else {
         return Vec::new();
@@ -698,7 +728,10 @@ fn parse_xai_data(data: &str, fallback: &Mutex<XaiFallback>) -> Vec<crate::model
     let Some(choice) = json.get("choices").and_then(|c| c.get(0)) else {
         return pieces;
     };
-    let delta = choice.get("delta").cloned().unwrap_or(serde_json::Value::Null);
+    let delta = choice
+        .get("delta")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let text = delta
         .get("content")
         .map(twanagent_service::xai::text_from_content)
@@ -840,7 +873,10 @@ mod tests {
 
     #[test]
     fn text_from_content_reads_string_and_text_parts() {
-        assert_eq!(twanagent_service::xai::text_from_content(&serde_json::json!("Hello")), "Hello");
+        assert_eq!(
+            twanagent_service::xai::text_from_content(&serde_json::json!("Hello")),
+            "Hello"
+        );
         assert_eq!(
             twanagent_service::xai::text_from_content(&serde_json::json!([
                 { "type": "text", "text": "Hi " },
@@ -848,7 +884,10 @@ mod tests {
             ])),
             "Hi there"
         );
-        assert_eq!(twanagent_service::xai::text_from_content(&serde_json::json!(null)), "");
+        assert_eq!(
+            twanagent_service::xai::text_from_content(&serde_json::json!(null)),
+            ""
+        );
     }
 
     #[test]
@@ -857,14 +896,26 @@ mod tests {
             "delta": { "content": null },
             "message": { "role": "assistant", "content": "Saved." }
         });
-        assert_eq!(twanagent_service::xai::fallback_choice_text(&choice), "Saved.");
+        assert_eq!(
+            twanagent_service::xai::fallback_choice_text(&choice),
+            "Saved."
+        );
     }
 
     #[test]
     fn the_final_message_keeps_an_ending_the_deltas_skipped() {
-        assert_eq!(twanagent_service::xai::unseen_reply_tail("Hello", "Hello world."), Some(" world.".into()));
-        assert_eq!(twanagent_service::xai::unseen_reply_tail("", "Saved."), Some("Saved.".into()));
-        assert_eq!(twanagent_service::xai::unseen_reply_tail("Saved.", "Saved."), None);
+        assert_eq!(
+            twanagent_service::xai::unseen_reply_tail("Hello", "Hello world."),
+            Some(" world.".into())
+        );
+        assert_eq!(
+            twanagent_service::xai::unseen_reply_tail("", "Saved."),
+            Some("Saved.".into())
+        );
+        assert_eq!(
+            twanagent_service::xai::unseen_reply_tail("Saved.", "Saved."),
+            None
+        );
     }
 
     #[test]
@@ -881,8 +932,14 @@ mod tests {
                 { "type": "text", "text": "Hi" }
             ]
         });
-        assert_eq!(twanagent_service::xai::text_from_content(delta.get("content").unwrap()), "Hi");
-        assert_eq!(twanagent_service::xai::reasoning_from_delta(&delta), "secret");
+        assert_eq!(
+            twanagent_service::xai::text_from_content(delta.get("content").unwrap()),
+            "Hi"
+        );
+        assert_eq!(
+            twanagent_service::xai::reasoning_from_delta(&delta),
+            "secret"
+        );
     }
 
     #[test]
@@ -939,7 +996,10 @@ mod tests {
         let fallback = std::sync::Mutex::new(XaiFallback::default());
         let data = r#"{"choices":[{"delta":{},"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"call-1","function":{"name":"read_file","arguments":"{\"path\":\"src/lib/tool-reveal.ts\"}"}}]}}]}"#;
         let pieces = parse_xai_data(data, &fallback);
-        assert!(pieces.iter().all(|piece| !matches!(piece, crate::model_providers::event::StreamPiece::ToolStart { .. })));
+        assert!(pieces.iter().all(|piece| !matches!(
+            piece,
+            crate::model_providers::event::StreamPiece::ToolStart { .. }
+        )));
         let held = fallback.lock().unwrap();
         assert_eq!(held.message_tools.len(), 1);
         assert_eq!(held.message_tools[0].name, "read_file");
@@ -963,6 +1023,9 @@ mod tests {
         let choice = serde_json::json!({
             "message": { "reasoning_content": "Thought.", "content": "Answer" }
         });
-        assert_eq!(twanagent_service::xai::message_reasoning(&choice), "Thought.");
+        assert_eq!(
+            twanagent_service::xai::message_reasoning(&choice),
+            "Thought."
+        );
     }
 }

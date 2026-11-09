@@ -88,7 +88,11 @@ pub fn delete_agent_token(server_id: &str) -> Result<()> {
 
 fn agent_token_account(server_id: &str) -> Result<String> {
     let server_id = server_id.trim();
-    if server_id.is_empty() || server_id.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+    if server_id.is_empty()
+        || server_id
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
         return Err(Error::Other("server id is empty".into()));
     }
     Ok(format!("agent-token:{server_id}"))
@@ -236,7 +240,10 @@ fn read_account(service: &str, account: &str) -> std::result::Result<Option<Stri
 }
 
 #[cfg(target_os = "macos")]
-fn read_account_uncached(service: &str, account: &str) -> std::result::Result<Option<String>, String> {
+fn read_account_uncached(
+    service: &str,
+    account: &str,
+) -> std::result::Result<Option<String>, String> {
     match get_generic_password(service, account) {
         Ok(bytes) => String::from_utf8(bytes)
             .map(Some)
@@ -245,7 +252,9 @@ fn read_account_uncached(service: &str, account: &str) -> std::result::Result<Op
         Err(err) if err.code() == -25300 => Ok(None),
         // User cancelled, the prompt was refused, or the keychain would not interact.
         // Remembering these stops the usage page from asking again on every visit.
-        Err(err) if matches!(err.code(), -128 | -25293 | -25308) => Err(format!("keychain prompt: {err}")),
+        Err(err) if matches!(err.code(), -128 | -25293 | -25308) => {
+            Err(format!("keychain prompt: {err}"))
+        }
         Err(err) => Err(err.to_string()),
     }
 }
@@ -270,8 +279,13 @@ fn account_cache_key(service: &str, account: &str) -> String {
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn recall_account(service: &str, account: &str) -> Option<std::result::Result<Option<String>, String>> {
-    let cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+fn recall_account(
+    service: &str,
+    account: &str,
+) -> Option<std::result::Result<Option<String>, String>> {
+    let cache = keychain_memory()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     match cache.get(&account_cache_key(service, account))? {
         Remembered::Value(value) => Some(Ok(Some(value.clone()))),
         Remembered::Missing => Some(Ok(None)),
@@ -280,20 +294,30 @@ fn recall_account(service: &str, account: &str) -> Option<std::result::Result<Op
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn remember_account(service: &str, account: &str, read: &std::result::Result<Option<String>, String>) {
+fn remember_account(
+    service: &str,
+    account: &str,
+    read: &std::result::Result<Option<String>, String>,
+) {
     let remembered = match read {
         Ok(Some(value)) => Remembered::Value(value.clone()),
         Ok(None) => Remembered::Missing,
-        Err(message) if message.starts_with("keychain prompt:") => Remembered::Denied(message.clone()),
+        Err(message) if message.starts_with("keychain prompt:") => {
+            Remembered::Denied(message.clone())
+        }
         Err(_) => return,
     };
-    let mut cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+    let mut cache = keychain_memory()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     cache.insert(account_cache_key(service, account), remembered);
 }
 
 #[cfg(any(target_os = "macos", test))]
 fn forget_account(service: &str, account: &str) {
-    let mut cache = keychain_memory().lock().unwrap_or_else(|err| err.into_inner());
+    let mut cache = keychain_memory()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     cache.remove(&account_cache_key(service, account));
 }
 
@@ -373,7 +397,10 @@ fn open_keys(data_dir: &Path) -> Result<rusqlite::Connection> {
 fn migrate_keychain_keys(conn: &rusqlite::Connection) {
     for provider in PROVIDERS {
         let already = appdb::get_provider_key(conn, provider).ok().flatten();
-        if already.as_ref().is_some_and(|value| !value.trim().is_empty()) {
+        if already
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
             continue;
         }
         let Some(value) = read_keychain_provider(provider) else {
@@ -522,7 +549,10 @@ pub fn resolve_minimax_key(saved: Option<String>, env: Option<String>) -> Option
 }
 
 pub fn resolve_minimax_key_on_disk(data_dir: &Path) -> Option<String> {
-    resolve_minimax_key(get_minimax_key(data_dir), std::env::var("MINIMAX_API_KEY").ok())
+    resolve_minimax_key(
+        get_minimax_key(data_dir),
+        std::env::var("MINIMAX_API_KEY").ok(),
+    )
 }
 
 #[cfg(test)]
@@ -536,7 +566,13 @@ mod xai_key_tests {
         forget_account(service, account);
         assert!(recall_account(service, account).is_none());
         remember_account(service, account, &Ok(Some("token".into())));
-        assert_eq!(recall_account(service, account).unwrap().unwrap().as_deref(), Some("token"));
+        assert_eq!(
+            recall_account(service, account)
+                .unwrap()
+                .unwrap()
+                .as_deref(),
+            Some("token")
+        );
         // A failure that was not the password dialog must not stick.
         forget_account(service, account);
         remember_account(service, account, &Err("disk full".into()));
@@ -674,8 +710,14 @@ mod xai_key_tests {
         set_anthropic_key(dir.path(), "anthropic-secret").unwrap();
         assert_eq!(get_minimax_key(dir.path()), None);
         set_minimax_key(dir.path(), "minimax-secret").unwrap();
-        assert_eq!(get_minimax_key(dir.path()).as_deref(), Some("minimax-secret"));
-        assert_eq!(get_anthropic_key(dir.path()).as_deref(), Some("anthropic-secret"));
+        assert_eq!(
+            get_minimax_key(dir.path()).as_deref(),
+            Some("minimax-secret")
+        );
+        assert_eq!(
+            get_anthropic_key(dir.path()).as_deref(),
+            Some("anthropic-secret")
+        );
         assert_eq!(
             resolve_minimax_key(None, Some(" env-key ".into())).as_deref(),
             Some("env-key")
@@ -688,7 +730,11 @@ mod xai_key_tests {
     #[test]
     fn anthropic_key_is_not_written_to_secrets_json() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("secrets.json"), r#"{"xai_key":"file-secret"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("secrets.json"),
+            r#"{"xai_key":"file-secret"}"#,
+        )
+        .unwrap();
         set_anthropic_key(dir.path(), "anthropic-secret").unwrap();
         let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
         assert!(raw.contains("file-secret"), "{raw}");
@@ -736,10 +782,14 @@ mod xai_key_tests {
         }
         let conn = crate::appdb::open(dir.path()).unwrap();
         assert_eq!(
-            crate::appdb::get_provider_key(&conn, "xai").unwrap().as_deref(),
+            crate::appdb::get_provider_key(&conn, "xai")
+                .unwrap()
+                .as_deref(),
             Some("xai-secret")
         );
-        assert!(crate::appdb::get_setting(&conn, "provider.xai").unwrap().is_none());
+        assert!(crate::appdb::get_setting(&conn, "provider.xai")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -753,7 +803,9 @@ mod xai_key_tests {
         assert_eq!(get_xai_key(dir.path()).as_deref(), Some("file-secret"));
         let conn = crate::appdb::open(dir.path()).unwrap();
         assert_eq!(
-            crate::appdb::get_provider_key(&conn, "xai").unwrap().as_deref(),
+            crate::appdb::get_provider_key(&conn, "xai")
+                .unwrap()
+                .as_deref(),
             Some("file-secret")
         );
         let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap();
@@ -774,5 +826,4 @@ mod xai_key_tests {
         assert!(!raw.contains("file-secret"), "{raw}");
         assert!(!raw.contains("db-secret"), "{raw}");
     }
-
 }

@@ -11,19 +11,26 @@ use super::context::{
 };
 use super::subagent::{emit_subagent, spawn_subagent};
 use super::tools::{
-    ask_plan, capability_roots, cap_tool_text, commit_files, create_group_chat, git_target,
+    ask_plan, cap_tool_text, capability_roots, commit_files, create_group_chat, git_target,
     group_or_repo, json_ok, list_group_chats, read_group_chat, run_shell, search, todo_text,
     turn_tools, update_journey,
 };
 use super::{
-    assistant_value, close_dangling, emit, emit_saved, fail, hold_provider_outage, int_arg, keep_partial,
-    normalize_permission, parse_args, record_round_usage, retryable_model_error, round_is_empty,
-    save, stopped, str_arg, LiveTurn, LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
+    assistant_value, close_dangling, emit, emit_saved, fail, hold_provider_outage, int_arg,
+    keep_partial, normalize_permission, parse_args, record_round_usage, retryable_model_error,
+    round_is_empty, save, stopped, str_arg, LiveTurn, LocalTurnStart, ProviderHold,
+    CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
 };
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
-pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request: &LocalTurnStart, live: &Arc<LiveTurn>) {
+pub(super) fn drive(
+    app: &AppHandle,
+    data_dir: &Path,
+    workspace: &Path,
+    request: &LocalTurnStart,
+    live: &Arc<LiveTurn>,
+) {
     let id = request.conversation_id.trim();
     let home = crate::dev::paths::home_dir().unwrap_or_default();
     let roots = capability_roots(workspace);
@@ -38,7 +45,10 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
     let permission = normalize_permission(&request.permission);
     let mut transcript = request.messages.clone();
     let saved_len = 0usize;
-    let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
+    let window = request
+        .context_window
+        .filter(|value| *value > 0)
+        .unwrap_or(0);
     let (mut prompt_tokens, mut compaction) = load_budget(data_dir, &request.workspace, id);
     let mut overflow_retries = 0u8;
     let mut model_tries = 0u8;
@@ -73,13 +83,44 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
             }
             Fit::TooBig => {
                 fail(app, id, &mut transcript, CONTEXT_LIMIT_MESSAGE);
-                save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                save(
+                    data_dir,
+                    &request.workspace,
+                    id,
+                    &transcript,
+                    saved_len,
+                    None,
+                );
                 emit_saved(app, id, &transcript, None, compaction.as_ref());
                 return;
             }
         }
-        let prompt = build_prompt(workspace, &transcript, compaction.as_ref(), &request.system, &permission, &model, plan, id);
-        let round = match stream_round(app, id, id, None, &model, &request.effort, window, prompt, &live.cancel, request.journey_id.clone(), false, turn_tools(workspace, id)).await_round() {
+        let prompt = build_prompt(
+            workspace,
+            &transcript,
+            compaction.as_ref(),
+            &request.system,
+            &permission,
+            &model,
+            plan,
+            id,
+        );
+        let round = match stream_round(
+            app,
+            id,
+            id,
+            None,
+            &model,
+            &request.effort,
+            window,
+            prompt,
+            &live.cancel,
+            request.journey_id.clone(),
+            false,
+            turn_tools(workspace, id),
+        )
+        .await_round()
+        {
             Ok(round) => round,
             Err(err) => {
                 let message = err.to_string();
@@ -104,7 +145,14 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                     continue;
                 }
                 if stopped(live) {
-                    save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                    save(
+                        data_dir,
+                        &request.workspace,
+                        id,
+                        &transcript,
+                        saved_len,
+                        None,
+                    );
                     emit_saved(app, id, &transcript, None, compaction.as_ref());
                     emit(app, id, "stopped", None, None, None);
                     return;
@@ -112,7 +160,14 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 match hold_provider_outage(app, id, &live.cancel, &mut outage_tries, &message) {
                     ProviderHold::Retry => continue,
                     ProviderHold::Stopped => {
-                        save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                        save(
+                            data_dir,
+                            &request.workspace,
+                            id,
+                            &transcript,
+                            saved_len,
+                            None,
+                        );
                         emit_saved(app, id, &transcript, None, compaction.as_ref());
                         emit(app, id, "stopped", None, None, None);
                         return;
@@ -125,16 +180,42 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 }
                 let text = context_failure_text(&message);
                 fail(app, id, &mut transcript, text);
-                save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+                save(
+                    data_dir,
+                    &request.workspace,
+                    id,
+                    &transcript,
+                    saved_len,
+                    None,
+                );
                 emit_saved(app, id, &transcript, None, compaction.as_ref());
                 return;
             }
         };
-        record_round_usage(data_dir, &request.workspace, id, &model, round.usage.as_ref());
+        record_round_usage(
+            data_dir,
+            &request.workspace,
+            id,
+            &model,
+            round.usage.as_ref(),
+        );
         if stopped(live) || round.error.as_deref() == Some("Stopped.") {
             keep_partial(&mut transcript, &round);
-            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+            save(
+                data_dir,
+                &request.workspace,
+                id,
+                &transcript,
+                saved_len,
+                round.usage.as_ref(),
+            );
+            emit_saved(
+                app,
+                id,
+                &transcript,
+                round.usage.as_ref(),
+                compaction.as_ref(),
+            );
             emit(app, id, "stopped", None, None, None);
             return;
         }
@@ -160,16 +241,42 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 continue;
             }
             if stopped(live) {
-                save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-                emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+                save(
+                    data_dir,
+                    &request.workspace,
+                    id,
+                    &transcript,
+                    saved_len,
+                    round.usage.as_ref(),
+                );
+                emit_saved(
+                    app,
+                    id,
+                    &transcript,
+                    round.usage.as_ref(),
+                    compaction.as_ref(),
+                );
                 emit(app, id, "stopped", None, None, None);
                 return;
             }
             match hold_provider_outage(app, id, &live.cancel, &mut outage_tries, &error) {
                 ProviderHold::Retry => continue,
                 ProviderHold::Stopped => {
-                    save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-                    emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+                    save(
+                        data_dir,
+                        &request.workspace,
+                        id,
+                        &transcript,
+                        saved_len,
+                        round.usage.as_ref(),
+                    );
+                    emit_saved(
+                        app,
+                        id,
+                        &transcript,
+                        round.usage.as_ref(),
+                        compaction.as_ref(),
+                    );
                     emit(app, id, "stopped", None, None, None);
                     return;
                 }
@@ -181,8 +288,21 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
             }
             let text = context_failure_text(&error);
             fail(app, id, &mut transcript, text);
-            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+            save(
+                data_dir,
+                &request.workspace,
+                id,
+                &transcript,
+                saved_len,
+                round.usage.as_ref(),
+            );
+            emit_saved(
+                app,
+                id,
+                &transcript,
+                round.usage.as_ref(),
+                compaction.as_ref(),
+            );
             return;
         }
         if let Some(usage) = round.usage.as_ref() {
@@ -201,7 +321,12 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
             if round_is_empty(&round) {
                 fail(app, id, &mut transcript, EMPTY_REPLY);
             } else {
-                transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
+                transcript.push(assistant_value(
+                    &round.text,
+                    &round.reasoning,
+                    &[],
+                    &round.thinking,
+                ));
                 // The full transcript save is large after a tool round. Send the
                 // answer by itself first, or the window keeps the tool list and
                 // the reply appears only on the next launch.
@@ -209,14 +334,45 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                     emit(app, id, "reply", Some(round.text.clone()), None, None);
                 }
             }
-            save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-            emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+            save(
+                data_dir,
+                &request.workspace,
+                id,
+                &transcript,
+                saved_len,
+                round.usage.as_ref(),
+            );
+            emit_saved(
+                app,
+                id,
+                &transcript,
+                round.usage.as_ref(),
+                compaction.as_ref(),
+            );
             emit(app, id, "done", None, None, None);
             return;
         }
-        transcript.push(assistant_value(&round.text, &round.reasoning, &round.tool_calls, &round.thinking));
-        save(data_dir, &request.workspace, id, &transcript, saved_len, round.usage.as_ref());
-        emit_saved(app, id, &transcript, round.usage.as_ref(), compaction.as_ref());
+        transcript.push(assistant_value(
+            &round.text,
+            &round.reasoning,
+            &round.tool_calls,
+            &round.thinking,
+        ));
+        save(
+            data_dir,
+            &request.workspace,
+            id,
+            &transcript,
+            saved_len,
+            round.usage.as_ref(),
+        );
+        emit_saved(
+            app,
+            id,
+            &transcript,
+            round.usage.as_ref(),
+            compaction.as_ref(),
+        );
         let mut contents = Vec::with_capacity(round.tool_calls.len());
         let mut spawn_waits: Vec<(usize, std::thread::JoinHandle<String>)> = Vec::new();
         for call in &round.tool_calls {
@@ -224,7 +380,14 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 contents.push("Skipped: stopped.".to_string());
                 continue;
             }
-            emit(app, id, "tool", Some(call.name.clone()), Some(call.clone()), None);
+            emit(
+                app,
+                id,
+                "tool",
+                Some(call.name.clone()),
+                Some(call.clone()),
+                None,
+            );
             if call.name == "spawn_subagent" && request.allow_spawn {
                 let app_child = app.clone();
                 let conversation_id = id.to_string();
@@ -310,7 +473,14 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 "tool_call_id": call.id,
                 "content": stored,
             }));
-            save(data_dir, &request.workspace, id, &transcript, saved_len, None);
+            save(
+                data_dir,
+                &request.workspace,
+                id,
+                &transcript,
+                saved_len,
+                None,
+            );
             emit_saved(app, id, &transcript, None, compaction.as_ref());
         }
     }
@@ -370,7 +540,10 @@ impl RoundWait {
         // Register before the request starts. Stop during the handshake has to find this flag,
         // not a map that is still empty until the HTTP call returns.
         let cancel = if let Ok(mut map) = super::super::chat::streams().lock() {
-            let flag = map.get(&stream_id).cloned().unwrap_or_else(|| cancel.clone());
+            let flag = map
+                .get(&stream_id)
+                .cloned()
+                .unwrap_or_else(|| cancel.clone());
             map.insert(stream_id.clone(), flag.clone());
             flag
         } else {
@@ -416,7 +589,14 @@ impl RoundWait {
                     );
                     return;
                 }
-                emit(&progress_app, &progress_id, progress.kind, Some(progress.text), None, None);
+                emit(
+                    &progress_app,
+                    &progress_id,
+                    progress.kind,
+                    Some(progress.text),
+                    None,
+                    None,
+                );
             },
         ))?;
         let error = if cancel.load(Ordering::Relaxed) {
@@ -456,7 +636,11 @@ pub(super) fn stream_round(
         conversation_id: conversation_id.to_string(),
         stream_id: {
             let id = stream_id.trim();
-            if id.is_empty() { conversation_id.to_string() } else { id.to_string() }
+            if id.is_empty() {
+                conversation_id.to_string()
+            } else {
+                id.to_string()
+            }
         },
         subagent_id: subagent_id.map(str::to_string).filter(|id| !id.is_empty()),
         model: model.to_string(),
@@ -487,28 +671,50 @@ pub(super) fn run_tool(
     context_window: Option<u64>,
     live: &Arc<LiveTurn>,
 ) -> String {
-    if let Some(text) = twanagent_service::capabilities::call(capability_id, &call.name, &call.arguments) {
+    if let Some(text) =
+        twanagent_service::capabilities::call(capability_id, &call.name, &call.arguments)
+    {
         return text;
     }
-    if permission == "read-only" && matches!(call.name.as_str(), "write_file" | "edit_file" | "run_command" | "git_commit" | "create_chat") {
+    if permission == "read-only"
+        && matches!(
+            call.name.as_str(),
+            "write_file" | "edit_file" | "run_command" | "git_commit" | "create_chat"
+        )
+    {
         return format!("Error: {} is blocked in read-only mode.", call.name);
     }
     let args = parse_args(&call.arguments);
     let result = match call.name.as_str() {
-        "list_dir" => json_ok(super::super::files::list_dir(workspace, str_arg(&args, "path"))),
+        "list_dir" => json_ok(super::super::files::list_dir(
+            workspace,
+            str_arg(&args, "path"),
+        )),
         "grep" => super::super::files::grep(
             workspace,
             str_arg(&args, "pattern"),
             str_arg(&args, "path"),
             str_arg(&args, "glob"),
         ),
-        "glob" => super::super::files::glob(workspace, str_arg(&args, "pattern"), str_arg(&args, "path")),
-        "read_file" => super::super::files::read_file(workspace, str_arg(&args, "path")).and_then(|text| {
-            twanagent_service::numbered_lines(&text, int_arg(&args, "offset"), int_arg(&args, "limit"))
+        "glob" => {
+            super::super::files::glob(workspace, str_arg(&args, "pattern"), str_arg(&args, "path"))
+        }
+        "read_file" => {
+            super::super::files::read_file(workspace, str_arg(&args, "path")).and_then(|text| {
+                twanagent_service::numbered_lines(
+                    &text,
+                    int_arg(&args, "offset"),
+                    int_arg(&args, "limit"),
+                )
                 .map_err(Error::from)
-        }),
-        "write_file" => super::super::files::write_file(workspace, str_arg(&args, "path"), str_arg(&args, "contents"))
-            .map(|_| format!("Wrote {}", str_arg(&args, "path"))),
+            })
+        }
+        "write_file" => super::super::files::write_file(
+            workspace,
+            str_arg(&args, "path"),
+            str_arg(&args, "contents"),
+        )
+        .map(|_| format!("Wrote {}", str_arg(&args, "path"))),
         "edit_file" => super::super::files::edit_file(
             workspace,
             str_arg(&args, "path"),
@@ -516,39 +722,55 @@ pub(super) fn run_tool(
             str_arg(&args, "new_string"),
         )
         .map(|_| format!("Edited {}", str_arg(&args, "path"))),
-        "git_status" => group_or_repo(workspace, |layout| {
-            super::super::group_git::status(layout, true)
-                .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
-        }, || {
-            git_target(workspace, data_dir).and_then(|target| {
-                super::super::git::git_status_with(&target, true)
+        "git_status" => group_or_repo(
+            workspace,
+            |layout| {
+                super::super::group_git::status(layout, true)
                     .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
-            })
-        }),
-        "git_diff" => group_or_repo(workspace, |layout| {
-            let commit = str_arg(&args, "commit");
-            if commit.is_empty() {
-                super::super::group_git::diff(layout, str_arg(&args, "path"))
-            } else {
-                Err(Error::Other(super::super::group_git::OPEN_REPO.into()))
-            }
-        }, || {
-            git_target(workspace, data_dir).and_then(|target| {
+            },
+            || {
+                git_target(workspace, data_dir).and_then(|target| {
+                    super::super::git::git_status_with(&target, true)
+                        .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+                })
+            },
+        ),
+        "git_diff" => group_or_repo(
+            workspace,
+            |layout| {
                 let commit = str_arg(&args, "commit");
                 if commit.is_empty() {
-                    super::super::git::git_diff(&target, str_arg(&args, "path"))
+                    super::super::group_git::diff(layout, str_arg(&args, "path"))
                 } else {
-                    super::super::git::git_show(&target, commit)
+                    Err(Error::Other(super::super::group_git::OPEN_REPO.into()))
                 }
-            })
-        }),
-        "git_log" => group_or_repo(workspace, |_| Err(Error::Other(super::super::group_git::OPEN_REPO.into())), || {
-            git_target(workspace, data_dir).and_then(|target| {
-                let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(20).clamp(1, 80) as u32;
-                super::super::git::git_log(&target, limit)
-                    .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
-            })
-        }),
+            },
+            || {
+                git_target(workspace, data_dir).and_then(|target| {
+                    let commit = str_arg(&args, "commit");
+                    if commit.is_empty() {
+                        super::super::git::git_diff(&target, str_arg(&args, "path"))
+                    } else {
+                        super::super::git::git_show(&target, commit)
+                    }
+                })
+            },
+        ),
+        "git_log" => group_or_repo(
+            workspace,
+            |_| Err(Error::Other(super::super::group_git::OPEN_REPO.into())),
+            || {
+                git_target(workspace, data_dir).and_then(|target| {
+                    let limit = args
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(20)
+                        .clamp(1, 80) as u32;
+                    super::super::git::git_log(&target, limit)
+                        .and_then(|rows| serde_json::to_string_pretty(&rows).map_err(Error::from))
+                })
+            },
+        ),
         "git_commit" => commit_files(workspace, data_dir, &args),
         "run_command" => run_shell(
             app,
@@ -560,7 +782,9 @@ pub(super) fn run_tool(
             live,
         ),
         "web_search" => search(app, data_dir, &call.arguments),
-        "list_chats" => list_group_chats(data_dir, workspace, workspace_key, &args, conversation_id),
+        "list_chats" => {
+            list_group_chats(data_dir, workspace, workspace_key, &args, conversation_id)
+        }
         "read_chat" => read_group_chat(data_dir, workspace, workspace_key, &args),
         "create_chat" => create_group_chat(
             app,

@@ -16,20 +16,25 @@ use crate::process::WindowlessCommand;
 use crate::remote::config::{Machine, RemoteProject};
 use crate::remote::ssh::{ExecRequest, Pool};
 
-#[path = "git/worktree.rs"]
-mod worktree;
+#[path = "git/actions.rs"]
+mod actions;
 #[path = "git/pull_request.rs"]
 mod pull_request;
+#[path = "git/worktree.rs"]
+mod worktree;
 
+pub use actions::{fetch_action_runs, GitActionRun, GitActionsSnapshot};
 pub use pull_request::{
     git_branch_pull_request, git_pull_request_checkout, git_pull_requests, git_remote_url,
     github_repo_slug, GitBranchPullRequest,
 };
 #[cfg(test)]
-pub use pull_request::{parse_branch_pull_request, parse_pull_request_heads, parse_pull_request_states};
+pub use pull_request::{
+    parse_branch_pull_request, parse_pull_request_heads, parse_pull_request_states,
+};
 pub use worktree::{
-    external_worktree_root, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
-    project_removal, remove_project_worktrees, GitWorktreeAdd, ProjectRemoval,
+    external_worktree_root, git_worktree_add, git_worktree_remove, git_worktree_rename,
+    git_worktrees, project_removal, remove_project_worktrees, GitWorktreeAdd, ProjectRemoval,
 };
 #[cfg(test)]
 pub use worktree::{parse_worktree_list, worktree_destination, worktree_home, WorktreeHome};
@@ -628,7 +633,10 @@ fn line_count(data: &[u8]) -> u32 {
 }
 
 fn remote_line_count(target: &GitTarget, rel: &str) -> Result<u32> {
-    let text = git_output(target, &["diff", "--no-index", "--numstat", "--", "/dev/null", rel])?;
+    let text = git_output(
+        target,
+        &["diff", "--no-index", "--numstat", "--", "/dev/null", rel],
+    )?;
     if let Some((add, _)) = parse_git_numstat(&text).get(rel) {
         return Ok(*add);
     }
@@ -671,7 +679,11 @@ pub fn sanitize_git_branch(raw: &str) -> Result<String> {
     {
         return Err(Error::Other("switch to a branch, not a commit".into()));
     }
-    if s.starts_with('-') || s.starts_with('.') || s.ends_with('/') || s.ends_with('.') || s.ends_with(".lock")
+    if s.starts_with('-')
+        || s.starts_with('.')
+        || s.ends_with('/')
+        || s.ends_with('.')
+        || s.ends_with(".lock")
     {
         return Err(Error::Other("invalid branch name".into()));
     }
@@ -692,7 +704,9 @@ pub fn sanitize_commit_message(raw: &str) -> Result<String> {
     if s.is_empty() {
         return Err(Error::Other("commit message is empty".into()));
     }
-    if s.chars().any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t')) {
+    if s.chars()
+        .any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t'))
+    {
         return Err(Error::Other("commit message has invalid characters".into()));
     }
     if s.len() > 20_000 {
@@ -729,7 +743,12 @@ pub fn git_branches(target: &GitTarget) -> Result<GitBranches> {
 pub fn git_label(target: &GitTarget) -> Result<GitRepoSummary> {
     match git_text(
         target,
-        &["status", "--porcelain=v2", "--branch", "--untracked-files=no"],
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=no",
+        ],
     )? {
         GitText::NotRepo => Ok(empty_summary()),
         GitText::Output(text) => Ok(parse_git_label(&text)),
@@ -1084,7 +1103,10 @@ pub fn parse_git_log(text: &str) -> Vec<GitCommit> {
 
 pub fn git_show(target: &GitTarget, hash: &str) -> Result<String> {
     let hash = sanitize_revision(hash)?;
-    git_output(target, &["show", "--no-color", "--format=fuller", "--", &hash])
+    git_output(
+        target,
+        &["show", "--no-color", "--format=fuller", "--", &hash],
+    )
 }
 
 fn sanitize_revision(raw: &str) -> Result<String> {
@@ -1155,7 +1177,8 @@ mod tests {
 
     #[test]
     fn parse_quoted_paths() {
-        let rows = parse_git_status("?? \"src/my file.rs\"\nR  \"old file.rs\" -> \"src/new file.rs\"\n");
+        let rows =
+            parse_git_status("?? \"src/my file.rs\"\nR  \"old file.rs\" -> \"src/new file.rs\"\n");
         assert_eq!(rows[0].path, "src/my file.rs");
         assert_eq!(rows[1].original.as_deref(), Some("old file.rs"));
         assert_eq!(rows[1].path, "src/new file.rs");
@@ -1318,7 +1341,10 @@ mod tests {
         init_repo(dir.path());
         let target = local(dir.path());
         assert!(git_commit(&target, "   ").is_err());
-        assert!(git_commit(&target, "empty").unwrap_err().to_string().contains("nothing staged"));
+        assert!(git_commit(&target, "empty")
+            .unwrap_err()
+            .to_string()
+            .contains("nothing staged"));
     }
 
     #[test]
@@ -1372,8 +1398,8 @@ mod tests {
     }
 
     #[test]
-fn parse_worktree_list_reads_main_linked_detached_and_bare() {
-    let text = "\
+    fn parse_worktree_list_reads_main_linked_detached_and_bare() {
+        let text = "\
 worktree /work/billing
 HEAD abcdef1234567890abcdef1234567890abcdef12
 branch refs/heads/main
@@ -1390,266 +1416,294 @@ worktree /work/billing.git
 HEAD abcdef1234567890abcdef1234567890abcdef12
 bare
 ";
-    let rows = parse_worktree_list(text);
-    assert_eq!(rows.len(), 4);
-    assert!(rows[0].main);
-    assert_eq!(rows[0].path, "/work/billing");
-    assert_eq!(rows[0].branch.as_deref(), Some("main"));
-    assert!(!rows[0].bare && !rows[0].detached);
-    assert!(!rows[1].main);
-    assert_eq!(rows[1].branch.as_deref(), Some("feat/login"));
-    assert_eq!(rows[1].path, "/work/billing-worktrees/feat-login");
-    assert!(rows[2].detached);
-    assert_eq!(rows[2].branch, None);
-    assert!(rows[3].bare);
-    assert!(parse_worktree_list("").is_empty());
-    assert!(parse_worktree_list("fatal: not a git repository\n").is_empty());
-}
+        let rows = parse_worktree_list(text);
+        assert_eq!(rows.len(), 4);
+        assert!(rows[0].main);
+        assert_eq!(rows[0].path, "/work/billing");
+        assert_eq!(rows[0].branch.as_deref(), Some("main"));
+        assert!(!rows[0].bare && !rows[0].detached);
+        assert!(!rows[1].main);
+        assert_eq!(rows[1].branch.as_deref(), Some("feat/login"));
+        assert_eq!(rows[1].path, "/work/billing-worktrees/feat-login");
+        assert!(rows[2].detached);
+        assert_eq!(rows[2].branch, None);
+        assert!(rows[3].bare);
+        assert!(parse_worktree_list("").is_empty());
+        assert!(parse_worktree_list("fatal: not a git repository\n").is_empty());
+    }
 
-#[test]
-fn worktree_destination_lives_inside_the_project_and_flattens_slashes() {
-    let main = Path::new("/work/billing");
-    let home = WorktreeHome { inside: true, root: main.join("worktrees") };
-    let dest = worktree_destination(&home, "feat/login").unwrap();
-    assert_eq!(dest, PathBuf::from("/work/billing/worktrees/feat-login"));
-    assert!(worktree_destination(&home, "foo;rm").is_err());
-    assert!(worktree_destination(&home, "").is_err());
-}
+    #[test]
+    fn worktree_destination_lives_inside_the_project_and_flattens_slashes() {
+        let main = Path::new("/work/billing");
+        let home = WorktreeHome {
+            inside: true,
+            root: main.join("worktrees"),
+        };
+        let dest = worktree_destination(&home, "feat/login").unwrap();
+        assert_eq!(dest, PathBuf::from("/work/billing/worktrees/feat-login"));
+        assert!(worktree_destination(&home, "foo;rm").is_err());
+        assert!(worktree_destination(&home, "").is_err());
+    }
 
-#[test]
-fn an_opened_folder_keeps_worktrees_in_app_data() {
-    let projects = Path::new("/Users/me/twanagent-dev/projects");
-    let owned = Path::new("/Users/me/twanagent-dev/projects/billing");
-    let opened = Path::new("/Users/me/code/billing");
-    let data = Path::new("/Users/me/Library/Application Support/app.twanagent.desktop-dev");
-    let inside = worktree_home(owned, &[projects], data);
-    assert!(inside.inside);
-    assert_eq!(inside.root, PathBuf::from("/Users/me/twanagent-dev/projects/billing/worktrees"));
-    let outside = worktree_home(opened, &[projects], data);
-    assert!(!outside.inside);
-    let dest = worktree_destination(&outside, "feat/login").unwrap();
-    assert!(dest.starts_with(data.join("worktrees")));
-    assert!(dest.ends_with("feat-login"));
-    assert!(!dest.starts_with(opened));
-    assert_eq!(
-        external_worktree_root(data, opened),
-        outside.root,
-    );
-}
+    #[test]
+    fn an_opened_folder_keeps_worktrees_in_app_data() {
+        let projects = Path::new("/Users/me/twanagent-dev/projects");
+        let owned = Path::new("/Users/me/twanagent-dev/projects/billing");
+        let opened = Path::new("/Users/me/code/billing");
+        let data = Path::new("/Users/me/Library/Application Support/app.twanagent.desktop-dev");
+        let inside = worktree_home(owned, &[projects], data);
+        assert!(inside.inside);
+        assert_eq!(
+            inside.root,
+            PathBuf::from("/Users/me/twanagent-dev/projects/billing/worktrees")
+        );
+        let outside = worktree_home(opened, &[projects], data);
+        assert!(!outside.inside);
+        let dest = worktree_destination(&outside, "feat/login").unwrap();
+        assert!(dest.starts_with(data.join("worktrees")));
+        assert!(dest.ends_with("feat-login"));
+        assert!(!dest.starts_with(opened));
+        assert_eq!(external_worktree_root(data, opened), outside.root,);
+    }
 
-#[test]
-fn git_worktrees_lists_a_real_add() {
-    let dir = temp_ws();
-    let (repo, target) = owned_repo(&dir);
-    let added = git_worktree_add(&target, "feat/login", true).unwrap();
-    assert!(added.opened.contains("worktrees"));
-    assert!(added.opened.contains("feat-login"));
-    assert!(fs::canonicalize(&added.opened).unwrap().starts_with(fs::canonicalize(&repo).unwrap()));
-    let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
-    assert!(exclude.lines().any(|line| line.trim() == "/worktrees/"));
-    let names: Vec<_> = added
-        .worktrees
-        .iter()
-        .filter_map(|row| row.branch.clone())
-        .collect();
-    assert!(names.iter().any(|name| name == "main"));
-    assert!(names.iter().any(|name| name == "feat/login"));
-    let linked = added
-        .worktrees
-        .iter()
-        .find(|row| row.branch.as_deref() == Some("feat/login"))
+    #[test]
+    fn git_worktrees_lists_a_real_add() {
+        let dir = temp_ws();
+        let (repo, target) = owned_repo(&dir);
+        let added = git_worktree_add(&target, "feat/login", true).unwrap();
+        assert!(added.opened.contains("worktrees"));
+        assert!(added.opened.contains("feat-login"));
+        assert!(fs::canonicalize(&added.opened)
+            .unwrap()
+            .starts_with(fs::canonicalize(&repo).unwrap()));
+        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert!(exclude.lines().any(|line| line.trim() == "/worktrees/"));
+        let names: Vec<_> = added
+            .worktrees
+            .iter()
+            .filter_map(|row| row.branch.clone())
+            .collect();
+        assert!(names.iter().any(|name| name == "main"));
+        assert!(names.iter().any(|name| name == "feat/login"));
+        let linked = added
+            .worktrees
+            .iter()
+            .find(|row| row.branch.as_deref() == Some("feat/login"))
+            .unwrap();
+        assert!(!linked.main);
+        assert!(Path::new(&linked.path).join("README.md").is_file());
+        let main_branch = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&main_branch.stdout).trim(), "main");
+        let again = git_worktree_add(&target, "feat/login", true).unwrap_err();
+        assert!(again.to_string().contains("already checked out"));
+    }
+
+    #[test]
+    fn git_worktree_remove_refuses_a_dirty_tree_and_keeps_the_branch() {
+        let dir = temp_ws();
+        let (repo, target) = owned_repo(&dir);
+        let added = git_worktree_add(&target, "feature", true).unwrap();
+        let linked = added
+            .worktrees
+            .iter()
+            .find(|row| !row.main)
+            .unwrap()
+            .path
+            .clone();
+        fs::write(Path::new(&linked).join("note.txt"), "dirty\n").unwrap();
+        let dirty = git_worktree_remove(&target, &linked).unwrap_err();
+        assert!(Path::new(&linked).exists(), "{dirty}");
+        fs::remove_file(Path::new(&linked).join("note.txt")).unwrap();
+        let left = git_worktree_remove(&target, &linked).unwrap();
+        assert!(!Path::new(&linked).exists());
+        assert!(left.iter().all(|row| row.main || row.path != linked));
+        let branches = git_branches(&target).unwrap();
+        assert!(branches.branches.iter().any(|name| name == "feature"));
+        let main = git_worktree_remove(&target, repo.to_str().unwrap()).unwrap_err();
+        assert!(main.to_string().contains("main checkout"));
+    }
+
+    #[test]
+    fn git_worktree_rename_moves_the_branch_and_the_folder() {
+        let dir = temp_ws();
+        let (repo, target) = owned_repo(&dir);
+        let added = git_worktree_add(&target, "wip", true).unwrap();
+        let linked = added
+            .worktrees
+            .iter()
+            .find(|row| !row.main)
+            .unwrap()
+            .path
+            .clone();
+        fs::write(Path::new(&linked).join("note.txt"), "kept\n").unwrap();
+        let renamed = git_worktree_rename(&target, &linked, "feat/login").unwrap();
+        assert!(!Path::new(&linked).exists());
+        assert!(renamed.opened.contains("worktrees"));
+        assert!(renamed.opened.contains("feat-login"));
+        let row = renamed
+            .worktrees
+            .iter()
+            .find(|row| row.branch.as_deref() == Some("feat/login"))
+            .unwrap();
+        assert!(!row.main);
+        assert_eq!(
+            fs::read_to_string(Path::new(&row.path).join("note.txt")).unwrap(),
+            "kept\n"
+        );
+        let branches = git_branches(&local(&repo)).unwrap();
+        assert!(branches.branches.iter().any(|name| name == "feat/login"));
+        assert!(!branches.branches.iter().any(|name| name == "wip"));
+        let same = git_worktree_rename(&target, &row.path, "feat/login").unwrap();
+        assert_eq!(same.opened, row.path);
+        let main = git_worktree_rename(&target, repo.to_str().unwrap(), "other").unwrap_err();
+        assert!(main.to_string().contains("main checkout"));
+    }
+
+    #[test]
+    fn an_opened_folder_checks_a_worktree_out_beside_app_data() {
+        let dir = temp_ws();
+        let projects = dir.path().join("projects");
+        let data = dir.path().join("app-data");
+        let opened = dir.path().join("code").join("billing");
+        fs::create_dir_all(&opened).unwrap();
+        init_repo(&opened);
+        let target = GitTarget::local_in(&opened, &[projects], &data).unwrap();
+        let added = git_worktree_add(&target, "feat/login", true).unwrap();
+        let opened_canon = fs::canonicalize(&added.opened).unwrap();
+        let home = fs::canonicalize(external_worktree_root(
+            &data,
+            &fs::canonicalize(&opened).unwrap(),
+        ))
         .unwrap();
-    assert!(!linked.main);
-    assert!(Path::new(&linked.path).join("README.md").is_file());
-    let main_branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&main_branch.stdout).trim(), "main");
-    let again = git_worktree_add(&target, "feat/login", true).unwrap_err();
-    assert!(again.to_string().contains("already checked out"));
-}
+        assert!(opened_canon.starts_with(&home));
+        assert!(added.opened.contains("feat-login"));
+        assert!(!opened.join("worktrees").exists());
+        assert!(Path::new(&added.opened).join("README.md").is_file());
+        fs::remove_dir_all(&home).unwrap();
+        assert!(!opened_canon.exists());
+    }
 
-#[test]
-fn git_worktree_remove_refuses_a_dirty_tree_and_keeps_the_branch() {
-    let dir = temp_ws();
-    let (repo, target) = owned_repo(&dir);
-    let added = git_worktree_add(&target, "feature", true).unwrap();
-    let linked = added
-        .worktrees
-        .iter()
-        .find(|row| !row.main)
-        .unwrap()
-        .path
-        .clone();
-    fs::write(Path::new(&linked).join("note.txt"), "dirty\n").unwrap();
-    let dirty = git_worktree_remove(&target, &linked).unwrap_err();
-    assert!(Path::new(&linked).exists(), "{dirty}");
-    fs::remove_file(Path::new(&linked).join("note.txt")).unwrap();
-    let left = git_worktree_remove(&target, &linked).unwrap();
-    assert!(!Path::new(&linked).exists());
-    assert!(left.iter().all(|row| row.main || row.path != linked));
-    let branches = git_branches(&target).unwrap();
-    assert!(branches.branches.iter().any(|name| name == "feature"));
-    let main = git_worktree_remove(&target, repo.to_str().unwrap()).unwrap_err();
-    assert!(main.to_string().contains("main checkout"));
-}
+    #[test]
+    fn project_removal_splits_the_main_checkout_from_its_worktrees() {
+        let dir = temp_ws();
+        let (repo, target) = owned_repo(&dir);
+        let added = git_worktree_add(&target, "feat/login", true).unwrap();
+        let linked = added
+            .worktrees
+            .iter()
+            .find(|row| !row.main)
+            .unwrap()
+            .path
+            .clone();
+        fs::write(Path::new(&linked).join("big.bin"), vec![1u8; 64 * 1024]).unwrap();
+        let commit = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&linked)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        commit(&["add", "big.bin"]);
+        commit(&["commit", "-m", "add a large file"]);
+        let data = dir.path().join("app-data");
+        let projects = dir.path().join("projects");
+        fs::create_dir_all(&data).unwrap();
+        let report = project_removal(&target, &data, &[&projects]);
+        assert!(report.app_managed);
+        assert_eq!(report.worktree_count, 1);
+        assert_eq!(report.worktree_sizes.len(), 1);
+        assert!(report.worktree_sizes[0].bytes >= 64 * 1024);
+        let again = project_removal(&target, &data, &[&projects]);
+        assert_eq!(again.project, report.project);
+        assert_eq!(again.worktree_sizes, report.worktree_sizes);
+        assert!(
+            report.worktrees >= 64 * 1024,
+            "worktrees {}",
+            report.worktrees
+        );
+        assert!(report.project > 0);
+        assert!(
+            report.project < report.worktrees,
+            "project {} includes the worktree",
+            report.project
+        );
+        let removed = remove_project_worktrees(&target, &data).unwrap();
+        assert_eq!(removed, vec![linked.clone()]);
+        assert!(!Path::new(&linked).exists());
+        assert!(repo.join("README.md").is_file());
+        let after = project_removal(&target, &data, &[&projects]);
+        assert_eq!(after.worktree_count, 0);
+        assert_eq!(after.worktrees, 0);
+    }
 
-#[test]
-fn git_worktree_rename_moves_the_branch_and_the_folder() {
-    let dir = temp_ws();
-    let (repo, target) = owned_repo(&dir);
-    let added = git_worktree_add(&target, "wip", true).unwrap();
-    let linked = added
-        .worktrees
-        .iter()
-        .find(|row| !row.main)
-        .unwrap()
-        .path
-        .clone();
-    fs::write(Path::new(&linked).join("note.txt"), "kept\n").unwrap();
-    let renamed = git_worktree_rename(&target, &linked, "feat/login").unwrap();
-    assert!(!Path::new(&linked).exists());
-    assert!(renamed.opened.contains("worktrees"));
-    assert!(renamed.opened.contains("feat-login"));
-    let row = renamed
-        .worktrees
-        .iter()
-        .find(|row| row.branch.as_deref() == Some("feat/login"))
-        .unwrap();
-    assert!(!row.main);
-    assert_eq!(
-        fs::read_to_string(Path::new(&row.path).join("note.txt")).unwrap(),
-        "kept\n"
-    );
-    let branches = git_branches(&local(&repo)).unwrap();
-    assert!(branches.branches.iter().any(|name| name == "feat/login"));
-    assert!(!branches.branches.iter().any(|name| name == "wip"));
-    let same = git_worktree_rename(&target, &row.path, "feat/login").unwrap();
-    assert_eq!(same.opened, row.path);
-    let main = git_worktree_rename(&target, repo.to_str().unwrap(), "other").unwrap_err();
-    assert!(main.to_string().contains("main checkout"));
-}
+    #[test]
+    fn git_worktrees_reports_a_missing_repo() {
+        let dir = temp_ws();
+        assert!(git_worktrees(&local(dir.path())).unwrap().is_empty());
+    }
 
-#[test]
-fn an_opened_folder_checks_a_worktree_out_beside_app_data() {
-    let dir = temp_ws();
-    let projects = dir.path().join("projects");
-    let data = dir.path().join("app-data");
-    let opened = dir.path().join("code").join("billing");
-    fs::create_dir_all(&opened).unwrap();
-    init_repo(&opened);
-    let target = GitTarget::local_in(&opened, &[projects], &data).unwrap();
-    let added = git_worktree_add(&target, "feat/login", true).unwrap();
-    let opened_canon = fs::canonicalize(&added.opened).unwrap();
-    let home = fs::canonicalize(external_worktree_root(&data, &fs::canonicalize(&opened).unwrap())).unwrap();
-    assert!(opened_canon.starts_with(&home));
-    assert!(added.opened.contains("feat-login"));
-    assert!(!opened.join("worktrees").exists());
-    assert!(Path::new(&added.opened).join("README.md").is_file());
-    fs::remove_dir_all(&home).unwrap();
-    assert!(!opened_canon.exists());
-}
+    #[test]
+    fn github_repo_slug_reads_https_and_ssh_and_refuses_other_hosts() {
+        assert_eq!(
+            github_repo_slug("https://github.com/TwanLuttik/TwanAgent.git\n").as_deref(),
+            Some("TwanLuttik/TwanAgent")
+        );
+        assert_eq!(
+            github_repo_slug("git@github.com:TwanLuttik/TwanAgent.git").as_deref(),
+            Some("TwanLuttik/TwanAgent")
+        );
+        assert_eq!(
+            github_repo_slug("ssh://git@github.com/TwanLuttik/TwanAgent").as_deref(),
+            Some("TwanLuttik/TwanAgent")
+        );
+        assert_eq!(github_repo_slug("https://gitlab.com/a/b.git"), None);
+        assert_eq!(github_repo_slug("git@github.com:only-one"), None);
+        assert_eq!(github_repo_slug("https://github.com/a/b/extra"), None);
+        assert_eq!(github_repo_slug(""), None);
+    }
 
-#[test]
-fn project_removal_splits_the_main_checkout_from_its_worktrees() {
-    let dir = temp_ws();
-    let (repo, target) = owned_repo(&dir);
-    let added = git_worktree_add(&target, "feat/login", true).unwrap();
-    let linked = added
-        .worktrees
-        .iter()
-        .find(|row| !row.main)
-        .unwrap()
-        .path
-        .clone();
-    fs::write(Path::new(&linked).join("big.bin"), vec![1u8; 64 * 1024]).unwrap();
-    let commit = |args: &[&str]| {
-        let out = Command::new("git").args(args).current_dir(&linked).output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    };
-    commit(&["add", "big.bin"]);
-    commit(&["commit", "-m", "add a large file"]);
-    let data = dir.path().join("app-data");
-    let projects = dir.path().join("projects");
-    fs::create_dir_all(&data).unwrap();
-    let report = project_removal(&target, &data, &[&projects]);
-    assert!(report.app_managed);
-    assert_eq!(report.worktree_count, 1);
-    assert_eq!(report.worktree_sizes.len(), 1);
-    assert!(report.worktree_sizes[0].bytes >= 64 * 1024);
-    let again = project_removal(&target, &data, &[&projects]);
-    assert_eq!(again.project, report.project);
-    assert_eq!(again.worktree_sizes, report.worktree_sizes);
-    assert!(report.worktrees >= 64 * 1024, "worktrees {}", report.worktrees);
-    assert!(report.project > 0);
-    assert!(report.project < report.worktrees, "project {} includes the worktree", report.project);
-    let removed = remove_project_worktrees(&target, &data).unwrap();
-    assert_eq!(removed, vec![linked.clone()]);
-    assert!(!Path::new(&linked).exists());
-    assert!(repo.join("README.md").is_file());
-    let after = project_removal(&target, &data, &[&projects]);
-    assert_eq!(after.worktree_count, 0);
-    assert_eq!(after.worktrees, 0);
-}
-
-#[test]
-fn git_worktrees_reports_a_missing_repo() {
-    let dir = temp_ws();
-    assert!(git_worktrees(&local(dir.path())).unwrap().is_empty());
-}
-
-#[test]
-fn github_repo_slug_reads_https_and_ssh_and_refuses_other_hosts() {
-    assert_eq!(
-        github_repo_slug("https://github.com/TwanLuttik/TwanAgent.git\n").as_deref(),
-        Some("TwanLuttik/TwanAgent")
-    );
-    assert_eq!(
-        github_repo_slug("git@github.com:TwanLuttik/TwanAgent.git").as_deref(),
-        Some("TwanLuttik/TwanAgent")
-    );
-    assert_eq!(
-        github_repo_slug("ssh://git@github.com/TwanLuttik/TwanAgent").as_deref(),
-        Some("TwanLuttik/TwanAgent")
-    );
-    assert_eq!(github_repo_slug("https://gitlab.com/a/b.git"), None);
-    assert_eq!(github_repo_slug("git@github.com:only-one"), None);
-    assert_eq!(github_repo_slug("https://github.com/a/b/extra"), None);
-    assert_eq!(github_repo_slug(""), None);
-}
-
-#[test]
-fn parse_pull_request_heads_keeps_open_requests_newest_first() {
-    let text = "\
+    #[test]
+    fn parse_pull_request_heads_keeps_open_requests_newest_first() {
+        let text = "\
 abc1234\trefs/pull/4/head
 def5678\trefs/pull/12/head
 not-a-sha\trefs/pull/3/head
 abc1234\trefs/pull/4/merge
 999\trefs/heads/main
 ";
-    let rows = parse_pull_request_heads(text, "TwanLuttik/TwanAgent");
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].number, 12);
-    assert_eq!(rows[0].branch, "pr/12");
-    assert_eq!(rows[0].url, "https://github.com/TwanLuttik/TwanAgent/pull/12");
-    assert_eq!(rows[1].number, 4);
-    assert!(parse_pull_request_heads("fatal: not a git repository", "a/b").is_empty());
-    assert!(rows.iter().all(|row| row.open));
-    let states = parse_pull_request_states(
+        let rows = parse_pull_request_heads(text, "TwanLuttik/TwanAgent");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].number, 12);
+        assert_eq!(rows[0].branch, "pr/12");
+        assert_eq!(
+            rows[0].url,
+            "https://github.com/TwanLuttik/TwanAgent/pull/12"
+        );
+        assert_eq!(rows[1].number, 4);
+        assert!(parse_pull_request_heads("fatal: not a git repository", "a/b").is_empty());
+        assert!(rows.iter().all(|row| row.open));
+        let states = parse_pull_request_states(
         r#"[{"number":12,"title":"Show open pull requests","state":"OPEN"},{"number":4,"title":"Old","state":"MERGED"},{"number":0,"title":"nope","state":"OPEN"}]"#,
     )
     .unwrap();
-    assert!(states.get(&12).unwrap().open);
-    assert_eq!(states.get(&12).unwrap().title, "Show open pull requests");
-    assert!(!states.get(&4).unwrap().open);
-    assert!(parse_pull_request_states("not json").is_none());
-}
+        assert!(states.get(&12).unwrap().open);
+        assert_eq!(states.get(&12).unwrap().title, "Show open pull requests");
+        assert!(!states.get(&4).unwrap().open);
+        assert!(parse_pull_request_states("not json").is_none());
+    }
 
-#[test]
-fn parse_branch_pull_request_reads_the_github_mobile_fields() {
-    let text = r#"{
+    #[test]
+    fn parse_branch_pull_request_reads_the_github_mobile_fields() {
+        let text = r#"{
       "number": 12,
       "title": "Show the pull request",
       "state": "OPEN",
@@ -1675,42 +1729,64 @@ fn parse_branch_pull_request_reads_the_github_mobile_fields() {
       }],
       "files": [{"path": "src/components/workspace/GitPane.tsx", "additions": 30, "deletions": 4}]
     }"#;
-    let row = parse_branch_pull_request(text).unwrap();
-    assert_eq!(row.number, 12);
-    assert_eq!(row.state, "open");
-    assert_eq!(row.author, "twan");
-    assert_eq!(row.base, "main");
-    assert_eq!(row.head, "git-pane");
-    assert_eq!(row.review, "approved");
-    assert_eq!(row.checks, pull_request::GitPullRequestChecks { pass: 1, fail: 1, pending: 1 });
-    assert_eq!(row.commits[0].short, "abcdef1");
-    assert_eq!(row.files[0].path, "src/components/workspace/GitPane.tsx");
-    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"MERGED","isDraft":true}"#).unwrap().state, "merged");
-    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"OPEN","isDraft":true}"#).unwrap().state, "draft");
-    assert_eq!(parse_branch_pull_request(r#"{"number":12,"state":"CLOSED"}"#).unwrap().state, "closed");
-    assert!(parse_branch_pull_request("").is_none());
-    assert!(parse_branch_pull_request(r#"{"title":"no number"}"#).is_none());
-}
+        let row = parse_branch_pull_request(text).unwrap();
+        assert_eq!(row.number, 12);
+        assert_eq!(row.state, "open");
+        assert_eq!(row.author, "twan");
+        assert_eq!(row.base, "main");
+        assert_eq!(row.head, "git-pane");
+        assert_eq!(row.review, "approved");
+        assert_eq!(
+            row.checks,
+            pull_request::GitPullRequestChecks {
+                pass: 1,
+                fail: 1,
+                pending: 1
+            }
+        );
+        assert_eq!(row.commits[0].short, "abcdef1");
+        assert_eq!(row.files[0].path, "src/components/workspace/GitPane.tsx");
+        assert_eq!(
+            parse_branch_pull_request(r#"{"number":12,"state":"MERGED","isDraft":true}"#)
+                .unwrap()
+                .state,
+            "merged"
+        );
+        assert_eq!(
+            parse_branch_pull_request(r#"{"number":12,"state":"OPEN","isDraft":true}"#)
+                .unwrap()
+                .state,
+            "draft"
+        );
+        assert_eq!(
+            parse_branch_pull_request(r#"{"number":12,"state":"CLOSED"}"#)
+                .unwrap()
+                .state,
+            "closed"
+        );
+        assert!(parse_branch_pull_request("").is_none());
+        assert!(parse_branch_pull_request(r#"{"title":"no number"}"#).is_none());
+    }
 
-#[test]
-fn pull_request_checkout_refuses_a_repo_without_github() {
-    let dir = temp_ws();
-    init_repo(dir.path());
-    let err = git_pull_request_checkout(&local(dir.path()), 4).unwrap_err();
-    assert!(err.to_string().contains("GitHub"));
-    assert!(git_pull_requests(&local(dir.path())).unwrap().is_empty());
-}
+    #[test]
+    fn pull_request_checkout_refuses_a_repo_without_github() {
+        let dir = temp_ws();
+        init_repo(dir.path());
+        let err = git_pull_request_checkout(&local(dir.path()), 4).unwrap_err();
+        assert!(err.to_string().contains("GitHub"));
+        assert!(git_pull_requests(&local(dir.path())).unwrap().is_empty());
+    }
 
-fn owned_repo(dir: &tempfile::TempDir) -> (PathBuf, GitTarget) {
-    let projects = dir.path().join("projects");
-    let repo = projects.join("billing");
-    fs::create_dir_all(&repo).unwrap();
-    init_repo(&repo);
-    let target = GitTarget::local_in(&repo, &[projects], &dir.path().join("app-data")).unwrap();
-    (repo, target)
-}
+    fn owned_repo(dir: &tempfile::TempDir) -> (PathBuf, GitTarget) {
+        let projects = dir.path().join("projects");
+        let repo = projects.join("billing");
+        fs::create_dir_all(&repo).unwrap();
+        init_repo(&repo);
+        let target = GitTarget::local_in(&repo, &[projects], &dir.path().join("app-data")).unwrap();
+        (repo, target)
+    }
 
-fn init_repo(path: &Path) {
+    fn init_repo(path: &Path) {
         fs::write(path.join("README.md"), "hi").unwrap();
         let git = |args: &[&str]| {
             let out = Command::new("git")
@@ -1718,7 +1794,11 @@ fn init_repo(path: &Path) {
                 .current_dir(path)
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         git(&["init", "-b", "main"]);
         git(&["config", "--local", "commit.gpgsign", "false"]);

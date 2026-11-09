@@ -4,55 +4,27 @@ mod settings;
 mod sidebar;
 
 pub use projects::{
-    list_projects,
-    add_project,
-    add_project_named,
-    reorder_projects,
-    project_key_public,
-    rename_project_path,
-    remove_project,
-    import_legacy_projects,
+    add_project, add_project_named, import_legacy_projects, list_projects, project_key_public,
+    remove_project, rename_project_path, reorder_projects,
 };
-pub use schema::{
-    db_path,
-    open,
-    get_provider_key,
-    set_provider_key,
-    delete_provider_key,
-};
+pub use schema::{db_path, delete_provider_key, get_provider_key, open, set_provider_key};
 pub use settings::{
-    get_setting,
-    get_account_usage,
-    get_pull_requests,
-    set_pull_requests,
-    set_account_usage,
-    project_path_moves,
-    previous_paths_for,
-    remember_project_move,
-    forget_project_paths,
-    set_setting,
+    forget_project_paths, get_account_usage, get_actions, get_pull_requests, get_setting,
+    previous_paths_for, project_path_moves, remember_project_move, set_account_usage, set_actions,
+    set_pull_requests, set_setting,
 };
 pub use sidebar::{
-    sidebar_cached,
-    replace_sidebar,
-    upsert_sidebar_conversation,
-    replace_sidebar_source,
-    sidebar_is_cloud,
-    sidebar_transcript_by_id,
-    sidebar_transcript,
-    save_sidebar_transcript,
-    sidebar_transcripts,
-    sidebar_snapshot,
-    sidebar_for,
-    clear_sidebar,
+    clear_sidebar, replace_sidebar, replace_sidebar_source, save_sidebar_transcript,
+    sidebar_cached, sidebar_for, sidebar_is_cloud, sidebar_snapshot, sidebar_transcript,
+    sidebar_transcript_by_id, sidebar_transcripts, upsert_sidebar_conversation,
 };
 
 pub mod commands;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::settings::list_settings;
+    use super::*;
     use std::fs;
 
     use rusqlite::Connection;
@@ -66,12 +38,20 @@ mod tests {
         let folder = tempdir().unwrap();
         let conn = open(data.path()).unwrap();
         let added = add_project(&conn, folder.path()).unwrap();
-        assert!(added.path.ends_with(folder.path().file_name().unwrap().to_str().unwrap()) || !added.path.is_empty());
+        assert!(
+            added
+                .path
+                .ends_with(folder.path().file_name().unwrap().to_str().unwrap())
+                || !added.path.is_empty()
+        );
         let again = add_project(&conn, folder.path()).unwrap();
         assert_eq!(again.path, added.path);
         let rows = list_projects(&conn).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].name, folder.path().file_name().unwrap().to_string_lossy());
+        assert_eq!(
+            rows[0].name,
+            folder.path().file_name().unwrap().to_string_lossy()
+        );
         assert!(remove_project(&conn, &added.path).unwrap());
         assert!(list_projects(&conn).unwrap().is_empty());
         assert!(!remove_project(&conn, &added.path).unwrap());
@@ -122,7 +102,8 @@ mod tests {
         let second = add_project(&conn, b.path()).unwrap();
         let third = add_project(&conn, c.path()).unwrap();
         let third_path = third.path.clone();
-        let rows = reorder_projects(&conn, &[third.path, first.path.clone(), "/missing".into()]).unwrap();
+        let rows =
+            reorder_projects(&conn, &[third.path, first.path.clone(), "/missing".into()]).unwrap();
         assert_eq!(
             rows.iter().map(|row| row.path.clone()).collect::<Vec<_>>(),
             vec![third_path.clone(), first.path, second.path]
@@ -146,7 +127,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n, 2);
-        let names: Vec<_> = list_projects(&conn).unwrap().into_iter().map(|row| row.name).collect();
+        let names: Vec<_> = list_projects(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
         assert!(names.iter().any(|name| name == "Alpha"));
         assert!(!names.iter().any(|name| name == ".hidden"));
         let again = import_legacy_projects(&conn, &[root.path()], &[]).unwrap();
@@ -234,13 +219,17 @@ mod tests {
             archived: false,
         };
         save_sidebar_transcript(&conn, "/app/alpha", &transcript).unwrap();
-        let loaded = sidebar_transcript(&conn, "/app/Alpha/", &chat.id).unwrap().unwrap();
+        let loaded = sidebar_transcript(&conn, "/app/Alpha/", &chat.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.messages.len(), 1);
         replace_sidebar(&conn, "/app/alpha", &[], &[]).unwrap();
         let (chats, journeys) = sidebar_for(&conn, "/app/alpha").unwrap();
         assert!(chats.is_empty() && journeys.is_empty());
         assert!(!sidebar_is_cloud(&conn, "/app/alpha").unwrap());
-        assert!(sidebar_transcript(&conn, "/app/alpha", "c1").unwrap().is_some());
+        assert!(sidebar_transcript(&conn, "/app/alpha", "c1")
+            .unwrap()
+            .is_some());
         assert!(sidebar_cached(&conn, "/app/beta").unwrap());
     }
 
@@ -344,7 +333,10 @@ mod tests {
         }
         let conn = open(data.path()).unwrap();
         set_provider_key(&conn, "xai", "xai-secret").unwrap();
-        assert_eq!(get_provider_key(&conn, "xai").unwrap().as_deref(), Some("xai-secret"));
+        assert_eq!(
+            get_provider_key(&conn, "xai").unwrap().as_deref(),
+            Some("xai-secret")
+        );
     }
 
     #[test]
@@ -354,7 +346,10 @@ mod tests {
         assert!(get_provider_key(&conn, "xai").unwrap().is_none());
         set_provider_key(&conn, "xai", " xai-secret ").unwrap();
         set_provider_key(&conn, "anthropic", "anthropic-secret").unwrap();
-        assert_eq!(get_provider_key(&conn, "xai").unwrap().as_deref(), Some("xai-secret"));
+        assert_eq!(
+            get_provider_key(&conn, "xai").unwrap().as_deref(),
+            Some("xai-secret")
+        );
         set_provider_key(&conn, "xai", "").unwrap();
         assert!(get_provider_key(&conn, "xai").unwrap().is_none());
         assert_eq!(
@@ -371,15 +366,33 @@ mod tests {
     fn pull_request_cache_roundtrip() {
         let data = tempdir().unwrap();
         let conn = open(data.path()).unwrap();
-        assert!(get_pull_requests(&conn, "TwanLuttik/TwanAgent").unwrap().is_none());
+        assert!(get_pull_requests(&conn, "TwanLuttik/TwanAgent")
+            .unwrap()
+            .is_none());
         set_pull_requests(&conn, "TwanLuttik/TwanAgent", r#"[{"number":5}]"#).unwrap();
         set_pull_requests(&conn, "TwanLuttik/TwanAgent", r#"[{"number":6}]"#).unwrap();
         set_pull_requests(&conn, "other/repo", "[]").unwrap();
         assert_eq!(
-            get_pull_requests(&conn, "TwanLuttik/TwanAgent").unwrap().as_deref(),
+            get_pull_requests(&conn, "TwanLuttik/TwanAgent")
+                .unwrap()
+                .as_deref(),
             Some(r#"[{"number":6}]"#)
         );
         assert!(set_pull_requests(&conn, "  ", "[]").is_err());
+    }
+
+    #[test]
+    fn action_run_cache_roundtrip() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        assert!(get_actions(&conn, "acme/app").unwrap().is_none());
+        set_actions(&conn, "acme/app", "[]").unwrap();
+        set_actions(&conn, "acme/app", r#"[{"id":2}]"#).unwrap();
+        let (payload, at) = get_actions(&conn, "acme/app").unwrap().unwrap();
+        assert_eq!(payload, r#"[{"id":2}]"#);
+        assert!(!at.is_empty());
+        assert!(set_actions(&conn, "  ", "[]").is_err());
+        assert!(get_actions(&conn, "  ").unwrap().is_none());
     }
 
     #[test]

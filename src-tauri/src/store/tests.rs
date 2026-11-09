@@ -139,7 +139,10 @@ fn a_turn_can_replace_the_stored_summary_without_rewriting_the_row() {
     )
     .unwrap();
     let loaded = get_conversation(&conn, "c1").unwrap();
-    assert_eq!(loaded.compaction.as_ref().unwrap().summary, "Read the first files.");
+    assert_eq!(
+        loaded.compaction.as_ref().unwrap().summary,
+        "Read the first files."
+    );
     assert_eq!(loaded.compaction.as_ref().unwrap().through, 5);
     assert_eq!(loaded.title, "Hello");
 }
@@ -174,7 +177,8 @@ fn suffix_write_leaves_the_prefix_rows() {
     let before = message_row_ids(&conn, "c1");
     let mut next = original;
     next.push(json!({"role":"tool","tool_call_id":"t1","content":"ok"}));
-    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:00Z", &next, 2, None).unwrap();
+    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:00Z", &next, 2, None)
+        .unwrap();
     let after = message_row_ids(&conn, "c1");
     assert_eq!(after.len(), 3);
     assert_eq!(after[0], before[0]);
@@ -182,11 +186,19 @@ fn suffix_write_leaves_the_prefix_rows() {
     assert_eq!(after[2].1, 2);
     assert_eq!(after[2].2, "ok");
     let updated_at: String = conn
-        .query_row("SELECT updated_at FROM conversations WHERE id = 'c1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT updated_at FROM conversations WHERE id = 'c1'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(updated_at, "2026-02-01T00:00:00Z");
     let title: String = conn
-        .query_row("SELECT title FROM conversations WHERE id = 'c1'", [], |row| row.get(0))
+        .query_row(
+            "SELECT title FROM conversations WHERE id = 'c1'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(title, "Hello");
     let loaded = get_conversation(&conn, "c1").unwrap();
@@ -198,7 +210,11 @@ fn suffix_write_leaves_the_prefix_rows() {
 fn suffix_write_can_store_context_usage() {
     let dir = tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
-    save_conversation(&conn, &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})])).unwrap();
+    save_conversation(
+        &conn,
+        &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]),
+    )
+    .unwrap();
     let next = vec![
         json!({"role":"user","content":"hi"}),
         json!({"role":"assistant","content":"ok"}),
@@ -210,11 +226,23 @@ fn suffix_write_can_store_context_usage() {
         cache_read_tokens: 100,
         cache_creation_tokens: 0,
     };
-    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:00Z", &next, 1, Some(&usage)).unwrap();
+    save_conversation_suffix_with_usage(
+        &conn,
+        "c1",
+        "2026-02-01T00:00:00Z",
+        &next,
+        1,
+        Some(&usage),
+    )
+    .unwrap();
     let loaded = get_conversation(&conn, "c1").unwrap();
     assert_eq!(loaded.context_usage.as_ref().unwrap().prompt_tokens, 1380);
-    assert_eq!(loaded.context_usage.as_ref().unwrap().cache_read_tokens, 100);
-    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:01Z", &next, 2, None).unwrap();
+    assert_eq!(
+        loaded.context_usage.as_ref().unwrap().cache_read_tokens,
+        100
+    );
+    save_conversation_suffix_with_usage(&conn, "c1", "2026-02-01T00:00:01Z", &next, 2, None)
+        .unwrap();
     let kept = get_conversation(&conn, "c1").unwrap();
     assert_eq!(kept.context_usage.as_ref().unwrap().prompt_tokens, 1380);
 }
@@ -401,9 +429,17 @@ fn appending_a_message_keeps_the_earlier_rows() {
 fn save_does_not_move_a_chat_out_of_its_journey() {
     let dir = tempdir().unwrap();
     let conn = open(dir.path()).unwrap();
-    save_conversation(&conn, &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})])).unwrap();
+    save_conversation(
+        &conn,
+        &conv("c1", "Hello", vec![json!({"role":"user","content":"hi"})]),
+    )
+    .unwrap();
     let journey = create_journey(&conn, dir.path(), "c1").unwrap();
-    let mut row = conv("c1", "Hello again", vec![json!({"role":"user","content":"next"})]);
+    let mut row = conv(
+        "c1",
+        "Hello again",
+        vec![json!({"role":"user","content":"next"})],
+    );
     row.journey_id = None;
     row.sort_order = 99;
     save_conversation(&conn, &row).unwrap();
@@ -419,7 +455,11 @@ fn archive_survives_a_later_save() {
     let conn = open(dir.path()).unwrap();
     save_conversation(&conn, &conv("c1", "Hello", vec![])).unwrap();
     set_conversation_archived(&conn, "c1", true).unwrap();
-    let mut row = conv("c1", "Hello again", vec![json!({"role":"user","content":"hi"})]);
+    let mut row = conv(
+        "c1",
+        "Hello again",
+        vec![json!({"role":"user","content":"hi"})],
+    );
     row.archived = false;
     save_conversation(&conn, &row).unwrap();
     let loaded = get_conversation(&conn, "c1").unwrap();
@@ -462,7 +502,9 @@ fn older_store_gains_archived_column() {
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].archived);
     let version: i64 = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     // Opening any older store runs every later migration, including composer settings.
     assert_eq!(version, 10);
@@ -532,7 +574,9 @@ fn older_store_gains_composer_setting_columns() {
     assert_eq!(rows[0].context_window, None);
     assert_eq!(rows[0].permission, None);
     let version: i64 = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(version, 10);
 }
@@ -551,7 +595,10 @@ fn save_keeps_effort_until_a_new_one_is_written() {
     assert_eq!(loaded.effort.as_deref(), Some("low"));
     row.effort = Some("high".into());
     save_conversation(&conn, &row).unwrap();
-    assert_eq!(get_conversation(&conn, "c1").unwrap().effort.as_deref(), Some("high"));
+    assert_eq!(
+        get_conversation(&conn, "c1").unwrap().effort.as_deref(),
+        Some("high")
+    );
 }
 
 #[test]
@@ -668,7 +715,9 @@ fn older_store_gains_finished_at_column() {
     assert_eq!(loaded.messages[0]["durationMs"], 800);
     assert!(loaded.messages[0].get("finishedAt").is_none());
     let version: i64 = conn
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(version, 10);
 }

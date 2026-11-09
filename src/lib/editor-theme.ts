@@ -17,19 +17,21 @@ const LIGHT = {
   type: "#0b4f79",
   tag: "#2a6f3f",
   attr: "#815f03",
-  punct: "#6e6e73",
+  punct: "#8e8e93",
+  name: "#1c1c1e",
 };
 
 const DARK = {
-  comment: "#8e8e93",
+  comment: "#8b8b93",
   keyword: "#ff7ab2",
-  string: "#ff8170",
-  number: "#d0bf69",
-  func: "#6bdfff",
-  type: "#dabaff",
-  tag: "#acd7b7",
-  attr: "#d0a8ff",
-  punct: "#98989d",
+  string: "#ffb4a2",
+  number: "#e3d48a",
+  func: "#7ad7f0",
+  type: "#d2b8ff",
+  tag: "#b7e0c2",
+  attr: "#c4b5fd",
+  punct: "#6f6f76",
+  name: "#ececf1",
 };
 
 export function editorTheme(mode: "light" | "dark"): Extension {
@@ -61,6 +63,12 @@ export function editorTheme(mode: "light" | "dark"): Extension {
     { tag: t.angleBracket, color: c.punct },
     { tag: t.attributeName, color: c.attr },
     { tag: t.propertyName, color: c.attr },
+    { tag: t.definition(t.propertyName), color: c.attr },
+    { tag: t.variableName, color: c.name },
+    { tag: t.punctuation, color: c.punct },
+    { tag: t.separator, color: c.punct },
+    { tag: t.bracket, color: c.punct },
+    { tag: t.operator, color: c.punct },
     { tag: t.heading, color: c.keyword, fontWeight: "600" },
     { tag: t.link, color: c.func },
     { tag: t.emphasis, fontStyle: "italic" },
@@ -80,34 +88,51 @@ export function editorTheme(mode: "light" | "dark"): Extension {
       "&.cm-focused": { outline: "none" },
       ".cm-scroller": {
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
-        fontSize: "12px",
-        lineHeight: "18px",
+        fontSize: "13px",
+        lineHeight: "22px",
         overflow: "auto",
         overscrollBehavior: "contain",
       },
       ".cm-content": {
-        caretColor: "var(--color-ink)",
-        padding: "8px 0",
+        caretColor: "var(--color-accent)",
+        padding: "14px 0 40px",
+      },
+      ".cm-line": {
+        padding: "0 16px 0 4px",
       },
       ".cm-gutters": {
-        backgroundColor: "var(--color-panel)",
+        backgroundColor: "transparent",
         color: "var(--color-muted)",
-        borderRight: "1px solid var(--color-line)",
+        borderRight: "none",
       },
       ".cm-gitGutter": {
-        backgroundColor: "var(--color-panel)",
+        backgroundColor: "transparent",
       },
       ".cm-lineNumbers .cm-gutterElement": {
-        minWidth: "2.4rem",
-        padding: "0 8px 0 6px",
+        minWidth: "2.75rem",
+        padding: "0 14px 0 10px",
+        fontVariantNumeric: "tabular-nums",
       },
-      ".cm-activeLine": { backgroundColor: "var(--color-wash)" },
-      ".cm-activeLineGutter": { backgroundColor: "var(--color-wash)", color: "var(--color-ink)" },
+      ".cm-foldGutter .cm-gutterElement": {
+        padding: "0 2px",
+        opacity: "0.7",
+      },
+      ".cm-activeLine": {
+        backgroundColor: "color-mix(in srgb, var(--color-ink) 4%, transparent)",
+      },
+      ".cm-activeLineGutter": {
+        backgroundColor: "transparent",
+        color: "var(--color-ink)",
+      },
       ".cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
         backgroundColor: "var(--color-select) !important",
       },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-ink)" },
-      ".cm-matchingBracket": { backgroundColor: "var(--color-inset)" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-accent)" },
+      ".cm-matchingBracket": {
+        backgroundColor: "transparent",
+        outline: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)",
+        borderRadius: "2px",
+      },
     },
     { dark: mode === "dark" },
   );

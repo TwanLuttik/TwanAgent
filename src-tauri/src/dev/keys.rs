@@ -48,14 +48,18 @@ pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRunt
     // CLI probes and the model list block. Keep them off the thread that answers clicks.
     let status = crate::state::run_blocking(move || {
         let mut status = grok_cli::runtime(&data_dir);
-        let models = tauri::async_runtime::block_on(crate::model_providers::registry::list_models(&data_dir));
+        let models = tauri::async_runtime::block_on(crate::model_providers::registry::list_models(
+            &data_dir,
+        ));
         status.models = models;
-        let claude_ready =
-            tauri::async_runtime::block_on(crate::anthropic::resolve_claude_auth_fresh_in(&data_dir))
-                .is_some();
-        let minimax_ready =
-            tauri::async_runtime::block_on(crate::minimax::resolve_minimax_auth_fresh_in(&data_dir))
-                .is_some();
+        let claude_ready = tauri::async_runtime::block_on(
+            crate::anthropic::resolve_claude_auth_fresh_in(&data_dir),
+        )
+        .is_some();
+        let minimax_ready = tauri::async_runtime::block_on(
+            crate::minimax::resolve_minimax_auth_fresh_in(&data_dir),
+        )
+        .is_some();
         status.providers = vec![
             grok_cli::ProviderStatus {
                 id: "xai".into(),
@@ -105,7 +109,9 @@ pub async fn dev_cli_info(state: State<'_, AppState>) -> Result<grok_cli::GrokCl
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_claude_cli_info(state: State<'_, AppState>) -> Result<crate::anthropic::ClaudeCliInfo> {
+pub async fn dev_claude_cli_info(
+    state: State<'_, AppState>,
+) -> Result<crate::anthropic::ClaudeCliInfo> {
     let data_dir = state.data_dir.clone();
     let mut info = crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await?;
     info.update = cli_update_version(crate::model_providers::cli_update::claude_update(
@@ -118,7 +124,9 @@ pub async fn dev_claude_cli_info(state: State<'_, AppState>) -> Result<crate::an
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_minimax_cli_info(state: State<'_, AppState>) -> Result<crate::minimax::MinimaxCliInfo> {
+pub async fn dev_minimax_cli_info(
+    state: State<'_, AppState>,
+) -> Result<crate::minimax::MinimaxCliInfo> {
     let data_dir = state.data_dir.clone();
     let mut info = crate::state::run_blocking(|| Ok(crate::minimax::minimax_cli_info())).await?;
     info.update = cli_update_version(crate::model_providers::cli_update::minimax_update(
@@ -138,12 +146,19 @@ async fn cli_update_version(
 
 /// Install the newer CLI with that CLI's own updater, then read the version that is now on disk.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_cli_update(state: State<'_, AppState>, provider: String) -> Result<grok_cli::GrokCliInfo> {
+pub async fn dev_cli_update(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<grok_cli::GrokCliInfo> {
     let data_dir = state.data_dir.clone();
     let provider = provider.trim().to_string();
     match provider.as_str() {
         "xai" | "anthropic" | "minimax" => {}
-        _ => return Err(crate::error::Error::Other(format!("{provider} has no CLI to update."))),
+        _ => {
+            return Err(crate::error::Error::Other(format!(
+                "{provider} has no CLI to update."
+            )))
+        }
     }
     let id = provider.clone();
     crate::state::run_blocking(move || install_cli_update(&id)).await?;
@@ -154,18 +169,27 @@ fn install_cli_update(provider: &str) -> Result<()> {
     let failed = |err: String| crate::error::Error::Other(err);
     match provider {
         "xai" => {
-            let bin = crate::grok_cli::grok_bin().ok_or_else(|| failed("Grok CLI is not installed.".into()))?;
-            crate::model_providers::cli_update::run_cli_update(&bin, &["update"]).map_err(failed)?;
+            let bin = crate::grok_cli::grok_bin()
+                .ok_or_else(|| failed("Grok CLI is not installed.".into()))?;
+            crate::model_providers::cli_update::run_cli_update(&bin, &["update"])
+                .map_err(failed)?;
             crate::grok_cli::forget_cli_version();
         }
         "anthropic" => {
-            let bin = crate::anthropic::claude_bin().ok_or_else(|| failed("Claude CLI is not installed.".into()))?;
-            crate::model_providers::cli_update::run_cli_update(&bin, &["update"]).map_err(failed)?;
+            let bin = crate::anthropic::claude_bin()
+                .ok_or_else(|| failed("Claude CLI is not installed.".into()))?;
+            crate::model_providers::cli_update::run_cli_update(&bin, &["update"])
+                .map_err(failed)?;
             crate::anthropic::forget_claude_version();
         }
         "minimax" => {
-            let bin = crate::minimax::mmx_bin().ok_or_else(|| failed("MiniMax CLI is not installed.".into()))?;
-            crate::model_providers::cli_update::run_cli_update(&bin, &["update", "--non-interactive"]).map_err(failed)?;
+            let bin = crate::minimax::mmx_bin()
+                .ok_or_else(|| failed("MiniMax CLI is not installed.".into()))?;
+            crate::model_providers::cli_update::run_cli_update(
+                &bin,
+                &["update", "--non-interactive"],
+            )
+            .map_err(failed)?;
             crate::minimax::forget_mmx_version();
         }
         _ => return Err(failed(format!("{provider} has no CLI to update."))),
@@ -175,7 +199,10 @@ fn install_cli_update(provider: &str) -> Result<()> {
 
 /// The CLI row after an install. The saved update check is dropped so the badge does not stay stale.
 /// Every provider shares the same fields, so the settings page can store whichever one came back.
-async fn cli_info_after_update(data_dir: &std::path::Path, provider: &str) -> Result<grok_cli::GrokCliInfo> {
+async fn cli_info_after_update(
+    data_dir: &std::path::Path,
+    provider: &str,
+) -> Result<grok_cli::GrokCliInfo> {
     match provider {
         "xai" => {
             crate::model_providers::cli_update::forget_cache(data_dir, "grok");
@@ -198,26 +225,44 @@ async fn cli_info_after_update(data_dir: &std::path::Path, provider: &str) -> Re
                 data_dir,
                 &crate::model_providers::cli_update::claude_cache_id(bin.as_deref()),
             );
-            let mut info = crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await?;
+            let mut info =
+                crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await?;
             info.update = cli_update_version(crate::model_providers::cli_update::claude_update(
                 data_dir,
                 info.version.as_deref(),
                 Some(std::path::Path::new(&info.path)),
             ))
             .await;
-            Ok(cli_info_fields(info.installed, info.path, info.version, info.logged_in, info.email, info.update))
+            Ok(cli_info_fields(
+                info.installed,
+                info.path,
+                info.version,
+                info.logged_in,
+                info.email,
+                info.update,
+            ))
         }
         "minimax" => {
             crate::model_providers::cli_update::forget_cache(data_dir, "minimax");
-            let mut info = crate::state::run_blocking(|| Ok(crate::minimax::minimax_cli_info())).await?;
+            let mut info =
+                crate::state::run_blocking(|| Ok(crate::minimax::minimax_cli_info())).await?;
             info.update = cli_update_version(crate::model_providers::cli_update::minimax_update(
                 data_dir,
                 info.version.as_deref(),
             ))
             .await;
-            Ok(cli_info_fields(info.installed, info.path, info.version, info.logged_in, info.email, info.update))
+            Ok(cli_info_fields(
+                info.installed,
+                info.path,
+                info.version,
+                info.logged_in,
+                info.email,
+                info.update,
+            ))
         }
-        _ => Err(crate::error::Error::Other(format!("{provider} has no CLI to update."))),
+        _ => Err(crate::error::Error::Other(format!(
+            "{provider} has no CLI to update."
+        ))),
     }
 }
 

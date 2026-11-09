@@ -25,7 +25,10 @@ fn catalog_lists_each_claude_family() {
     assert_eq!(rows[0].efforts[0].label, "Low");
     assert_eq!(rows[0].efforts[3].label, "Extra high");
     assert_eq!(rows[0].efforts.last().map(|e| e.id.as_str()), Some("max"));
-    let haiku = rows.iter().find(|row| row.id == "claude-haiku-4-5").unwrap();
+    let haiku = rows
+        .iter()
+        .find(|row| row.id == "claude-haiku-4-5")
+        .unwrap();
     assert_eq!(haiku.efforts.len(), 3);
     assert_eq!(haiku.context_window, Some(200_000));
 }
@@ -75,10 +78,24 @@ fn models_page_keeps_live_claude_ids_and_drops_the_rest() {
     let (rows, last_id, has_more) = parse_models_page(body);
     assert_eq!(
         rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
-        ["claude-opus-4-8", "claude-sonnet-4-5-20250929", "claude-3-haiku-20240307"]
+        [
+            "claude-opus-4-8",
+            "claude-sonnet-4-5-20250929",
+            "claude-3-haiku-20240307"
+        ]
     );
-    assert_eq!(rows[0].efforts.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["high", "xhigh"]);
-    assert_eq!(rows[0].capabilities, ["vision", "thinking", "pdf", "effort"]);
+    assert_eq!(
+        rows[0]
+            .efforts
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["high", "xhigh"]
+    );
+    assert_eq!(
+        rows[0].capabilities,
+        ["vision", "thinking", "pdf", "effort"]
+    );
     assert_eq!(rows[1].name, "Claude Sonnet 4.5");
     assert_eq!(rows[1].context_window, Some(200_000));
     assert!(rows[1].efforts.iter().any(|row| row.id == "max"));
@@ -107,11 +124,26 @@ fn haiku_uses_a_fixed_thinking_budget_and_newer_models_stay_adaptive() {
     assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
     assert!(!supports_adaptive_thinking("claude-3-haiku-20240307"));
     assert_eq!(manual_thinking_budget("claude-haiku-4-5", None), None);
-    assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("low")), Some(1_024));
-    assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("medium")), Some(4_096));
-    assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("high")), Some(8_192));
-    assert_eq!(manual_thinking_budget("claude-opus-4-8", Some("high")), None);
-    assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("nope")), None);
+    assert_eq!(
+        manual_thinking_budget("claude-haiku-4-5", Some("low")),
+        Some(1_024)
+    );
+    assert_eq!(
+        manual_thinking_budget("claude-haiku-4-5", Some("medium")),
+        Some(4_096)
+    );
+    assert_eq!(
+        manual_thinking_budget("claude-haiku-4-5", Some("high")),
+        Some(8_192)
+    );
+    assert_eq!(
+        manual_thinking_budget("claude-opus-4-8", Some("high")),
+        None
+    );
+    assert_eq!(
+        manual_thinking_budget("claude-haiku-4-5", Some("nope")),
+        None
+    );
 }
 
 fn sample_tools(include_journey: bool) -> serde_json::Value {
@@ -180,7 +212,10 @@ fn effort_is_included_and_journey_tools_stay_out() {
     );
     assert_eq!(opus["thinking"]["type"], "adaptive");
     assert_eq!(opus["output_config"]["effort"], "high");
-    assert!(opus.get("thinking").and_then(|row| row.get("budget_tokens")).is_none());
+    assert!(opus
+        .get("thinking")
+        .and_then(|row| row.get("budget_tokens"))
+        .is_none());
     assert!(body.get("system").is_none());
     let names: Vec<_> = body["tools"]
         .as_array()
@@ -208,9 +243,17 @@ fn image_data_urls_become_base64_blocks_and_remote_urls_are_dropped() {
         &serde_json::json!([]),
     );
     assert!(body.get("output_config").is_none());
-    assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
+    assert_eq!(
+        body["messages"][0]["content"]
+            .as_array()
+            .map(|rows| rows.len()),
+        Some(2)
+    );
     assert_eq!(body["messages"][0]["content"][1]["type"], "image");
-    assert_eq!(body["messages"][0]["content"][1]["source"]["media_type"], "image/jpeg");
+    assert_eq!(
+        body["messages"][0]["content"][1]["source"]["media_type"],
+        "image/jpeg"
+    );
     assert_eq!(body["messages"][0]["content"][1]["source"]["data"], "abc");
 }
 
@@ -247,7 +290,10 @@ fn tool_round_trip_groups_results_and_repairs_arguments() {
         &sample_tools(false),
     );
     let assistant = &body["messages"][0];
-    assert_eq!(assistant["content"].as_array().map(|rows| rows.len()), Some(3));
+    assert_eq!(
+        assistant["content"].as_array().map(|rows| rows.len()),
+        Some(3)
+    );
     assert!(assistant["content"]
         .as_array()
         .unwrap()
@@ -258,7 +304,10 @@ fn tool_round_trip_groups_results_and_repairs_arguments() {
     assert_eq!(assistant["content"][2]["input"], serde_json::json!({}));
     let results = &body["messages"][1];
     assert_eq!(results["role"], "user");
-    assert_eq!(results["content"].as_array().map(|rows| rows.len()), Some(2));
+    assert_eq!(
+        results["content"].as_array().map(|rows| rows.len()),
+        Some(2)
+    );
     assert_eq!(results["content"][0]["type"], "tool_result");
     assert_eq!(results["content"][0]["tool_use_id"], "toolu_1");
     assert_eq!(results["content"][1]["tool_use_id"], "toolu_2");

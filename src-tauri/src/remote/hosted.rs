@@ -47,7 +47,14 @@ pub fn prompt_frame(turn: &HostedTurn) -> Result<ClientFrame> {
     }))
 }
 
-fn emit_live_socket(app: &AppHandle, stream_id: &str, conversation_id: &str, port: u16, direction: &str, text: &str) {
+fn emit_live_socket(
+    app: &AppHandle,
+    stream_id: &str,
+    conversation_id: &str,
+    port: u16,
+    direction: &str,
+    text: &str,
+) {
     let _ = app.emit(
         "dev-live-socket",
         crate::dev::types::DevLiveSocketEvent {
@@ -60,7 +67,13 @@ fn emit_live_socket(app: &AppHandle, stream_id: &str, conversation_id: &str, por
     );
 }
 
-fn emit_hosted(app: &AppHandle, stream_id: &str, kind: &str, text: Option<String>, conversation: Option<serde_json::Value>) {
+fn emit_hosted(
+    app: &AppHandle,
+    stream_id: &str,
+    kind: &str,
+    text: Option<String>,
+    conversation: Option<serde_json::Value>,
+) {
     let _ = app.emit(
         "dev-chat",
         crate::dev::types::DevChatEvent {
@@ -95,10 +108,13 @@ pub async fn dev_hosted_turn(
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let server = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
-        .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))?;
+    let server =
+        crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+            .ok_or_else(|| Error::Other("Pair this server before sending a message.".into()))?;
     if !server.paired {
-        return Err(Error::Other("Pair this server before sending a message.".into()));
+        return Err(Error::Other(
+            "Pair this server before sending a message.".into(),
+        ));
     }
     let secret = machine
         .secret_account
@@ -144,10 +160,22 @@ pub async fn dev_hosted_turn(
         // are not stuck behind the SSH command. A chat that is already open keeps its own join.
         let stop = Arc::new(AtomicBool::new(false));
         if let Ok(mut map) = hosted_follows().lock() {
-            map.insert(chat_id.clone(), FollowSlot { stream_id: sid.clone(), stop: stop.clone() });
+            map.insert(
+                chat_id.clone(),
+                FollowSlot {
+                    stream_id: sid.clone(),
+                    stop: stop.clone(),
+                },
+            );
         }
         tauri::async_runtime::spawn(async move {
-            let _ = wake_live(pool.clone(), machine_for_live.clone(), secret.clone(), remote_path.clone()).await;
+            let _ = wake_live(
+                pool.clone(),
+                machine_for_live.clone(),
+                secret.clone(),
+                remote_path.clone(),
+            )
+            .await;
             let port = match open_live_tunnel(&machine_for_live).await {
                 Ok(port) => port,
                 Err(err) => {
@@ -155,7 +183,18 @@ pub async fn dev_hosted_turn(
                     return;
                 }
             };
-            if let Err(err) = read_live_socket(&app2, &sid, port, &chat_id, &token, &stop, &cache_dir, &cache_workspace).await {
+            if let Err(err) = read_live_socket(
+                &app2,
+                &sid,
+                port,
+                &chat_id,
+                &token,
+                &stop,
+                &cache_dir,
+                &cache_workspace,
+            )
+            .await
+            {
                 emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
             }
         });
@@ -229,7 +268,11 @@ fn server_token_from(stored: Option<&str>, keychain: Option<&str>) -> Option<Str
 
 fn server_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> {
     let stored: Option<String> = conn
-        .query_row("SELECT token FROM agent_servers WHERE id = ?1", [server_id], |row| row.get(0))
+        .query_row(
+            "SELECT token FROM agent_servers WHERE id = ?1",
+            [server_id],
+            |row| row.get(0),
+        )
         .map_err(|err| Error::Other(err.to_string()))?;
     if let Some(token) = server_token_from(stored.as_deref(), None) {
         return Ok(token);
@@ -241,7 +284,8 @@ fn server_token(conn: &rusqlite::Connection, server_id: &str) -> Result<String> 
 fn serve_feed_command() -> String {
     "fifo=\"$HOME/.twanagent/serve.stdin\"; \
 if [ ! -p \"$fifo\" ]; then echo 'the live server is not running' >&2; exit 1; fi; \
-cat > \"$fifo\"".into()
+cat > \"$fifo\""
+        .into()
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -251,7 +295,14 @@ pub fn dev_hosted_cancel(stream_id: String) {
     if let Some(job) = hosted_job(&stream_id) {
         let frame = ClientFrame::CancelTurn { id: stream_id };
         std::thread::spawn(move || {
-            let _ = feed_resident(&job.pool, &job.machine, job.secret.as_deref(), &job.token, &job.remote_path, &frame);
+            let _ = feed_resident(
+                &job.pool,
+                &job.machine,
+                job.secret.as_deref(),
+                &job.token,
+                &job.remote_path,
+                &frame,
+            );
         });
     }
 }
@@ -323,7 +374,8 @@ struct FollowSlot {
 }
 
 fn hosted_follows() -> &'static Mutex<std::collections::HashMap<String, FollowSlot>> {
-    static FOLLOWS: OnceLock<Mutex<std::collections::HashMap<String, FollowSlot>>> = OnceLock::new();
+    static FOLLOWS: OnceLock<Mutex<std::collections::HashMap<String, FollowSlot>>> =
+        OnceLock::new();
     FOLLOWS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -333,7 +385,8 @@ struct LiveTunnel {
 }
 
 fn live_tunnels() -> &'static Mutex<std::collections::HashMap<String, Arc<LiveTunnel>>> {
-    static TUNNELS: OnceLock<Mutex<std::collections::HashMap<String, Arc<LiveTunnel>>>> = OnceLock::new();
+    static TUNNELS: OnceLock<Mutex<std::collections::HashMap<String, Arc<LiveTunnel>>>> =
+        OnceLock::new();
     TUNNELS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -397,12 +450,18 @@ pub async fn dev_hosted_follow(
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let server = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
-        .ok_or_else(|| Error::Other("Pair this server before opening its chats.".into()))?;
+    let server =
+        crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+            .ok_or_else(|| Error::Other("Pair this server before opening its chats.".into()))?;
     if !server.paired {
-        return Err(Error::Other("Pair this server before opening its chats.".into()));
+        return Err(Error::Other(
+            "Pair this server before opening its chats.".into(),
+        ));
     }
-    let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
+    let secret = machine
+        .secret_account
+        .as_deref()
+        .and_then(crate::secrets::get_ssh_secret);
     let token = server_token(&conn, &server.id)?;
     let stop = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = hosted_follows().lock() {
@@ -435,7 +494,18 @@ pub async fn dev_hosted_follow(
                 return;
             }
         };
-        if let Err(err) = read_live_socket(&app2, &sid, local, &chat_id, &token, &stop, &cache_dir, &cache_workspace).await {
+        if let Err(err) = read_live_socket(
+            &app2,
+            &sid,
+            local,
+            &chat_id,
+            &token,
+            &stop,
+            &cache_dir,
+            &cache_workspace,
+        )
+        .await
+        {
             emit_hosted(&app2, &sid, "error", Some(err.to_string()), None);
         }
         emit_hosted(&app2, &sid, "idle", None, None);
@@ -537,7 +607,10 @@ async fn open_live_tunnel(machine: &crate::remote::config::Machine) -> Result<u1
 async fn wait_for_port(port: u16) -> Result<()> {
     let started = std::time::Instant::now();
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         if started.elapsed() > std::time::Duration::from_secs(8) {
@@ -591,10 +664,31 @@ async fn read_live_socket(
         let Ok(value) = serde_json::from_str::<serde_json::Value>(text.as_str()) else {
             continue;
         };
-        let kind = value.get("type").and_then(|item| item.as_str()).unwrap_or("");
+        let kind = value
+            .get("type")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
         match kind {
-            "delta" => emit_hosted(app, stream_id, "delta", value.get("text").and_then(|item| item.as_str()).map(str::to_string), None),
-            "status" => emit_hosted(app, stream_id, "status", value.get("text").and_then(|item| item.as_str()).map(str::to_string), None),
+            "delta" => emit_hosted(
+                app,
+                stream_id,
+                "delta",
+                value
+                    .get("text")
+                    .and_then(|item| item.as_str())
+                    .map(str::to_string),
+                None,
+            ),
+            "status" => emit_hosted(
+                app,
+                stream_id,
+                "status",
+                value
+                    .get("text")
+                    .and_then(|item| item.as_str())
+                    .map(str::to_string),
+                None,
+            ),
             "done" => {
                 // The chat stays open. The next turn on this conversation uses the same socket.
                 // The saved conversation is also the copy the next launch paints.
@@ -606,10 +700,23 @@ async fn read_live_socket(
                 emit_hosted(app, stream_id, "idle", None, None);
             }
             "error" => {
-                emit_hosted(app, stream_id, "error", value.get("message").and_then(|item| item.as_str()).map(str::to_string), None);
+                emit_hosted(
+                    app,
+                    stream_id,
+                    "error",
+                    value
+                        .get("message")
+                        .and_then(|item| item.as_str())
+                        .map(str::to_string),
+                    None,
+                );
             }
             "shell_approval" => {
-                let command = value.get("command").and_then(|item| item.as_str()).unwrap_or("").to_string();
+                let command = value
+                    .get("command")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 emit_hosted(app, stream_id, "shell_approval", Some(command), None);
             }
             _ => {}
@@ -628,13 +735,23 @@ pub fn dev_hosted_shell_answer(conversation_id: String, allow: bool) -> Result<(
         id: conversation_id,
         allow,
     };
-    feed_resident(&job.pool, &job.machine, job.secret.as_deref(), &job.token, &job.remote_path, &frame)
+    feed_resident(
+        &job.pool,
+        &job.machine,
+        job.secret.as_deref(),
+        &job.token,
+        &job.remote_path,
+        &frame,
+    )
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub fn dev_hosted_unfollow(stream_id: String) {
     if let Ok(mut map) = hosted_follows().lock() {
-        let found = map.iter().find(|(_, slot)| slot.stream_id == stream_id).map(|(id, _)| id.clone());
+        let found = map
+            .iter()
+            .find(|(_, slot)| slot.stream_id == stream_id)
+            .map(|(id, _)| id.clone());
         if let Some(id) = found {
             if let Some(slot) = map.remove(&id) {
                 slot.stop.store(true, Ordering::Relaxed);
@@ -643,13 +760,19 @@ pub fn dev_hosted_unfollow(stream_id: String) {
     }
 }
 
-fn summary_from_hosted(row: &twanagent_service::ConversationSummary) -> crate::dev::ConversationSummary {
+fn summary_from_hosted(
+    row: &twanagent_service::ConversationSummary,
+) -> crate::dev::ConversationSummary {
     crate::dev::ConversationSummary {
         id: row.id.clone(),
         title: row.title.clone(),
         created_at: row.created_at.clone(),
         updated_at: row.updated_at.clone(),
-        kind: if row.kind.is_empty() { "chat".into() } else { row.kind.clone() },
+        kind: if row.kind.is_empty() {
+            "chat".into()
+        } else {
+            row.kind.clone()
+        },
         journey_id: row.journey_id.clone(),
         sort_order: row.sort_order,
         effort: row.effort.clone(),
@@ -667,7 +790,11 @@ fn conversation_from_hosted(row: &twanagent_service::Conversation) -> crate::dev
         title: row.title.clone(),
         created_at: row.created_at.clone(),
         updated_at: row.updated_at.clone(),
-        kind: if row.kind.is_empty() { "chat".into() } else { row.kind.clone() },
+        kind: if row.kind.is_empty() {
+            "chat".into()
+        } else {
+            row.kind.clone()
+        },
         messages: row.messages.clone(),
         context_usage: row
             .context_usage
@@ -695,16 +822,26 @@ fn remember_hosted_value(data_dir: &std::path::Path, workspace: &str, value: &se
 }
 
 /// Remember the server's chat list so the next launch paints it before SSH answers.
-fn remember_hosted_list(data_dir: &std::path::Path, workspace: &str, rows: &[twanagent_service::ConversationSummary]) {
+fn remember_hosted_list(
+    data_dir: &std::path::Path,
+    workspace: &str,
+    rows: &[twanagent_service::ConversationSummary],
+) {
     let Ok(conn) = crate::appdb::open(data_dir) else {
         return;
     };
     let summaries: Vec<_> = rows.iter().map(summary_from_hosted).collect();
-    let journeys = crate::appdb::sidebar_for(&conn, workspace).map(|(_, journeys)| journeys).unwrap_or_default();
+    let journeys = crate::appdb::sidebar_for(&conn, workspace)
+        .map(|(_, journeys)| journeys)
+        .unwrap_or_default();
     let _ = crate::appdb::replace_sidebar_source(&conn, workspace, &summaries, &journeys, true);
 }
 
-fn remember_hosted_conversation(data_dir: &std::path::Path, workspace: &str, row: &twanagent_service::Conversation) {
+fn remember_hosted_conversation(
+    data_dir: &std::path::Path,
+    workspace: &str,
+    row: &twanagent_service::Conversation,
+) {
     let Ok(conn) = crate::appdb::open(data_dir) else {
         return;
     };
@@ -716,16 +853,23 @@ fn remember_hosted_conversation(data_dir: &std::path::Path, workspace: &str, row
 pub fn dev_hosted_sidebar_cached(
     state: State<'_, AppState>,
     workspace: String,
-) -> Result<(Vec<crate::dev::ConversationSummary>, Vec<crate::dev::Journey>, Vec<crate::dev::Conversation>)> {
+) -> Result<(
+    Vec<crate::dev::ConversationSummary>,
+    Vec<crate::dev::Journey>,
+    Vec<crate::dev::Conversation>,
+)> {
     let conn = crate::appdb::open(&state.data_dir)?;
     if !crate::appdb::sidebar_is_cloud(&conn, &workspace)? {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     let (rows, journeys) = crate::appdb::sidebar_for(&conn, &workspace)?;
-    let rows: Vec<_> = rows.into_iter().filter(|row| {
-        let title = row.title.trim();
-        !(title.is_empty() || title == "New chat")
-    }).collect();
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            let title = row.title.trim();
+            !(title.is_empty() || title == "New chat")
+        })
+        .collect();
     let keep: std::collections::HashSet<_> = rows.iter().map(|row| row.id.clone()).collect();
     let transcripts = crate::appdb::sidebar_transcripts(&conn, &workspace)?
         .into_iter()
@@ -787,7 +931,9 @@ async fn sync_one_project(
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
     // An SSH project, or an old machine whose agent server was removed, has nothing to copy.
     // That is not a failure. Logging it repeats for every usage open.
-    let Some(server) = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)? else {
+    let Some(server) =
+        crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+    else {
         return Ok(0);
     };
     if !server.paired {
@@ -808,7 +954,10 @@ async fn sync_one_project(
     let secret = if state.ssh_pool.is_alive(&machine.id) {
         None
     } else {
-        machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret)
+        machine
+            .secret_account
+            .as_deref()
+            .and_then(crate::secrets::get_ssh_secret)
     };
     let pool = state.ssh_pool.clone();
     let mount = project.mount_path.clone();
@@ -824,8 +973,12 @@ async fn sync_one_project(
                 timeout_secs: 60,
             },
         )?;
-        if result.timed_out || result.exit_code.is_some_and(|code| code != 0) && result.stdout_bytes.len() < 4 {
-            return Err(Error::Other(format!("could not read the usage log for {name}")));
+        if result.timed_out
+            || result.exit_code.is_some_and(|code| code != 0) && result.stdout_bytes.len() < 4
+        {
+            return Err(Error::Other(format!(
+                "could not read the usage log for {name}"
+            )));
         }
         let (frame, _) = decode_server_reply(&result.stdout_bytes, &result.stderr)?;
         let rows = match frame {
@@ -888,19 +1041,28 @@ pub async fn dev_hosted_call(
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let server = crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
-        .ok_or_else(|| Error::Other("Pair this server before opening its chats.".into()))?;
+    let server =
+        crate::remote::agent_server::server_by_host(&conn, &machine.host, machine.port)?
+            .ok_or_else(|| Error::Other("Pair this server before opening its chats.".into()))?;
     if !server.paired {
-        return Err(Error::Other("Pair this server before opening its chats.".into()));
+        return Err(Error::Other(
+            "Pair this server before opening its chats.".into(),
+        ));
     }
     let token = server_token(&conn, &server.id)?;
-    let value: serde_json::Value = serde_json::from_str(&frame_json).map_err(|err| Error::Other(err.to_string()))?;
-    let frame: ClientFrame = serde_json::from_value(value).map_err(|err| Error::Other(err.to_string()))?;
-    let bytes = resident_bytes(&project.remote_path, &frame, &token).map_err(|err| Error::Other(err.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&frame_json).map_err(|err| Error::Other(err.to_string()))?;
+    let frame: ClientFrame =
+        serde_json::from_value(value).map_err(|err| Error::Other(err.to_string()))?;
+    let bytes = resident_bytes(&project.remote_path, &frame, &token)
+        .map_err(|err| Error::Other(err.to_string()))?;
     let _ = encode_frame::<ClientFrame>;
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
     let command = hosted_command(&encoded);
-    let secret = machine.secret_account.as_deref().and_then(crate::secrets::get_ssh_secret);
+    let secret = machine
+        .secret_account
+        .as_deref()
+        .and_then(crate::secrets::get_ssh_secret);
     let pool = state.ssh_pool.clone();
     let host = machine.host.clone();
     let data_dir = state.data_dir.clone();
@@ -987,13 +1149,20 @@ mod tests {
 
     #[test]
     fn a_copy_banner_is_not_reported_as_a_short_frame() {
-        let err = decode_server_reply(b"installed\n", "").unwrap_err().to_string();
+        let err = decode_server_reply(b"installed\n", "")
+            .unwrap_err()
+            .to_string();
         assert!(!err.contains("frame header"));
         assert!(err.contains("not a frame"));
-        let detail = decode_server_reply(b"", "the program is missing").unwrap_err().to_string();
+        let detail = decode_server_reply(b"", "the program is missing")
+            .unwrap_err()
+            .to_string();
         assert_eq!(detail, "the program is missing");
         let frame = encode_frame(&ServerFrame::Ok).unwrap();
-        assert!(matches!(decode_server_reply(&frame, "").unwrap().0, ServerFrame::Ok));
+        assert!(matches!(
+            decode_server_reply(&frame, "").unwrap().0,
+            ServerFrame::Ok
+        ));
     }
 
     #[test]

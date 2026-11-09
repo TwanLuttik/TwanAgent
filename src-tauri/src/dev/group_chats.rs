@@ -99,9 +99,8 @@ pub fn project_tool_defs() -> Vec<Value> {
     let list_description = format!(
         "List other chats in this project. Returns id, title, and updated time. Does not return messages. The current chat is omitted. Pass archived to include archived chats. {READ_WHEN}"
     );
-    let read_description = format!(
-        "Read one chat in this project. Read-only. id comes from list_chats. {READ_WHEN}"
-    );
+    let read_description =
+        format!("Read one chat in this project. Read-only. id comes from list_chats. {READ_WHEN}");
     let create_description = format!(
         "Create a new chat in this project and start it. {CREATE_WHEN} message is the first prompt."
     );
@@ -154,7 +153,12 @@ pub fn project_tool_defs() -> Vec<Value> {
     .unwrap_or_default()
 }
 
-pub fn list_member_chats(data_dir: &Path, layout: &GroupLayout, alias: &str, archived: bool) -> Result<String> {
+pub fn list_member_chats(
+    data_dir: &Path,
+    layout: &GroupLayout,
+    alias: &str,
+    archived: bool,
+) -> Result<String> {
     let rows = member_rows(data_dir, layout, alias, archived)?;
     if rows.is_empty() {
         return Ok("No chats.".into());
@@ -205,14 +209,24 @@ pub fn create_member_chat(
 }
 
 /// Chats stored for one project that is not a group. `current_id` is left off the list.
-pub fn list_project_chats(data_dir: &Path, workspace: &str, archived: bool, current_id: &str) -> Result<String> {
+pub fn list_project_chats(
+    data_dir: &Path,
+    workspace: &str,
+    archived: bool,
+    current_id: &str,
+) -> Result<String> {
     let rows = project_rows(data_dir, workspace, archived, current_id)?;
     if rows.is_empty() {
         return Ok("No chats.".into());
     }
     let mut lines = Vec::new();
     for row in rows {
-        lines.push(format!("{}\t{}\t{}", row.id, one_line(&row.title), row.updated_at));
+        lines.push(format!(
+            "{}\t{}\t{}",
+            row.id,
+            one_line(&row.title),
+            row.updated_at
+        ));
     }
     Ok(lines.join("\n"))
 }
@@ -236,7 +250,17 @@ pub fn create_project_chat(
     if workspace.is_empty() {
         return Err(Error::Other("project path is empty".into()));
     }
-    save_new_chat(data_dir, workspace, "", title, message, model, effort, context_window, permission)
+    save_new_chat(
+        data_dir,
+        workspace,
+        "",
+        title,
+        message,
+        model,
+        effort,
+        context_window,
+        permission,
+    )
 }
 
 fn save_new_chat(
@@ -274,9 +298,13 @@ fn save_new_chat(
         permission: nonempty(permission),
         archived: false,
     };
-    super::conv::with_store(data_dir, workspace, |conn| crate::store::save_conversation(conn, &conversation))?;
+    super::conv::with_store(data_dir, workspace, |conn| {
+        crate::store::save_conversation(conn, &conversation)
+    })?;
     let _ = super::conv::index_saved_conversation(data_dir, workspace, &id);
-    let summary = super::conv::with_store(data_dir, workspace, |conn| crate::store::conversation_summary(conn, &id))?;
+    let summary = super::conv::with_store(data_dir, workspace, |conn| {
+        crate::store::conversation_summary(conn, &id)
+    })?;
     Ok(CreatedChat {
         alias: alias.to_string(),
         workspace: workspace.to_string(),
@@ -284,14 +312,23 @@ fn save_new_chat(
     })
 }
 
-fn project_rows(data_dir: &Path, workspace: &str, archived: bool, current_id: &str) -> Result<Vec<ListedChat>> {
+fn project_rows(
+    data_dir: &Path,
+    workspace: &str,
+    archived: bool,
+    current_id: &str,
+) -> Result<Vec<ListedChat>> {
     let workspace = workspace.trim();
     if workspace.is_empty() {
         return Err(Error::Other("project path is empty".into()));
     }
     let current_id = current_id.trim();
     let _ = super::conv::import_conversations_json(data_dir, workspace);
-    let summaries = super::conv::with_store(data_dir, workspace, crate::store::list_conversation_summaries)?;
+    let summaries = super::conv::with_store(
+        data_dir,
+        workspace,
+        crate::store::list_conversation_summaries,
+    )?;
     let mut rows = Vec::new();
     for summary in summaries {
         if summary.archived && !archived {
@@ -307,7 +344,11 @@ fn project_rows(data_dir: &Path, workspace: &str, archived: bool, current_id: &s
             updated_at: summary.updated_at,
         });
     }
-    rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
+    rows.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
     Ok(rows)
 }
 
@@ -320,7 +361,9 @@ fn load_project_chat(data_dir: &Path, workspace: &str, id: &str) -> Result<Conve
     if id.is_empty() {
         return Err(Error::Other("chat id is empty".into()));
     }
-    match super::conv::with_store(data_dir, workspace, |conn| crate::store::get_conversation(conn, id)) {
+    match super::conv::with_store(data_dir, workspace, |conn| {
+        crate::store::get_conversation(conn, id)
+    }) {
         Ok(conversation) => Ok(conversation),
         Err(Error::NotFound(_)) => Err(Error::Other(format!("no chat {id} in this project"))),
         Err(err) => Err(err),
@@ -329,7 +372,11 @@ fn load_project_chat(data_dir: &Path, workspace: &str, id: &str) -> Result<Conve
 
 fn nonempty(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn chat_title(title: &str, message: &str) -> String {
@@ -341,17 +388,28 @@ fn chat_title(title: &str, message: &str) -> String {
     };
     let trimmed = source.trim();
     let title: String = trimmed.chars().take(80).collect();
-    if title.is_empty() { "New chat".into() } else { title }
+    if title.is_empty() {
+        "New chat".into()
+    } else {
+        title
+    }
 }
 
-pub fn read_member_chat(data_dir: &Path, layout: &GroupLayout, alias: &str, id: &str) -> Result<String> {
+pub fn read_member_chat(
+    data_dir: &Path,
+    layout: &GroupLayout,
+    alias: &str,
+    id: &str,
+) -> Result<String> {
     let member = require_member(layout, alias)?;
     let id = id.trim();
     if id.is_empty() {
         return Err(Error::Other("chat id is empty".into()));
     }
     let key = path_string(&member.path);
-    let conversation = match super::conv::with_store(data_dir, &key, |conn| crate::store::get_conversation(conn, id)) {
+    let conversation = match super::conv::with_store(data_dir, &key, |conn| {
+        crate::store::get_conversation(conn, id)
+    }) {
         Ok(conversation) => conversation,
         Err(Error::NotFound(_)) => {
             return Err(Error::Other(format!("no chat {id} in {}", member.alias)))
@@ -361,7 +419,12 @@ pub fn read_member_chat(data_dir: &Path, layout: &GroupLayout, alias: &str, id: 
     Ok(cap_transcript(&render_chat(&member.alias, &conversation)))
 }
 
-fn member_rows(data_dir: &Path, layout: &GroupLayout, alias: &str, archived: bool) -> Result<Vec<ListedChat>> {
+fn member_rows(
+    data_dir: &Path,
+    layout: &GroupLayout,
+    alias: &str,
+    archived: bool,
+) -> Result<Vec<ListedChat>> {
     let alias = alias.trim();
     let members: Vec<_> = if alias.is_empty() {
         layout.members.iter().collect()
@@ -372,7 +435,8 @@ fn member_rows(data_dir: &Path, layout: &GroupLayout, alias: &str, archived: boo
     for member in members {
         let key = path_string(&member.path);
         let _ = super::conv::import_conversations_json(data_dir, &key);
-        let summaries = super::conv::with_store(data_dir, &key, crate::store::list_conversation_summaries)?;
+        let summaries =
+            super::conv::with_store(data_dir, &key, crate::store::list_conversation_summaries)?;
         for summary in summaries {
             if summary.archived && !archived {
                 continue;
@@ -394,7 +458,10 @@ fn member_rows(data_dir: &Path, layout: &GroupLayout, alias: &str, archived: boo
     Ok(rows)
 }
 
-fn require_member<'a>(layout: &'a GroupLayout, alias: &str) -> Result<&'a super::group::GroupMember> {
+fn require_member<'a>(
+    layout: &'a GroupLayout,
+    alias: &str,
+) -> Result<&'a super::group::GroupMember> {
     let alias = alias.trim();
     if alias.is_empty() {
         return Err(Error::Other("name the project alias".into()));
@@ -429,7 +496,10 @@ fn render_chat(alias: &str, conversation: &Conversation) -> String {
 }
 
 fn render_message(message: &Value) -> String {
-    let role = message.get("role").and_then(Value::as_str).unwrap_or("message");
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or("message");
     let mut body = content_text(message.get("content"));
     if let Some(reasoning) = message
         .get("reasoning")
@@ -541,7 +611,13 @@ mod tests {
         .unwrap();
     }
 
-    fn grouped() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir, tempfile::TempDir, GroupLayout) {
+    fn grouped() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        tempfile::TempDir,
+        tempfile::TempDir,
+        GroupLayout,
+    ) {
         let data = temp_dir();
         let projects = temp_dir();
         let api_root = temp_dir();
@@ -558,12 +634,60 @@ mod tests {
     #[test]
     fn list_and_read_stay_inside_the_named_project() {
         let (data, _projects, _api_root, _web_root, layout) = grouped();
-        let api = layout.members.iter().find(|member| member.alias == "api").unwrap();
-        let web = layout.members.iter().find(|member| member.alias == "web").unwrap();
-        save(data.path(), &api.path, &chat("shared", "Api login", "2026-02-02T00:00:00Z", "api token check", false));
-        save(data.path(), &web.path, &chat("shared", "Web login", "2026-03-03T00:00:00Z", "web token check", false));
-        save(data.path(), &web.path, &chat("old", "Old web", "2026-01-01T00:00:00Z", "archived body", true));
-        save(data.path(), &layout.root, &chat("group-chat", "Group only", "2026-04-04T00:00:00Z", "not a member", false));
+        let api = layout
+            .members
+            .iter()
+            .find(|member| member.alias == "api")
+            .unwrap();
+        let web = layout
+            .members
+            .iter()
+            .find(|member| member.alias == "web")
+            .unwrap();
+        save(
+            data.path(),
+            &api.path,
+            &chat(
+                "shared",
+                "Api login",
+                "2026-02-02T00:00:00Z",
+                "api token check",
+                false,
+            ),
+        );
+        save(
+            data.path(),
+            &web.path,
+            &chat(
+                "shared",
+                "Web login",
+                "2026-03-03T00:00:00Z",
+                "web token check",
+                false,
+            ),
+        );
+        save(
+            data.path(),
+            &web.path,
+            &chat(
+                "old",
+                "Old web",
+                "2026-01-01T00:00:00Z",
+                "archived body",
+                true,
+            ),
+        );
+        save(
+            data.path(),
+            &layout.root,
+            &chat(
+                "group-chat",
+                "Group only",
+                "2026-04-04T00:00:00Z",
+                "not a member",
+                false,
+            ),
+        );
 
         let listed = list_member_chats(data.path(), &layout, "", false).unwrap();
         assert!(listed.contains("web\tshared\tWeb login"), "{listed}");
@@ -611,13 +735,30 @@ mod tests {
         assert_eq!(created.alias, "web");
         assert_eq!(created.summary.title, "Handoff plan");
         let after = list_member_chats(data.path(), &layout, "web", false).unwrap();
-        assert!(after.contains(&format!("web\t{}\tHandoff plan", created.summary.id)), "{after}");
+        assert!(
+            after.contains(&format!("web\t{}\tHandoff plan", created.summary.id)),
+            "{after}"
+        );
         let note = read_member_chat(data.path(), &layout, "web", &created.summary.id).unwrap();
         assert!(note.contains("Look at the login page."), "{note}");
         let group_only = list_member_chats(data.path(), &layout, "", false).unwrap();
         assert!(!group_only.contains("Group only"), "{group_only}");
-        assert!(create_member_chat(data.path(), &layout, "missing", "Nope", "text", "", "", None, "").is_err());
-        assert!(create_member_chat(data.path(), &layout, "api", "Nope", "  ", "", "", None, "").is_err());
+        assert!(create_member_chat(
+            data.path(),
+            &layout,
+            "missing",
+            "Nope",
+            "text",
+            "",
+            "",
+            None,
+            ""
+        )
+        .is_err());
+        assert!(
+            create_member_chat(data.path(), &layout, "api", "Nope", "  ", "", "", None, "")
+                .is_err()
+        );
         assert!(read_member_chat(data.path(), &layout, "missing", "shared").is_err());
         assert!(list_member_chats(data.path(), &layout, "missing", false).is_err());
     }
@@ -625,9 +766,17 @@ mod tests {
     #[test]
     fn a_long_transcript_keeps_the_start_and_the_end() {
         let (data, _projects, _api_root, _web_root, layout) = grouped();
-        let api = layout.members.iter().find(|member| member.alias == "api").unwrap();
+        let api = layout
+            .members
+            .iter()
+            .find(|member| member.alias == "api")
+            .unwrap();
         let body = "x".repeat(30_000);
-        save(data.path(), &api.path, &chat("long", "Long", "2026-02-02T00:00:00Z", &body, false));
+        save(
+            data.path(),
+            &api.path,
+            &chat("long", "Long", "2026-02-02T00:00:00Z", &body, false),
+        );
         let text = read_member_chat(data.path(), &layout, "api", "long").unwrap();
         assert!(text.contains("omitted"), "{text}");
         assert!(text.chars().count() < 30_000);
@@ -654,13 +803,39 @@ mod tests {
         let data = temp_dir();
         let project = temp_dir();
         let key = path_string(project.path());
-        save(data.path(), project.path(), &chat("current", "This chat", "2026-04-04T00:00:00Z", "mine", false));
         save(
             data.path(),
             project.path(),
-            &chat("other", "Login\nbug", "2026-03-03T00:00:00Z", "token check", false),
+            &chat(
+                "current",
+                "This chat",
+                "2026-04-04T00:00:00Z",
+                "mine",
+                false,
+            ),
         );
-        save(data.path(), project.path(), &chat("old", "Old note", "2026-01-01T00:00:00Z", "archived body", true));
+        save(
+            data.path(),
+            project.path(),
+            &chat(
+                "other",
+                "Login\nbug",
+                "2026-03-03T00:00:00Z",
+                "token check",
+                false,
+            ),
+        );
+        save(
+            data.path(),
+            project.path(),
+            &chat(
+                "old",
+                "Old note",
+                "2026-01-01T00:00:00Z",
+                "archived body",
+                true,
+            ),
+        );
 
         let listed = list_project_chats(data.path(), &key, false, "current").unwrap();
         assert!(listed.contains("other\tLogin bug\t"), "{listed}");
@@ -701,7 +876,10 @@ mod tests {
         assert_eq!(created.summary.title, "Handoff plan");
         assert_eq!(created.summary.model.as_deref(), Some("grok-4.6"));
         let listed = list_project_chats(data.path(), &key, false, "not-this").unwrap();
-        assert!(listed.contains(&format!("{}\tHandoff plan", created.summary.id)), "{listed}");
+        assert!(
+            listed.contains(&format!("{}\tHandoff plan", created.summary.id)),
+            "{listed}"
+        );
         let note = read_project_chat(data.path(), &key, &created.summary.id).unwrap();
         assert!(note.contains("Look at the login page."), "{note}");
         assert!(create_project_chat(data.path(), &key, "Nope", "  ", "", "", None, "").is_err());
@@ -716,8 +894,14 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["list_chats", "read_chat", "create_chat"]);
         let create = tool_named(&tools, "create_chat");
-        let description = create.pointer("/function/description").and_then(Value::as_str).unwrap();
-        assert!(description.contains("user asked for another chat"), "{description}");
+        let description = create
+            .pointer("/function/description")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(
+            description.contains("user asked for another chat"),
+            "{description}"
+        );
         assert!(description.contains("separate task"), "{description}");
         let required = required_names(create);
         assert!(required.contains(&"message"), "{required:?}");
@@ -730,16 +914,28 @@ mod tests {
         assert!(!PROJECT_PROMPT_LINE.contains("Use list_chats and read_chat to read them"));
         assert!(PROJECT_PROMPT_LINE.contains("user asked for another chat"));
         let list = tool_named(&tools, "list_chats");
-        let list_description = list.pointer("/function/description").and_then(Value::as_str).unwrap();
-        assert!(list_description.contains("Do not call it at the start of a conversation"), "{list_description}");
+        let list_description = list
+            .pointer("/function/description")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(
+            list_description.contains("Do not call it at the start of a conversation"),
+            "{list_description}"
+        );
     }
 
     #[test]
     fn group_create_chat_says_when_to_use_it() {
         let group_tools = tool_defs();
         let create = tool_named(&group_tools, "create_chat");
-        let description = create.pointer("/function/description").and_then(Value::as_str).unwrap();
-        assert!(description.contains("user asked for another chat"), "{description}");
+        let description = create
+            .pointer("/function/description")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(
+            description.contains("user asked for another chat"),
+            "{description}"
+        );
         assert!(description.contains("separate task"), "{description}");
         assert!(PROMPT_LINE.contains("user asked for another chat"));
         assert!(PROMPT_LINE.contains("Do not call them at the start of a conversation"));

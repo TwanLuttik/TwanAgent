@@ -6,25 +6,27 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::secrets;
 use crate::process::WindowlessCommand;
+use crate::secrets;
 
 mod billing;
 mod plan;
 
-pub use plan::{
-    dev_grok_plan, dev_grok_plan_edit, dev_grok_plan_set, dev_grok_plan_write, edit_grok_plan_file,
-    encode_session_cwd, grok_home, read_grok_plan, session_exists_in,
-    session_id_safe, write_grok_plan_file, write_grok_plan_state, GrokPlanSnapshot, __cmd__dev_grok_plan,
-    __cmd__dev_grok_plan_edit, __cmd__dev_grok_plan_set, __cmd__dev_grok_plan_write,
-    __tauri_command_name_dev_grok_plan, __tauri_command_name_dev_grok_plan_edit,
-    __tauri_command_name_dev_grok_plan_set, __tauri_command_name_dev_grok_plan_write,
-};
 pub use billing::{
-    account_usage, cached_account_usage, dev_xai_account_usage, dev_xai_account_usage_cached, parse_billing,
-    parse_subscription_tier, AccountUsage, AccountUsageWindow, BILLING_URL, PROVIDER_XAI, SETTINGS_URL,
-    XAI_OAUTH_CLIENT_ID, XAI_OAUTH_TOKEN_URL, __cmd__dev_xai_account_usage, __cmd__dev_xai_account_usage_cached,
+    __cmd__dev_xai_account_usage, __cmd__dev_xai_account_usage_cached,
     __tauri_command_name_dev_xai_account_usage, __tauri_command_name_dev_xai_account_usage_cached,
+    account_usage, cached_account_usage, dev_xai_account_usage, dev_xai_account_usage_cached,
+    parse_billing, parse_subscription_tier, AccountUsage, AccountUsageWindow, BILLING_URL,
+    PROVIDER_XAI, SETTINGS_URL, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_TOKEN_URL,
+};
+pub use plan::{
+    __cmd__dev_grok_plan, __cmd__dev_grok_plan_edit, __cmd__dev_grok_plan_set,
+    __cmd__dev_grok_plan_write, __tauri_command_name_dev_grok_plan,
+    __tauri_command_name_dev_grok_plan_edit, __tauri_command_name_dev_grok_plan_set,
+    __tauri_command_name_dev_grok_plan_write, dev_grok_plan, dev_grok_plan_edit, dev_grok_plan_set,
+    dev_grok_plan_write, edit_grok_plan_file, encode_session_cwd, grok_home, read_grok_plan,
+    session_exists_in, session_id_safe, write_grok_plan_file, write_grok_plan_state,
+    GrokPlanSnapshot,
 };
 
 const FALLBACK_MODELS: &[(&str, &str, &[&str])] = &[
@@ -164,7 +166,11 @@ fn cli_version_cache() -> &'static Mutex<Option<String>> {
 }
 
 pub fn cached_cli_version() -> String {
-    if let Some(found) = cli_version_cache().lock().ok().and_then(|guard| guard.clone()) {
+    if let Some(found) = cli_version_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+    {
         return found;
     }
     let detected = grok_bin().as_ref().and_then(|path| grok_version(path));

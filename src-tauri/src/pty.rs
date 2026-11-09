@@ -134,23 +134,21 @@ fn spawn_command_pty(
         .name(format!("dev-pty-{id}"))
         .spawn(move || {
             let mut buf = [0u8; 8192];
-            let read_loop = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                            let _ = app_r.emit(
-                                EVENT,
-                                PtyEvent {
-                                    id: id_r.clone(),
-                                    kind: "data".into(),
-                                    data: Some(data),
-                                },
-                            );
-                        }
-                        Err(_) => break,
+            let read_loop = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        let _ = app_r.emit(
+                            EVENT,
+                            PtyEvent {
+                                id: id_r.clone(),
+                                kind: "data".into(),
+                                data: Some(data),
+                            },
+                        );
                     }
+                    Err(_) => break,
                 }
             }));
             if read_loop.is_err() {
@@ -254,10 +252,7 @@ fn spawn_remote_pty(
     let conn = crate::appdb::open(&state.data_dir)?;
     let machine = crate::remote::config::machine_by_id(&conn, &project.machine_id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
-    let target = format!(
-        "{}@{}",
-        machine.user, machine.host
-    );
+    let target = format!("{}@{}", machine.user, machine.host);
     let remote = format!(
         "mkdir -p {dir} && cd {dir} && exec ${{SHELL:-/bin/bash}} -l",
         dir = crate::remote::ssh::shell_single_quote(&project.remote_path)
@@ -317,7 +312,9 @@ mod tests {
 
     #[test]
     fn pty_cwd_drops_the_windows_verbatim_prefix() {
-        let got = pty_cwd(Path::new(r"\\?\C:\Users\twanl\twanagent-dev\projects\windows-testings"));
+        let got = pty_cwd(Path::new(
+            r"\\?\C:\Users\twanl\twanagent-dev\projects\windows-testings",
+        ));
         let rendered = got.to_string_lossy();
         assert!(!rendered.starts_with(r"\\?\"), "{rendered}");
         assert!(
@@ -325,9 +322,14 @@ mod tests {
                 || rendered.contains("Users/twanl/twanagent-dev/projects/windows-testings"),
             "{rendered}"
         );
-        let unc = pty_cwd(Path::new(r"\\?\UNC\server\share\project")).to_string_lossy().into_owned();
+        let unc = pty_cwd(Path::new(r"\\?\UNC\server\share\project"))
+            .to_string_lossy()
+            .into_owned();
         assert!(!unc.contains("UNC"), "{unc}");
-        assert!(unc.contains("server") && unc.contains("share") && unc.contains("project"), "{unc}");
+        assert!(
+            unc.contains("server") && unc.contains("share") && unc.contains("project"),
+            "{unc}"
+        );
     }
 
     #[test]

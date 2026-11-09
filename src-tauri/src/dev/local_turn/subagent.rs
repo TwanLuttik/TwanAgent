@@ -7,12 +7,13 @@ use tauri::AppHandle;
 
 use super::super::types::DevToolCall;
 use super::context::{context_failure_text, fit_prompt, recover_overflow, Fit};
-use super::tools::{cap_tool_text, turn_tools};
 use super::drive::{run_tool, stream_round};
+use super::tools::{cap_tool_text, turn_tools};
 use super::{
-    assistant_value, close_dangling, emit, hold_provider_outage, int_arg, live, normalize_permission, parse_args,
-    record_round_usage, retryable_model_error, round_is_empty, stopped, stopped_flag, str_arg, LiveTurn,
-    LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
+    assistant_value, close_dangling, emit, hold_provider_outage, int_arg, live,
+    normalize_permission, parse_args, record_round_usage, retryable_model_error, round_is_empty,
+    stopped, stopped_flag, str_arg, LiveTurn, LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE,
+    EMPTY_REPLY,
 };
 
 /// A child has its own transcript and its own model rounds. The parent waits for the summary.
@@ -47,9 +48,16 @@ pub(super) fn spawn_subagent(
         let label = if raw.is_empty() { "Subagent" } else { raw };
         label.chars().take(80).collect::<String>()
     };
-    let child_type = parse_subagent_type(args.get("subagent_type").or_else(|| args.get("subagentType")));
+    let child_type = parse_subagent_type(
+        args.get("subagent_type")
+            .or_else(|| args.get("subagentType")),
+    );
     let child_id = uuid::Uuid::new_v4().to_string();
-    let model = if model.trim().is_empty() { "grok-4.6".to_string() } else { model.trim().to_string() };
+    let model = if model.trim().is_empty() {
+        "grok-4.6".to_string()
+    } else {
+        model.trim().to_string()
+    };
     emit_subagent(
         app,
         conversation_id,
@@ -74,7 +82,14 @@ pub(super) fn spawn_subagent(
         children.push(cancel.clone());
     }
     let knowledge = journey_knowledge(data_dir, workspace_key, journey_id);
-    let mut system = subagent_system(&workspace.display().to_string(), child_type, &description, permission, &knowledge, &model);
+    let mut system = subagent_system(
+        &workspace.display().to_string(),
+        child_type,
+        &description,
+        permission,
+        &knowledge,
+        &model,
+    );
     let block = twanagent_service::capabilities::prompt_block(conversation_id);
     if !block.is_empty() {
         system.push('\n');
@@ -93,7 +108,16 @@ pub(super) fn spawn_subagent(
         allow_spawn: false,
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drive_subagent(app, data_dir, workspace, &child_request, child_type, &child_id, &cancel, live)
+        drive_subagent(
+            app,
+            data_dir,
+            workspace,
+            &child_request,
+            child_type,
+            &child_id,
+            &cancel,
+            live,
+        )
     }));
     if let Ok(mut children) = live.children.lock() {
         children.retain(|child| !Arc::ptr_eq(child, &cancel));
@@ -102,7 +126,13 @@ pub(super) fn spawn_subagent(
         Ok(summary) => with_conversation(&child_id, summary),
         Err(_) => {
             let error = "the subagent stopped unexpectedly".to_string();
-            emit_subagent(app, conversation_id, "error", &child_id, json!({ "error": error }));
+            emit_subagent(
+                app,
+                conversation_id,
+                "error",
+                &child_id,
+                json!({ "error": error }),
+            );
             emit_subagent(
                 app,
                 conversation_id,
@@ -145,7 +175,8 @@ fn drive_subagent(
     } else {
         request.model.trim().to_string()
     };
-    let plan = crate::model_providers::registry::plan_mode(crate::model_providers::registry::find(&model));
+    let plan =
+        crate::model_providers::registry::plan_mode(crate::model_providers::registry::find(&model));
     let permission = normalize_permission(&request.permission);
     let mut transcript = request.messages.clone();
     let mut compaction: Option<super::super::types::DevCompaction> = None;
@@ -153,12 +184,19 @@ fn drive_subagent(
     let mut overflow_retries = 0u8;
     let mut model_tries = 0u8;
     let mut outage_tries = 0u32;
-    let window = request.context_window.filter(|value| *value > 0).unwrap_or(0);
+    let window = request
+        .context_window
+        .filter(|value| *value > 0)
+        .unwrap_or(0);
     let mut failed = String::new();
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
         if stopped_flag(cancel) || stopped(parent) {
-            let summary = if failed.is_empty() { "Stopped.".to_string() } else { failed };
+            let summary = if failed.is_empty() {
+                "Stopped.".to_string()
+            } else {
+                failed
+            };
             emit_subagent(
                 app,
                 parent_id,
@@ -298,7 +336,13 @@ fn drive_subagent(
             }
         };
         forget_child_stream(parent_id, &stream_id);
-        record_round_usage(data_dir, &request.workspace, parent_id, &model, round.usage.as_ref());
+        record_round_usage(
+            data_dir,
+            &request.workspace,
+            parent_id,
+            &model,
+            round.usage.as_ref(),
+        );
         if stopped_flag(cancel) || stopped(parent) || round.error.as_deref() == Some("Stopped.") {
             emit_subagent(
                 app,
@@ -359,7 +403,13 @@ fn drive_subagent(
                 continue;
             }
             failed = context_failure_text(&error).to_string();
-            emit_subagent(app, parent_id, "error", child_id, json!({ "error": failed }));
+            emit_subagent(
+                app,
+                parent_id,
+                "error",
+                child_id,
+                json!({ "error": failed }),
+            );
             emit_subagent(
                 app,
                 parent_id,
@@ -380,10 +430,22 @@ fn drive_subagent(
         }
         model_tries = 0;
         if !round.streamed_reasoning && !round.reasoning.trim().is_empty() {
-            emit_subagent(app, parent_id, "reasoning", child_id, json!({ "text": round.reasoning.trim() }));
+            emit_subagent(
+                app,
+                parent_id,
+                "reasoning",
+                child_id,
+                json!({ "text": round.reasoning.trim() }),
+            );
         }
         if !round.streamed_text && !round.text.is_empty() {
-            emit_subagent(app, parent_id, "delta", child_id, json!({ "text": round.text }));
+            emit_subagent(
+                app,
+                parent_id,
+                "delta",
+                child_id,
+                json!({ "text": round.text }),
+            );
         }
         if round.tool_calls.is_empty() {
             if round_is_empty(&round) {
@@ -398,7 +460,12 @@ fn drive_subagent(
                 );
                 return format!("Subagent failed: {error}");
             }
-            transcript.push(assistant_value(&round.text, &round.reasoning, &[], &round.thinking));
+            transcript.push(assistant_value(
+                &round.text,
+                &round.reasoning,
+                &[],
+                &round.thinking,
+            ));
             let summary = summarize_subagent(&transcript);
             emit_subagent(
                 app,
@@ -409,8 +476,19 @@ fn drive_subagent(
             );
             return format!("Subagent {description} finished:\n{summary}");
         }
-        transcript.push(assistant_value(&round.text, &round.reasoning, &round.tool_calls, &round.thinking));
-        emit_subagent(app, parent_id, "update", child_id, json!({ "messages": transcript }));
+        transcript.push(assistant_value(
+            &round.text,
+            &round.reasoning,
+            &round.tool_calls,
+            &round.thinking,
+        ));
+        emit_subagent(
+            app,
+            parent_id,
+            "update",
+            child_id,
+            json!({ "messages": transcript }),
+        );
         for call in &round.tool_calls {
             let content = if stopped_flag(cancel) || stopped(parent) {
                 super::super::chat::dev_chat_cancel(stream_id.clone());
@@ -457,7 +535,13 @@ fn drive_subagent(
                 "tool_call_id": call.id,
                 "content": stored,
             }));
-            emit_subagent(app, parent_id, "update", child_id, json!({ "messages": transcript }));
+            emit_subagent(
+                app,
+                parent_id,
+                "update",
+                child_id,
+                json!({ "messages": transcript }),
+            );
         }
     }
 }
@@ -475,12 +559,25 @@ pub(super) fn forget_stream(turn: &LiveTurn, stream_id: &str) {
     };
 }
 
-pub(super) fn emit_subagent(app: &AppHandle, conversation_id: &str, kind: &str, child_id: &str, mut body: Value) {
+pub(super) fn emit_subagent(
+    app: &AppHandle,
+    conversation_id: &str,
+    kind: &str,
+    child_id: &str,
+    mut body: Value,
+) {
     if let Some(object) = body.as_object_mut() {
         object.insert("id".into(), Value::String(child_id.to_string()));
         object.insert("event".into(), Value::String(kind.to_string()));
     }
-    emit(app, conversation_id, "subagent", Some(body.to_string()), None, None);
+    emit(
+        app,
+        conversation_id,
+        "subagent",
+        Some(body.to_string()),
+        None,
+        None,
+    );
 }
 
 fn parse_subagent_type(raw: Option<&Value>) -> &'static str {
@@ -494,11 +591,17 @@ fn parse_subagent_type(raw: Option<&Value>) -> &'static str {
 fn child_tool_block(child_type: &str, name: &str) -> Option<String> {
     let blocked = matches!(
         name,
-        "spawn_subagent" | "update_journey_knowledge" | "todo_write" | "enter_plan_mode" | "exit_plan_mode"
+        "spawn_subagent"
+            | "update_journey_knowledge"
+            | "todo_write"
+            | "enter_plan_mode"
+            | "exit_plan_mode"
     ) || ((child_type == "explore" || child_type == "plan")
         && matches!(name, "write_file" | "edit_file" | "run_command"));
     if blocked {
-        Some(format!("Error: {name} is not available to this {child_type} subagent."))
+        Some(format!(
+            "Error: {name} is not available to this {child_type} subagent."
+        ))
     } else {
         None
     }
@@ -509,7 +612,11 @@ fn summarize_subagent(messages: &[Value]) -> String {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        let text = message.get("content").and_then(Value::as_str).unwrap_or("").trim();
+        let text = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         if !text.is_empty() {
             return text.to_string();
         }
@@ -580,13 +687,19 @@ fn journey_knowledge(data_dir: &Path, workspace: &str, journey_id: Option<&str>)
         return String::new();
     };
     let dir = super::super::conv::conv_store_dir(data_dir, workspace);
-    crate::store::with_conn(&dir, |conn| crate::store::get_knowledge(&dir, conn, journey_id))
-        .unwrap_or_default()
+    crate::store::with_conn(&dir, |conn| {
+        crate::store::get_knowledge(&dir, conn, journey_id)
+    })
+    .unwrap_or_default()
 }
 
 /// The child prompt is its own system text plus its own transcript.
 /// Tools the child must not use are refused in `child_tool_block` before they run.
-fn build_child_prompt(transcript: &[Value], compaction: Option<&super::super::types::DevCompaction>, system: &str) -> Vec<Value> {
+fn build_child_prompt(
+    transcript: &[Value],
+    compaction: Option<&super::super::types::DevCompaction>,
+    system: &str,
+) -> Vec<Value> {
     let context = super::super::compact::messages_for_context(transcript, compaction);
     let mut messages = vec![json!({ "role": "system", "content": system.trim() })];
     messages.extend(super::super::compact::api_messages(&context));
@@ -600,22 +713,38 @@ fn tool_activity_label(call: &DevToolCall) -> String {
     match call.name.as_str() {
         "read_file" => {
             let range = read_range_label(&args);
-            if range.is_empty() { format!("Read {path}") } else { format!("Read {path} {range}") }
+            if range.is_empty() {
+                format!("Read {path}")
+            } else {
+                format!("Read {path} {range}")
+            }
         }
         "write_file" => format!("Write {}", file_label(path)),
         "edit_file" => format!("Edit {}", file_label(path)),
         "list_dir" => format!("List {}", if path.is_empty() { "." } else { path }),
         "grep" => {
             let pattern = first_text(&args, &["pattern", "query"]);
-            if pattern.is_empty() { "Search".into() } else { format!("Search {pattern}") }
+            if pattern.is_empty() {
+                "Search".into()
+            } else {
+                format!("Search {pattern}")
+            }
         }
         "glob" => {
             let pattern = str_arg(&args, "pattern").trim();
-            if pattern.is_empty() { "Find files".into() } else { format!("Find {pattern}") }
+            if pattern.is_empty() {
+                "Find files".into()
+            } else {
+                format!("Find {pattern}")
+            }
         }
         "list_chats" => {
             let alias = str_arg(&args, "alias").trim();
-            if alias.is_empty() { "Chats".into() } else { format!("Chats in {alias}") }
+            if alias.is_empty() {
+                "Chats".into()
+            } else {
+                format!("Chats in {alias}")
+            }
         }
         "read_chat" => {
             let alias = str_arg(&args, "alias").trim();
@@ -630,7 +759,11 @@ fn tool_activity_label(call: &DevToolCall) -> String {
         }
         "create_chat" => {
             let alias = str_arg(&args, "alias").trim();
-            if alias.is_empty() { "Create chat".into() } else { format!("Create chat {alias}") }
+            if alias.is_empty() {
+                "Create chat".into()
+            } else {
+                format!("Create chat {alias}")
+            }
         }
         "git_status" => "Git status".into(),
         "git_diff" => {
@@ -648,7 +781,11 @@ fn tool_activity_label(call: &DevToolCall) -> String {
         "git_commit" => "Commit".into(),
         "web_search" => {
             let query = collapse_ws(&first_text(&args, &["query", "search_term"]));
-            if query.is_empty() { "Web search".into() } else { format!("Web search: {query}") }
+            if query.is_empty() {
+                "Web search".into()
+            } else {
+                format!("Web search: {query}")
+            }
         }
         "run_command" => {
             let description = strip_run_prefix(&collapse_ws(str_arg(&args, "description")));
@@ -656,16 +793,28 @@ fn tool_activity_label(call: &DevToolCall) -> String {
                 format!("Run {description}")
             } else {
                 let command = collapse_ws(str_arg(&args, "command"));
-                if command.is_empty() { "Run command".into() } else { format!("Run {command}") }
+                if command.is_empty() {
+                    "Run command".into()
+                } else {
+                    format!("Run {command}")
+                }
             }
         }
         "spawn_subagent" => {
             let label = str_arg(&args, "description").trim();
-            if label.is_empty() { "Subagent".into() } else { format!("Subagent: {label}") }
+            if label.is_empty() {
+                "Subagent".into()
+            } else {
+                format!("Subagent: {label}")
+            }
         }
         "load_skill" => {
             let name = str_arg(&args, "name").trim();
-            if name.is_empty() { "Skill".into() } else { format!("Skill {name}") }
+            if name.is_empty() {
+                "Skill".into()
+            } else {
+                format!("Skill {name}")
+            }
         }
         "todo_write" => "Updated todos".into(),
         "enter_plan_mode" => "Enter plan mode".into(),
@@ -717,7 +866,12 @@ fn strip_run_prefix(text: &str) -> String {
     let mut chars = text.chars();
     let prefix: String = chars.by_ref().take(3).collect();
     if prefix.eq_ignore_ascii_case("run") && chars.next().is_some_and(char::is_whitespace) {
-        return text.chars().skip(4).collect::<String>().trim_start().to_string();
+        return text
+            .chars()
+            .skip(4)
+            .collect::<String>()
+            .trim_start()
+            .to_string();
     }
     text.to_string()
 }
@@ -725,11 +879,19 @@ fn strip_run_prefix(text: &str) -> String {
 fn mcp_label(name: &str) -> String {
     let rest = name.trim_start_matches("mcp__").replace("__", " ");
     let rest = rest.trim();
-    if rest.is_empty() { "MCP".into() } else { format!("MCP {rest}") }
+    if rest.is_empty() {
+        "MCP".into()
+    } else {
+        format!("MCP {rest}")
+    }
 }
 
 fn file_base(path: &str) -> &str {
-    Path::new(path).file_name().and_then(|name| name.to_str()).filter(|name| !name.is_empty()).unwrap_or(path)
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -783,12 +945,24 @@ mod tests {
     fn spawn_args_need_a_prompt_and_keep_the_three_child_types() {
         let missing = parse_args(r#"{"description":"Look"}"#);
         assert!(str_arg(&missing, "prompt").trim().is_empty());
-        assert_eq!(parse_subagent_type(Some(&serde_json::json!("explore"))), "explore");
-        assert_eq!(parse_subagent_type(Some(&serde_json::json!("plan"))), "plan");
-        assert_eq!(parse_subagent_type(Some(&serde_json::json!("nope"))), "general-purpose");
+        assert_eq!(
+            parse_subagent_type(Some(&serde_json::json!("explore"))),
+            "explore"
+        );
+        assert_eq!(
+            parse_subagent_type(Some(&serde_json::json!("plan"))),
+            "plan"
+        );
+        assert_eq!(
+            parse_subagent_type(Some(&serde_json::json!("nope"))),
+            "general-purpose"
+        );
         assert_eq!(parse_subagent_type(None), "general-purpose");
         let long = "x".repeat(100);
-        assert_eq!(long.chars().take(80).collect::<String>().chars().count(), 80);
+        assert_eq!(
+            long.chars().take(80).collect::<String>().chars().count(),
+            80
+        );
     }
 
     #[test]
@@ -798,7 +972,14 @@ mod tests {
         assert!(prompt.contains("do not edit files"));
         assert!(prompt.contains("Task: Find parser"));
         assert!(!prompt.contains("Journey knowledge:"));
-        let with_notes = subagent_system("/tmp/app", "plan", "Write a plan", "approve-all", "- voice is casual", "claude-opus-4-8");
+        let with_notes = subagent_system(
+            "/tmp/app",
+            "plan",
+            "Write a plan",
+            "approve-all",
+            "- voice is casual",
+            "claude-opus-4-8",
+        );
         assert!(with_notes.contains("You are Claude (claude-opus-4-8), a plan subagent"));
         assert!(with_notes.contains("Journey knowledge:\n- voice is casual"));
         assert!(with_notes.contains("without asking"));

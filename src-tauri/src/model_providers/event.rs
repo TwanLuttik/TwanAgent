@@ -80,11 +80,23 @@ pub struct ThinkingAccum {
     rows: Vec<OpenThinking>,
 }
 
-pub fn merge_usage(prev: Option<(u64, u64)>, prompt_tokens: u64, completion_tokens: u64) -> (u64, u64) {
+pub fn merge_usage(
+    prev: Option<(u64, u64)>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) -> (u64, u64) {
     let (prev_prompt, prev_completion) = prev.unwrap_or((0, 0));
     (
-        if prompt_tokens == u64::MAX { prev_prompt } else { prompt_tokens },
-        if completion_tokens == u64::MAX { prev_completion } else { completion_tokens },
+        if prompt_tokens == u64::MAX {
+            prev_prompt
+        } else {
+            prompt_tokens
+        },
+        if completion_tokens == u64::MAX {
+            prev_completion
+        } else {
+            completion_tokens
+        },
     )
 }
 
@@ -160,7 +172,11 @@ pub fn apply_thinking(blocks: &mut ThinkingAccum, piece: &StreamPiece) {
             }
         }
         StreamPiece::ThinkingSignature { index, signature } => {
-            if let Some(row) = blocks.rows.iter_mut().find(|row| row.index == *index && !row.redacted) {
+            if let Some(row) = blocks
+                .rows
+                .iter_mut()
+                .find(|row| row.index == *index && !row.redacted)
+            {
                 row.signature.push_str(signature);
                 return;
             }

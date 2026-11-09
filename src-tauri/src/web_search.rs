@@ -115,7 +115,9 @@ fn cap_domains(domains: Vec<String>) -> Vec<String> {
 }
 
 fn normalize_domain(raw: &str) -> String {
-    let trimmed = raw.trim().trim_matches(|c| c == '"' || c == '\'' || c == ',');
+    let trimmed = raw
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == ',');
     let without_scheme = trimmed
         .strip_prefix("https://")
         .or_else(|| trimmed.strip_prefix("http://"))
@@ -134,7 +136,9 @@ fn normalize_domain(raw: &str) -> String {
             !label.is_empty()
                 && !label.starts_with('-')
                 && !label.ends_with('-')
-                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         });
     if !ok {
         return String::new();
@@ -148,7 +152,8 @@ pub fn resolve_request(arguments: &str) -> std::result::Result<WebSearchRequest,
     let args: Value = if arguments.trim().is_empty() {
         Value::Null
     } else {
-        serde_json::from_str(arguments).map_err(|_| "web_search arguments were not valid JSON".to_string())?
+        serde_json::from_str(arguments)
+            .map_err(|_| "web_search arguments were not valid JSON".to_string())?
     };
     let query = args
         .get("query")
@@ -195,13 +200,25 @@ pub fn request_body(req: &WebSearchRequest) -> Value {
         if !req.allowed_domains.is_empty() {
             filters.insert(
                 "allowed_domains".into(),
-                Value::Array(req.allowed_domains.iter().cloned().map(Value::String).collect()),
+                Value::Array(
+                    req.allowed_domains
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
             );
         }
         if !req.excluded_domains.is_empty() {
             filters.insert(
                 "excluded_domains".into(),
-                Value::Array(req.excluded_domains.iter().cloned().map(Value::String).collect()),
+                Value::Array(
+                    req.excluded_domains
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
             );
         }
         tool["filters"] = Value::Object(filters);
@@ -305,7 +322,10 @@ fn citations_from(body: &Value) -> Vec<WebCitation> {
     collect_citations(body, &mut out);
     let mut unique = Vec::new();
     for citation in out {
-        if unique.iter().any(|seen: &WebCitation| seen.url == citation.url) {
+        if unique
+            .iter()
+            .any(|seen: &WebCitation| seen.url == citation.url)
+        {
             continue;
         }
         unique.push(citation);
@@ -428,7 +448,12 @@ fn parse_toml_string_array(src: &str, section: &str, key: &str) -> Vec<String> {
     Vec::new()
 }
 
-pub async fn search(app: &AppHandle, data_dir: &std::path::Path, stream_id: &str, arguments: &str) -> Result<String> {
+pub async fn search(
+    app: &AppHandle,
+    data_dir: &std::path::Path,
+    stream_id: &str,
+    arguments: &str,
+) -> Result<String> {
     let req = resolve_request(arguments).map_err(Error::Other)?;
     let Some(auth) = grok_cli::resolve_auth(data_dir) else {
         return Err(Error::Other(
@@ -502,32 +527,28 @@ async fn execute(
             .header("x-grok-client-identifier", headers.client_identifier)
             .header(reqwest::header::USER_AGENT, headers.user_agent);
     }
-    let resp = http
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            if e.is_timeout() {
-                Error::Other("Web search timed out.".into())
-            } else {
-                Error::Other(format!("Web search failed: {e}"))
-            }
-        })?;
+    let resp = http.json(&body).send().await.map_err(|e| {
+        if e.is_timeout() {
+            Error::Other("Web search timed out.".into())
+        } else {
+            Error::Other(format!("Web search failed: {e}"))
+        }
+    })?;
     let status = resp.status();
     if status.as_u16() == 401 {
         let _ = resp.text().await;
-        return Err(Error::Other(
-            if auth.via_cli {
-                "Grok CLI login expired. Run grok login, or add an API key in Settings.".into()
-            } else {
-                "xAI rejected the API key.".into()
-            },
-        ));
+        return Err(Error::Other(if auth.via_cli {
+            "Grok CLI login expired. Run grok login, or add an API key in Settings.".into()
+        } else {
+            "xAI rejected the API key.".into()
+        }));
     }
     if !status.is_success() {
         let detail = resp.text().await.unwrap_or_default();
         let detail = detail.chars().take(300).collect::<String>();
-        return Err(Error::Other(format!("Web search failed ({status}): {detail}")));
+        return Err(Error::Other(format!(
+            "Web search failed ({status}): {detail}"
+        )));
     }
     let content_type = resp
         .headers()
@@ -539,8 +560,9 @@ async fn execute(
         return read_search_stream(app, stream_id, req, resp).await;
     }
     let text = resp.text().await.unwrap_or_default();
-    let body: Value = serde_json::from_str(&text)
-        .map_err(|_| Error::Other("Web search returned a response that could not be read.".into()))?;
+    let body: Value = serde_json::from_str(&text).map_err(|_| {
+        Error::Other("Web search returned a response that could not be read.".into())
+    })?;
     emit_hosts(app, stream_id, &body);
     Ok(parse_response(&req.query, &req.allowed_domains, &body))
 }
@@ -756,7 +778,10 @@ mod tests {
         assert_eq!(body["model"], "grok-4.6");
         assert_eq!(body["input"], "rust 2024 edition");
         assert_eq!(body["tools"][0]["type"], "web_search");
-        assert_eq!(body["tools"][0]["filters"]["allowed_domains"][0], "doc.rust-lang.org");
+        assert_eq!(
+            body["tools"][0]["filters"]["allowed_domains"][0],
+            "doc.rust-lang.org"
+        );
         assert!(body.get("stream").is_none());
     }
 
@@ -812,7 +837,10 @@ mod tests {
             hosts_from(&event),
             vec!["seriouseats.com", "kingarthur.com"]
         );
-        assert_eq!(host_of("https://www.seriouseats.com/donuts").as_deref(), Some("seriouseats.com"));
+        assert_eq!(
+            host_of("https://www.seriouseats.com/donuts").as_deref(),
+            Some("seriouseats.com")
+        );
         assert_eq!(host_of("not a url"), None);
     }
 

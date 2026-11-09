@@ -2,17 +2,18 @@
 
 use tauri::{AppHandle, Manager, State};
 
-use crate::dev::{off_main, same_project_path};
 use crate::dev::git::{
-    git_branch_pull_request, git_branches, git_commit, git_create_branch, git_diff, git_discard,
-    git_file_at, git_identity, git_label, git_log, git_pull_request_checkout, git_pull_requests,
-    git_set_identity, git_show, git_stage, git_stash, git_status_with, git_switch, git_sync,
-    git_unstage, git_worktree_add, git_worktree_remove, git_worktree_rename, git_worktrees,
-    GitBranchPullRequest, GitCommit, GitIdentity, GitPullRequest, GitRepoSummary, GitTarget,
-    GitWorktree, GitWorktreeAdd,
+    fetch_action_runs, git_branch_pull_request, git_branches, git_commit, git_create_branch,
+    git_diff, git_discard, git_file_at, git_identity, git_label, git_log,
+    git_pull_request_checkout, git_pull_requests, git_remote_url, git_set_identity, git_show,
+    git_stage, git_stash, git_status_with, git_switch, git_sync, git_unstage, git_worktree_add,
+    git_worktree_remove, git_worktree_rename, git_worktrees, github_repo_slug, GitActionRun,
+    GitActionsSnapshot, GitBranchPullRequest, GitCommit, GitIdentity, GitPullRequest,
+    GitRepoSummary, GitTarget, GitWorktree, GitWorktreeAdd,
 };
-use crate::dev::types::{GitBranches, GitChange};
 use crate::dev::paths::{expand_folder_path, path_string};
+use crate::dev::types::{GitBranches, GitChange};
+use crate::dev::{off_main, same_project_path};
 use crate::error::{Error, Result};
 use crate::state::AppState;
 
@@ -46,7 +47,10 @@ pub async fn dev_git_diff(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_git_branches(state: State<'_, AppState>, workspace: String) -> Result<GitBranches> {
+pub async fn dev_git_branches(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<GitBranches> {
     let target = git_target(&state, &workspace)?;
     off_main(move || git_branches(&target)).await
 }
@@ -134,7 +138,10 @@ pub async fn dev_git_commit(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_git_identity(state: State<'_, AppState>, workspace: String) -> Result<GitIdentity> {
+pub async fn dev_git_identity(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<GitIdentity> {
     let target = git_target(&state, &workspace)?;
     off_main(move || git_identity(&target)).await
 }
@@ -210,7 +217,11 @@ pub async fn dev_git_pull_requests(
     let data_dir = state.data_dir.clone();
     off_main(move || {
         let rows = git_pull_requests(&target)?;
-        if let Some(repo) = rows.first().map(|row| pull_request_repo(&row.url)).flatten() {
+        if let Some(repo) = rows
+            .first()
+            .map(|row| pull_request_repo(&row.url))
+            .flatten()
+        {
             if let Ok(conn) = crate::appdb::open(&data_dir) {
                 if let Ok(payload) = serde_json::to_string(&rows) {
                     let _ = crate::appdb::set_pull_requests(&conn, &repo, &payload);
@@ -267,6 +278,74 @@ pub async fn dev_git_branch_pull_request(
 ) -> Result<Option<GitBranchPullRequest>> {
     let target = git_target(&state, &workspace)?;
     off_main(move || git_branch_pull_request(&target)).await
+}
+
+/// The Actions list saved after the last refresh. None until one has landed, or when this is not GitHub.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_actions_cached(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Option<GitActionsSnapshot>> {
+    let target = git_target(&state, &workspace)?;
+    let data_dir = state.data_dir.clone();
+    off_main(move || read_actions_cache(&target, &data_dir)).await
+}
+
+/// One `gh run list` for this repo. A failure leaves the saved list alone.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dev_git_actions(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<Option<GitActionsSnapshot>> {
+    let target = git_target(&state, &workspace)?;
+    let data_dir = state.data_dir.clone();
+    off_main(move || {
+        let Some(repo) = actions_repo(&target) else {
+            return Ok(None);
+        };
+        let runs = fetch_action_runs(&target)?;
+        let fetched_at = save_actions(&data_dir, &repo, &runs);
+        Ok(Some(GitActionsSnapshot { runs, fetched_at }))
+    })
+    .await
+}
+
+fn actions_repo(target: &GitTarget) -> Option<String> {
+    github_repo_slug(&git_remote_url(target)?)
+}
+
+fn read_actions_cache(
+    target: &GitTarget,
+    data_dir: &std::path::Path,
+) -> Result<Option<GitActionsSnapshot>> {
+    let Some(repo) = actions_repo(target) else {
+        return Ok(None);
+    };
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return Ok(None);
+    };
+    let Some((payload, fetched_at)) = crate::appdb::get_actions(&conn, &repo)? else {
+        return Ok(None);
+    };
+    let runs = serde_json::from_str::<Vec<GitActionRun>>(&payload).unwrap_or_default();
+    Ok(Some(GitActionsSnapshot { runs, fetched_at }))
+}
+
+fn save_actions(data_dir: &std::path::Path, repo: &str, runs: &[GitActionRun]) -> String {
+    let Ok(payload) = serde_json::to_string(runs) else {
+        return String::new();
+    };
+    let Ok(conn) = crate::appdb::open(data_dir) else {
+        return String::new();
+    };
+    if crate::appdb::set_actions(&conn, repo, &payload).is_err() {
+        return String::new();
+    }
+    crate::appdb::get_actions(&conn, repo)
+        .ok()
+        .flatten()
+        .map(|(_, at)| at)
+        .unwrap_or_default()
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -361,7 +440,9 @@ pub async fn dev_git_worktree_remove(
     // shows the conversations from the last time.
     let data_dir = state.data_dir.clone();
     let forgotten = path.clone();
-    let _ = off_main(move || crate::dev::project_location::drop_project_chats(&data_dir, &forgotten)).await;
+    let _ =
+        off_main(move || crate::dev::project_location::drop_project_chats(&data_dir, &forgotten))
+            .await;
     Ok(rows)
 }
 
@@ -381,11 +462,13 @@ pub async fn dev_git_file_at(
     off_main(move || git_file_at(&target, &path, &revision)).await
 }
 
-
 /// Branch label for a sidebar row. Does not register the folder as an opened workspace.
 /// One local `git status`. A cloud project's files are not on this mount.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_git_project_summary(state: State<'_, AppState>, path: String) -> Result<GitRepoSummary> {
+pub async fn dev_git_project_summary(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitRepoSummary> {
     let root = crate::dev::paths::expand_folder_path(&path)?;
     if crate::remote::project_for_workspace(&state, &root)?.is_some() {
         return Ok(crate::dev::git::GitRepoSummary {
@@ -407,7 +490,10 @@ pub async fn dev_git_project_summary(state: State<'_, AppState>, path: String) -
     off_main(move || git_label(&target)).await
 }
 
-fn group_layout(state: &AppState, workspace: &str) -> Result<Option<crate::dev::group::GroupLayout>> {
+fn group_layout(
+    state: &AppState,
+    workspace: &str,
+) -> Result<Option<crate::dev::group::GroupLayout>> {
     let root = state.require_workspace(workspace)?;
     Ok(crate::dev::group::layout(&root))
 }
@@ -420,7 +506,10 @@ fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
     let Some(project) = crate::remote::project_for_workspace(state, &root)? else {
         return GitTarget::local_in(
             &root,
-            &[state.projects_root.clone(), state.legacy_projects_root.clone()],
+            &[
+                state.projects_root.clone(),
+                state.legacy_projects_root.clone(),
+            ],
             &state.data_dir,
         );
     };
@@ -433,4 +522,3 @@ fn git_target(state: &AppState, workspace: &str) -> Result<GitTarget> {
         .and_then(crate::secrets::get_ssh_secret);
     GitTarget::remote(&root, machine, project, state.ssh_pool.clone(), secret)
 }
-

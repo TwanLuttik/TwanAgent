@@ -10,7 +10,10 @@ use crate::error::Result;
 use crate::state::AppState;
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_tree_signature(state: State<'_, AppState>, workspace: String) -> Result<TreeSnapshot> {
+pub async fn dev_tree_signature(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<TreeSnapshot> {
     let files = WorkspaceFiles::open(&state, &workspace)?;
     off_main(move || files.tree()).await
 }
@@ -126,10 +129,16 @@ pub fn dev_list_skill_files(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_load_skill(state: State<'_, AppState>, workspace: String, name: String) -> Result<String> {
+pub fn dev_load_skill(
+    state: State<'_, AppState>,
+    workspace: String,
+    name: String,
+) -> Result<String> {
     let root = state.require_workspace(&workspace)?;
     let home = crate::dev::paths::home_dir().unwrap_or_default();
-    Ok(twanagent_service::capabilities::load_skill_at(&root, &home, &name))
+    Ok(twanagent_service::capabilities::load_skill_at(
+        &root, &home, &name,
+    ))
 }
 
 #[tauri::command(rename_all = "snake_case")]

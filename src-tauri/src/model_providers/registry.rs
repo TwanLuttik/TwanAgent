@@ -23,7 +23,9 @@ pub fn sign_in_error(id: ProviderId) -> &'static str {
     match id {
         ProviderId::Anthropic => super::anthropic::SIGN_IN_ERROR,
         ProviderId::Minimax => super::minimax::SIGN_IN_ERROR,
-        ProviderId::Xai => "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings.",
+        ProviderId::Xai => {
+            "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings."
+        }
     }
 }
 
@@ -34,9 +36,7 @@ pub fn plan_mode(id: ProviderId) -> bool {
 /// Fallback rows from every provider, with a signed-in provider's live list replacing its fallback.
 pub async fn list_models(_data_dir: &Path) -> Vec<DevModel> {
     // The caller already paid for `grok --version`. Take the model rows without spawning it again.
-    let mut rows = grok_cli::load_models_public(
-        grok_cli::grok_home().as_deref(),
-    );
+    let mut rows = grok_cli::load_models_public(grok_cli::grok_home().as_deref());
     rows.retain(|row| {
         row.provider != super::anthropic::PROVIDER_ANTHROPIC
             && row.provider != super::minimax::PROVIDER_MINIMAX

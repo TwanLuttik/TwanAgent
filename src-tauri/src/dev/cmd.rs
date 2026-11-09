@@ -62,7 +62,9 @@ fn live_commands() -> &'static Mutex<HashMap<String, LiveCommand>> {
 /// A detached job is killed by the pid it printed. Missing ids are already gone.
 pub fn stop_command(id: &str) -> Result<()> {
     let live = {
-        let mut map = live_commands().lock().unwrap_or_else(|err| err.into_inner());
+        let mut map = live_commands()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let Some(live) = map.get_mut(id) else {
             return Ok(());
         };
@@ -93,7 +95,14 @@ fn remember_running(id: &str, child: u32) {
     live_commands()
         .lock()
         .unwrap_or_else(|err| err.into_inner())
-        .insert(id.to_string(), LiveCommand { pid: 0, child: Some(child), stopped: false });
+        .insert(
+            id.to_string(),
+            LiveCommand {
+                pid: 0,
+                child: Some(child),
+                stopped: false,
+            },
+        );
 }
 
 fn remember_command(id: &str, pid: u32) {
@@ -103,7 +112,14 @@ fn remember_command(id: &str, pid: u32) {
     live_commands()
         .lock()
         .unwrap_or_else(|err| err.into_inner())
-        .insert(id.to_string(), LiveCommand { pid, child: None, stopped: false });
+        .insert(
+            id.to_string(),
+            LiveCommand {
+                pid,
+                child: None,
+                stopped: false,
+            },
+        );
 }
 
 fn forget_command(id: &str) {
@@ -295,13 +311,19 @@ fn kill_command_tree(child: &mut std::process::Child) -> Result<()> {
     let result = Command::new("taskkill")
         .args(["/F", "/T", "/PID", &child.id().to_string()])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .stdout(Stdio::null()).stderr(Stdio::null()).status();
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let _ = child.kill();
     let _ = child.wait();
     match result {
         Ok(status) if status.success() => Ok(()),
-        Ok(status) => Err(Error::Other(format!("could not stop Windows command tree: {status}"))),
-        Err(err) => Err(Error::Other(format!("could not stop Windows command tree: {err}"))),
+        Ok(status) => Err(Error::Other(format!(
+            "could not stop Windows command tree: {status}"
+        ))),
+        Err(err) => Err(Error::Other(format!(
+            "could not stop Windows command tree: {err}"
+        ))),
     }
 }
 
@@ -576,7 +598,11 @@ fn detached_pid(stdout: &[u8]) -> Option<u32> {
         .take_while(|ch| ch.is_ascii_digit())
         .collect::<String>();
     let pid = digits.parse::<u32>().ok()?;
-    if pid == 0 { None } else { Some(pid) }
+    if pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
 }
 
 fn format_command_output(stdout: &[u8], stderr: &[u8], outcome: CommandWait) -> String {
@@ -641,14 +667,18 @@ mod tests {
     #[cfg(windows)]
     fn windows_powershell_command(script: &str) -> String {
         use base64::Engine;
-        let binary = std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let binary =
+            std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         assert!(binary.is_file(), "system PowerShell must be installed");
         // EncodedCommand takes UTF-16LE. The outer quotes are cmd.exe's /C envelope;
         // the inner quotes protect the absolute executable path independently of PATH.
         let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-        format!("\"\"{}\" -NoProfile -NonInteractive -EncodedCommand {encoded}\"", binary.display())
+        format!(
+            "\"\"{}\" -NoProfile -NonInteractive -EncodedCommand {encoded}\"",
+            binary.display()
+        )
     }
 
     #[test]
@@ -675,9 +705,8 @@ mod tests {
             "sleep 30".to_string()
         };
         let id_for_run = id.clone();
-        let worker = thread::spawn(move || {
-            run_command_streaming(&dir_path, &command, &id_for_run, |_| {})
-        });
+        let worker =
+            thread::spawn(move || run_command_streaming(&dir_path, &command, &id_for_run, |_| {}));
         let started = std::time::Instant::now();
         while started.elapsed() < Duration::from_secs(2) && !command_was_stopped(&id) {
             if live_commands().lock().unwrap().contains_key(&id) {
@@ -692,7 +721,10 @@ mod tests {
         stop_command(&id).unwrap();
         let out = worker.join().unwrap().unwrap();
         assert!(out.contains("Skipped: stopped."), "{out}");
-        assert!(started.elapsed() < Duration::from_secs(5), "stop waited for the command");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stop waited for the command"
+        );
     }
 
     #[test]
@@ -747,7 +779,10 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
         let listed = run_command(dir.path(), "ps -ax -o pid=,command=").unwrap();
         let alive = listed.lines().any(|line| {
-            let command = line.trim().split_once(' ').map(|(_, command)| command.trim());
+            let command = line
+                .trim()
+                .split_once(' ')
+                .map(|(_, command)| command.trim());
             command == Some("sleep 30") || command.is_some_and(|text| text.ends_with(" sleep 30"))
         });
         assert!(alive, "background process was killed: {listed}");
@@ -831,9 +866,12 @@ mod tests {
             "",
             Duration::from_secs(2),
             |chunk| seen.push_str(chunk),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(out.contains("timed out"), "{out}");
-        let pid = seen.lines().find_map(|line| line.trim().parse::<u32>().ok())
+        let pid = seen
+            .lines()
+            .find_map(|line| line.trim().parse::<u32>().ok())
             .expect("child must report its PID before timing out");
         let pid = sysinfo::Pid::from_u32(pid);
         let mut system = sysinfo::System::new();
@@ -861,7 +899,8 @@ mod tests {
         assert!(
             out.len() >= CMD_OUTPUT_LIMIT,
             "expected large output, got {}: {:?}",
-            out.len(), &out[..out.len().min(200)]
+            out.len(),
+            &out[..out.len().min(200)]
         );
         assert!(out.contains("truncated"));
     }

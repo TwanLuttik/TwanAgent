@@ -93,10 +93,7 @@ impl AppState {
     }
 
     pub fn opened_workspaces(&self) -> Vec<PathBuf> {
-        self.opened
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .list()
+        self.opened.lock().unwrap_or_else(|e| e.into_inner()).list()
     }
 
     pub fn forget_workspace(&self, root: &Path) -> Result<bool> {
@@ -118,7 +115,9 @@ impl AppState {
         // A project under the projects folder can be listed before it is registered.
         // Its icon is an asset URL, so the folder has to be allowed or the image 403s
         // and the sidebar keeps the folder glyph.
-        let _ = app.asset_protocol_scope().allow_directory(&self.projects_root, true);
+        let _ = app
+            .asset_protocol_scope()
+            .allow_directory(&self.projects_root, true);
         if self.legacy_projects_root != self.projects_root {
             let _ = app
                 .asset_protocol_scope()

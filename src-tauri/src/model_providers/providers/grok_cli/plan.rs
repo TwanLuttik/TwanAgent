@@ -165,12 +165,12 @@ fn plan_mode_json(previous: &str, state: &str, awaiting: bool) -> String {
             .and_then(|item| item.as_str())
             .unwrap_or("Inactive");
         if normalized == "Active" && was != "Active" {
-            obj.insert("was_previously_active".into(), serde_json::Value::Bool(true));
+            obj.insert(
+                "was_previously_active".into(),
+                serde_json::Value::Bool(true),
+            );
         }
-        obj.insert(
-            "state".into(),
-            serde_json::Value::String(normalized.into()),
-        );
+        obj.insert("state".into(), serde_json::Value::String(normalized.into()));
         obj.insert(
             "awaiting_plan_approval".into(),
             serde_json::Value::Bool(awaiting),
@@ -183,7 +183,10 @@ fn plan_mode_json(previous: &str, state: &str, awaiting: bool) -> String {
             .or_insert(serde_json::Value::Bool(false));
     }
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| {
-        format!("{{\"state\":\"{}\",\"awaiting_plan_approval\":{awaiting}}}", normalize_plan_state(state))
+        format!(
+            "{{\"state\":\"{}\",\"awaiting_plan_approval\":{awaiting}}}",
+            normalize_plan_state(state)
+        )
     })
 }
 
@@ -242,7 +245,8 @@ pub fn edit_grok_plan_file(
     if !session_id_safe(session_id) {
         return Err("invalid session id".into());
     }
-    let dir = session_dir(home, workspace, session_id).ok_or_else(|| "plan file is missing".to_string())?;
+    let dir = session_dir(home, workspace, session_id)
+        .ok_or_else(|| "plan file is missing".to_string())?;
     let path = dir.join("plan.md");
     let current = fs::read_to_string(&path).map_err(|_| "plan file is missing".to_string())?;
     let count = current.matches(old).count();
@@ -417,7 +421,14 @@ mod tests {
         let id = "01a0a89f-8f33-7600-8603-fb8517309b74";
         let workspace = PathBuf::from("/tmp/project");
         write_grok_plan_file(dir.path(), &workspace, id, "# Plan\n\nReuse helper.\n").unwrap();
-        edit_grok_plan_file(dir.path(), &workspace, id, "Reuse helper.", "Reuse the session helper.").unwrap();
+        edit_grok_plan_file(
+            dir.path(),
+            &workspace,
+            id,
+            "Reuse helper.",
+            "Reuse the session helper.",
+        )
+        .unwrap();
         let plan = read_grok_plan(dir.path(), &workspace, id);
         assert!(plan.content.contains("Reuse the session helper."));
         let missing = edit_grok_plan_file(dir.path(), &workspace, id, "nope", "x");

@@ -57,7 +57,11 @@ fn save_window_maximized(data_dir: &Path, maximized: bool) {
     let Ok(conn) = appdb::open(data_dir) else {
         return;
     };
-    let _ = appdb::set_setting(&conn, WINDOW_MAXIMIZED_KEY, if maximized { "1" } else { "0" });
+    let _ = appdb::set_setting(
+        &conn,
+        WINDOW_MAXIMIZED_KEY,
+        if maximized { "1" } else { "0" },
+    );
 }
 
 /// The last session's size, applied before the window is shown so it does not open and then jump.
@@ -105,7 +109,11 @@ fn nudge_window_on_screen(window: &tauri::WebviewWindow) {
 
 /// Remember the size after a resize. A minimized window reports 0×0 and is ignored.
 /// A maximized frame is not saved: the restored size is what should come back.
-pub(crate) fn note_window_resize(window: &tauri::WebviewWindow, data_dir: &Path, size: tauri::PhysicalSize<u32>) {
+pub(crate) fn note_window_resize(
+    window: &tauri::WebviewWindow,
+    data_dir: &Path,
+    size: tauri::PhysicalSize<u32>,
+) {
     if size.width == 0 || size.height == 0 {
         return;
     }
@@ -120,7 +128,11 @@ pub(crate) fn note_window_resize(window: &tauri::WebviewWindow, data_dir: &Path,
     if scale <= 0.0 {
         return;
     }
-    save_window_size(data_dir, f64::from(size.width) / scale, f64::from(size.height) / scale);
+    save_window_size(
+        data_dir,
+        f64::from(size.width) / scale,
+        f64::from(size.height) / scale,
+    );
 }
 
 /// Debug runs keep their own app data so `tauri dev` cannot read or rewrite a release install.
@@ -164,4 +176,3 @@ mod tests {
         }
     }
 }
-

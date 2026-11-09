@@ -6,6 +6,7 @@ import { loadGitChangesView, saveGitChangesView, type GitChangesView } from "../
 import * as api from "../../lib/tauri";
 import type { GitBranchPullRequest, GitBranches, GitChange, GitCommit, GitIdentity, GitRepoSummary, GitWorktree } from "../../lib/tauri";
 import { Symbol } from "../Symbol";
+import { ActionsRow } from "./ActionsRow";
 import { BranchSwitch } from "./BranchSwitch";
 import { ChangeFileRow, ChangeTree, changeLabel } from "./GitChanges";
 import { CommitList, GitSectionTabs, PullRequestView } from "./GitSections";
@@ -80,6 +81,7 @@ export function GitPane({
   const [email, setEmail] = useState("");
   const [section, setSection] = useState<GitSection>("changes");
   const [request, setRequest] = useState<GitBranchPullRequest | null>(null);
+  const [actionsRefresh, setActionsRefresh] = useState(0);
   const tree = view === "tree" ? gitChangesTree(changes) : [];
   const totals = gitChangeTotals(changes);
   const staged = changes.filter((row) => row.staged);
@@ -157,34 +159,41 @@ export function GitPane({
 
   return (
     <>
-      <div className="shrink-0 px-1.5 pt-1">
-        {grouped ? null : <BranchSwitch
-          current={summary?.detached ? summary.commit : branches.current}
-          names={branches.branches}
-          switching={switching}
-          onSwitch={onSwitch}
-          upstream={summary?.upstream ?? null}
-          ahead={summary?.ahead ?? 0}
-          behind={summary?.behind ?? 0}
-          workspace={workspacePath}
-          worktrees={repo ? worktrees : []}
-          busy={busy}
-          onOpenWorktree={(path) => onOpenWorkspace?.(path)}
-          onCreateWorktree={onCreateWorktree}
-          onRemoveWorktree={onRemoveWorktree}
-        />}
-        {branchError ? <p className="px-2 pt-1 text-[11px] text-err">{branchError}</p> : null}
-        {repo && !grouped ? (
-          <div className="mt-0.5 flex items-center gap-0.5 rounded-[8px] bg-wash/70 px-0.5 py-0.5">
-            <GitIconButton label="Fetch" icon="arrow.2.circlepath" disabled={busy} onClick={() => onSync("fetch")} />
-            <GitIconButton label="Pull" icon="square.and.arrow.down" disabled={busy} onClick={() => onSync("pull")} />
-            <GitIconButton
-              label={summary?.upstream ? "Push" : "Publish branch"}
-              icon="square.and.arrow.up"
-              disabled={busy}
-              onClick={() => onSync(summary?.upstream ? "push" : "publish")}
-            />
-            <div className="relative ml-auto" ref={moreRef}>
+      <div className="shrink-0 px-1 pt-1">
+        <div className="flex items-center gap-0.5 pr-0.5">
+          {grouped ? <div className="min-w-0 flex-1" /> : (
+            <div className="min-w-0 flex-1">
+              <BranchSwitch
+                current={summary?.detached ? summary.commit : branches.current}
+                names={branches.branches}
+                switching={switching}
+                onSwitch={onSwitch}
+                upstream={summary?.upstream ?? null}
+                ahead={summary?.ahead ?? 0}
+                behind={summary?.behind ?? 0}
+                workspace={workspacePath}
+                worktrees={repo ? worktrees : []}
+                busy={busy}
+                onOpenWorktree={(path) => onOpenWorkspace?.(path)}
+                onCreateWorktree={onCreateWorktree}
+                onRemoveWorktree={onRemoveWorktree}
+              />
+            </div>
+          )}
+          {repo && !grouped ? (
+            <div className="flex shrink-0 items-center">
+              <GitIconButton label="Fetch" icon="arrow.2.circlepath" disabled={busy} onClick={() => onSync("fetch")} />
+              <GitIconButton label="Pull" icon="square.and.arrow.down" disabled={busy} onClick={() => onSync("pull")} />
+              <GitIconButton
+                label={summary?.upstream ? "Push" : "Publish branch"}
+                icon="square.and.arrow.up"
+                disabled={busy}
+                onClick={() => {
+                  onSync(summary?.upstream ? "push" : "publish");
+                  setActionsRefresh((n) => n + 1);
+                }}
+              />
+              <div className="relative" ref={moreRef}>
               <GitIconButton
                 label="More"
                 icon="ellipsis"
@@ -222,9 +231,14 @@ export function GitPane({
                   />
                 </div>
               ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
+        </div>
+        {repo && !grouped && workspacePath ? (
+          <ActionsRow workspace={workspacePath} branch={branch} refreshToken={actionsRefresh} />
         ) : null}
+        {branchError ? <p className="px-2 pt-1 text-[12px] text-err">{branchError}</p> : null}
         {showNew ? (
           <form
             className="flex gap-1 px-0.5 pt-1"
@@ -278,34 +292,28 @@ export function GitPane({
           onSelect={setSection}
           trailing={
             showing === "changes" ? (
-              <div className="mb-1 flex items-center gap-1.5">
-                <div className="flex items-center rounded-[6px] bg-wash p-px" role="group" aria-label="Change list layout">
-                  <button
-                    type="button"
-                    aria-pressed={view === "list"}
-                    aria-label="List view"
-                    title="List"
-                    onClick={() => setChangesView("list")}
-                    className={`flex size-5 items-center justify-center rounded-[5px] ${
-                      view === "list" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    <Symbol name="list.bullet" className="size-3" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={view === "tree"}
-                    aria-label="Tree view"
-                    title="Tree"
-                    onClick={() => setChangesView("tree")}
-                    className={`flex size-5 items-center justify-center rounded-[5px] ${
-                      view === "tree" ? "bg-panel text-ink shadow-sm" : "text-muted hover:text-ink"
-                    }`}
-                  >
-                    <Symbol name="list.tree" className="size-3" />
-                  </button>
-                </div>
-                <span className="rounded-full bg-wash px-1.5 py-px text-[10px] font-medium text-muted tabular-nums">{changes.length}</span>
+              <div className="mb-1 flex items-center gap-0.5" role="group" aria-label="Change list layout">
+                <button
+                  type="button"
+                  aria-pressed={view === "list"}
+                  aria-label="List view"
+                  title="List"
+                  onClick={() => setChangesView("list")}
+                  className={`flex size-6 items-center justify-center rounded-md ${view === "list" ? "text-ink" : "text-muted hover:text-ink"}`}
+                >
+                  <Symbol name="list.bullet" className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={view === "tree"}
+                  aria-label="Tree view"
+                  title="Tree"
+                  onClick={() => setChangesView("tree")}
+                  className={`flex size-6 items-center justify-center rounded-md ${view === "tree" ? "text-ink" : "text-muted hover:text-ink"}`}
+                >
+                  <Symbol name="list.tree" className="size-3.5" />
+                </button>
+                <span className="pr-1 pl-0.5 text-[12px] text-muted tabular-nums">{changes.length}</span>
               </div>
             ) : null
           }
@@ -324,25 +332,22 @@ export function GitPane({
         />
       ) : null}
       {showing === "changes" && changes.length > 0 ? (
-        <div className="shrink-0 px-1.5 pt-1.5">
+        <div className="shrink-0 px-2 pt-1 pb-1">
           <button
             type="button"
             onClick={onOpenAll}
-            className={`flex w-full items-center gap-1.5 rounded-[7px] px-2 py-[5px] text-left text-[12px] ${
-              selected === ALL_DIFF_PATH ? "bg-wash-strong text-ink" : "text-ink hover:bg-wash"
+            className={`flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-left text-[12px] ${
+              selected === ALL_DIFF_PATH ? "bg-wash text-ink" : "text-muted hover:text-ink"
             }`}
           >
-            <Symbol name="doc" className="size-3.5 shrink-0 text-accent" />
-            <span className="min-w-0 flex-1 truncate font-medium">View diff</span>
-            {totals.additions > 0 ? (
-              <span className="rounded bg-ok/12 px-1 font-mono text-[10px] font-medium text-ok tabular-nums">+{formatDiffCount(totals.additions)}</span>
-            ) : null}
-            {totals.deletions > 0 ? (
-              <span className="rounded bg-err/12 px-1 font-mono text-[10px] font-medium text-err tabular-nums">-{formatDiffCount(totals.deletions)}</span>
-            ) : null}
+            <span>Diff</span>
+            <span className="ml-auto flex items-baseline gap-2 font-mono text-[11px] tabular-nums">
+              {totals.additions > 0 ? <span className="text-ok">+{formatDiffCount(totals.additions)}</span> : null}
+              {totals.deletions > 0 ? <span className="text-err">−{formatDiffCount(totals.deletions)}</span> : null}
+            </span>
           </button>
           <form
-            className="mt-1 grid gap-1"
+            className="mt-1"
             onSubmit={(ev) => {
               ev.preventDefault();
               const text = message.trim();
@@ -354,27 +359,47 @@ export function GitPane({
             <textarea
               value={message}
               onChange={(ev) => setMessage(ev.target.value)}
-              placeholder={staged.length ? "Commit message" : "Stage files to commit"}
+              placeholder="Commit message"
               rows={2}
-              className="resize-none rounded-[6px] bg-wash px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-muted/70"
+              onKeyDown={(ev) => {
+                if (ev.key !== "Enter" || (!ev.metaKey && !ev.ctrlKey)) return;
+                ev.preventDefault();
+                ev.currentTarget.form?.requestSubmit();
+              }}
+              className="w-full resize-none rounded-lg bg-wash px-3 py-2 text-[13px] leading-5 text-ink outline-none placeholder:text-muted/80"
             />
-            <div className="flex items-center gap-1">
-              <GitAction label={unstaged.length ? `Stage ${unstaged.length}` : "Stage"} disabled={busy || unstaged.length === 0} onClick={() => onStage(unstaged.map((row) => row.path))} />
-              <GitAction label="Unstage" disabled={busy || staged.length === 0} onClick={() => onUnstage(staged.map((row) => row.path))} />
-              <span className="ml-auto">
-                <GitIconButton
-                  label="Discard all changes"
-                  icon="trash"
-                  disabled={busy || changes.length === 0}
-                  onClick={() => {
-                    if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
-                  }}
-                />
-              </span>
+            <div className="mt-1 flex items-center gap-1 px-0.5">
+              <button
+                type="button"
+                disabled={busy || unstaged.length === 0}
+                onClick={() => onStage(unstaged.map((row) => row.path))}
+                className="rounded-md px-1.5 py-1 text-[12px] text-ink hover:bg-wash disabled:text-muted disabled:hover:bg-transparent"
+              >
+                Stage all
+                {unstaged.length > 0 ? <span className="ml-1 text-muted tabular-nums">{unstaged.length}</span> : null}
+              </button>
+              {staged.length > 0 ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => onUnstage(staged.map((row) => row.path))}
+                  className="rounded-md px-1.5 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink disabled:opacity-40"
+                >
+                  Unstage
+                </button>
+              ) : null}
+              <GitIconButton
+                label="Discard all changes"
+                icon="trash"
+                disabled={busy || changes.length === 0}
+                onClick={() => {
+                  if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
+                }}
+              />
               <button
                 type="submit"
                 disabled={busy || !message.trim() || staged.length === 0}
-                className="rounded-[6px] bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-wash disabled:text-muted disabled:opacity-100"
+                className="ml-auto rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-transparent disabled:text-muted"
               >
                 {busy ? "Working…" : "Commit"}
               </button>

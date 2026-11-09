@@ -51,7 +51,9 @@ pub fn dev_remote_home(state: State<'_, AppState>, id: String) -> Result<String>
     )?;
     let home = out.stdout.trim();
     if !home.starts_with('/') || home.contains('\n') {
-        return Err(Error::Other("could not read the home folder on that server".into()));
+        return Err(Error::Other(
+            "could not read the home folder on that server".into(),
+        ));
     }
     Ok(home.to_string())
 }
@@ -128,7 +130,10 @@ pub fn dev_list_remote_projects(state: State<'_, AppState>) -> Result<Vec<Remote
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_test_machine(state: State<'_, AppState>, id: String) -> Result<super::TestMachineResult> {
+pub fn dev_test_machine(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<super::TestMachineResult> {
     let conn = super::open_db(&state)?;
     let machine = config::machine_by_id(&conn, &id)?
         .ok_or_else(|| Error::NotFound("machine not found".into()))?;
@@ -251,7 +256,12 @@ pub async fn dev_create_remote_project(
         let machine = config::machine_by_id(&conn, &machine_id)?
             .ok_or_else(|| Error::NotFound("machine not found".into()))?;
         require_trusted_host(&work, &machine)?;
-        let _ = super::require_exec(&work, &machine, &super::super::mount::mkdir_remote_command(&remote_path)?, 30)?;
+        let _ = super::require_exec(
+            &work,
+            &machine,
+            &super::super::mount::mkdir_remote_command(&remote_path)?,
+            30,
+        )?;
         register_remote_project(&app, &machine, &name, &remote_path)
     })
     .await
@@ -259,7 +269,10 @@ pub async fn dev_create_remote_project(
 
 fn require_trusted_host(work: &ServerWork, machine: &config::Machine) -> Result<()> {
     let known = KnownHosts::load(&work.data_dir);
-    let trusted = known.rows.iter().any(|row| row.host == machine.host && row.port == machine.port);
+    let trusted = known
+        .rows
+        .iter()
+        .any(|row| row.host == machine.host && row.port == machine.port);
     if trusted {
         return Ok(());
     }
@@ -268,7 +281,12 @@ fn require_trusted_host(work: &ServerWork, machine: &config::Machine) -> Result<
     ))
 }
 
-fn register_remote_project(app: &AppHandle, machine: &config::Machine, name: &str, remote_path: &str) -> Result<String> {
+fn register_remote_project(
+    app: &AppHandle,
+    machine: &config::Machine,
+    name: &str,
+    remote_path: &str,
+) -> Result<String> {
     let state = app.state::<AppState>();
     let conn = super::open_db(&state)?;
     // Opening a folder that already exists on the server must not add a second sidebar row.
@@ -310,9 +328,15 @@ pub async fn dev_workspace_remote(
         let machine = config::machine_by_id(&conn, &project.machine_id)?
             .ok_or_else(|| Error::NotFound("machine not found".into()))?;
         let online = machine_reachable(&machine.host, machine.port);
-        let paired_server = super::super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
+        let paired_server =
+            super::super::agent_server::server_by_host(&conn, &machine.host, machine.port)?;
         // The file on the server is the truth. The local note is only a fallback when SSH cannot answer.
-        let providers = super::servers::provider_keys_on_server(&work, &machine, paired_server.as_ref(), &conn)?;
+        let providers = super::servers::provider_keys_on_server(
+            &work,
+            &machine,
+            paired_server.as_ref(),
+            &conn,
+        )?;
         let paired = paired_server.as_ref().is_some_and(|server| server.paired);
         Ok(Some(super::WorkspaceRemote {
             machine_id: machine.id,
@@ -333,7 +357,10 @@ pub async fn dev_workspace_remote(
 /// Open the SSH session before the file tree asks for it.
 /// File tools share one channel, so the first login would otherwise stall the window.
 #[tauri::command(rename_all = "snake_case")]
-pub async fn dev_warm_workspace_link(state: State<'_, AppState>, workspace: String) -> Result<bool> {
+pub async fn dev_warm_workspace_link(
+    state: State<'_, AppState>,
+    workspace: String,
+) -> Result<bool> {
     let work = super::server_work(&state);
     crate::state::run_blocking(move || {
         let root = crate::dev::paths::expand_folder_path(&workspace)?;
@@ -398,7 +425,9 @@ pub fn machine_reachable(host: &str, port: u16) -> bool {
             let _ = ping_tx.send(host_answers_ping(&ping_host));
         })
         .ok();
-    let answered = ping_rx.recv_timeout(std::time::Duration::from_millis(1500)).unwrap_or(false);
+    let answered = ping_rx
+        .recv_timeout(std::time::Duration::from_millis(1500))
+        .unwrap_or(false);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("twanagent-reach".into())
@@ -413,7 +442,8 @@ pub fn machine_reachable(host: &str, port: u16) -> bool {
     let Ok(Some(addr)) = rx.recv_timeout(std::time::Duration::from_millis(1200)) else {
         return false;
     };
-    let port_open = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok();
+    let port_open =
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(900)).is_ok();
     // The port is the login. Ping only confirms the address is a live machine.
     let _ = answered;
     port_open

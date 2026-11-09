@@ -254,7 +254,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
     }
     if version.unwrap_or(0) < 9 {
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN context_window INTEGER", []);
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN context_window INTEGER",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN permission TEXT", []);
     }
     if version.unwrap_or(0) < 10 {
@@ -298,9 +301,21 @@ fn insert_conversation(conn: &Connection, conv: &Conversation, sort_order: i64) 
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    let effort = conv.effort.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let model = conv.model.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    let permission = conv.permission.as_ref().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
+    let effort = conv
+        .effort
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let model = conv
+        .model
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let permission = conv
+        .permission
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     let context_window = conv.context_window.filter(|value| *value > 0);
     conn.execute(
         "INSERT INTO conversations (id, title, created_at, updated_at, kind, journey_id, sort_order, context_usage, compaction, effort, model, context_window, permission, archived)
@@ -478,7 +493,10 @@ fn sync_messages(conn: &Connection, conversation_id: &str, messages: &[Value]) -
     }
     let stored = load_messages(conn, conversation_id)?;
     let mut prefix = 0;
-    while prefix < stored.len() && prefix < messages.len() && message_same(&stored[prefix], &messages[prefix]) {
+    while prefix < stored.len()
+        && prefix < messages.len()
+        && message_same(&stored[prefix], &messages[prefix])
+    {
         prefix += 1;
     }
     if prefix == stored.len() && prefix == messages.len() {
@@ -502,7 +520,9 @@ fn message_same(stored: &Value, incoming: &Value) -> bool {
     if text_field(stored, "content") != text_field(incoming, "content") {
         return false;
     }
-    if stored.get("tool_call_id").and_then(Value::as_str) != incoming.get("tool_call_id").and_then(Value::as_str) {
+    if stored.get("tool_call_id").and_then(Value::as_str)
+        != incoming.get("tool_call_id").and_then(Value::as_str)
+    {
         return false;
     }
     if canonical_json(stored.get("tool_calls")) != canonical_json(incoming.get("tool_calls")) {
@@ -521,7 +541,11 @@ fn message_same(stored: &Value, incoming: &Value) -> bool {
     if reasoning(stored) != reasoning(incoming) {
         return false;
     }
-    let duration = |msg: &Value| msg.get("durationMs").and_then(Value::as_i64).filter(|ms| *ms >= 0);
+    let duration = |msg: &Value| {
+        msg.get("durationMs")
+            .and_then(Value::as_i64)
+            .filter(|ms| *ms >= 0)
+    };
     if duration(stored) != duration(incoming) {
         return false;
     }
@@ -584,7 +608,8 @@ type MessageRow = (
 );
 
 fn message_from_row(row: MessageRow) -> Result<Value> {
-    let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at) = row;
+    let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at) =
+        row;
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), Value::String(role));
     if let Some(text) = content {
@@ -613,7 +638,11 @@ fn message_from_row(row: MessageRow) -> Result<Value> {
     Ok(Value::Object(obj))
 }
 
-fn load_message_at(conn: &Connection, conversation_id: &str, sort_order: i64) -> Result<Option<Value>> {
+fn load_message_at(
+    conn: &Connection,
+    conversation_id: &str,
+    sort_order: i64,
+) -> Result<Option<Value>> {
     let row = conn
         .query_row(
             "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
@@ -704,7 +733,9 @@ fn row_to_conversation(
         sort_order,
         effort: effort.filter(|value| !value.trim().is_empty()),
         model: model.filter(|value| !value.trim().is_empty()),
-        context_window: context_window.and_then(|value| u64::try_from(value).ok()).filter(|value| *value > 0),
+        context_window: context_window
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0),
         permission: permission.filter(|value| !value.trim().is_empty()),
         archived,
     })
@@ -765,13 +796,13 @@ mod conversations;
 pub(crate) use conversations::clip_sidebar_line;
 mod journeys;
 
+#[cfg(test)]
+pub use conversations::list_conversations;
 pub use conversations::{
     conversation_summary, delete_conversation, get_conversation, list_conversation_summaries,
     reorder_conversations, save_conversation, save_conversation_suffix_with_usage,
     set_conversation_archived, set_conversation_compaction,
 };
-#[cfg(test)]
-pub use conversations::list_conversations;
 pub use journeys::{
     create_journey, delete_journey, get_knowledge, list_journeys, move_conversation,
     rename_journey, reorder_sidebar, save_knowledge, set_journey_collapsed, set_journey_color,
