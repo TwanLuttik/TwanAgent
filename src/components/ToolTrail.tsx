@@ -228,20 +228,23 @@ function ToolMark({ label }: { label: string }) {
   return (
     <Symbol
       name={toolTrailTypeIcon(toolTrailKind(label))}
-      className="size-3 shrink-0 text-muted/80 transition-colors duration-200 group-hover:text-ink"
+      className="size-3 shrink-0 text-muted/80 transition-colors duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none group-hover:text-ink"
     />
   );
 }
+
+const VERB =
+  "transition-colors duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none";
 
 /** The action stays darker than the path, so a list of reads does not look like one sentence. */
 function ToolLabel({ label }: { label: string }) {
   const parts = toolTrailParts(label);
   if (!parts.detail) {
-    return <span className="tool-verb min-w-0 truncate text-ink/75">{parts.verb}</span>;
+    return <span className={`tool-verb min-w-0 truncate text-ink/75 ${VERB}`}>{parts.verb}</span>;
   }
   return (
     <span className="flex min-w-0 items-baseline gap-1.5">
-      <span className="tool-verb shrink-0 text-ink/75">{parts.verb}</span>
+      <span className={`tool-verb shrink-0 text-ink/75 ${VERB}`}>{parts.verb}</span>
       <span className="min-w-0 truncate text-muted/80">{parts.detail}</span>
     </span>
   );
@@ -348,7 +351,7 @@ function ExpandableToolCall({
         onClick={() => {
           if (canOpen) setOpen((value) => !value);
         }}
-        className={`group flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 transition-colors duration-200 hover:[&_.tool-verb]:text-ink ${
+        className={`group flex min-w-0 items-center gap-2 text-left text-[13px] leading-5 hover:[&_.tool-verb]:text-ink ${
           canOpen ? "w-full rounded-md" : "cursor-default"
         }`}
       >

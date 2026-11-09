@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import * as api from "../../lib/tauri";
 import type { ProjectRemoval } from "../../lib/tauri";
 import { formatBytes } from "../../lib/usage";
-import { AnchoredMenu, MenuItem, MenuSubmenu } from "../ContextMenu";
+import { AnchoredMenu, MenuItem, MenuSeparator, MenuSubmenu } from "../ContextMenu";
 
 export function ProjectContextMenu({
   x,
@@ -38,11 +38,16 @@ export function ProjectContextMenu({
   onAddTo?: (groupPath: string) => void;
   removeLabel?: string;
 }) {
+  const hasActions = Boolean(onNewChat || onFavorite || onSettings);
+  const hasPlace = Boolean(onReveal || path);
+  const hasOrganize = Boolean(onGroup || (addTargets && addTargets.length > 0));
   return (
     <AnchoredMenu x={x} y={y} label={name}>
       {onNewChat ? <MenuItem onClick={onNewChat}>New chat</MenuItem> : null}
       {onFavorite ? <MenuItem onClick={onFavorite}>{favorite ? "Unfavorite" : "Favorite"}</MenuItem> : null}
       {onSettings ? <MenuItem onClick={onSettings}>Settings</MenuItem> : null}
+      {hasActions && hasPlace ? <MenuSeparator /> : null}
+      {onReveal ? <MenuItem onClick={onReveal}>Open in Finder</MenuItem> : null}
       {path ? (
         <MenuItem
           onClick={() => {
@@ -50,10 +55,10 @@ export function ProjectContextMenu({
             onCopied?.();
           }}
         >
-          Copy ID
+          Copy path
         </MenuItem>
       ) : null}
-      {onReveal ? <MenuItem onClick={onReveal}>Open in Finder</MenuItem> : null}
+      {(hasActions || hasPlace) && hasOrganize ? <MenuSeparator /> : null}
       {onGroup ? <MenuItem onClick={onGroup}>Group projects</MenuItem> : null}
       {addTargets && addTargets.length > 0 ? (
         <MenuSubmenu label="Add to group">
@@ -64,6 +69,7 @@ export function ProjectContextMenu({
           ))}
         </MenuSubmenu>
       ) : null}
+      {hasActions || hasPlace || hasOrganize ? <MenuSeparator /> : null}
       <MenuItem danger onClick={onDelete}>
         {removeLabel}
       </MenuItem>

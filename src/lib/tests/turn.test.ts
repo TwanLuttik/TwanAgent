@@ -20,6 +20,8 @@ import {
   isRetryableChatError,
   isTransientProviderError,
   providerRetryPauseMs,
+  providerRetryStatus,
+  isProviderRetryStatus,
   markUnseenFinished,
   pendingEditBlocksSend,
   pendingForChat,
@@ -253,11 +255,16 @@ describe("isTransientProviderError", () => {
     assert.equal(providerRetryPauseMs(0), 2000);
     assert.equal(providerRetryPauseMs(3), 16000);
     assert.equal(providerRetryPauseMs(9), 30000);
+    assert.equal(providerRetryStatus(1), "The model is unavailable. Retry 1…");
+    assert.equal(providerRetryStatus(4), "The model is unavailable. Retry 4…");
+    assert.equal(providerRetryStatus(0), "The model is unavailable. Retry 1…");
+    assert.equal(isProviderRetryStatus(providerRetryStatus(2)), true);
+    assert.equal(isProviderRetryStatus("Thinking…"), false);
     assert.equal(activityFromTurnStatus(null), null);
     assert.equal(activityFromTurnStatus("  "), null);
-    assert.deepEqual(activityFromTurnStatus("The model is unavailable. Retrying…"), {
+    assert.deepEqual(activityFromTurnStatus(providerRetryStatus(2)), {
       kind: "tool",
-      label: "The model is unavailable. Retrying…",
+      label: "The model is unavailable. Retry 2…",
     });
   });
 });

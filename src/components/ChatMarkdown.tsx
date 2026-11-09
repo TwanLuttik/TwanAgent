@@ -79,7 +79,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({ text, live = false }: {
   if (!shown) return null;
   if (live && shown !== text) return <StreamingPlain text={text} />;
   return (
-    <div className="text-[13px] leading-[1.65] text-ink/80 [overflow-wrap:anywhere]">
+    <div className="text-[13px] leading-[1.65] text-ink/80 [overflow-wrap:break-word]">
       <Markdown remarkPlugins={[remarkGfm]} components={components}>
         {linkifyBareUrls(closeOpenFence(shown))}
       </Markdown>
@@ -89,7 +89,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({ text, live = false }: {
 
 function StreamingPlain({ text }: { text: string }) {
   return (
-    <div className="text-[13px] leading-[1.65] whitespace-pre-wrap text-ink/80 [overflow-wrap:anywhere]">
+    <div className="text-[13px] leading-[1.65] whitespace-pre-wrap text-ink/80 [overflow-wrap:break-word]">
       {closeOpenFence(text)}
     </div>
   );
@@ -238,7 +238,7 @@ function markdownComponents(
           href={href}
           title={href}
           rel="noreferrer noopener"
-          className="cursor-pointer rounded-[3px] bg-accent/20 px-[3px] text-accent box-decoration-clone hover:bg-accent/30 [&_strong]:text-accent"
+          className="cursor-pointer text-accent underline decoration-accent/35 underline-offset-[0.15em] hover:decoration-accent [&_strong]:text-accent"
           onClick={(event) => {
             if (!href || !browserLink(href)) return;
             event.preventDefault();
@@ -339,8 +339,7 @@ function MarkdownCode({
   if (!looksLikeWorkspacePath(raw) || !existing.has(path)) {
     return <code className="rounded-[4px] bg-inset px-[5px] py-px font-mono text-[12px] text-ink">{children}</code>;
   }
-  const chipClass =
-    "inline-flex max-w-full items-center gap-1 align-middle font-mono text-[12px] leading-none text-accent [overflow-wrap:anywhere]";
+  const chipClass = "inline align-baseline font-mono text-[12px] text-accent [overflow-wrap:anywhere]";
   const chip = (
     <code
       title={workspace ? undefined : onOpenFile ? `Open ${path}` : path}
@@ -359,8 +358,8 @@ function MarkdownCode({
       }
       className={onOpenFile ? `${chipClass} cursor-pointer hover:underline` : chipClass}
     >
-      <FileIcon name={path} className="size-3" />
-      <span>{raw}</span>
+      <FileIcon name={path} className="mr-1 inline-block size-3 align-[-0.125em]" />
+      {raw}
     </code>
   );
   if (!workspace) return chip;

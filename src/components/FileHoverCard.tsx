@@ -121,7 +121,7 @@ export function FileHoverCard({
   return (
     <span
       ref={wrap}
-      className="relative inline-flex max-w-full items-center align-middle leading-none"
+      className="relative inline max-w-full align-baseline"
       title={on ? undefined : onOpen ? `Open ${path}` : path}
       onMouseEnter={show}
       onMouseLeave={hide}

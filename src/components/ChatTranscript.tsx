@@ -16,6 +16,7 @@ import { imageTextParts, imageTokenLabel } from "../lib/image";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
+import { isProviderRetryStatus } from "../lib/turn";
 import { subagentOpenId, type SubagentRecord, type SubagentRun } from "../lib/subagent";
 import { RunningElapsed } from "./RunningElapsed";
 import { ThinkingTrace } from "./ThinkingTrace";
@@ -161,10 +162,13 @@ function UserBubble({
 }
 
 export function ActivityStatus({ label, startedAt }: { label: string; startedAt?: number }) {
+  const down = isProviderRetryStatus(label);
   return (
-    <div className="mb-3 flex items-center gap-1.5 text-[11px] text-muted/55" aria-live="polite">
+    <div className={`mb-3 flex items-center gap-1.5 text-[11px] ${down ? "text-warn" : "text-muted/55"}`} aria-live="polite">
       <span
-        className="size-2.5 shrink-0 animate-spin rounded-full border border-ink/35 border-t-transparent"
+        className={`size-2.5 shrink-0 animate-spin rounded-full border border-t-transparent ${
+          down ? "border-warn/70" : "border-ink/35"
+        }`}
         aria-hidden
       />
       <span>{label}</span>

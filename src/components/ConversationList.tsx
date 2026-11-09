@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   DndContext,
   DragOverlay,
@@ -31,6 +32,7 @@ import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { subagentsForParent } from "../lib/subagent-parent";
 import { sidebarActivityIcon, sidebarActivityText } from "../lib/core";
+import { isProviderRetryStatus } from "../lib/turn";
 import { formatModelName } from "../lib/usage";
 
 export function ConversationList({
@@ -174,7 +176,7 @@ export function ConversationList({
       onDragEnd={onDragEnd}
     >
       <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
-        <div ref={listRef} className="flex flex-col gap-1" role="list">
+        <div ref={listRef} className="flex flex-col gap-0.5" role="list">
           {conversations.map((row) => (
             <SortableRow
               key={row.id}
@@ -346,6 +348,50 @@ const SortableRow = memo(function SortableRow({
   );
 });
 
+const SNIPPET_EASE = [0.22, 1, 0.36, 1] as const;
+
+/** The activity line changes while a chat runs. The new text rises as the old one leaves. */
+function RisingText({ text, title }: { text: string; title: string }) {
+  const reduce = useReducedMotion();
+  return (
+    <span className="relative block h-[14px] min-w-0 flex-1 overflow-hidden">
+      <AnimatePresence initial={false}>
+        <motion.span
+          key={text}
+          initial={reduce ? false : { opacity: 0, y: 5 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduce ? { opacity: 0 } : { opacity: 0, y: -5 }}
+          transition={{ duration: reduce ? 0 : 0.18, ease: SNIPPET_EASE }}
+          className="absolute inset-0 truncate"
+          title={title}
+        >
+          {text}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+}
+
+function RisingIcon({ name }: { name: string }) {
+  const reduce = useReducedMotion();
+  return (
+    <span className="relative block size-3 shrink-0 overflow-hidden">
+      <AnimatePresence initial={false}>
+        <motion.span
+          key={name}
+          initial={reduce ? false : { opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduce ? { opacity: 0 } : { opacity: 0, y: -4 }}
+          transition={{ duration: reduce ? 0 : 0.18, ease: SNIPPET_EASE }}
+          className="absolute inset-0"
+        >
+          <Symbol name={name} className="size-3" />
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+}
+
 /** Move the held row without stretching it to the height of the row it passes over. */
 function rowDragTransform(transform: Transform | null): string | undefined {
   if (!transform) return undefined;
@@ -402,9 +448,17 @@ const ConversationCard = memo(function ConversationCard({
   const activityIcon = running && caption ? sidebarActivityIcon(caption) : "";
   const activityMark = activityIcon && activityIcon !== "arrow.turn.down.right" ? activityIcon : "";
   const activityText = running && caption ? sidebarActivityText(caption) : caption;
+  const snippetQuiet = !running && !selected;
+  const retrying = running && isProviderRetryStatus(activityText);
+  const snippetClass = `mt-px flex min-w-0 items-center gap-1 text-[11px] leading-[14px] transition-colors duration-150 ease-out motion-reduce:transition-none ${
+    retrying ? "text-warn" : running ? "text-ink" : snippetQuiet ? "text-muted/55 group-hover/chat:text-muted" : "text-muted"
+  }`;
+  const arrowClass = `size-3 shrink-0 transition-opacity duration-150 ease-out motion-reduce:transition-none ${
+    snippetQuiet ? "text-muted opacity-45 group-hover/chat:opacity-70" : "opacity-70"
+  }`;
   return (
     <div
-      className={`group/chat relative z-0 flex items-center overflow-visible rounded-xl select-none hover:z-10 ${
+      className={`group/chat relative z-0 flex items-center overflow-visible rounded-xl select-none transition-colors duration-150 ease-out motion-reduce:transition-none hover:z-10 ${
         overlay
           ? "cursor-grabbing border border-transparent bg-canvas shadow-card"
           : placeholder
@@ -429,7 +483,7 @@ const ConversationCard = memo(function ConversationCard({
           onSelect?.(rowId, { toggle: false, range: false });
           onOpen?.(rowId);
         }}
-        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 py-1.5 pr-2 pl-2 text-left text-ink outline-none disabled:cursor-default"
+        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 py-1 pr-2 pl-2 text-left text-ink outline-none disabled:cursor-default"
       >
         <ChatLogo model={row.model} />
         <span className={`min-w-0 flex-1 ${onDelete ? "transition-[padding] duration-150 ease-out group-hover/chat:pr-4" : ""}`}>
@@ -468,28 +522,24 @@ const ConversationCard = memo(function ConversationCard({
             ) : null}
           </span>
           {place.worktree && place.branch.trim() ? (
-            <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
+            <span className={snippetClass}>
               <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-ok" />
               <span className="max-w-[46%] shrink-0 truncate text-ok" title={place.branch.trim()}>
                 {place.branch.trim()}
               </span>
               {caption ? (
                 <>
-                  {activityMark ? <Symbol name={activityMark} className="size-3 shrink-0" /> : null}
-                  <Symbol name="arrow.turn.down.right" className="size-3 shrink-0 opacity-70" />
-                  <span className="min-w-0 truncate" title={caption}>
-                    {activityText}
-                  </span>
+                  {activityMark ? <RisingIcon name={activityMark} /> : null}
+                  <Symbol name="arrow.turn.down.right" className={arrowClass} />
+                  <RisingText text={activityText} title={caption} />
                 </>
               ) : null}
             </span>
           ) : caption ? (
-            <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
-              {activityMark ? <Symbol name={activityMark} className="size-3 shrink-0" /> : null}
-              <Symbol name="arrow.turn.down.right" className="size-3 shrink-0 opacity-70" />
-              <span className="min-w-0 truncate" title={caption}>
-                {activityText}
-              </span>
+            <span className={snippetClass}>
+              {activityMark ? <RisingIcon name={activityMark} /> : null}
+              <Symbol name="arrow.turn.down.right" className={arrowClass} />
+              <RisingText text={activityText} title={caption} />
             </span>
           ) : null}
         </span>

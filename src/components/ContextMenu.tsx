@@ -133,6 +133,10 @@ export function AnchoredMenu({
 const ITEM =
   "flex w-full items-center rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-wash disabled:cursor-default disabled:opacity-40";
 
+export function MenuSeparator() {
+  return <div role="separator" className="mx-1.5 my-1 h-px bg-line/50" />;
+}
+
 export function MenuItem({
   danger,
   disabled,

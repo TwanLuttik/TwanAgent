@@ -61,7 +61,17 @@ export function providerRetryPauseMs(attempt: number): number {
   return seconds * 1000;
 }
 
-export const PROVIDER_RETRY_STATUS = "The model is unavailable. Retrying…";
+const PROVIDER_RETRY_PREFIX = "The model is unavailable.";
+
+/** Shown while the turn waits out a provider outage. `retry` is 1 on the first try. */
+export function providerRetryStatus(retry: number): string {
+  const count = Math.max(1, Math.floor(retry));
+  return `${PROVIDER_RETRY_PREFIX} Retry ${count}…`;
+}
+
+export function isProviderRetryStatus(label: string): boolean {
+  return label.trim().startsWith(PROVIDER_RETRY_PREFIX);
+}
 
 /** Blank clears the wait label and the chat goes back to Thinking. */
 export function activityFromTurnStatus(text: string | null | undefined): ConversationActivity | null {

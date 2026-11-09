@@ -24,7 +24,7 @@ use crate::state::AppState;
 use drive::Round;
 
 const EVENT: &str = "dev-local-turn";
-const FAILURE_PREFIX: &str = "Couldn't continue: ";
+pub(super) const FAILURE_PREFIX: &str = "Couldn't continue: ";
 const EMPTY_REPLY: &str = "Grok returned an empty reply.";
 const CONTEXT_LIMIT_MESSAGE: &str =
     "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
@@ -509,7 +509,7 @@ fn hold_provider_outage(
         app,
         id,
         "status",
-        Some(twanagent_service::PROVIDER_RETRY_STATUS.to_string()),
+        Some(twanagent_service::provider_retry_status(tries.saturating_add(1))),
         None,
         None,
     );
@@ -570,6 +570,7 @@ fn retryable_model_error(error: &str) -> bool {
         return false;
     }
     text.contains("xai request failed")
+        || twanagent_service::bare_status_error(error, "403")
         || text.contains("429")
         || text.contains("500")
         || text.contains("502")
@@ -691,6 +692,9 @@ mod tests {
         let grok = "xAI request failed: Service temporarily unavailable. The model did not respond to this request.";
         assert!(provider_outage(grok));
         assert!(provider_outage("xAI error 503: unavailable"));
+        assert!(provider_outage("xAI error 403: "));
+        assert!(provider_outage("xAI error 403:"));
+        assert!(!provider_outage("xAI error 403: permission denied"));
         assert!(provider_outage("xAI request failed: error sending request"));
         assert!(!provider_outage("error decoding response body"));
         assert!(!provider_outage("Stopped."));

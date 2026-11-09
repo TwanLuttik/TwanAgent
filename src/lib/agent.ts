@@ -44,7 +44,7 @@ import {
   mergeFinishedTranscript,
   mergeHostedTranscript,
   providerRetryPauseMs,
-  PROVIDER_RETRY_STATUS,
+  providerRetryStatus,
   skipToolIfAborted,
   turnFailureMessage,
 } from "./turn.ts";
@@ -832,9 +832,9 @@ async function streamUntilUp(
   let result = await streamCompletion(messages, opts, imageCache);
   while (result.error && isTransientProviderError(result.error)) {
     if (opts.signal.aborted) return { ...result, error: "Stopped." };
-    opts.onStatus?.(PROVIDER_RETRY_STATUS);
-    await pauseForProvider(opts.signal, attempt);
     attempt += 1;
+    opts.onStatus?.(providerRetryStatus(attempt));
+    await pauseForProvider(opts.signal, attempt - 1);
     if (opts.signal.aborted) return { ...result, error: "Stopped." };
     opts.onStatus?.("");
     result = await streamCompletion(messages, opts, imageCache);

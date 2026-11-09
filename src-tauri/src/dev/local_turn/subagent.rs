@@ -235,16 +235,7 @@ fn drive_subagent(
                 return format!("Subagent stopped: {description}");
             }
             Fit::TooBig => {
-                let error = CONTEXT_LIMIT_MESSAGE.to_string();
-                emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
-                emit_subagent(
-                    app,
-                    parent_id,
-                    "done",
-                    child_id,
-                    json!({ "status": "error", "summary": error, "messages": transcript }),
-                );
-                return format!("Subagent failed: {error}");
+                return finish_failed(app, parent_id, child_id, &mut transcript, CONTEXT_LIMIT_MESSAGE);
             }
         }
         let prompt = build_child_prompt(&transcript, compaction.as_ref(), &request.system);
@@ -323,16 +314,8 @@ fn drive_subagent(
                     model_tries = 1;
                     continue;
                 }
-                let text = context_failure_text(&error).to_string();
-                emit_subagent(app, parent_id, "error", child_id, json!({ "error": text }));
-                emit_subagent(
-                    app,
-                    parent_id,
-                    "done",
-                    child_id,
-                    json!({ "status": "error", "summary": text, "messages": transcript }),
-                );
-                return format!("Subagent failed: {text}");
+                let text = context_failure_text(&error);
+                return finish_failed(app, parent_id, child_id, &mut transcript, text);
             }
         };
         forget_child_stream(parent_id, &stream_id);
@@ -403,21 +386,7 @@ fn drive_subagent(
                 continue;
             }
             failed = context_failure_text(&error).to_string();
-            emit_subagent(
-                app,
-                parent_id,
-                "error",
-                child_id,
-                json!({ "error": failed }),
-            );
-            emit_subagent(
-                app,
-                parent_id,
-                "done",
-                child_id,
-                json!({ "status": "error", "summary": failed, "messages": transcript }),
-            );
-            return format!("Subagent failed: {failed}");
+            return finish_failed(app, parent_id, child_id, &mut transcript, &failed);
         }
         if let Some(usage) = round.usage.as_ref() {
             prompt_tokens = usage.prompt_tokens;
@@ -449,16 +418,7 @@ fn drive_subagent(
         }
         if round.tool_calls.is_empty() {
             if round_is_empty(&round) {
-                let error = EMPTY_REPLY.to_string();
-                emit_subagent(app, parent_id, "error", child_id, json!({ "error": error }));
-                emit_subagent(
-                    app,
-                    parent_id,
-                    "done",
-                    child_id,
-                    json!({ "status": "error", "summary": error, "messages": transcript }),
-                );
-                return format!("Subagent failed: {error}");
+                return finish_failed(app, parent_id, child_id, &mut transcript, EMPTY_REPLY);
             }
             transcript.push(assistant_value(
                 &round.text,
@@ -544,6 +504,34 @@ fn drive_subagent(
             );
         }
     }
+}
+
+/// The child chat keeps the reason it stopped. A bare tool trace looked like a
+/// second conversation that never belonged to the task.
+fn finish_failed(
+    app: &AppHandle,
+    parent_id: &str,
+    child_id: &str,
+    transcript: &mut Vec<Value>,
+    error: &str,
+) -> String {
+    let text = error.trim();
+    if !text.is_empty() {
+        transcript.push(json!({
+            "role": "assistant",
+            "content": format!("{}{text}", super::FAILURE_PREFIX),
+            "error": true,
+        }));
+    }
+    emit_subagent(app, parent_id, "error", child_id, json!({ "error": text }));
+    emit_subagent(
+        app,
+        parent_id,
+        "done",
+        child_id,
+        json!({ "status": "error", "summary": text, "messages": transcript }),
+    );
+    format!("Subagent failed: {text}")
 }
 
 fn forget_child_stream(conversation_id: &str, stream_id: &str) {

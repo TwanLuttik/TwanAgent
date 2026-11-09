@@ -439,7 +439,11 @@ const CONTEXT_LIMIT_MESSAGE: &str =
     "This conversation is over the context size you chose. Start a new chat, or pick a larger context size.";
 const FAILURE_PREFIX: &str = "Couldn't continue: ";
 /// Shown while a Grok (or other provider) outage is retried. The turn stays running.
-pub const PROVIDER_RETRY_STATUS: &str = "The model is unavailable. Retrying…";
+/// Shown while the turn waits out a provider outage. `retry` is 1 on the first try.
+pub fn provider_retry_status(retry: u32) -> String {
+    let count = retry.max(1);
+    format!("The model is unavailable. Retry {count}…")
+}
 const TOOL_TEXT_CAP: usize = 24_000;
 const TOOL_TEXT_HEAD: usize = 20_000;
 const TOOL_TEXT_TAIL: usize = 2_000;
@@ -495,6 +499,20 @@ enum ProviderHold {
     Pass,
 }
 
+/// True when `error` names this HTTP status and then says nothing.
+///
+/// The Grok CLI proxy does this for 403 when several chat calls are in flight.
+/// A 403 that explains itself (a blocked key, a team policy) is a real refusal.
+pub fn bare_status_error(error: &str, status: &str) -> bool {
+    let text = error.to_ascii_lowercase();
+    let marker = format!("error {status}");
+    let Some(at) = text.find(&marker) else {
+        return false;
+    };
+    let rest = text[at + marker.len()..].trim();
+    rest.trim_start_matches(':').trim().is_empty()
+}
+
 /// The provider did not answer, and trying again later can succeed.
 /// Auth, stop, and context-length errors are not outages: those end or fold the turn.
 pub fn transient_provider_error(error: &str) -> bool {
@@ -509,7 +527,8 @@ pub fn transient_provider_error(error: &str) -> bool {
     {
         return false;
     }
-    text.contains("temporarily unavailable")
+    bare_status_error(error, "403")
+        || text.contains("temporarily unavailable")
         || text.contains("did not respond")
         || text.contains("overloaded")
         || text.contains("rate limit")
@@ -565,7 +584,7 @@ fn hold_transient_provider(
     if !transient_provider_error(message) {
         return ProviderHold::Pass;
     }
-    on_event(TurnEvent::Status(PROVIDER_RETRY_STATUS.to_string()));
+    on_event(TurnEvent::Status(provider_retry_status(tries.saturating_add(1))));
     let attempt = *tries;
     *tries = tries.saturating_add(1);
     if !wait_for_provider(cancel, attempt) {
@@ -1264,6 +1283,9 @@ mod tests {
         let grok = "xAI request failed: Service temporarily unavailable. The model did not respond to this request.";
         assert!(transient_provider_error(grok));
         assert!(transient_provider_error("xAI error 503: unavailable"));
+        assert!(transient_provider_error("xAI error 403: "));
+        assert!(transient_provider_error("xAI error 403:"));
+        assert!(!transient_provider_error("xAI error 403: permission denied"));
         assert!(transient_provider_error("xAI request failed: overloaded"));
         assert!(!transient_provider_error("error decoding response body"));
         assert!(!transient_provider_error("Stopped."));
@@ -1274,5 +1296,8 @@ mod tests {
         ));
         assert_eq!(provider_retry_pause(0).as_secs(), 2);
         assert_eq!(provider_retry_pause(4).as_secs(), 30);
+        assert_eq!(provider_retry_status(1), "The model is unavailable. Retry 1…");
+        assert_eq!(provider_retry_status(0), "The model is unavailable. Retry 1…");
+        assert_eq!(provider_retry_status(4), "The model is unavailable. Retry 4…");
     }
 }

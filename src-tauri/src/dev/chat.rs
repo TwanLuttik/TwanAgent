@@ -16,6 +16,29 @@ fn http_client() -> &'static reqwest::Client {
     crate::model_providers::runner::http_client()
 }
 
+/// Parallel subagents each open their own chat stream. The Grok CLI proxy answers
+/// that burst with an empty 403, which used to kill every child but one.
+const XAI_IN_FLIGHT: usize = 2;
+
+fn xai_slots() -> &'static tokio::sync::Semaphore {
+    static SLOTS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SLOTS.get_or_init(|| tokio::sync::Semaphore::new(XAI_IN_FLIGHT))
+}
+
+/// Wait for a chat slot. Stop during the wait must not sit until some other stream ends.
+async fn xai_permit(cancel: &AtomicBool) -> Result<tokio::sync::SemaphorePermit<'static>> {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Error::Other("Stopped.".into()));
+        }
+        match tokio::time::timeout(Duration::from_millis(200), xai_slots().acquire()).await {
+            Ok(Ok(permit)) => return Ok(permit),
+            Ok(Err(_)) => return Err(Error::Other("xAI request failed: cancelled".into())),
+            Err(_) => {}
+        }
+    }
+}
+
 pub(crate) fn streams() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static STREAMS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     STREAMS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -619,6 +642,7 @@ async fn stream_chat(
             .header(reqwest::header::USER_AGENT, headers.user_agent)
             .header("x-grok-model-override", &model);
     }
+    let _permit = xai_permit(&cancel).await?;
     let resp = req
         .json(&body)
         .send()
