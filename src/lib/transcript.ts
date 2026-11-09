@@ -265,8 +265,23 @@ export function toolTrailTypeIcon(type: string): string {
 
 /** Sidebar activity mark. Known tools use the conversation icon; other lines keep the turn arrow. */
 export function sidebarActivityIcon(label: string): string {
-  const icon = toolTrailTypeIcon(toolTrailKind(label));
+  const trimmed = label.trim();
+  if (trimmed === "Thinking…" || trimmed === "Thinking...") return "brain";
+  const icon = toolTrailTypeIcon(toolTrailKind(trimmed));
   return icon === "ellipsis" ? "arrow.turn.down.right" : icon;
+}
+
+/**
+ * Caption next to the activity icon. The icon already says Read, Run, or Edit,
+ * so the verb is not repeated. Thinking and ordinary lines stay whole.
+ */
+export function sidebarActivityText(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed) return "";
+  const icon = sidebarActivityIcon(trimmed);
+  if (icon === "arrow.turn.down.right" || icon === "brain") return trimmed;
+  const detail = toolTrailParts(trimmed).detail.trim();
+  return detail || trimmed;
 }
 
 export function isLiveToolTrail(items: TranscriptItem[], index: number, busy: boolean): boolean {

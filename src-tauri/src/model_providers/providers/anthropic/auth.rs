@@ -64,6 +64,8 @@ fn managed_cli_api_key(raw: Option<&str>) -> Option<String> {
 }
 
 /// Account name `claude` passes to `security find-generic-password -a`.
+/// Windows `cargo check` does not build tests, and the keychain read is macOS-only.
+#[cfg(any(test, target_os = "macos"))]
 fn claude_cli_keychain_account(user: Option<&str>) -> String {
     let user = user.unwrap_or("").trim();
     let ok = !user.is_empty()
@@ -80,6 +82,7 @@ fn claude_cli_keychain_account(user: Option<&str>) -> String {
 /// Service name `claude` passes to `security -s` for the managed API key.
 /// A custom config dir adds the first 8 hex chars of its sha256, which is how
 /// Claude Code keeps two logins apart.
+#[cfg(any(test, target_os = "macos"))]
 fn claude_cli_keychain_service(secure_dir: Option<&str>, config_dir: Option<&str>) -> String {
     let secure = secure_dir.map(str::trim);
     let config = config_dir.map(str::trim).filter(|value| !value.is_empty());

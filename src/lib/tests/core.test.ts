@@ -47,6 +47,7 @@ import {
   toolTrailKind,
   toolTrailParts,
   sidebarActivityIcon,
+  sidebarActivityText,
   toolTrailTypeIcon,
   transcriptItems,
   liveTranscriptItems,
@@ -1362,8 +1363,13 @@ describe("tool trail collapse", () => {
     assert.equal(sidebarActivityIcon("Read src/main.tsx"), "doc.text.magnifyingglass");
     assert.equal(sidebarActivityIcon("List src-tauri/service/src/model"), "folder");
     assert.equal(sidebarActivityIcon("Editing mod.rs"), "pencil");
-    assert.equal(sidebarActivityIcon("Thinking…"), "arrow.turn.down.right");
+    assert.equal(sidebarActivityIcon("Thinking…"), "brain");
     assert.equal(sidebarActivityIcon("The context readout in the prompt"), "arrow.turn.down.right");
+    assert.equal(sidebarActivityText("Run Rewrite mis-slotted plate keys"), "Rewrite mis-slotted plate keys");
+    assert.equal(sidebarActivityText("Read src/main.tsx"), "src/main.tsx");
+    assert.equal(sidebarActivityText("Thinking…"), "Thinking…");
+    assert.equal(sidebarActivityText("Git status"), "Git status");
+    assert.equal(sidebarActivityText("The context readout in the prompt"), "The context readout in the prompt");
   });
 
   it("keeps special tool types intact when grouping", () => {

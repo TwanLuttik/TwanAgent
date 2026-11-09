@@ -1,33 +1,78 @@
 import { useSyncExternalStore } from "react";
 import * as api from "./tauri.ts";
-import type { AppUpdate } from "./tauri.ts";
-import { versionIsNewer } from "./update.ts";
+import {
+  closeDemo,
+  failDemo,
+  openDemo,
+  tickDemo,
+  versionIsNewer,
+  type UpdateModel,
+  type UpdatePhase,
+} from "./update.ts";
 
-export type UpdatePhase = "checking" | "idle" | "downloading" | "installing" | "ready";
+export type { UpdatePhase };
 
 type UpdateSnapshot = {
-  update: AppUpdate | null;
+  update: UpdateModel["update"];
   phase: UpdatePhase;
   received: number;
   total: number;
   dev: boolean;
+  error: string | null;
+  demo: boolean;
 };
 
-const empty: UpdateSnapshot = {
+const emptyModel: UpdateModel = {
+  update: null,
+  phase: "checking",
+  received: 0,
+  total: 0,
+  error: null,
+  demo: false,
+  held: null,
+};
+
+const serverSnapshot: UpdateSnapshot = {
   update: null,
   phase: "checking",
   received: 0,
   total: 0,
   dev: false,
+  error: null,
+  demo: false,
 };
 
-let snapshot: UpdateSnapshot = empty;
+let model: UpdateModel = emptyModel;
+let dev = false;
+let snapshot: UpdateSnapshot = serverSnapshot;
 const listeners = new Set<() => void>();
 let started = false;
+let demoTimer: ReturnType<typeof setInterval> | null = null;
+let demoStartedAt = 0;
 
-function publish(next: Partial<UpdateSnapshot>) {
-  snapshot = { ...snapshot, ...next };
+function viewOf(next: UpdateModel, isDev: boolean): UpdateSnapshot {
+  return {
+    update: next.update,
+    phase: next.phase,
+    received: next.received,
+    total: next.total,
+    dev: isDev,
+    error: next.error,
+    demo: next.demo,
+  };
+}
+
+function publish(next: UpdateModel, isDev = dev) {
+  model = next;
+  dev = isDev;
+  snapshot = viewOf(next, isDev);
   for (const listener of listeners) listener();
+}
+
+function clearDemoTimer() {
+  if (demoTimer == null) return;
+  clearInterval(demoTimer);
+  demoTimer = null;
 }
 
 function subscribe(listener: () => void) {
@@ -42,46 +87,105 @@ function start() {
   if (started) return;
   started = true;
   void api.onAppUpdate((event) => {
-    if (snapshot.phase === "ready") return;
+    if (model.demo || model.phase === "ready") return;
     publish({
+      ...model,
       received: event.received,
-      total: event.total > 0 ? event.total : snapshot.total,
+      total: event.total > 0 ? event.total : model.total,
       phase: event.phase === "install" ? "installing" : event.phase === "ready" ? "ready" : "downloading",
+      error: null,
     });
   });
-  void api.appDevBuild().then((dev) => publish({ dev })).catch(() => undefined);
+  void api.appDevBuild().then((isDev) => publish(model, isDev)).catch(() => undefined);
   void api
     .appUpdateCheck()
     .then((found) => {
-      if (found && versionIsNewer(found.version, __APP_VERSION_LABEL__)) {
-        publish({ update: found, total: found.bytes, phase: "idle" });
+      const update = found && versionIsNewer(found.version, __APP_VERSION_LABEL__) ? found : null;
+      if (model.demo) {
+        if (!model.held && update) publish({ ...model, held: update });
         return;
       }
-      publish({ update: null, phase: "idle" });
+      if (model.phase !== "checking" && model.phase !== "idle") return;
+      publish({
+        ...model,
+        update,
+        total: update?.bytes ?? 0,
+        phase: "idle",
+        received: 0,
+        error: null,
+      });
     })
     .catch(() => {
-      publish({ phase: "idle" });
+      if (model.demo || model.phase !== "checking") return;
+      publish({ ...model, phase: "idle" });
     });
 }
 
 export function useAppUpdate(): UpdateSnapshot {
-  return useSyncExternalStore(subscribe, () => snapshot, () => empty);
+  return useSyncExternalStore(subscribe, () => snapshot, () => serverSnapshot);
 }
 
-export async function installAppUpdate(): Promise<string | null> {
-  const update = snapshot.update;
-  if (!update || snapshot.phase === "downloading" || snapshot.phase === "installing") return null;
-  publish({ phase: "downloading", received: 0 });
+function playDemo() {
+  clearDemoTimer();
+  demoStartedAt = Date.now();
+  publish({
+    ...model,
+    phase: "downloading",
+    received: 0,
+    total: model.update?.bytes ?? 0,
+    error: null,
+  });
+  demoTimer = setInterval(() => {
+    const next = tickDemo(model, Date.now() - demoStartedAt);
+    publish(next);
+    if (next.phase === "ready" || next.phase === "error") clearDemoTimer();
+  }, 100);
+}
+
+export async function installAppUpdate(): Promise<void> {
+  const update = model.update;
+  if (!update || model.phase === "downloading" || model.phase === "installing") return;
+  if (model.demo) {
+    playDemo();
+    return;
+  }
+  publish({ ...model, phase: "downloading", received: 0, total: update.bytes, error: null });
   try {
     await api.appUpdateInstall(update);
-    publish({ phase: "ready" });
-    return null;
+    if (!model.demo && model.phase !== "error") publish({ ...model, phase: "ready", error: null });
   } catch (err) {
-    publish({ phase: "idle" });
-    return String(err);
+    if (!model.demo && model.phase !== "ready") publish({ ...model, phase: "error", error: String(err) });
   }
 }
 
 export function relaunchAppUpdate(): Promise<void> {
+  if (model.demo) {
+    stopUpdateDemo();
+    return Promise.resolve();
+  }
   return api.appUpdateRelaunch();
+}
+
+export function toggleUpdateDemo(): void {
+  if (!dev) return;
+  if (model.demo) {
+    stopUpdateDemo();
+    return;
+  }
+  const next = openDemo(model);
+  if (next === model) return;
+  clearDemoTimer();
+  publish(next);
+}
+
+function stopUpdateDemo() {
+  clearDemoTimer();
+  publish(closeDemo(model));
+}
+
+export function failUpdateDemo(): void {
+  const next = failDemo(model);
+  if (next === model) return;
+  clearDemoTimer();
+  publish(next);
 }

@@ -340,7 +340,7 @@ function MarkdownCode({
     return <code className="rounded-[4px] bg-inset px-[5px] py-px font-mono text-[12px] text-ink">{children}</code>;
   }
   const chipClass =
-    "inline-flex max-w-full items-center gap-1 align-baseline font-mono text-[12px] text-accent [overflow-wrap:anywhere]";
+    "inline-flex max-w-full items-center gap-1 align-middle font-mono text-[12px] leading-none text-accent [overflow-wrap:anywhere]";
   const chip = (
     <code
       title={workspace ? undefined : onOpenFile ? `Open ${path}` : path}

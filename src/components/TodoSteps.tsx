@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { AgentTodo, TodoStatus } from "../lib/todo";
 import { Symbol } from "./Symbol";
@@ -6,7 +6,15 @@ import { Symbol } from "./Symbol";
 const EASE = [0.22, 1, 0.36, 1] as const;
 const DURATION = 0.32;
 
-export function TodoSteps({ todos, compact }: { todos: AgentTodo[]; compact?: boolean }) {
+export function TodoSteps({
+  todos,
+  compact,
+  meter,
+}: {
+  todos: AgentTodo[];
+  compact?: boolean;
+  meter?: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const done = todos.filter((todo) => todo.status === "completed" || todo.status === "cancelled").length;
 
@@ -22,6 +30,7 @@ export function TodoSteps({ todos, compact }: { todos: AgentTodo[]; compact?: bo
             <TodoBubble key={todo.id} status={todo.status} />
           ))}
         </div>
+        {meter}
         <span className="shrink-0 text-[11px] tabular-nums text-muted">
           {done}/{todos.length}
         </span>

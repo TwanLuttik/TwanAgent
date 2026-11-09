@@ -573,7 +573,15 @@ export function Composer({
               transition={{ duration: TODO_DURATION, ease: TODO_EASE }}
               className="overflow-visible"
             >
-              <TodoSteps todos={todos} compact={compact} />
+              <TodoSteps
+                todos={todos}
+                compact={compact}
+                meter={
+                  usage && usageWindow ? (
+                    <ContextUsageReadout usage={usage} windowSize={usageWindow} expanded={usageHover} inline />
+                  ) : null
+                }
+              />
             </motion.div>
           ) : null}
         </AnimatePresence>
@@ -763,7 +771,7 @@ export function Composer({
           </button>
         </div>
       </div>
-      {usage && usageWindow ? (
+      {usage && usageWindow && !todosAreOpen(todos) ? (
         <ContextUsageReadout usage={usage} windowSize={usageWindow} expanded={usageHover} />
       ) : null}
       </div>

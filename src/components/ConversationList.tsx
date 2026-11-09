@@ -30,7 +30,7 @@ import { RunningElapsed } from "./RunningElapsed";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
 import { subagentsForParent } from "../lib/subagent-parent";
-import { sidebarActivityIcon } from "../lib/core";
+import { sidebarActivityIcon, sidebarActivityText } from "../lib/core";
 import { formatModelName } from "../lib/usage";
 
 export function ConversationList({
@@ -400,8 +400,8 @@ const ConversationCard = memo(function ConversationCard({
     place,
   });
   const activityIcon = running && caption ? sidebarActivityIcon(caption) : "";
-  const captionIcon =
-    activityIcon && activityIcon !== "arrow.turn.down.right" ? activityIcon : "arrow.turn.down.right";
+  const activityMark = activityIcon && activityIcon !== "arrow.turn.down.right" ? activityIcon : "";
+  const activityText = running && caption ? sidebarActivityText(caption) : caption;
   return (
     <div
       className={`group/chat relative z-0 flex items-center overflow-visible rounded-xl select-none hover:z-10 ${
@@ -475,20 +475,20 @@ const ConversationCard = memo(function ConversationCard({
               </span>
               {caption ? (
                 <>
-                  {activityIcon && activityIcon !== "arrow.turn.down.right" ? (
-                    <Symbol name={activityIcon} className="size-3 shrink-0" />
-                  ) : null}
+                  {activityMark ? <Symbol name={activityMark} className="size-3 shrink-0" /> : null}
+                  <Symbol name="arrow.turn.down.right" className="size-3 shrink-0 opacity-70" />
                   <span className="min-w-0 truncate" title={caption}>
-                    {caption}
+                    {activityText}
                   </span>
                 </>
               ) : null}
             </span>
           ) : caption ? (
             <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
-              <Symbol name={captionIcon} className="size-3 shrink-0" />
+              {activityMark ? <Symbol name={activityMark} className="size-3 shrink-0" /> : null}
+              <Symbol name="arrow.turn.down.right" className="size-3 shrink-0 opacity-70" />
               <span className="min-w-0 truncate" title={caption}>
-                {caption}
+                {activityText}
               </span>
             </span>
           ) : null}

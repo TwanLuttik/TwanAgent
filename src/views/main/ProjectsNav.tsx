@@ -23,7 +23,7 @@ import { useMain, useSidebar } from "./context";
 import { ProjectConversations } from "./ProjectConversations";
 import { ActivityDock, todoSignature } from "./SidebarActivity";
 import { SidebarSearch } from "./SidebarSearch";
-import { UpdateRow } from "./UpdateRow";
+import { UpdateNotice, VersionChip } from "./UpdateRow";
 
 export function ProjectsNav({
   usageHover,
@@ -736,6 +736,7 @@ export function ProjectsNav({
           <Symbol name="book" className="size-4 text-muted" />
           <span>Docs</span>
         </button>
+        <UpdateNotice />
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -748,7 +749,7 @@ export function ProjectsNav({
             <Symbol name="gearshape" className="size-4 text-muted" />
             <span>Settings</span>
           </button>
-          <UpdateRow />
+          <VersionChip />
         </div>
       </div>
     </>
