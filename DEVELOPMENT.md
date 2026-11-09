@@ -101,6 +101,8 @@ npm run bundle
 
 The macOS app lands in `src-tauri/target/release/bundle/macos/TwanAgent.app`.
 
+The server binary is separate. `scripts/build-server.sh` (or `npm run build:server`) builds it into the folder the app copies from. A Linux machine needs `scripts/build-server.sh linux`. The steps are in [docs/twanagent-server.md](docs/twanagent-server.md#build).
+
 Build an unsigned Windows x64 NSIS installer from the repo root:
 
 ```powershell
@@ -148,7 +150,7 @@ The app still installs a server by copying a binary built on that Mac. The relea
 
 - `src/` React interface, chat client, and frontend tests in `src/lib/tests/`
 - `src-tauri/src/` Rust commands, store, providers, and tools
-- `scripts/` macOS debug wrapper, build stamp, and icon script
+- `scripts/` macOS debug wrapper, server build, build stamp, and icon script
 - App data holds conversations and project location. API keys use the keychain service `app.twanagent.desktop`
 - Projects default to `~/twanagent/projects`
 

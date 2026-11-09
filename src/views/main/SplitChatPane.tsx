@@ -1,10 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { insertCompactionEvent } from "../../lib/compact";
 import type { ChatMessage } from "../../lib/core";
 import { getSecondaryLiveStream, subscribeLiveStream, subscribeSecondaryLiveStream, useSecondaryLiveStream, useSecondaryLiveStreamEmpty } from "../../lib/live-stream";
 import { DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
+import { SubagentCrumb, useSubagentParentId } from "../../components/SubagentCrumb";
+import { rememberSubagentParent } from "../../lib/subagent-parent";
+import { subagentRunInfo } from "../../lib/subagent";
 import { chatScrollFor, isNearBottom, pinChatToEnd, rememberChatScroll, stickToBottomAfterRestore } from "../../lib/chat-scroll";
-import { chatHasRunningTurn, pendingForChat, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
+import { chatHasRunningTurn, mergeHostedTranscript, pendingForChat, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { rememberSplitPane, splitGroupForChat, splitPaneCache } from "../../lib/split-pane";
 import { useMain } from "./context";
 import { SessionComposer } from "./SessionComposer";
@@ -73,9 +76,12 @@ function StableChatPane({ chatId, active }: { chatId: string; active: boolean })
 /** The conversation sitting beside the focused one. It keeps its own scroller and input. */
 function SplitChatPane({ chatId, active = false }: { chatId: string; active?: boolean }) {
   const {
+    activeId,
     beginPendingEdit,
     closePendingEdit,
     conversations,
+    openChat,
+    subagents,
     editingPending,
     fileDrag,
     focusSplitPane,
@@ -99,6 +105,13 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   const restoredFor = useRef("");
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>(() => splitPaneCache(chatId)?.messages ?? []);
   const messages = active ? liveMessages : storedMessages;
+  const subagentRuns = useMemo(
+    () => (chatId === activeId ? subagentRunInfo(subagents, runningTurns) : {}),
+    [chatId, activeId, subagents, runningTurns],
+  );
+  const subagentParent = useSubagentParentId(chatId);
+  const subagentTitle = conversations.find((row: { id: string; title?: string }) => row.id === chatId)?.title?.trim() || "Subagent";
+  const parentTitle = conversations.find((row: { id: string; title?: string }) => row.id === subagentParent)?.title?.trim() || "Chat";
   useEffect(() => {
     if (messages.length) rememberSplitPane(chatId, { messages });
   }, [chatId, messages]);
@@ -153,10 +166,13 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
               full.compaction?.summary && full.compaction.through > 0
                 ? insertCompactionEvent(body, full.compaction.through)
                 : body;
-            setStoredMessages(shown);
+            // The disk read can finish after the reply was painted from memory.
+            // Replacing with the older tool rows is what hid the answer.
+            const merged = mergeHostedTranscript(splitPaneCache(chatId)?.messages ?? [], shown);
+            setStoredMessages(merged);
             // Focusing this pane reads the cache. Without this write the click
             // paints an empty new chat over the transcript that is on screen.
-            rememberSplitPane(chatId, { messages: shown });
+            rememberSplitPane(chatId, { messages: merged });
           })
           .catch(() => {
             if (!gone) setStoredMessages([]);
@@ -226,6 +242,17 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1">
       {fileDrag === chatId ? <DropImagesHint /> : null}
+      {subagentParent ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-canvas from-65% to-transparent pb-4">
+          <div className="mx-auto w-full min-w-0 max-w-[720px] px-4 pt-3">
+            <SubagentCrumb
+              parentTitle={parentTitle}
+              title={subagentTitle}
+              onOpenParent={() => void openChat(subagentParent)}
+            />
+          </div>
+        </div>
+      ) : null}
       <div
         ref={scroller}
         className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
@@ -242,7 +269,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
           if (group) focusSplitPane(group.id, pane as 0 | 1);
         }}
       >
-        <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-4 pt-5">
+        <div className={`relative mx-auto w-full min-w-0 max-w-[720px] px-4 ${subagentParent ? "pt-14" : "pt-5"}`}>
           <LiveTranscript
             key={chatId}
             messages={messages}
@@ -253,6 +280,12 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
             transcriptPending={!active && loading && messages.length === 0}
             conversationId={chatId}
             mentionFiles={mentionFiles}
+            subagents={chatId === activeId ? subagents : []}
+            subagentRuns={subagentRuns}
+            onOpenConversation={(id) => {
+              if (chatId && chatId !== id) rememberSubagentParent(id, chatId);
+              void openChat(id);
+            }}
             onLoadOlder={() => undefined}
             pendingShell={false}
             pendingPlan={false}

@@ -30,7 +30,11 @@ export function ProjectSection({
   /** Whether that card is showing. Ignored when `card` is false. */
   open?: boolean;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    // Tab would focus this drag handle and WKWebView paints that as a selection bar.
+    attributes: { tabIndex: -1 },
+  });
   const body = (
     <>
       {header({ ...attributes, ...listeners })}

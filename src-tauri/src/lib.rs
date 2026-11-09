@@ -191,7 +191,6 @@ pub fn run() {
             grok_cli::dev_grok_plan_set,
             grok_cli::dev_grok_plan_write,
             pty::dev_pty_open,
-            pty::dev_pty_open_grok,
             pty::dev_pty_write,
             pty::dev_pty_write_bytes,
             pty::dev_pty_resize,

@@ -116,6 +116,48 @@ export function preferredFolderAction(query: string): FolderActionId {
   return "open";
 }
 
+export type FolderFocus =
+  | { kind: "action"; id: FolderActionId }
+  | { kind: "project"; index: number }
+  | { kind: "folder"; index: number };
+
+export type FolderEnterTarget =
+  | { kind: "clone" }
+  | { kind: "create" }
+  | { kind: "open" }
+  | { kind: "project"; index: number }
+  | { kind: "folder"; index: number };
+
+/**
+ * Highlight from the field, before the mouse or arrows intervene.
+ * A git URL always points at Clone, even when project rows still match.
+ */
+export function folderFocusFromQuery(query: string, matchedProjects: number, onServer: boolean): FolderFocus {
+  if (looksLikeGitUrl(query)) return { kind: "action", id: "clone" };
+  if (looksLikePath(query)) return { kind: "action", id: onServer ? "create" : "open" };
+  if (matchedProjects > 0 && !onServer) return { kind: "project", index: 0 };
+  if (sanitizeProjectName(query)) return { kind: "action", id: "create" };
+  return { kind: "action", id: onServer ? "create" : "open" };
+}
+
+/**
+ * Enter follows the query when it is a git URL, so hovering New project
+ * cannot create a folder from a clone.
+ */
+export function folderEnterTarget(query: string, focus: FolderFocus): FolderEnterTarget {
+  if (looksLikeGitUrl(query)) return { kind: "clone" };
+  if (focus.kind === "project" || focus.kind === "folder") return focus;
+  if (focus.id === "clone") return { kind: "clone" };
+  if (focus.id === "create") return { kind: "create" };
+  return { kind: "open" };
+}
+
+/** A click on New project with a git URL in the field is a clone, not a create. */
+export function folderClickAction(id: FolderActionId, query: string): FolderActionId {
+  if (id === "create" && looksLikeGitUrl(query)) return "clone";
+  return id;
+}
+
 export function folderActionEnabled(id: FolderActionId, query: string): boolean {
   if (id === "open") return true;
   if (id === "create") return sanitizeProjectName(query) !== null;
@@ -128,6 +170,7 @@ export function folderActionHint(id: FolderActionId, query: string, place = "thi
     return path && looksLikePath(path) ? path : "Type a folder location";
   }
   if (id === "create") {
+    if (looksLikeGitUrl(query)) return "That is a git URL — use Clone from Git";
     const name = sanitizeProjectName(query);
     return name ? `Create ${name} on ${place}` : `Create a folder on ${place}`;
   }

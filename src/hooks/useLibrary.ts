@@ -7,7 +7,6 @@ import {
   conversationTitleFrom,
   lastChatLine,
   moveById,
-  newConversationId,
   nowIso,
   projectKey,
   type ChatMessage,
@@ -17,7 +16,6 @@ import {
   isLinkedWorktreePath,
   isSameProject,
   moveProjectGroup,
-  nextTopSort,
   patchSidebarConversations,
   prependChatInGroups,
   prependProjectChat,
@@ -35,8 +33,7 @@ import { forgetPaneWorkspace } from "../lib/pane-sessions";
 import { getLiveStream, setLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
 import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForChat, splitPaneCache, type TabItem } from "../lib/split-pane";
 import { shellSessions } from "../lib/shell-terminal";
-import { conversationDraft, parseConversationKind, type ConversationKind } from "../lib/terminal-chat";
-import { terminalSessions } from "../lib/terminal-sessions";
+
 import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, commitPartialReply, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, messagesShowStream, type PendingMessage, type RunningTurn } from "../lib/turn";
 import { publishWorktreeList, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
@@ -51,7 +48,6 @@ import {
   loadPermission,
   saveComposerDraft,
   saveComposerPastes,
-  saveModel,
   pushRecentWorkspace,
   removeRecentWorkspace,
   saveCollapsedProjects,
@@ -383,7 +379,6 @@ async function deleteProjectFromSidebar(path: string, mode: "list" | "files" | "
     return;
   }
   saveConversation(path, "");
-  void terminalSessions.disposeWorkspace(path);
   void shellSessions.disposeWorkspace(path);
   forgetPaneWorkspace(path);
   const leftover = removeRecentWorkspace(path);
@@ -574,7 +569,7 @@ function applyWorkspace(path: string, preferId = "", name = "", remote = false) 
   if (!isLinkedWorktreePath(path, worktreeListsFor(path))) expandProject(path);
 }
 
-const startNewChatRef = useRef<(kind?: ConversationKind) => void>(() => {});
+const startNewChatRef = useRef<() => void>(() => {});
 /** Set by the shell. True when the chat is already in a split and was only focused. */
 const revealListedChatRef = useRef<((id: string) => boolean) | null>(null);
 const openSettingsRef = useRef(openSettings);
@@ -601,107 +596,31 @@ function forgetEmptyComposer() {
   setDraftImages(forgetUnsavedDraft);
 }
 
-async function startNewChat(kind: ConversationKind = "chat", path = workspace) {
+async function startNewChat() {
   setShowSettings(false);
   setShowUsage(false);
   setShowDocs(false);
   setShowServers(false);
   setProjectSettings(null);
   if (!runningWsRef.current) hideSubagents();
-  // A plain new chat stays off every project until the first prompt. The selector
+  // A new chat stays off every project until the first prompt. The selector
   // only chooses where that prompt will be saved.
-  if (kind === "chat") {
-    stickToBottomRef.current = true;
-    activeIdRef.current = "";
-    setActiveId("");
-    setMessages([]);
-    stopHostedFollow();
-    setStreamText("");
-    setStreamReasoning("");
-    setLiveTools([]);
-    setRunningActivity(null);
-    setTurnStartedAt(0);
-    hideSubagents();
-    retargetForegroundTurn("");
-    setEditor((prev) => selectChatTab(prev));
-    // Every unsaved chat shares the empty id. A prompt that was just sent, or one
-    // still sitting there, must not appear in the next new chat.
-    forgetEmptyComposer();
-    return;
-  }
-  if (!path) {
-    setFolderOpen(true);
-    return;
-  }
   stickToBottomRef.current = true;
-  const chosen = composerSettingsForChat(
-    null,
-    models,
-    {
-      model: model || loadModel(),
-      effort: effort || defaultEffort || loadEffort(),
-      contextWindow: contextWindow || loadContextWindow(),
-      permission: permission || loadPermission(),
-    },
-  );
-  if (chosen.model) saveModel(chosen.model);
-  const conv = conversationDraft(kind, newConversationId(), nowIso(), null, chosen.effort, {
-    model: chosen.model,
-    contextWindow: chosen.contextWindow,
-    permission: chosen.permission,
-  });
-  // A cloud chat is created on the server by the first prompt. Saving the empty
-  // draft here writes it into the local mount, and the sidebar shows it beside
-  // the real conversation.
-  if (isSameProject(path, workspace) && hostedChatsRef.current) {
-    setActiveId("");
-    setMessages([]);
-    stopHostedFollow();
-    setStreamText("");
-    setStreamReasoning("");
-    setLiveTools([]);
-    setRunningActivity(null);
-    setTurnStartedAt(0);
-    hideSubagents();
-    retargetForegroundTurn("");
-    setEditor((prev) => selectChatTab(prev));
-    saveConversation(path, "");
-    forgetEmptyComposer();
-    return;
-  }
-  const rows = projectConversations(path);
-  const sortOrder = nextTopSort(rows.map((row) => row.sort_order));
-  const summary: ConversationSummary = {
-    id: conv.id,
-    title: conv.title,
-    created_at: conv.created_at,
-    updated_at: conv.updated_at,
-    kind: conv.kind,
-    sort_order: sortOrder,
-    effort: conv.effort ?? null,
-    model: conv.model ?? null,
-    context_window: conv.context_window ?? null,
-    permission: conv.permission ?? null,
-  };
-  await api.saveConversation(path, { ...conv, sort_order: sortOrder });
-  saveConversation(path, conv.id);
-  expandProject(path);
-  if (!isSameProject(path, workspace)) {
-    applyProjectData(path, [summary, ...rows.filter((row) => row.id !== conv.id)]);
-    applyWorkspace(path);
-    return;
-  }
-  setActiveId(conv.id);
+  activeIdRef.current = "";
+  setActiveId("");
   setMessages([]);
+  stopHostedFollow();
   setStreamText("");
   setStreamReasoning("");
   setLiveTools([]);
   setRunningActivity(null);
   setTurnStartedAt(0);
   hideSubagents();
-  retargetForegroundTurn(conv.id);
+  retargetForegroundTurn("");
   setEditor((prev) => selectChatTab(prev));
-  setConversations((current) => [summary, ...current.filter((row) => row.id !== conv.id)]);
+  // Every unsaved chat shares the empty id. A prompt that was just sent, or one
+  // still sitting there, must not appear in the next new chat.
+  forgetEmptyComposer();
 }
 
 async function openSidebarChat(path: string, id: string) {
@@ -782,7 +701,7 @@ useEffect(() => {
     }
     if (!isNewChatHotkey(ev, isMacOS())) return;
     ev.preventDefault();
-    void startNewChatRef.current("chat");
+    void startNewChatRef.current();
   }
   window.addEventListener("keydown", onKey, true);
   return () => window.removeEventListener("keydown", onKey, true);
@@ -900,6 +819,25 @@ function retargetForegroundTurn(id: string) {
 function finishOpen(generation: number, id: string) {
   if (generation !== openGeneration.current || openingChatRef.current !== id) return;
   openingChatRef.current = "";
+}
+
+/**
+ * The sidebar cache can be the tool rows from a turn that already saved its
+ * reply. Opening that chat used to return before reading the database, so the
+ * answer stayed missing until a restart.
+ */
+async function repairCachedReply(path: string, id: string, painted: ChatMessage[], generation: number) {
+  try {
+    const full = await api.getConversation(path, id);
+    if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return;
+    const disk = (full.messages as ChatMessage[]) ?? [];
+    const merged = mergeHostedTranscript(painted, disk);
+    if (merged === painted) return;
+    shownMessages.current.set(id, merged);
+    setMessages(merged);
+  } catch {
+    /* the cache stays; the next full read can still repair it */
+  }
 }
 
 async function openChat(id: string, tabs = openTabsRef.current, path = workspace) {
@@ -1022,6 +960,9 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
     saveConversation(path, id);
     setOpeningId("");
     finishOpen(generation, id);
+    // The cache can be the tool rows from before the reply was saved. The
+    // database still has the answer, so read it without blocking the click.
+    if (!hostedChatsRef.current) void repairCachedReply(path, id, cached, generation);
     return;
   }
   // A chat that is not in memory yet keeps the previous transcript for this one
@@ -1336,7 +1277,6 @@ async function archiveChat(id: string, archived = true, path = workspace): Promi
     const turn = turnsRef.current.get(id);
     if (turn) turn.abort();
     else if (runningId === id) abortRef.current?.abort();
-    await terminalSessions.dispose(id);
   }
   try {
     await api.archiveConversation(path, id, archived);
@@ -1385,7 +1325,6 @@ async function removeChat(id: string, path = workspace) {
     delete next[id];
     return next;
   });
-  await terminalSessions.dispose(id);
   await api.deleteConversation(path, id);
   if (loadConversation(path) === id) saveConversation(path, "");
   if (isSameProject(path, workspace)) {
@@ -1427,7 +1366,8 @@ async function writePersisted(id: string, payload: PersistPayload) {
   const existing =
     conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
   const now = payload.touch === false ? (existing?.updated_at || nowIso()) : nowIso();
-  const kind = parseConversationKind(existing?.kind);
+  // Old terminal chats are normal chats now. Saving one drops that kind.
+  const kind = existing?.kind === "terminal" ? "chat" : existing?.kind || "chat";
   // Until an assistant reply exists, the composer chip is the model for this
   // chat. The row may still hold the model copied when the empty chat was created.
   const unanswered = !next.some((message) => message.role === "assistant");

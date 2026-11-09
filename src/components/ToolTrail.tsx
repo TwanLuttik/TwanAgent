@@ -11,6 +11,11 @@ import {
 import { loadExpandEdits, subscribePrefs } from "../lib/prefs";
 import { lineDiffRows, type LineDiffPart, type LineDiffRow } from "../lib/line-diff";
 import { toolRevealNextAt, toolRevealSteps, toolRowsVisibleOnMount } from "../lib/tool-reveal";
+import { isSubagentLabel, subagentCardTitle, type SubagentRun } from "../lib/subagent";
+import { providerProfile } from "../lib/provider";
+import { formatModelName } from "../lib/usage";
+import { ChatLogo } from "./ConversationList";
+import { RunningElapsed } from "./RunningElapsed";
 import { Symbol } from "./Symbol";
 
 const REVEAL = { duration: 0.22, ease: [0.22, 1, 0.36, 1] as const };
@@ -103,37 +108,70 @@ export function ToolTrail({
   files: _files = [],
   details = [],
   commands = [],
+  openIds = [],
   live,
   conversationId = "",
+  model = "",
+  modelName = "",
+  runningOpenIds,
+  runs,
+  onOpen,
 }: {
   labels: string[];
   /** Kept for callers. Line counts now render on the edit row itself. */
   files?: ToolFileChange[];
   details?: (ToolFileChange | null)[];
   commands?: string[];
+  /** Conversation ids aligned with `labels`. A subagent row opens that chat. */
+  openIds?: string[];
   live: boolean;
   /** Scopes the "already shown" rows to this chat, so switching chats starts fresh. */
   conversationId?: string;
+  model?: string;
+  modelName?: string;
+  runningOpenIds?: ReadonlySet<string>;
+  /** Live tool label and start time, keyed by the subagent conversation id. */
+  runs?: Readonly<Record<string, SubagentRun>>;
+  onOpen?: (id: string) => void;
 }) {
-  const rows = foldToolTrailRows(labels, details, commands);
+  const rows = foldToolTrailRows(labels, details, commands, openIds);
   const signature = rows.map((row) => row.label).join("\n");
   if (rows.length === 0) return null;
+  const trail = { model, modelName, runningOpenIds, runs, onOpen };
   if (!live) {
     // History renders before the live trail. Writing its labels here made opening
     // a running chat look like a new batch, so every call already finished staggered in.
-    return <ToolTrailRows rows={rows} />;
+    return <ToolTrailRows rows={rows} trail={trail} />;
   }
-  return <LiveToolTrail key={conversationId} rows={rows} signature={signature} conversationId={conversationId} />;
+  return (
+    <LiveToolTrail
+      key={conversationId}
+      rows={rows}
+      signature={signature}
+      conversationId={conversationId}
+      trail={trail}
+    />
+  );
 }
+
+type SubagentTrail = {
+  model: string;
+  modelName: string;
+  runningOpenIds?: ReadonlySet<string>;
+  runs?: Readonly<Record<string, SubagentRun>>;
+  onOpen?: (id: string) => void;
+};
 
 function LiveToolTrail({
   rows,
   signature,
   conversationId,
+  trail,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
   signature: string;
   conversationId: string;
+  trail: SubagentTrail;
 }) {
   // Read before this paint records itself, so a remount can tell new rows from ones already shown.
   // No signature means we just opened this chat: calls that already ran stay still.
@@ -145,18 +183,20 @@ function LiveToolTrail({
   useEffect(() => {
     seenToolSignatures.set(conversationId, signature);
   }, [conversationId, signature]);
-  return <ToolTrailRows rows={visible} spinningLast animateFrom={settledOnMount} />;
+  return <ToolTrailRows rows={visible} spinningLast animateFrom={settledOnMount} trail={trail} />;
 }
 
 function ToolTrailRows({
   rows,
   spinningLast = false,
   animateFrom = rows.length,
+  trail,
 }: {
   rows: ReturnType<typeof foldToolTrailRows>;
   spinningLast?: boolean;
   /** First row index that should fade in. Earlier rows render in place. */
   animateFrom?: number;
+  trail: SubagentTrail;
 }) {
   return (
     <div className="mb-3" aria-label="Tool activity">
@@ -172,8 +212,10 @@ function ToolTrailRows({
               label={row.label}
               change={row.change}
               detail={row.detail}
+              openId={row.openId}
               children={row.children}
-              spinning={spinningLast && i === rows.length - 1}
+              spinning={spinningLast && i === rows.length - 1 && !isSubagentLabel(row.label)}
+              trail={trail}
             />
           </motion.div>
         ))}
@@ -218,17 +260,65 @@ function ToolCallBlock({
   label,
   change,
   detail,
+  openId = "",
   children = [],
   spinning = false,
   counts = true,
+  trail,
+}: {
+  label: string;
+  change: ToolFileChange | null;
+  detail: string;
+  openId?: string;
+  children?: ToolTrailRow[];
+  spinning?: boolean;
+  /** Child calls keep their own diff, but the parent already shows the total. */
+  counts?: boolean;
+  trail?: SubagentTrail;
+}) {
+  if (isSubagentLabel(label)) {
+    return (
+      <SubagentConversationCard
+        title={subagentCardTitle(label)}
+        model={trail?.model ?? ""}
+        modelName={trail?.modelName ?? ""}
+        openId={openId}
+        running={Boolean(openId && trail?.runningOpenIds?.has(openId))}
+        activity={openId ? trail?.runs?.[openId]?.activity ?? "" : ""}
+        startedAt={openId ? trail?.runs?.[openId]?.startedAt ?? 0 : 0}
+        onOpen={trail?.onOpen}
+      />
+    );
+  }
+  return (
+    <ExpandableToolCall
+      label={label}
+      change={change}
+      detail={detail}
+      children={children}
+      spinning={spinning}
+      counts={counts}
+      trail={trail}
+    />
+  );
+}
+
+function ExpandableToolCall({
+  label,
+  change,
+  detail,
+  children = [],
+  spinning = false,
+  counts = true,
+  trail,
 }: {
   label: string;
   change: ToolFileChange | null;
   detail: string;
   children?: ToolTrailRow[];
   spinning?: boolean;
-  /** Child calls keep their own diff, but the parent already shows the total. */
   counts?: boolean;
+  trail?: SubagentTrail;
 }) {
   const hasDiff = change != null && (change.added.length > 0 || change.removed.length > 0);
   const [expandEdits, setExpandEditsOn] = useState(() => loadExpandEdits());
@@ -272,7 +362,7 @@ function ToolCallBlock({
         <ToolCallBody show={show}>
           {() =>
             nested ? (
-              <ToolCallTree rows={children} />
+              <ToolCallTree rows={children} trail={trail} />
             ) : (
               <div className="mt-0.5 mb-1 ml-5 min-w-0">
                 {hasDiff && change ? <InlineEditDiff change={change} /> : <ToolDetail text={command} />}
@@ -325,13 +415,20 @@ function ToolCallBody({ show, children }: { show: boolean; children: () => React
 }
 
 /** Calls on one file, drawn under the file with a trunk and a branch per call. */
-function ToolCallTree({ rows }: { rows: ToolTrailRow[] }) {
+function ToolCallTree({ rows, trail }: { rows: ToolTrailRow[]; trail?: SubagentTrail }) {
   return (
     <div className="relative mt-0.5 mb-1 ml-[5px] border-l border-line/70 pl-3">
       {rows.map((row, i) => (
         <div key={`${row.label}-${i}`} className="relative">
           <span className="absolute top-[10px] -left-3 h-px w-2.5 bg-line/70" aria-hidden />
-          <ToolCallBlock label={row.label} change={row.change} detail={row.detail} counts={false} />
+          <ToolCallBlock
+            label={row.label}
+            change={row.change}
+            detail={row.detail}
+            openId={row.openId}
+            counts={false}
+            trail={trail}
+          />
         </div>
       ))}
     </div>
@@ -344,6 +441,90 @@ function LineChangeCounts({ change }: { change: ToolFileChange }) {
     <span className="flex shrink-0 items-baseline gap-1 font-mono text-[11px] leading-none tabular-nums">
       {change.additions > 0 ? <span className="text-ok">+{change.additions}</span> : null}
       {change.deletions > 0 ? <span className="text-err">-{change.deletions}</span> : null}
+    </span>
+  );
+}
+
+function SubagentConversationCard({
+  title,
+  model,
+  modelName,
+  openId,
+  running,
+  activity,
+  startedAt,
+  onOpen,
+}: {
+  title: string;
+  model: string;
+  modelName: string;
+  openId: string;
+  running: boolean;
+  activity: string;
+  startedAt: number;
+  onOpen?: (id: string) => void;
+}) {
+  const caption = modelName.trim() || (model.trim() ? formatModelName(model) : "Subagent");
+  const tool = activity.trim();
+  const open = Boolean(openId && onOpen);
+  return (
+    <div className="group/chat my-0.5 flex items-center overflow-visible rounded-xl select-none hover:bg-wash">
+      <button
+        type="button"
+        disabled={!open}
+        onClick={() => {
+          if (openId && onOpen) onOpen(openId);
+        }}
+        className={`flex min-w-0 flex-1 items-start gap-2 py-1.5 pr-2 pl-2 text-left text-ink ${
+          open ? "cursor-pointer" : "cursor-default"
+        }`}
+      >
+        <ChatLogo model={model} />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[13px] leading-4 font-medium">{title}</span>
+            {running && startedAt ? (
+              <RunningElapsed
+                startedAt={startedAt}
+                className="shrink-0 text-[11px] leading-none tabular-nums text-muted"
+              />
+            ) : null}
+          </span>
+          {running && tool ? (
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+              <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0 opacity-70" />
+              <span className="min-w-0 truncate" title={tool}>
+                {tool}
+              </span>
+            </span>
+          ) : null}
+          <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+            <ModelLineMark model={model} />
+            <span className="min-w-0 truncate" title={caption}>
+              {caption}
+            </span>
+          </span>
+        </span>
+        {running ? (
+          <span
+            className="mt-0.5 size-3.5 shrink-0 self-center animate-spin rounded-full border border-muted/55 border-t-transparent"
+            aria-label="Running"
+          />
+        ) : null}
+      </button>
+    </div>
+  );
+}
+
+/** Provider mark for the model line. The activity above keeps the turn arrow. */
+function ModelLineMark({ model }: { model: string }) {
+  if (!model.trim()) return <Symbol name="sparkles" className="size-2.5 shrink-0 opacity-70" />;
+  const profile = providerProfile(model);
+  const tone =
+    profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "group/minimax" : "usage-mark-xai";
+  return (
+    <span className={`flex size-3 shrink-0 items-center justify-center ${tone}`} data-colored="">
+      <Symbol name={profile.symbol} colored={profile.id === "minimax"} className="size-3" />
     </span>
   );
 }

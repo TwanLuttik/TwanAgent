@@ -217,10 +217,17 @@ type PlainReply = {
   message: ChatMessage;
 };
 
+function hasOnlyQuietTools(message: ChatMessage): boolean {
+  const calls = message.tool_calls ?? [];
+  return calls.length > 0 && calls.every((call) => QUIET_TOOLS.has(call.name));
+}
+
 /**
  * The answer that ends the turn.
  * Tool rows after it still count: a late result can be appended behind the text.
- * Narration that called a tool is not the answer.
+ * Narration that called a tool is not the answer. Neither is a reasoning-only
+ * row or a quiet todo/plan update: those used to occupy this slot and the real
+ * reply was then dropped when the turn sealed.
  */
 function plainReply(messages: ChatMessage[]): PlainReply | null {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -229,9 +236,13 @@ function plainReply(messages: ChatMessage[]): PlainReply | null {
     if (message.role === "tool") continue;
     if (message.role !== "assistant" || message.error) continue;
     if (hasVisibleToolCall(message)) return null;
+    if (hasOnlyQuietTools(message)) continue;
     const content = String(message.content ?? "").trim();
-    const reasoning = String(message.reasoning ?? "").trim();
-    if (!content && !reasoning) return null;
+    if (!content) {
+      // Reasoning with no text is not the answer. An empty row still ends the walk.
+      if (String(message.reasoning ?? "").trim()) continue;
+      return null;
+    }
     return { index: i, content, message };
   }
   return null;
@@ -258,32 +269,89 @@ function preferFinishedTranscript(live: ChatMessage[], stored: ChatMessage[]): C
   return live;
 }
 
+function toolCallIds(message: ChatMessage): string[] {
+  const ids: string[] = [];
+  for (const call of message.tool_calls ?? []) {
+    if (call.id) ids.push(call.id);
+  }
+  return ids;
+}
+
+function sameToolCall(a: ChatMessage, b: ChatMessage): boolean {
+  const left = toolCallIds(a);
+  const right = toolCallIds(b);
+  if (!left.length || !right.length) return false;
+  return left.some((id) => right.includes(id));
+}
+
+function containsAssistantText(messages: ChatMessage[], text: string): boolean {
+  const want = text.trim();
+  if (!want) return false;
+  return messages.some(
+    (message) => message?.role === "assistant" && String(message.content ?? "").trim() === want,
+  );
+}
+
+/**
+ * The live buffer can be folded onto the assistant that also called the tools.
+ * A later tool save still has the short narration, so length keeps that copy
+ * and the ending disappears with the stream.
+ */
+function applyLongerAssistantContent(base: ChatMessage[], extra: ChatMessage[]): ChatMessage[] {
+  let next: ChatMessage[] | null = null;
+  for (const message of extra) {
+    if (!message || message.role !== "assistant" || message.error) continue;
+    const full = String(message.content ?? "");
+    if (!full.trim()) continue;
+    const rows = next ?? base;
+    const index = rows.findIndex((row) => row?.role === "assistant" && sameToolCall(row, message));
+    if (index < 0) continue;
+    const kept = rows[index];
+    if (!kept) continue;
+    const short = String(kept.content ?? "");
+    if (!short.trim() || full.length <= short.length || !full.startsWith(short)) continue;
+    if (!next) next = base.slice();
+    next[index] = {
+      ...kept,
+      content: full,
+      ...(String(message.reasoning ?? "").trim() ? { reasoning: message.reasoning } : {}),
+    };
+  }
+  return next ?? base;
+}
+
 /** Put `extra`'s concluding reply onto `base` when this turn's tool list lost it. */
 function attachPlainReply(base: ChatMessage[], extra: ChatMessage[]): ChatMessage[] {
   if (promptCount(base) !== promptCount(extra)) return base;
+  const next = applyLongerAssistantContent(base, extra);
   const reply = plainReply(extra);
-  if (!reply) return base;
-  const current = plainReply(base);
-  if (current) {
-    if (!reply.content || current.content === reply.content || current.content.startsWith(reply.content)) {
-      return base;
-    }
-    if (current.content && reply.content.startsWith(current.content)) {
-      const next = base.slice();
-      const kept = base[current.index];
-      if (!kept) return base;
-      next[current.index] = {
+  if (!reply?.content) return next;
+  const current = plainReply(next);
+  if (current?.content) {
+    if (current.content === reply.content || current.content.startsWith(reply.content)) return next;
+    if (reply.content.startsWith(current.content)) {
+      const copy = next.slice();
+      const kept = next[current.index];
+      if (!kept) return next;
+      copy[current.index] = {
         ...kept,
         content: String(reply.message.content ?? ""),
         ...(String(reply.message.reasoning ?? "").trim() ? { reasoning: reply.message.reasoning } : {}),
       };
-      return next;
+      return copy;
     }
-    return base;
+    // The longer list already ends on this sentence.
+    if (containsAssistantText(next, reply.content)) return next;
+    // Its ending is only the narration the other list already continued past.
+    if (containsAssistantText(extra, current.content)) {
+      return [...next, plainReplyMessage(reply.message)];
+    }
+    return next;
   }
-  const open = openAssistant(base);
-  if (open && reply.content && open.content === reply.content) return base;
-  return [...base, plainReplyMessage(reply.message)];
+  const open = openAssistant(next);
+  if (open && open.content === reply.content) return next;
+  if (containsAssistantText(next, reply.content)) return next;
+  return [...next, plainReplyMessage(reply.message)];
 }
 
 function plainReplyMessage(message: ChatMessage): ChatMessage {
@@ -746,7 +814,10 @@ export function messagesShowStream(messages: ChatMessage[], text: string, reason
   if (!want && !thought) return true;
   const open = openAssistant(messages);
   if (!open?.trailingTools) return false;
-  return bufferHeld(open.content, want) && bufferHeld(open.reasoning, thought);
+  // The narration before the tools is already on screen. Only an exact match
+  // is that narration. A prefix match cleared the real reply when it started
+  // with the same words, and the bubble never came back.
+  return open.content === want && bufferHeld(open.reasoning, thought);
 }
 
 /**

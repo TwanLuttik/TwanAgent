@@ -411,6 +411,7 @@ describe("commitPartialReply", () => {
       { role: "tool" as const, tool_call_id: "1", content: "file" },
     ];
     assert.equal(messagesShowStream(tools, "Reading the settings."), true);
+    assert.equal(messagesShowStream(tools, "Reading"), false);
     assert.equal(messagesShowStream(tools, "Settings is now grouped panels."), false);
   });
 
@@ -475,6 +476,101 @@ describe("commitPartialReply", () => {
     const kept = mergeFinishedTranscript(buried, painted);
     assert.equal(
       kept.some((message) => message.role === "assistant" && message.content === "The header is fixed."),
+      true,
+    );
+  });
+
+  it("keeps a reply that was folded onto the tool-calling message when a longer tool save arrives", () => {
+    const narration = {
+      role: "assistant" as const,
+      content: "I'll look at the header.",
+      tool_calls: [{ id: "1", name: "grep", arguments: "{}" }],
+    };
+    const extended = {
+      ...narration,
+      content: "I'll look at the header.\n\nThe header is fixed.",
+    };
+    const toolSave = [
+      ...history,
+      narration,
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+      { role: "tool" as const, tool_call_id: "2", content: "more" },
+    ];
+    const folded = [...history, extended];
+    for (const merged of [mergeHostedTranscript(folded, toolSave), mergeHostedTranscript(toolSave, folded)]) {
+      assert.equal(
+        merged.some((message) => String(message.content).includes("The header is fixed.")),
+        true,
+      );
+    }
+    assert.equal(
+      mergeFinishedTranscript(toolSave, folded).some((message) =>
+        String(message.content).includes("The header is fixed."),
+      ),
+      true,
+    );
+  });
+
+  it("does not drop a concluding reply when the longer list ends on reasoning only", () => {
+    const longer = [
+      ...history,
+      { role: "assistant" as const, content: "", reasoning: "Checked the tools." },
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+      { role: "tool" as const, tool_call_id: "2", content: "more" },
+    ];
+    const withAnswer = [...history, { role: "assistant" as const, content: "The header is fixed." }];
+    for (const merged of [
+      mergeHostedTranscript(withAnswer, longer),
+      mergeHostedTranscript(longer, withAnswer),
+      mergeFinishedTranscript(longer, withAnswer),
+      mergeFinishedTranscript(withAnswer, longer),
+    ]) {
+      assert.equal(
+        merged.some((message) => message.content === "The header is fixed."),
+        true,
+      );
+    }
+  });
+
+  it("does not let a quiet tool update stand in for the concluding reply", () => {
+    const longer = [
+      ...history,
+      {
+        role: "assistant" as const,
+        content: "Updated the plan.",
+        tool_calls: [{ id: "t", name: "todo_write", arguments: "{}" }],
+      },
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+      { role: "tool" as const, tool_call_id: "2", content: "more" },
+    ];
+    const withAnswer = [...history, { role: "assistant" as const, content: "The header is fixed." }];
+    assert.equal(
+      mergeFinishedTranscript(longer, withAnswer).some((message) => message.content === "The header is fixed."),
+      true,
+    );
+    assert.equal(
+      mergeHostedTranscript(longer, withAnswer).some((message) => message.content === "The header is fixed."),
+      true,
+    );
+  });
+
+  it("keeps a later reply when the longer list only has the narration the other list also has", () => {
+    const longer = [
+      ...history,
+      { role: "assistant" as const, content: "I'll look at the header." },
+      { role: "tool" as const, tool_call_id: "1", content: "file" },
+      { role: "tool" as const, tool_call_id: "2", content: "more" },
+    ];
+    const withAnswer = [
+      ...history,
+      { role: "assistant" as const, content: "I'll look at the header." },
+      { role: "assistant" as const, content: "The header is fixed." },
+    ];
+    const merged = mergeHostedTranscript(withAnswer, longer);
+    assert.equal(merged.some((message) => message.content === "The header is fixed."), true);
+    assert.equal(merged.some((message) => message.role === "tool" && message.content === "more"), true);
+    assert.equal(
+      mergeFinishedTranscript(longer, withAnswer).some((message) => message.content === "The header is fixed."),
       true,
     );
   });

@@ -154,50 +154,75 @@ pub(super) fn turn_tools(workspace: &Path, conversation_id: &str) -> Vec<Value> 
     let mut tools = twanagent_service::capabilities::tool_defs(conversation_id);
     if super::super::group::layout(workspace).is_some() {
         tools.extend(super::super::group_chats::tool_defs());
+    } else {
+        tools.extend(super::super::group_chats::project_tool_defs());
     }
     tools
 }
 
-pub(super) fn list_group_chats(data_dir: &Path, workspace: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
-    let Some(layout) = super::super::group::layout(workspace) else {
-        return Err(Error::Other("list_chats is only available in a grouped project".into()));
-    };
+pub(super) fn list_group_chats(
+    data_dir: &Path,
+    workspace: &Path,
+    workspace_key: &str,
+    args: &serde_json::Map<String, Value>,
+    current_id: &str,
+) -> Result<String> {
     let archived = args.get("archived").and_then(Value::as_bool).unwrap_or(false);
-    super::super::group_chats::list_member_chats(data_dir, &layout, str_arg(args, "alias"), archived)
+    if let Some(layout) = super::super::group::layout(workspace) {
+        return super::super::group_chats::list_member_chats(data_dir, &layout, str_arg(args, "alias"), archived);
+    }
+    super::super::group_chats::list_project_chats(data_dir, store_key(workspace, workspace_key).as_str(), archived, current_id)
 }
 
-pub(super) fn read_group_chat(data_dir: &Path, workspace: &Path, args: &serde_json::Map<String, Value>) -> Result<String> {
-    let Some(layout) = super::super::group::layout(workspace) else {
-        return Err(Error::Other("read_chat is only available in a grouped project".into()));
-    };
-    super::super::group_chats::read_member_chat(data_dir, &layout, str_arg(args, "alias"), str_arg(args, "id"))
+pub(super) fn read_group_chat(
+    data_dir: &Path,
+    workspace: &Path,
+    workspace_key: &str,
+    args: &serde_json::Map<String, Value>,
+) -> Result<String> {
+    if let Some(layout) = super::super::group::layout(workspace) {
+        return super::super::group_chats::read_member_chat(data_dir, &layout, str_arg(args, "alias"), str_arg(args, "id"));
+    }
+    super::super::group_chats::read_project_chat(data_dir, store_key(workspace, workspace_key).as_str(), str_arg(args, "id"))
 }
 
 pub(super) fn create_group_chat(
     app: &AppHandle,
     data_dir: &Path,
     workspace: &Path,
+    workspace_key: &str,
     args: &serde_json::Map<String, Value>,
     model: &str,
     effort: &str,
     context_window: Option<u64>,
     permission: &str,
 ) -> Result<String> {
-    let Some(layout) = super::super::group::layout(workspace) else {
-        return Err(Error::Other("create_chat is only available in a grouped project".into()));
-    };
     let message = str_arg(args, "message");
-    let created = super::super::group_chats::create_member_chat(
-        data_dir,
-        &layout,
-        str_arg(args, "alias"),
-        str_arg(args, "title"),
-        message,
-        model,
-        effort,
-        context_window,
-        permission,
-    )?;
+    let title = str_arg(args, "title");
+    let created = if let Some(layout) = super::super::group::layout(workspace) {
+        super::super::group_chats::create_member_chat(
+            data_dir,
+            &layout,
+            str_arg(args, "alias"),
+            title,
+            message,
+            model,
+            effort,
+            context_window,
+            permission,
+        )?
+    } else {
+        super::super::group_chats::create_project_chat(
+            data_dir,
+            store_key(workspace, workspace_key).as_str(),
+            title,
+            message,
+            model,
+            effort,
+            context_window,
+            permission,
+        )?
+    };
     let member = PathBuf::from(&created.workspace);
     spawn_local_turn(
         app,
@@ -224,15 +249,29 @@ pub(super) fn create_group_chat(
             "running": true,
         }),
     );
-    Ok(format!(
-        "{}\t{}\t{}",
-        created.alias, created.summary.id, created.summary.title
-    ))
+    Ok(created_chat_line(&created))
+}
+
+fn created_chat_line(created: &super::super::group_chats::CreatedChat) -> String {
+    if created.alias.is_empty() {
+        format!("{}\t{}", created.summary.id, created.summary.title)
+    } else {
+        format!("{}\t{}\t{}", created.alias, created.summary.id, created.summary.title)
+    }
+}
+
+fn store_key(workspace: &Path, workspace_key: &str) -> String {
+    let key = workspace_key.trim();
+    if key.is_empty() {
+        super::super::paths::path_string(workspace)
+    } else {
+        key.to_string()
+    }
 }
 
 pub(super) fn group_prompt(workspace: &Path) -> String {
     let Some(layout) = super::super::group::layout(workspace) else {
-        return String::new();
+        return format!("\n{}", super::super::group_chats::PROJECT_PROMPT_LINE);
     };
     let aliases = layout
         .members
@@ -374,5 +413,60 @@ mod tests {
         assert_eq!(head, "H".repeat(TOOL_TEXT_HEAD));
         assert_eq!(rest, "T".repeat(TOOL_TEXT_TAIL));
         assert!(capped.chars().count() < long.chars().count());
+    }
+
+    #[test]
+    fn a_normal_project_can_list_and_read_other_chats() {
+        let data = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let key = crate::dev::paths::path_string(project.path());
+        let prompt = group_prompt(project.path());
+        assert!(prompt.contains("other chats"), "{prompt}");
+        assert!(prompt.contains("Do not call them at the start of a conversation"), "{prompt}");
+        assert!(!prompt.contains("Use list_chats and read_chat to read them"), "{prompt}");
+        assert!(prompt.contains("user asked for another chat"), "{prompt}");
+
+        let tools = turn_tools(project.path(), "conv");
+        let read = tools
+            .iter()
+            .find(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some("read_chat"))
+            .expect("read_chat");
+        let required = read.pointer("/function/parameters/required").and_then(Value::as_array).unwrap();
+        assert!(required.iter().any(|name| name.as_str() == Some("id")));
+        assert!(!required.iter().any(|name| name.as_str() == Some("alias")));
+
+        let current = crate::dev::group_chats::create_project_chat(
+            data.path(),
+            &key,
+            "Current",
+            "This one.",
+            "",
+            "",
+            None,
+            "",
+        )
+        .unwrap();
+        let other = crate::dev::group_chats::create_project_chat(
+            data.path(),
+            &key,
+            "Login bug",
+            "token check",
+            "",
+            "",
+            None,
+            "",
+        )
+        .unwrap();
+        let args = serde_json::Map::new();
+        let listed = list_group_chats(data.path(), project.path(), &key, &args, &current.summary.id).unwrap();
+        assert!(listed.contains(&other.summary.id), "{listed}");
+        assert!(listed.contains("Login bug"), "{listed}");
+        assert!(!listed.contains(&current.summary.id), "{listed}");
+
+        let mut read_args = serde_json::Map::new();
+        read_args.insert("id".into(), Value::String(other.summary.id.clone()));
+        let text = read_group_chat(data.path(), project.path(), &key, &read_args).unwrap();
+        assert!(text.contains("token check"), "{text}");
+        assert!(!text.starts_with("api "), "{text}");
     }
 }

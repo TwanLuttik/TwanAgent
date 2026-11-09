@@ -131,7 +131,6 @@ const REGISTERED: &[&str] = &[
         "dev_grok_plan_set",
         "dev_grok_plan_write",
         "dev_pty_open",
-        "dev_pty_open_grok",
         "dev_pty_write",
         "dev_pty_write_bytes",
         "dev_pty_resize",

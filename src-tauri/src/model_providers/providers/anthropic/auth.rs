@@ -15,11 +15,17 @@ fn account_email(value: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// A Claude login leaves credentials on disk. The email is optional.
-/// The login keychain is not read. `security` asks for the keychain password
-/// when this app is not allowed to see the item, and the usage screen checks
-/// this account every time it opens.
+/// A Claude login leaves credentials on disk, or a `/login` managed API key in
+/// the macOS keychain. The email is optional. The OAuth blob in the keychain is
+/// not read: `security` asks for the keychain password when this app is not
+/// allowed to see it, and the usage screen checks this account every time it
+/// opens. The managed API key is a different item. A cancelled prompt for that
+/// item is remembered for this process so the check does not ask again.
 pub fn read_claude_account(home: &Path) -> Option<(bool, Option<String>)> {
+    read_claude_account_with(home, read_managed_cli_api_key().as_deref())
+}
+
+fn read_claude_account_with(home: &Path, managed: Option<&str>) -> Option<(bool, Option<String>)> {
     let claude = home.join(".claude");
     let creds = claude.join(".credentials.json");
     if creds.is_file() {
@@ -39,7 +45,123 @@ pub fn read_claude_account(home: &Path) -> Option<(bool, Option<String>)> {
             return Some((true, account_email(oauth)));
         }
     }
-    cli_access_token(home, false).map(|_| (true, cli_account_email(home)))
+    if let Some(found) = cli_access_token(home, false).map(|_| (true, cli_account_email(home))) {
+        return Some(found);
+    }
+    // `claude auth status` reports this as `/login managed key` with no credentials file.
+    managed_cli_api_key(managed).map(|_| (true, cli_account_email(home)))
+}
+
+/// Claude Code's `/login` managed key. Anything else, including the OAuth JSON
+/// blob stored under a different keychain item, is not an API key.
+fn managed_cli_api_key(raw: Option<&str>) -> Option<String> {
+    let key = raw?.trim();
+    if key.starts_with("sk-ant-") && key.len() > "sk-ant-".len() {
+        Some(key.to_string())
+    } else {
+        None
+    }
+}
+
+/// Account name `claude` passes to `security find-generic-password -a`.
+fn claude_cli_keychain_account(user: Option<&str>) -> String {
+    let user = user.unwrap_or("").trim();
+    let ok = !user.is_empty()
+        && user
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-');
+    if ok {
+        user.to_string()
+    } else {
+        "claude-code-user".into()
+    }
+}
+
+/// Service name `claude` passes to `security -s` for the managed API key.
+/// A custom config dir adds the first 8 hex chars of its sha256, which is how
+/// Claude Code keeps two logins apart.
+fn claude_cli_keychain_service(secure_dir: Option<&str>, config_dir: Option<&str>) -> String {
+    let secure = secure_dir.map(str::trim);
+    let config = config_dir.map(str::trim).filter(|value| !value.is_empty());
+    let material = match secure {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(value),
+        None => config,
+    };
+    let suffix = match material {
+        Some(value) => {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(value.as_bytes());
+            format!("-{}", hex::encode(&digest[..4]))
+        }
+        None => String::new(),
+    };
+    format!("Claude Code{suffix}")
+}
+
+/// The API key `claude /login` stored. `None` in tests, so a developer login
+/// cannot change fixture results. A missing item is not cached: signing in
+/// while the app is open should show up on the next check.
+#[cfg(all(target_os = "macos", not(test)))]
+fn read_managed_cli_api_key() -> Option<String> {
+    let user = std::env::var("USER")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("LOGNAME").ok())
+        .or_else(|| std::env::var("USERNAME").ok());
+    let account = claude_cli_keychain_account(user.as_deref());
+    let service = claude_cli_keychain_service(
+        std::env::var("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+            .ok()
+            .as_deref(),
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+    );
+    let raw = read_claude_keychain(&service, &account)?;
+    managed_cli_api_key(Some(&raw))
+}
+
+#[cfg(not(all(target_os = "macos", not(test))))]
+fn read_managed_cli_api_key() -> Option<String> {
+    None
+}
+
+/// One successful read is kept for this process. A cancelled prompt is kept too,
+/// so settings and usage do not ask on every refresh. `errSecInteractionNotAllowed`
+/// is not cached: the window may not have been able to show the dialog yet.
+#[cfg(all(target_os = "macos", not(test)))]
+fn read_claude_keychain(service: &str, account: &str) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Clone)]
+    enum Cached {
+        Value(String),
+        Denied,
+    }
+
+    static CACHE: OnceLock<Mutex<Option<Cached>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    // Hold the lock across the read so two startup probes share one keychain prompt.
+    let mut guard = cache.lock().unwrap_or_else(|err| err.into_inner());
+    match guard.as_ref() {
+        Some(Cached::Value(value)) => return Some(value.clone()),
+        Some(Cached::Denied) => return None,
+        None => {}
+    }
+    match security_framework::passwords::get_generic_password(service, account) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes).ok()?;
+            *guard = Some(Cached::Value(text.clone()));
+            Some(text)
+        }
+        // errSecItemNotFound. A missing item does not show the password dialog.
+        Err(err) if err.code() == -25300 => None,
+        // User cancelled, or the prompt was refused.
+        Err(err) if matches!(err.code(), -128 | -25293) => {
+            *guard = Some(Cached::Denied);
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 fn oauth_access_token(raw: &str) -> Option<String> {
@@ -99,15 +221,40 @@ pub async fn refresh_claude_cli_login() -> Option<String> {
     read_cli_access_token_fresh(&home).await
 }
 
-fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool) -> Option<ClaudeAuth> {
+fn resolve_claude_auth_with(
+    data_dir: &std::path::Path,
+    allow_expired_cli: bool,
+) -> Option<ClaudeAuth> {
+    resolve_claude_sources(
+        data_dir,
+        allow_expired_cli,
+        home_dir().as_deref(),
+        read_managed_cli_api_key(),
+    )
+}
+
+/// Saved app key, then the `/login` managed API key, then the OAuth files.
+/// The managed key is an `sk-ant-` API key, so it uses `x-api-key`, not a bearer token.
+fn resolve_claude_sources(
+    data_dir: &std::path::Path,
+    allow_expired_cli: bool,
+    home: Option<&Path>,
+    managed: Option<String>,
+) -> Option<ClaudeAuth> {
     if let Some(key) = crate::secrets::resolve_anthropic_key_on_disk(data_dir) {
         return Some(ClaudeAuth {
             token: key,
             via_cli: false,
         });
     }
-    let home = home_dir()?;
-    if let Some(token) = read_claude_access_token(&home) {
+    if let Some(token) = managed_cli_api_key(managed.as_deref()) {
+        return Some(ClaudeAuth {
+            token,
+            via_cli: false,
+        });
+    }
+    let home = home?;
+    if let Some(token) = read_claude_access_token(home) {
         return Some(ClaudeAuth {
             token,
             via_cli: true,
@@ -116,7 +263,7 @@ fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool)
     if !allow_expired_cli {
         return None;
     }
-    let (token, _) = cli_access_token(&home, true)?;
+    let (token, _) = cli_access_token(home, true)?;
     Some(ClaudeAuth {
         token,
         via_cli: true,
@@ -125,7 +272,8 @@ fn resolve_claude_auth_with(data_dir: &std::path::Path, allow_expired_cli: bool)
 
 /// The login the settings screen counts as signed in.
 /// `~/.claude/.credentials.json` first, then the Claude CLI credentials file.
-/// The login keychain is not read, so opening usage never asks for its password.
+/// The OAuth keychain item is not read, so opening usage never asks for its password.
+/// The `/login` managed API key is resolved separately and sent as `x-api-key`.
 pub fn read_claude_access_token(home: &Path) -> Option<String> {
     if let Some(raw) = fs::read_to_string(home.join(".claude").join(".credentials.json")).ok() {
         if let Some(token) = oauth_access_token(&raw) {
@@ -511,6 +659,77 @@ mod tests {
         assert!(token_needs_refresh(Some(1)));
         assert!(!token_needs_refresh(None));
         assert!(!token_needs_refresh(Some(4_102_444_800)));
+    }
+
+    #[test]
+    fn a_login_managed_key_signs_in_without_a_credentials_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        assert_eq!(read_claude_account_with(home, None), None);
+        assert_eq!(
+            read_claude_account_with(home, Some("sk-ant-from-cli")),
+            Some((true, None))
+        );
+        let auth = resolve_claude_sources(
+            dir.path(),
+            false,
+            Some(home),
+            Some("sk-ant-from-cli".into()),
+        )
+        .expect("managed key");
+        assert_eq!(auth.token, "sk-ant-from-cli");
+        // `/login` stores an API key, not an OAuth bearer token.
+        assert!(!auth.via_cli);
+        assert!(resolve_claude_sources(dir.path(), false, Some(home), None).is_none());
+        crate::secrets::set_anthropic_key(dir.path(), "sk-ant-saved").unwrap();
+        let saved = resolve_claude_sources(
+            dir.path(),
+            false,
+            Some(home),
+            Some("sk-ant-from-cli".into()),
+        )
+        .expect("saved key");
+        assert_eq!(saved.token, "sk-ant-saved");
+        assert!(!saved.via_cli);
+    }
+
+    #[test]
+    fn managed_cli_key_rejects_anything_that_is_not_an_api_key() {
+        assert_eq!(
+            managed_cli_api_key(Some(" sk-ant-api03-abc ")).as_deref(),
+            Some("sk-ant-api03-abc")
+        );
+        assert_eq!(managed_cli_api_key(None), None);
+        assert_eq!(managed_cli_api_key(Some("")), None);
+        assert_eq!(managed_cli_api_key(Some("sk-ant-")), None);
+        assert_eq!(
+            managed_cli_api_key(Some(r#"{"mcpOAuth":{"accessToken":""}}"#)),
+            None
+        );
+    }
+
+    #[test]
+    fn cli_keychain_name_matches_claude_code() {
+        assert_eq!(claude_cli_keychain_service(None, None), "Claude Code");
+        assert_eq!(claude_cli_keychain_service(Some(""), None), "Claude Code");
+        assert_eq!(
+            claude_cli_keychain_service(None, Some("/tmp/claude-home")),
+            "Claude Code-ee668b60"
+        );
+        assert_eq!(
+            claude_cli_keychain_service(Some("/custom/secure"), Some("/tmp/claude-home")),
+            "Claude Code-378dd983"
+        );
+        assert_eq!(
+            claude_cli_keychain_account(Some("twanluttik")),
+            "twanluttik"
+        );
+        assert_eq!(
+            claude_cli_keychain_account(Some("Ada Lovelace")),
+            "claude-code-user"
+        );
+        assert_eq!(claude_cli_keychain_account(Some("")), "claude-code-user");
+        assert_eq!(claude_cli_keychain_account(None), "claude-code-user");
     }
 
     #[test]

@@ -1,4 +1,5 @@
-import { parseToolArgs, type ChatMessage } from "./core.ts";
+import type { ChatMessage } from "./chat-types.ts";
+import { parseToolArgs } from "./tool-text.ts";
 import { agentNameFor } from "./provider.ts";
 import { permissionSystemLine, type PermissionMode } from "./permission.ts";
 
@@ -8,6 +9,8 @@ export type SubagentStatus = "running" | "done" | "error" | "stopped";
 
 export type SubagentRecord = {
   id: string;
+  /** Tool call that spawned this agent, so the transcript row can open it while it runs. */
+  callId: string;
   description: string;
   type: SubagentType;
   status: SubagentStatus;
@@ -122,9 +125,11 @@ export function emptySubagent(partial: {
   description: string;
   type: SubagentType;
   prompt: string;
+  callId?: string;
 }): SubagentRecord {
   return {
     id: partial.id,
+    callId: partial.callId?.trim() ?? "",
     description: partial.description,
     type: partial.type,
     status: "running",
@@ -135,6 +140,55 @@ export function emptySubagent(partial: {
     messages: [],
     summary: "",
   };
+}
+
+export { subagentToolResult, subagentConversationIdFromResult } from "./tool-text.ts";
+
+export function isSubagentLabel(label: string): boolean {
+  const trimmed = label.trim();
+  return trimmed === "Subagent" || trimmed.startsWith("Subagent:") || trimmed.startsWith("Subagent ");
+}
+
+/** Task name on the conversation row. "Subagent: Find parser" becomes "Find parser". */
+export function subagentCardTitle(label: string): string {
+  const rest = label.trim().replace(/^Subagent\s*:?\s*/i, "").trim();
+  return rest || "Subagent";
+}
+
+/**
+ * Which conversation a subagent row opens.
+ * A finished result wins. While it is still running, the live agent matched by tool call does.
+ */
+export type SubagentRun = { activity: string; startedAt: number };
+
+/** Latest tool label and the clock for a subagent row in the parent transcript. */
+export function subagentRunInfo(
+  agents: readonly { id: string; tools: readonly string[] }[],
+  running: Readonly<Record<string, { startedAt?: number } | undefined>>,
+): Record<string, SubagentRun> {
+  const runs: Record<string, SubagentRun> = {};
+  for (const agent of agents) {
+    if (!agent.id) continue;
+    runs[agent.id] = {
+      activity: agent.tools[agent.tools.length - 1]?.trim() ?? "",
+      startedAt: running[agent.id]?.startedAt ?? 0,
+    };
+  }
+  return runs;
+}
+
+export function subagentOpenId(
+  label: string,
+  stored: string,
+  callId: string,
+  agents: readonly { id: string; callId?: string }[],
+): string {
+  if (!isSubagentLabel(label)) return "";
+  const saved = stored.trim();
+  if (saved) return saved;
+  const id = callId.trim();
+  if (!id) return "";
+  return agents.find((agent) => agent.callId === id)?.id ?? "";
 }
 
 /** One `subagent` event from a local turn. The page turns this into a dock update. */
@@ -157,6 +211,7 @@ export function subagentFromLocalEvent(raw: string): SubagentEvent | null {
       type: "start",
       record: emptySubagent({
         id,
+        callId: String(body.callId ?? body.call_id ?? "").trim(),
         description: description.slice(0, 80),
         type,
         prompt: String(body.prompt ?? ""),
@@ -218,7 +273,9 @@ export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent)
     }
     if (event.type === "tool") return { ...row, tools: [...row.tools, event.label] };
     if (event.type === "update") {
-      return { ...row, messages: event.messages, streamText: "", streamReasoning: "" };
+      // The transcript now has these calls. Keeping the live labels painted them
+      // again under the next thought, with names that did not match the saved ones.
+      return { ...row, messages: event.messages, streamText: "", streamReasoning: "", tools: [] };
     }
     if (event.type === "done") {
       return {
@@ -228,6 +285,7 @@ export function applySubagentEvent(rows: SubagentRecord[], event: SubagentEvent)
         messages: event.messages,
         streamText: "",
         streamReasoning: "",
+        tools: [],
       };
     }
     return { ...row, status: row.status === "running" ? "error" : row.status, error: event.error };

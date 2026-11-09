@@ -1,7 +1,6 @@
 import { startTransition, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
-import { GrokTerminal } from "../../components/GrokTerminal";
 import { afterInput } from "../../lib/after-input";
 import { holdPaneSelection, paneProjectFollow } from "../../lib/pane-follow";
 import { filePanePending } from "../../lib/pane-sessions";
@@ -15,15 +14,12 @@ import {
   setEditorMarkdownView,
 } from "../../lib/editor";
 import { splitGroupForChat } from "../../lib/split-pane";
-import { parseConversationKind } from "../../lib/terminal-chat";
 import { draftForChat, setDraftForChat } from "../../lib/turn";
 import { appendSelectionToDraft } from "../../lib/editor-selection";
 import { PANE_DEFAULT, PANE_MAX, PANE_MIN, loadMarkdownOpenMode, loadPaneWidth, saveComposerDraft, savePaneWidth } from "../../lib/prefs";
 import { markPaneResizing, markPaneSliding, requestPaneFit } from "../../lib/terminal-fit";
 import { ServersDialog } from "../../components/ServersDialog";
 import { ProjectSettingsView } from "../ProjectSettingsView";
-import { SettingsView } from "../SettingsView";
-import { DocsView } from "../DocsView";
 import { UsageView } from "../UsageView";
 import { Symbol } from "../../components/Symbol";
 import { isMacOS, isWindows, WindowButtons } from "../../components/WindowButtons";
@@ -35,14 +31,13 @@ import { SplitRow } from "./SplitChatPane";
 export function ChatStage() {
   const {
     activeId,
+    allProjectGroups,
     applyWorkspace,
     closeFileTab,
     closeProjectSettings,
     closeServers,
-    closeSettings,
     closeUsage,
     closeDocs,
-    conversations,
     dirtyFiles,
     editor,
     folderOpen,
@@ -50,23 +45,12 @@ export function ChatStage() {
     openChat,
     openWorkspaceFile,
     pendingClosePath,
-    permission,
-    pickPermission,
-    speechModel,
-    speechModels,
-    speechProgress,
-    speechDownloading,
-    pickSpeechModel,
-    downloadSpeech,
     projectSettings,
-    reloadRuntime,
     setDirtyFiles,
     setDrafts,
     setEditor,
     setShowSettings,
     setShowUsage,
-    settingsTab,
-    setSettingsTab,
     bumpFiles,
     chatTabs,
     tabItems,
@@ -76,15 +60,13 @@ export function ChatStage() {
     setTabMenu,
     splitChat,
     splitSelected,
-    moveChatTab,
     unsplitChat,
     focusSplitPane,
     closeChatTab,
+    closeProjectChats,
     runningTurns,
     showServers,
-    showSettings,
     showUsage,
-    showDocs,
     paneCollapsed,
     setPaneCollapsed,
     sidebarCollapsed,
@@ -92,10 +74,7 @@ export function ChatStage() {
     workspace,
   } = useMain();
   const { openProjectFromSidebar, rememberOpenedProject } = useSidebar();
-  const fullPage = Boolean(showSettings || showUsage || showDocs || showServers || projectSettings);
-  const [settingsAlive, setSettingsAlive] = useState(showSettings);
-  if (showSettings && !settingsAlive) setSettingsAlive(true);
-  const chatKind = parseConversationKind(conversations.find((row: { id: string; kind?: string }) => row.id === activeId)?.kind);
+  const fullPage = Boolean(showUsage || showServers || projectSettings);
   const [paneWorkspace, setPaneWorkspace] = useState(workspace);
   // A click between chats in this project must not unmount the file pane.
   // `activeId` is empty for a frame while the next transcript loads.
@@ -179,8 +158,8 @@ export function ChatStage() {
             items={tabItems}
             tabHomes={tabHomes}
             activeChatId={activeId}
-            splitChatIds={splitChatIds}
             runningTurns={runningTurns}
+            projectGroups={allProjectGroups}
             menu={tabMenu}
             onChat={(id) => {
               setEditor((prev: typeof editor) => selectChatTab(prev));
@@ -193,11 +172,11 @@ export function ChatStage() {
               if (id !== activeId) void openChat(id);
             }}
             onCloseChat={closeChatTab}
+            onCloseProject={closeProjectChats}
             onCode={() => setEditor((prev: typeof editor) => focusEditor(prev))}
             onMenu={setTabMenu}
             onSplit={splitChat}
             onSplitSelected={splitSelected}
-            onMoveTab={moveChatTab}
             onUnsplit={unsplitChat}
             onCloseMenu={() => setTabMenu(null)}
           />
@@ -210,52 +189,23 @@ export function ChatStage() {
         {/* Clip sits inside the stroke so the top-left curve is not cut off. */}
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-tl-[11px]">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {/* Settings stays mounted after the first open. Escape only hides it,
-              so closing does not tear the page down or restart its checks. */}
-          {showSettings || settingsAlive ? (
-            <div
-              className="flex min-h-0 min-w-0 flex-1 flex-col"
-              style={showSettings ? undefined : { display: "none" }}
-            >
-              <SettingsView
-                embedded
-                active={showSettings}
-                tab={settingsTab}
-                onTab={setSettingsTab}
-                permission={permission}
-                onPermission={pickPermission}
-                speechModel={speechModel}
-                speechModels={speechModels}
-                speechProgress={speechProgress}
-                speechDownloading={speechDownloading}
-                onSpeechModel={pickSpeechModel}
-                onSpeechDownload={downloadSpeech}
-                onKeyChange={reloadRuntime}
-                onClose={folderOpen || !showSettings ? undefined : closeSettings}
-              />
-            </div>
-          ) : null}
-          {projectSettings && !showSettings && !showServers ? (
+          {projectSettings && !showServers ? (
             <ProjectSettingsView
               name={projectSettings.name}
               path={projectSettings.path}
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
           ) : null}
-          {showUsage && !showSettings && !showDocs && !showServers ? (
+          {showUsage && !showServers ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
           ) : null}
-          {showDocs && !showSettings && !showServers ? (
-            <DocsView onClose={folderOpen ? undefined : closeDocs} />
-          ) : null}
-          {showServers && !showSettings ? (
+          {showServers ? (
             <ServersDialog
               onClose={folderOpen ? () => undefined : closeServers}
               onOpenProject={(path, name) => applyWorkspace(path, "", name, true)}
             />
           ) : null}
-          {/* Chat and the file editor stay mounted under settings. Closing with
-              Escape only hides the page, so it does not have to rebuild them. */}
+          {/* Chat and the file editor stay mounted under a full-page screen. */}
           <div
             className="flex min-h-0 min-w-0 flex-1 flex-col"
             style={fullPage ? { display: "none" } : undefined}
@@ -297,8 +247,6 @@ export function ChatStage() {
                 });
               }}
             />
-          ) : chatKind === "terminal" && workspace && opened && activeId ? (
-            <GrokTerminal workspace={workspace} conversationId={activeId} active />
           ) : splitChatIds.length > 1 && editor.focus === "chat" ? (
             <SplitRow ids={splitChatIds} />
           ) : (

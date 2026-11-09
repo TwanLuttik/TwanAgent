@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import * as api from "../../lib/tauri";
 import type { ProjectRemoval } from "../../lib/tauri";
 import { formatBytes } from "../../lib/usage";
-import { AnchoredMenu } from "../ContextMenu";
+import { AnchoredMenu, MenuItem, MenuSubmenu } from "../ContextMenu";
 
 export function ProjectContextMenu({
   x,
@@ -40,88 +40,33 @@ export function ProjectContextMenu({
 }) {
   return (
     <AnchoredMenu x={x} y={y} label={name}>
-      {onNewChat ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={onNewChat}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          New chat
-        </button>
-      ) : null}
-      {onFavorite ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={onFavorite}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          {favorite ? "Unfavorite" : "Favorite"}
-        </button>
-      ) : null}
-      {onSettings ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={onSettings}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          Settings
-        </button>
-      ) : null}
+      {onNewChat ? <MenuItem onClick={onNewChat}>New chat</MenuItem> : null}
+      {onFavorite ? <MenuItem onClick={onFavorite}>{favorite ? "Unfavorite" : "Favorite"}</MenuItem> : null}
+      {onSettings ? <MenuItem onClick={onSettings}>Settings</MenuItem> : null}
       {path ? (
-        <button
-          type="button"
-          role="menuitem"
+        <MenuItem
           onClick={() => {
             void navigator.clipboard.writeText(path).catch(() => undefined);
             onCopied?.();
           }}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
         >
           Copy ID
-        </button>
+        </MenuItem>
       ) : null}
-      {onReveal ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={onReveal}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          Open in Finder
-        </button>
+      {onReveal ? <MenuItem onClick={onReveal}>Open in Finder</MenuItem> : null}
+      {onGroup ? <MenuItem onClick={onGroup}>Group projects</MenuItem> : null}
+      {addTargets && addTargets.length > 0 ? (
+        <MenuSubmenu label="Add to group">
+          {addTargets.map((target) => (
+            <MenuItem key={target.path} onClick={() => onAddTo?.(target.path)}>
+              {target.name}
+            </MenuItem>
+          ))}
+        </MenuSubmenu>
       ) : null}
-      {onGroup ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={onGroup}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          Group projects
-        </button>
-      ) : null}
-      {addTargets?.map((target) => (
-        <button
-          key={target.path}
-          type="button"
-          role="menuitem"
-          onClick={() => onAddTo?.(target.path)}
-          className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-        >
-          Add to {target.name}
-        </button>
-      ))}
-      <button
-        type="button"
-        role="menuitem"
-        onClick={onDelete}
-        className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-err hover:bg-inset"
-      >
+      <MenuItem danger onClick={onDelete}>
         {removeLabel}
-      </button>
+      </MenuItem>
     </AnchoredMenu>
   );
 }

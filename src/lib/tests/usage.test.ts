@@ -16,6 +16,7 @@ import {
   formatUsd,
   modelColorIndex,
   linePath,
+  smoothCurve,
   modelRate,
   rangeStartMs,
   teaserIndex,
@@ -305,23 +306,47 @@ describe("estimated cost", () => {
     assert.equal(cost.unpricedTokens, 0);
   });
 
-  it("leaves MiniMax unpriced until a list rate is stored", () => {
+  it("prices MiniMax at the pay-as-you-go list and keeps it out of the other totals", () => {
     const events = [
       ev({
         id: 1,
-        conversation_id: "minimax",
+        conversation_id: "m3",
         recorded_at: new Date(now).toISOString(),
         workspace_path: "/a",
         model: "MiniMax-M3",
-        prompt_tokens: 1_000,
-        completion_tokens: 100,
-        total_tokens: 1_100,
+        prompt_tokens: 1_000_000,
+        completion_tokens: 0,
+        total_tokens: 1_000_000,
+        cache_read_tokens: 200_000,
+      }),
+      ev({
+        id: 2,
+        conversation_id: "flash",
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "MiniMax-M3.1-Flash-Preview",
+        prompt_tokens: 1_000_000,
+        completion_tokens: 1_000_000,
+        total_tokens: 2_000_000,
       }),
     ];
     const cost = estimateUsageCost(events, { range: 7, nowMs: now });
-    assert.equal(cost.usd, 0);
-    assert.equal(cost.minimax, 0);
-    assert.equal(cost.unpricedTokens, 1_100);
+    const m3 = (800_000 * 0.6 + 200_000 * 0.12) / 1_000_000;
+    const flash = (1_000_000 * 0.15 + 1_000_000 * 0.6) / 1_000_000;
+    assert.equal(cost.usd, m3 + flash);
+    assert.equal(cost.minimax, m3 + flash);
+    assert.equal(cost.xai, 0);
+    assert.equal(cost.anthropic, 0);
+    assert.equal(cost.unpricedTokens, 0);
+    assert.equal(cost.byModel["MiniMax-M3"], m3);
+    const short = usageCostUsd({ prompt: 1000, completion: 100, total: 1100 }, "MiniMax-M3", 512_000);
+    const long = usageCostUsd({ prompt: 1000, completion: 100, total: 1100 }, "MiniMax-M3", 512_001);
+    assert.equal(short, (1000 * 0.3 + 100 * 1.2) / 1_000_000);
+    assert.equal(long, (1000 * 0.6 + 100 * 2.4) / 1_000_000);
+    assert.equal(modelRate("MiniMax-M3.1-Flash")?.cachedInput, 0.015);
+    assert.equal(modelRate("MiniMax-M2.7")?.input, 0.3);
+    assert.equal(modelRate("MiniMax-M2.7-highspeed")?.input, 0.6);
+    assert.equal(modelRate("MiniMax-M2.7-highspeed")?.output, 2.4);
     assert.equal(formatModelName("MiniMax-M3"), "MiniMax M3");
     assert.equal(modelColorIndex("MiniMax-M3"), modelColorIndex("minimax-m3"));
   });
@@ -886,6 +911,22 @@ describe("buildUsageTrend", () => {
     assert.equal(trend.points.length, 90);
     assert.equal(trend.points[0].total, 15);
     assert.equal(trend.totals.total, 15);
+  });
+});
+
+describe("smoothCurve", () => {
+  it("needs two points and keeps a peak from bowing past itself", () => {
+    assert.equal(smoothCurve([]), "");
+    assert.equal(smoothCurve([{ x: 0, y: 1 }]), "");
+    assert.equal(smoothCurve([{ x: 0, y: 0 }, { x: 10, y: 4 }]), "M 0.0 0.0 L 10.0 4.0");
+    const d = smoothCurve([
+      { x: 0, y: 40 },
+      { x: 50, y: 0 },
+      { x: 100, y: 40 },
+    ]);
+    assert.match(d, /^M 0\.0 40\.0 C /);
+    const ys = [...d.matchAll(/-?\d+\.\d+/g)].map(Number).filter((_, index) => index % 2 === 1);
+    for (const y of ys) assert.ok(y >= -0.05 && y <= 40.05, String(y));
   });
 });
 

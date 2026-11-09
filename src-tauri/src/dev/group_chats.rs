@@ -1,7 +1,7 @@
-//! Access from a group chat to the chats stored on its member projects.
+//! Read and create chats stored for a project.
 //!
-//! A chat id is only unique inside one project, so every call names the member alias.
-//! The tools never take a filesystem path. `create_chat` adds one chat to that project.
+//! A normal project names chats by id. A group names the member alias too, because a chat id
+//! is only unique inside one project. The tools never take a filesystem path.
 
 use std::path::Path;
 
@@ -17,7 +17,13 @@ const TRANSCRIPT_CAP: usize = 24_000;
 const TRANSCRIPT_HEAD: usize = 20_000;
 const TRANSCRIPT_TAIL: usize = 2_000;
 
-pub const PROMPT_LINE: &str = "Member projects keep their own chats. Use list_chats and read_chat to read them. Use create_chat to add a chat to one project and start it. message is that chat's first prompt.";
+pub const PROMPT_LINE: &str = "Member projects keep their own chats. Call list_chats or read_chat only when another chat is relevant to the request. Do not call them at the start of a conversation. Use create_chat only when the user asked for another chat, or when the request is a separate task that belongs in its own chat. message is that chat's first prompt.";
+
+pub const PROJECT_PROMPT_LINE: &str = "This project has other chats. Call list_chats or read_chat only when another chat is relevant to the request. Do not call them at the start of a conversation. Use create_chat only when the user asked for another chat, or when the request is a separate task that belongs in its own chat.";
+
+const CREATE_WHEN: &str = "Only call this when the user asked for another chat, or when their request is a separate task that belongs in its own chat. Do not use it for the work already happening in this chat.";
+
+const READ_WHEN: &str = "Only call this when another chat is relevant to the request. Do not call it at the start of a conversation.";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct ListedChat {
@@ -28,12 +34,21 @@ struct ListedChat {
 }
 
 pub fn tool_defs() -> Vec<Value> {
+    let list_description = format!(
+        "List chats that belong to the projects in this group. Returns alias, id, title, and updated time. Does not return messages. Pass an alias to limit the list to one project. Omit it to list every project. {READ_WHEN}"
+    );
+    let read_description = format!(
+        "Read one chat that belongs to a project in this group. Read-only. alias is the project name from list_chats, and id is that chat's id. {READ_WHEN}"
+    );
+    let create_description = format!(
+        "Create a new chat in one project in this group and start it. {CREATE_WHEN} It appears in that project's chat list while it runs. message is the first prompt."
+    );
     json!([
         {
             "type": "function",
             "function": {
                 "name": "list_chats",
-                "description": "List chats that belong to the projects in this group. Returns alias, id, title, and updated time. Does not return messages. Pass an alias to limit the list to one project. Omit it to list every project.",
+                "description": list_description,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -47,7 +62,7 @@ pub fn tool_defs() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "read_chat",
-                "description": "Read one chat that belongs to a project in this group. Read-only. alias is the project name from list_chats, and id is that chat's id.",
+                "description": read_description,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -62,7 +77,7 @@ pub fn tool_defs() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": "create_chat",
-                "description": "Create a new chat in one project in this group and start it. It appears in that project's chat list while it runs. message is the first prompt.",
+                "description": create_description,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -71,6 +86,65 @@ pub fn tool_defs() -> Vec<Value> {
                         "message": { "type": "string", "description": "Opening note stored in the new chat." }
                     },
                     "required": ["alias", "message"]
+                }
+            }
+        }
+    ])
+    .as_array()
+    .cloned()
+    .unwrap_or_default()
+}
+
+pub fn project_tool_defs() -> Vec<Value> {
+    let list_description = format!(
+        "List other chats in this project. Returns id, title, and updated time. Does not return messages. The current chat is omitted. Pass archived to include archived chats. {READ_WHEN}"
+    );
+    let read_description = format!(
+        "Read one chat in this project. Read-only. id comes from list_chats. {READ_WHEN}"
+    );
+    let create_description = format!(
+        "Create a new chat in this project and start it. {CREATE_WHEN} message is the first prompt."
+    );
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "list_chats",
+                "description": list_description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "archived": { "type": "boolean", "description": "Include archived chats. Omit to leave them out." }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_chat",
+                "description": read_description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Chat id from list_chats." }
+                    },
+                    "required": ["id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_chat",
+                "description": create_description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Sidebar title. Omit to use the first line of message." },
+                        "message": { "type": "string", "description": "Opening note stored in the new chat." }
+                    },
+                    "required": ["message"]
                 }
             }
         }
@@ -116,6 +190,66 @@ pub fn create_member_chat(
     permission: &str,
 ) -> Result<CreatedChat> {
     let member = require_member(layout, alias)?;
+    let key = path_string(&member.path);
+    save_new_chat(
+        data_dir,
+        &key,
+        &member.alias,
+        title,
+        message,
+        model,
+        effort,
+        context_window,
+        permission,
+    )
+}
+
+/// Chats stored for one project that is not a group. `current_id` is left off the list.
+pub fn list_project_chats(data_dir: &Path, workspace: &str, archived: bool, current_id: &str) -> Result<String> {
+    let rows = project_rows(data_dir, workspace, archived, current_id)?;
+    if rows.is_empty() {
+        return Ok("No chats.".into());
+    }
+    let mut lines = Vec::new();
+    for row in rows {
+        lines.push(format!("{}\t{}\t{}", row.id, one_line(&row.title), row.updated_at));
+    }
+    Ok(lines.join("\n"))
+}
+
+pub fn read_project_chat(data_dir: &Path, workspace: &str, id: &str) -> Result<String> {
+    let conversation = load_project_chat(data_dir, workspace, id)?;
+    Ok(cap_transcript(&render_chat("", &conversation)))
+}
+
+pub fn create_project_chat(
+    data_dir: &Path,
+    workspace: &str,
+    title: &str,
+    message: &str,
+    model: &str,
+    effort: &str,
+    context_window: Option<u64>,
+    permission: &str,
+) -> Result<CreatedChat> {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return Err(Error::Other("project path is empty".into()));
+    }
+    save_new_chat(data_dir, workspace, "", title, message, model, effort, context_window, permission)
+}
+
+fn save_new_chat(
+    data_dir: &Path,
+    workspace: &str,
+    alias: &str,
+    title: &str,
+    message: &str,
+    model: &str,
+    effort: &str,
+    context_window: Option<u64>,
+    permission: &str,
+) -> Result<CreatedChat> {
     let message = message.trim();
     if message.is_empty() {
         return Err(Error::Other("message is empty".into()));
@@ -140,15 +274,57 @@ pub fn create_member_chat(
         permission: nonempty(permission),
         archived: false,
     };
-    let key = path_string(&member.path);
-    super::conv::with_store(data_dir, &key, |conn| crate::store::save_conversation(conn, &conversation))?;
-    let _ = super::conv::index_saved_conversation(data_dir, &key, &id);
-    let summary = super::conv::with_store(data_dir, &key, |conn| crate::store::conversation_summary(conn, &id))?;
+    super::conv::with_store(data_dir, workspace, |conn| crate::store::save_conversation(conn, &conversation))?;
+    let _ = super::conv::index_saved_conversation(data_dir, workspace, &id);
+    let summary = super::conv::with_store(data_dir, workspace, |conn| crate::store::conversation_summary(conn, &id))?;
     Ok(CreatedChat {
-        alias: member.alias.clone(),
-        workspace: key,
+        alias: alias.to_string(),
+        workspace: workspace.to_string(),
         summary,
     })
+}
+
+fn project_rows(data_dir: &Path, workspace: &str, archived: bool, current_id: &str) -> Result<Vec<ListedChat>> {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return Err(Error::Other("project path is empty".into()));
+    }
+    let current_id = current_id.trim();
+    let _ = super::conv::import_conversations_json(data_dir, workspace);
+    let summaries = super::conv::with_store(data_dir, workspace, crate::store::list_conversation_summaries)?;
+    let mut rows = Vec::new();
+    for summary in summaries {
+        if summary.archived && !archived {
+            continue;
+        }
+        if !current_id.is_empty() && summary.id == current_id {
+            continue;
+        }
+        rows.push(ListedChat {
+            alias: String::new(),
+            id: summary.id,
+            title: summary.title,
+            updated_at: summary.updated_at,
+        });
+    }
+    rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.id.cmp(&b.id)));
+    Ok(rows)
+}
+
+fn load_project_chat(data_dir: &Path, workspace: &str, id: &str) -> Result<Conversation> {
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return Err(Error::Other("project path is empty".into()));
+    }
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(Error::Other("chat id is empty".into()));
+    }
+    match super::conv::with_store(data_dir, workspace, |conn| crate::store::get_conversation(conn, id)) {
+        Ok(conversation) => Ok(conversation),
+        Err(Error::NotFound(_)) => Err(Error::Other(format!("no chat {id} in this project"))),
+        Err(err) => Err(err),
+    }
 }
 
 fn nonempty(value: &str) -> Option<String> {
@@ -231,7 +407,11 @@ fn require_member<'a>(layout: &'a GroupLayout, alias: &str) -> Result<&'a super:
 }
 
 fn render_chat(alias: &str, conversation: &Conversation) -> String {
-    let mut out = format!("{alias} {}\n{}", conversation.id, conversation.title);
+    let mut out = if alias.is_empty() {
+        format!("{}\n{}", conversation.id, conversation.title)
+    } else {
+        format!("{alias} {}\n{}", conversation.id, conversation.title)
+    };
     if conversation.archived {
         out.push_str("\narchived");
     }
@@ -453,5 +633,119 @@ mod tests {
         assert!(text.chars().count() < 30_000);
         assert!(text.starts_with("api long"));
         assert!(text.trim_end().ends_with('x'));
+    }
+
+    fn tool_named<'a>(tools: &'a [Value], name: &str) -> &'a Value {
+        tools
+            .iter()
+            .find(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("missing {name}"))
+    }
+
+    fn required_names(tool: &Value) -> Vec<&str> {
+        tool.pointer("/function/parameters/required")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_normal_project_lists_and_reads_its_other_chats() {
+        let data = temp_dir();
+        let project = temp_dir();
+        let key = path_string(project.path());
+        save(data.path(), project.path(), &chat("current", "This chat", "2026-04-04T00:00:00Z", "mine", false));
+        save(
+            data.path(),
+            project.path(),
+            &chat("other", "Login\nbug", "2026-03-03T00:00:00Z", "token check", false),
+        );
+        save(data.path(), project.path(), &chat("old", "Old note", "2026-01-01T00:00:00Z", "archived body", true));
+
+        let listed = list_project_chats(data.path(), &key, false, "current").unwrap();
+        assert!(listed.contains("other\tLogin bug\t"), "{listed}");
+        assert!(!listed.contains("This chat"), "{listed}");
+        assert!(!listed.contains("Old note"), "{listed}");
+        assert!(!listed.contains("token check"), "{listed}");
+        assert!(!listed.contains("api\t"), "{listed}");
+
+        let with_archived = list_project_chats(data.path(), &key, true, "current").unwrap();
+        assert!(with_archived.contains("Old note"), "{with_archived}");
+        assert!(!with_archived.contains("This chat"), "{with_archived}");
+
+        let text = read_project_chat(data.path(), &key, "other").unwrap();
+        assert!(text.starts_with("other\n"), "{text}");
+        assert!(text.contains("token check"), "{text}");
+        assert!(read_project_chat(data.path(), &key, "missing").is_err());
+        assert!(read_project_chat(data.path(), &key, "  ").is_err());
+    }
+
+    #[test]
+    fn a_normal_project_can_create_a_chat() {
+        let data = temp_dir();
+        let project = temp_dir();
+        let key = path_string(project.path());
+        let created = create_project_chat(
+            data.path(),
+            &key,
+            "Handoff\nplan",
+            "Look at the login page.",
+            "grok-4.6",
+            "high",
+            Some(512_000),
+            "approve-all",
+        )
+        .unwrap();
+        assert!(created.alias.is_empty());
+        assert_eq!(created.workspace, key);
+        assert_eq!(created.summary.title, "Handoff plan");
+        assert_eq!(created.summary.model.as_deref(), Some("grok-4.6"));
+        let listed = list_project_chats(data.path(), &key, false, "not-this").unwrap();
+        assert!(listed.contains(&format!("{}\tHandoff plan", created.summary.id)), "{listed}");
+        let note = read_project_chat(data.path(), &key, &created.summary.id).unwrap();
+        assert!(note.contains("Look at the login page."), "{note}");
+        assert!(create_project_chat(data.path(), &key, "Nope", "  ", "", "", None, "").is_err());
+    }
+
+    #[test]
+    fn project_chat_tools_do_not_ask_for_an_alias() {
+        let tools = project_tool_defs();
+        let names: Vec<_> = tools
+            .iter()
+            .filter_map(|tool| tool.pointer("/function/name").and_then(Value::as_str))
+            .collect();
+        assert_eq!(names, vec!["list_chats", "read_chat", "create_chat"]);
+        let create = tool_named(&tools, "create_chat");
+        let description = create.pointer("/function/description").and_then(Value::as_str).unwrap();
+        assert!(description.contains("user asked for another chat"), "{description}");
+        assert!(description.contains("separate task"), "{description}");
+        let required = required_names(create);
+        assert!(required.contains(&"message"), "{required:?}");
+        assert!(!required.contains(&"alias"), "{required:?}");
+        let read_required = required_names(tool_named(&tools, "read_chat"));
+        assert_eq!(read_required, vec!["id"]);
+        assert!(PROJECT_PROMPT_LINE.contains("list_chats"));
+        assert!(PROJECT_PROMPT_LINE.contains("only when another chat is relevant"));
+        assert!(PROJECT_PROMPT_LINE.contains("Do not call them at the start of a conversation"));
+        assert!(!PROJECT_PROMPT_LINE.contains("Use list_chats and read_chat to read them"));
+        assert!(PROJECT_PROMPT_LINE.contains("user asked for another chat"));
+        let list = tool_named(&tools, "list_chats");
+        let list_description = list.pointer("/function/description").and_then(Value::as_str).unwrap();
+        assert!(list_description.contains("Do not call it at the start of a conversation"), "{list_description}");
+    }
+
+    #[test]
+    fn group_create_chat_says_when_to_use_it() {
+        let group_tools = tool_defs();
+        let create = tool_named(&group_tools, "create_chat");
+        let description = create.pointer("/function/description").and_then(Value::as_str).unwrap();
+        assert!(description.contains("user asked for another chat"), "{description}");
+        assert!(description.contains("separate task"), "{description}");
+        assert!(PROMPT_LINE.contains("user asked for another chat"));
+        assert!(PROMPT_LINE.contains("Do not call them at the start of a conversation"));
+        assert!(!PROMPT_LINE.contains("Use list_chats and read_chat to read them"));
+        let required = required_names(create);
+        assert!(required.contains(&"alias"), "{required:?}");
+        assert!(required.contains(&"message"), "{required:?}");
     }
 }

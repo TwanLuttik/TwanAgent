@@ -7,13 +7,84 @@ import {
   emptySubagent,
   parseSpawnArgs,
   parseSubagentType,
+  subagentCardTitle,
+  subagentConversationIdFromResult,
   subagentFromLocalEvent,
+  subagentOpenId,
+  subagentRunInfo,
   subagentsForChat,
   subagentSystemPrompt,
+  subagentToolResult,
   subagentTranscript,
   summarizeSubagent,
   toggleSubagentExpanded,
 } from "../subagent.ts";
+import { foldToolTrailRows, transcriptItems } from "../transcript.ts";
+
+describe("subagent conversation link", () => {
+  it("puts the conversation id on the tool result and reads it back", () => {
+    const text = subagentToolResult("child-1", "Subagent Find parser finished:\nDone");
+    assert.equal(text, "Subagent conversation: child-1\nSubagent Find parser finished:\nDone");
+    assert.equal(subagentConversationIdFromResult(text), "child-1");
+    assert.equal(subagentConversationIdFromResult("Subagent failed: nope"), "");
+    assert.equal(subagentToolResult("child-1", text), text);
+  });
+
+  it("names the row from the task, not the Subagent prefix", () => {
+    assert.equal(subagentCardTitle("Subagent: Strict code quality review"), "Strict code quality review");
+    assert.equal(subagentCardTitle("Subagent"), "Subagent");
+  });
+
+  it("keeps the latest tool call and the running clock for the row", () => {
+    const runs = subagentRunInfo(
+      [{ id: "child-1", tools: ["List 1 directory", "Read src/game/state/settings.ts"] }],
+      { "child-1": { startedAt: 50 } },
+    );
+    assert.deepEqual(runs["child-1"], { activity: "Read src/game/state/settings.ts", startedAt: 50 });
+    assert.deepEqual(subagentRunInfo([{ id: "child-2", tools: [] }], {}), {
+      "child-2": { activity: "", startedAt: 0 },
+    });
+  });
+
+  it("opens the saved conversation, or the live agent while that result is still out", () => {
+    assert.equal(subagentOpenId("Read app.ts", "", "call-1", []), "");
+    assert.equal(
+      subagentOpenId("Subagent: Find parser", "saved-1", "call-1", [{ id: "live-1", callId: "call-1" }]),
+      "saved-1",
+    );
+    assert.equal(
+      subagentOpenId("Subagent: Find parser", "", "call-1", [{ id: "live-1", callId: "call-1" }]),
+      "live-1",
+    );
+  });
+
+  it("keeps the conversation id on the transcript row and the folded trail", () => {
+    const items = transcriptItems([
+      { role: "user", content: "review" },
+      {
+        role: "assistant",
+        tool_calls: [
+          {
+            id: "call-1",
+            name: "spawn_subagent",
+            arguments: JSON.stringify({ description: "Strict code quality review", prompt: "review the code" }),
+          },
+        ],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "Subagent conversation: child-1\nSubagent Strict code quality review finished:\nLooks good",
+      },
+    ]);
+    const tools = items.find((item) => item.kind === "tools");
+    assert.equal(tools?.kind, "tools");
+    if (tools?.kind !== "tools") return;
+    assert.equal(tools.opens?.[0], "child-1");
+    assert.equal(foldToolTrailRows(tools.labels, tools.details, tools.commands, tools.opens)[0]?.openId, "child-1");
+    assert.equal(subagentCardTitle(tools.labels[0] ?? ""), "Strict code quality review");
+  });
+});
 
 describe("parseSpawnArgs", () => {
   it("reads prompt, description, and type", () => {
@@ -138,7 +209,7 @@ describe("applySubagentEvent", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].status, "done");
     assert.equal(rows[0].summary, "Parser is in dev.ts");
-    assert.deepEqual(rows[0].tools, ["Read src/lib.rs"]);
+    assert.deepEqual(rows[0].tools, []);
     assert.equal(rows[0].streamText, "");
   });
 
@@ -194,6 +265,35 @@ describe("subagentTranscript", () => {
     });
     assert.equal(rows[0].streamReasoning, "");
     assert.deepEqual(subagentTranscript(rows[0]), ["Check the join rule.", "Found the parser."]);
+  });
+
+  it("forgets live tool labels once the calls are in the transcript", () => {
+    let rows = applySubagentEvent([], { type: "start", record: start });
+    rows = applySubagentEvent(rows, { type: "tool", id: "s1", label: "Read main.js" });
+    rows = applySubagentEvent(rows, { type: "tool", id: "s1", label: "Load skill using-superpowers" });
+    assert.deepEqual(rows[0].tools, ["Read main.js", "Load skill using-superpowers"]);
+    rows = applySubagentEvent(rows, {
+      type: "reasoning",
+      id: "s1",
+      text: "The reads failed.",
+      append: true,
+    });
+    rows = applySubagentEvent(rows, {
+      type: "update",
+      id: "s1",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          reasoning: "The reads failed.",
+          tool_calls: [{ id: "1", name: "read_file", arguments: "{\"path\":\"scripts/shot.mjs\"}" }],
+        },
+      ],
+    });
+    assert.deepEqual(rows[0].tools, []);
+    assert.equal(rows[0].streamReasoning, "");
+    rows = applySubagentEvent(rows, { type: "tool", id: "s1", label: "Read scripts/shot.mjs" });
+    assert.deepEqual(rows[0].tools, ["Read scripts/shot.mjs"]);
   });
 
   it("appends a new stream after earlier assistant messages", () => {

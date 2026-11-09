@@ -60,6 +60,7 @@ import {
   parseSpawnArgs,
   summarizeSubagent,
   subagentSystemPrompt,
+  subagentToolResult,
   type SubagentEvent,
   type SubagentType,
 } from "./subagent.ts";
@@ -719,6 +720,7 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
     type: "start",
     record: emptySubagent({
       id,
+      callId: call.id,
       description: parsed.description,
       type: parsed.subagentType,
       prompt: parsed.prompt,
@@ -765,19 +767,19 @@ async function runSubagent(call: ToolCall, opts: TurnOpts): Promise<string> {
     const summary = summarizeSubagent(done);
     if (opts.signal.aborted) {
       opts.onSubagent?.({ type: "done", id, status: "stopped", summary: failed || "Stopped.", messages: done });
-      return `Subagent stopped: ${parsed.description}`;
+      return subagentToolResult(id, `Subagent stopped: ${parsed.description}`);
     }
     if (failed) {
       opts.onSubagent?.({ type: "done", id, status: "error", summary: failed, messages: done });
-      return `Subagent failed: ${failed}`;
+      return subagentToolResult(id, `Subagent failed: ${failed}`);
     }
     opts.onSubagent?.({ type: "done", id, status: "done", summary, messages: done });
-    return `Subagent ${parsed.description} finished:\n${summary}`;
+    return subagentToolResult(id, `Subagent ${parsed.description} finished:\n${summary}`);
   } catch (e) {
     const error = String(e);
     opts.onSubagent?.({ type: "error", id, error });
     opts.onSubagent?.({ type: "done", id, status: "error", summary: error, messages: [] });
-    return `Error: ${error}`;
+    return subagentToolResult(id, `Error: ${error}`);
   }
 }
 

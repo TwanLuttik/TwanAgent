@@ -405,6 +405,14 @@ export function ServersDialog({
     setError(null);
     try {
       await api.removeAgentServer(row.id, mode);
+      if (mode === "rotate") {
+        setSaved((rows) => rows.map((item) => (item.id === row.id ? { ...item, paired: true } : item)));
+        setFlash({
+          kind: "ok",
+          text: "Rotated the token. This Mac stays signed in. Other computers need to pair again.",
+        });
+        return;
+      }
       setSaved((rows) => rows.filter((item) => item.id !== row.id));
       setSelectedId(null);
       setStep("list");
@@ -440,7 +448,7 @@ export function ServersDialog({
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col bg-canvas">
       <div className="min-h-0 flex-1 overflow-auto px-6 py-5">
-        <div className="grid max-w-[640px] gap-4">
+        <div className={`grid gap-4 ${step === "detail" ? "max-w-[760px]" : "max-w-[640px]"}`}>
           {step === "detail" && selected ? null : (
             <div>
               <h2 id="servers-title" className="m-0 text-[15px] font-semibold">
@@ -519,7 +527,6 @@ export function ServersDialog({
                   .finally(() => setBusy(false));
               }}
               keys={keysById[selected.id] ?? null}
-              copyProviders={copyProviders}
               localKeys={localKeys}
               busy={busy}
               onBack={() => setStep("list")}
@@ -533,7 +540,6 @@ export function ServersDialog({
                   if (status?.online) loadStorage(selected.id);
                 });
               }}
-              onToggleProvider={toggleProvider}
               mcpName={mcpName}
               localMcp={localMcp}
               onMcpName={setMcpName}

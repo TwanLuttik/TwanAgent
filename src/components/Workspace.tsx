@@ -106,8 +106,10 @@ export const Workspace = memo(function Workspace({
   const [gitMissing, setGitMissing] = useState(false);
   const [treeReady, setTreeReady] = useState(false);
   // Terminals stay unmounted until the conversation can take a click. The shell
-  // is created in xterm, which blocks the main thread.
-  const [terminalReady, setTerminalReady] = useState(true);
+  // is created in xterm, which blocks the main thread. The first mount used to
+  // start that shell immediately, so selecting a chat after launch froze the
+  // Loading cover for as long as xterm took.
+  const [terminalReady, setTerminalReady] = useState(false);
   const [structureTick, setStructureTick] = useState(0);
   const refreshGen = useRef(0);
   const branchGen = useRef(0);
@@ -220,32 +222,15 @@ export const Workspace = memo(function Workspace({
         }
       }),
     );
-    let gitFailed = false;
-    let nextGit: { rows: GitChange[]; missing: boolean } | null = null;
-    try {
-      nextGit = await gitResult;
-    } catch (e) {
-      gitFailed = true;
-      if (gen === refreshGen.current) {
-        const text = String(e);
-        startTransition(() => {
-          if (gen === refreshGen.current) setError(text);
-        });
-      }
-    }
     if (gen !== refreshGen.current) return;
     const listError = listed.find((row) => row.failed)?.failed ?? "";
-    if (listError) gitFailed = true;
     const gone = listed.filter((row) => row.missing).map((row) => row.path);
-    // Painting a large tree is interruptible. Typing in the conversation wins.
+    // The folder list is enough to take the cover down. Git status is what
+    // sometimes takes a couple of seconds, and waiting for it left this spinner
+    // up after the conversation was already selected.
     startTransition(() => {
       if (gen !== refreshGen.current) return;
-      if (nextGit) {
-        setGitMissing(nextGit.missing);
-        setChanges(nextGit.rows);
-      }
       if (listError) setError(listError);
-      else if (!gitFailed) setError(null);
       if (gone.length) {
         setExpanded((prev) => {
           if (!gone.some((path) => prev[path])) return prev;
@@ -273,6 +258,28 @@ export const Workspace = memo(function Workspace({
         return next;
       });
       setTreeReady(true);
+    });
+    let gitFailed = false;
+    let nextGit: { rows: GitChange[]; missing: boolean } | null = null;
+    try {
+      nextGit = await gitResult;
+    } catch (e) {
+      gitFailed = true;
+      if (gen === refreshGen.current) {
+        const text = String(e);
+        startTransition(() => {
+          if (gen === refreshGen.current) setError(text);
+        });
+      }
+    }
+    const git = nextGit;
+    if (gen !== refreshGen.current || !git) return;
+    startTransition(() => {
+      if (gen !== refreshGen.current) return;
+      setGitMissing(git.missing);
+      setChanges(git.rows);
+      if (listError) setError(listError);
+      else if (!gitFailed) setError(null);
     });
   }, [workspace, expanded, activeKind]);
 

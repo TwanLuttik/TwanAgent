@@ -6,10 +6,9 @@ import {
   isSameProject,
   groupsFromSidebarSnapshot,
   mergeLoadedProjectGroups,
-  placeProjectChats,
   sameSidebarConversationList,
   sidebarProjects,
-  stampProjectServer,
+  syncOpenProjectSidebar,
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { projectKey } from "../lib/core";
@@ -175,6 +174,7 @@ export function useProjectIndex({
                     port: remote.port,
                     remotePath: remote.remote_path,
                     online: remote.online,
+                    providers: remote.providers,
                   },
                 };
               }
@@ -208,16 +208,19 @@ export function useProjectIndex({
 
   useEffect(() => {
     if (!workspace) return;
-    if (!isSameProject(sidebarLoadedForRef.current, workspace)) return;
-    // An empty list here is the gap between two projects, not a finished load.
-    // A cloud project keeps the cached rows until the server list arrives.
-    if (conversations.length === 0) return;
     setAllProjectGroups((prev) => {
-      const placed = placeProjectChats(prev, workspace, conversations, [], sidebarLoadedForRef.current);
-      const stamped = stampProjectServer(placed, workspace, remoteWorkspace, remoteForRef.current);
+      const next = syncOpenProjectSidebar(
+        prev,
+        workspace,
+        conversations,
+        remoteWorkspace,
+        sidebarLoadedForRef.current,
+        remoteForRef.current,
+      );
+      if (next === prev) return prev;
       if (
-        stamped.length === prev.length &&
-        stamped.every((group, i) => {
+        next.length === prev.length &&
+        next.every((group, i) => {
           const before = prev[i];
           return (
             before &&
@@ -231,7 +234,7 @@ export function useProjectIndex({
       ) {
         return prev;
       }
-      return stamped;
+      return next;
     });
   }, [workspace, conversations, remoteWorkspace, remoteForRef, sidebarLoadedForRef]);
 

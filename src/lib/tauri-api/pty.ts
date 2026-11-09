@@ -68,21 +68,6 @@ export function grokPlanEdit(
   });
 }
 
-export function ptyOpenGrok(
-  workspace: string,
-  cols: number,
-  rows: number,
-  sessionId?: string,
-): Promise<string> {
-  return invoke("dev_pty_open_grok", {
-    workspace,
-    cols,
-    rows,
-    sessionId,
-    session_id: sessionId,
-  });
-}
-
 export function ptyWrite(id: string, data: string): Promise<void> {
   return invoke("dev_pty_write", { id, data });
 }

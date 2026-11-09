@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatTokenCount } from "../lib/context";
 import { providerFor, type ProviderId } from "../lib/provider";
-import { chartCeiling, type UsageTrend, type UsageTrendPoint, type UsageTrendRange } from "../lib/usage";
+import { chartCeiling, smoothCurve, type UsageTrend, type UsageTrendPoint, type UsageTrendRange } from "../lib/usage";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -82,9 +82,13 @@ function bucketLabel(range: UsageTrendRange, atMs: number): string {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
+const CHART_H = 148;
+const PAD_TOP = 12;
+const PAD_BOTTOM = 8;
+
 /**
- * One column per day (or hour, for 24h). The bar is that bucket against the
- * busiest one, so a quiet week reads as quiet instead of stretching to fill.
+ * One smooth line for the range. 7 days folds the hourly points into days.
+ * The scale stays the busiest bucket, so pointing at a model does not restretch it.
  */
 export function UsageRhythm({
   trend,
@@ -93,18 +97,47 @@ export function UsageRhythm({
 }: {
   trend: UsageTrend;
   range: UsageTrendRange;
-  /** Model id under the pointer. Its slices stay bright and the rest fade. */
+  /** Model id under the pointer. The line shows that provider instead of the total. */
   focusModel?: string | null;
 }) {
   const points = useMemo(() => chartPoints(trend, range), [trend, range]);
   const focus = focusModel ? seriesId(focusModel) : null;
   const [hover, setHover] = useState<number | null>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const gradientId = useId().replace(/:/g, "");
   const peak = useMemo(() => Math.max(0, ...points.map((point) => point.total)), [points]);
   const ceiling = peak > 0 ? chartCeiling(peak) : 0;
+  const color = seriesColor(focus ?? dominantSeries(points));
   const active = hover != null ? points[hover] : null;
-  const hourly = range === "24h";
+  const activeValue = active ? (focus ? stackOf(active)[focus] : active.total) : 0;
+  const plot = useMemo(() => {
+    if (width <= 0 || ceiling <= 0) return null;
+    const coords = points.map((point, index) => ({
+      x: pointX(index, points.length, width, range),
+      y: pointY(focus ? stackOf(point)[focus] : point.total, ceiling),
+    }));
+    const line = smoothCurve(coords);
+    if (!line || coords.length === 0) return null;
+    const first = coords[0];
+    const last = coords[coords.length - 1];
+    const base = pointY(0, ceiling);
+    return { coords, line, area: `${line} L ${last.x.toFixed(1)} ${base.toFixed(1)} L ${first.x.toFixed(1)} ${base.toFixed(1)} Z` };
+  }, [ceiling, focus, points, range, width]);
+
+  useEffect(() => {
+    const el = frame.current;
+    if (!el) return;
+    const update = () => setWidth(el.clientWidth);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   if (points.length === 0 || peak <= 0) return null;
+
+  const dot = hover != null ? plot?.coords[hover] : null;
 
   return (
     <div className="grid gap-2">
@@ -112,29 +145,36 @@ export function UsageRhythm({
         {active ? (
           <>
             <span className="min-w-0 truncate">{bucketLabel(range, active.atMs)}</span>
-            <span className="shrink-0 tabular-nums text-ink">{formatTokenCount(active.total)}</span>
+            <span className="shrink-0 tabular-nums text-ink">{formatTokenCount(activeValue)}</span>
           </>
         ) : (
-          <>
-            <span>{hourly ? "Each bar is one hour" : "Each bar is one day"}</span>
-            <span className="tabular-nums">
-              peak {formatTokenCount(peak)}
-              <span className="text-muted/70"> · scale {formatTokenCount(ceiling)}</span>
-            </span>
-          </>
+          <span className="ml-auto tabular-nums">peak {formatTokenCount(peak)}</span>
         )}
       </div>
       <div
-        className={`relative flex h-[148px] items-end ${hourly ? "gap-px" : "gap-[3px]"}`}
+        ref={frame}
+        className="relative h-[148px]"
         onMouseLeave={() => setHover(null)}
         role="img"
         aria-label={`${formatTokenCount(trend.totals.total)} tokens, peak ${formatTokenCount(peak)}`}
       >
-        <div className="pointer-events-none absolute inset-x-0 top-0 border-t border-dashed border-line/70" />
-        {points.map((point, index) => {
-          const on = hover === index;
-          const parts = stackOf(point);
-          return (
+        {plot ? (
+          <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox={`0 0 ${width} ${CHART_H}`}>
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+                <stop offset="100%" stopColor={color} stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <path d={plot.area} fill={`url(#${gradientId})`} />
+            <path d={plot.line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {dot ? (
+              <circle cx={dot.x} cy={dot.y} r="3.5" fill={color} stroke="var(--color-canvas)" strokeWidth="2" />
+            ) : null}
+          </svg>
+        ) : null}
+        <div className="absolute inset-0 flex">
+          {points.map((point, index) => (
             <button
               key={point.atMs}
               type="button"
@@ -142,38 +182,41 @@ export function UsageRhythm({
               onMouseEnter={() => setHover(index)}
               onFocus={() => setHover(index)}
               onBlur={() => setHover(null)}
-              className={`group relative flex h-full min-w-0 flex-1 items-end rounded-[3px] outline-none transition-colors ${
-                on ? "bg-ink/[0.06]" : "hover:bg-ink/[0.04]"
-              }`}
-            >
-              <span
-                className={`flex w-full flex-col-reverse overflow-hidden rounded-[2px] transition-opacity ${
-                  on ? "opacity-100" : "opacity-80 group-hover:opacity-100"
-                }`}
-                style={{ height: point.total > 0 ? `${Math.max((point.total / ceiling) * 100, 2.5)}%` : "0%" }}
-              >
-                {SERIES.map((series) =>
-                  parts[series.id] > 0 ? (
-                    <span
-                      key={series.id}
-                      className="block w-full transition-opacity duration-150"
-                      style={{
-                        height: `${(parts[series.id] / point.total) * 100}%`,
-                        background: series.color,
-                        minHeight: 1,
-                        opacity: focus != null && focus !== series.id ? 0.14 : 1,
-                      }}
-                    />
-                  ) : null,
-                )}
-              </span>
-            </button>
-          );
-        })}
+              className="h-full min-w-0 flex-1 outline-none"
+            />
+          ))}
+        </div>
       </div>
       <RhythmAxis points={points} range={range} />
     </div>
   );
+}
+
+function seriesColor(id: SeriesId): string {
+  return SERIES.find((series) => series.id === id)?.color ?? "var(--usage-xai)";
+}
+
+function dominantSeries(points: UsageTrendPoint[]): SeriesId {
+  const totals: Record<SeriesId, number> = { xai: 0, anthropic: 0, minimax: 0, other: 0 };
+  for (const point of points) {
+    const parts = stackOf(point);
+    for (const series of SERIES) totals[series.id] += parts[series.id];
+  }
+  return SERIES.slice().sort((a, b) => totals[b.id] - totals[a.id])[0]?.id ?? "xai";
+}
+
+/** Day and hour labels sit in the middle of a column. Longer ranges pin the ends. */
+function pointX(index: number, count: number, width: number, range: UsageTrendRange): number {
+  if (count <= 1) return width / 2;
+  if (range === 7 || range === "24h") return ((index + 0.5) / count) * width;
+  return (index / (count - 1)) * width;
+}
+
+function pointY(value: number, ceiling: number): number {
+  const inner = CHART_H - PAD_TOP - PAD_BOTTOM;
+  if (ceiling <= 0) return PAD_TOP + inner;
+  const t = Math.max(0, Math.min(1, value / ceiling));
+  return PAD_TOP + (1 - t) * inner;
 }
 
 function RhythmAxis({
@@ -201,7 +244,7 @@ function RhythmAxis({
   }
   if (range === 7) {
     return (
-      <div className="grid gap-[3px] text-center text-[10px] text-muted" style={{ gridTemplateColumns: `repeat(${points.length}, minmax(0, 1fr))` }}>
+      <div className="grid text-center text-[10px] text-muted" style={{ gridTemplateColumns: `repeat(${points.length}, minmax(0, 1fr))` }}>
         {points.map((point) => {
           const d = new Date(point.atMs);
           return (

@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -25,8 +26,10 @@ import { Symbol } from "./Symbol";
 import type { ConversationSummary } from "../lib/tauri";
 import type { ChatPlace } from "../lib/chat-place";
 import { formatRelativeAge, relativeAgeTickMs } from "../lib/relative-time";
+import { RunningElapsed } from "./RunningElapsed";
 import { providerProfile } from "../lib/provider";
 import type { TodoBadge } from "../lib/todo";
+import { subagentsForParent } from "../lib/subagent-parent";
 import { formatModelName } from "../lib/usage";
 
 export function ConversationList({
@@ -47,6 +50,7 @@ export function ConversationList({
   selectedIds,
   onReorder,
   place,
+  subagentChats = [],
 }: {
   conversations: ConversationSummary[];
   activeId: string;
@@ -69,6 +73,8 @@ export function ConversationList({
   onReorder: (fromId: string, toId: string) => void;
   /** Branch, pull request, and where this project's chats live. */
   place: ChatPlace;
+  /** Subagent chats hidden from this list. Each stays reachable from its parent row. */
+  subagentChats?: ConversationSummary[];
 }) {
   const [draggingId, setDraggingId] = useState<UniqueIdentifier | null>(null);
   const [overId, setOverId] = useState<UniqueIdentifier | null>(null);
@@ -192,11 +198,15 @@ export function ConversationList({
               age={
                 !(row.id in runningIds) && loadingId !== row.id ? formatRelativeAge(row.updated_at, nowMs) : ""
               }
+              startedAt={runningIds[row.id]?.startedAt}
               reorderable={reorderable}
               onOpen={onOpen}
               onDelete={onDelete}
               onContextMenu={openRowMenu}
               place={place}
+              agents={subagentsForParent(row.id, subagentChats)}
+              runningIds={runningIds}
+              runningPreview={runningPreview}
             />
           ))}
         </div>
@@ -215,6 +225,7 @@ export function ConversationList({
                   ? formatRelativeAge(dragging.updated_at, nowMs)
                   : ""
               }
+              startedAt={runningIds[dragging.id]?.startedAt}
               place={place}
               overlay
             />
@@ -254,12 +265,16 @@ const SortableRow = memo(function SortableRow({
   insert,
   insertAfter,
   age,
+  startedAt,
   reorderable,
   onOpen,
   onSelect,
   onDelete,
   onContextMenu,
   place,
+  agents = [],
+  runningIds,
+  runningPreview,
 }: {
   row: ConversationSummary;
   selected: boolean;
@@ -271,16 +286,23 @@ const SortableRow = memo(function SortableRow({
   insert: boolean;
   insertAfter: boolean;
   age: string;
+  /** When this turn started. A running row shows the live elapsed time instead of its age. */
+  startedAt?: number;
   reorderable: boolean;
   onOpen: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete: (id: string) => void;
   onContextMenu: (ev: MouseEvent, id: string) => void;
   place: ChatPlace;
+  agents?: ConversationSummary[];
+  runningIds?: Readonly<Record<string, { startedAt?: number }>>;
+  runningPreview?: (id: string) => string;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: row.id,
     disabled: !reorderable,
+    // Tab would focus this drag handle and WKWebView paints that as a selection bar.
+    attributes: { tabIndex: -1 },
   });
   const hidden = isDragging || dragging;
 
@@ -288,7 +310,7 @@ const SortableRow = memo(function SortableRow({
     <div
       ref={setNodeRef}
       style={{ transform: rowDragTransform(transform), transition }}
-      className="group/chat relative z-0 touch-none hover:z-20"
+      className="group/chat relative z-0 touch-none select-none hover:z-20 outline-none"
       {...attributes}
       {...listeners}
       onContextMenu={(ev) => onContextMenu(ev, row.id)}
@@ -309,11 +331,15 @@ const SortableRow = memo(function SortableRow({
         todo={todo}
         placeholder={hidden}
         age={age}
+        startedAt={startedAt}
         rowId={row.id}
         onOpen={onOpen}
         onSelect={onSelect}
         onDelete={onDelete}
         place={place}
+        agents={agents}
+        runningIds={runningIds}
+        runningPreview={runningPreview}
       />
     </div>
   );
@@ -335,11 +361,15 @@ const ConversationCard = memo(function ConversationCard({
   placeholder,
   overlay,
   age,
+  startedAt,
   rowId = "",
   onOpen,
   onSelect,
   onDelete,
   place,
+  agents = [],
+  runningIds,
+  runningPreview,
 }: {
   row: ConversationSummary;
   selected: boolean;
@@ -350,11 +380,15 @@ const ConversationCard = memo(function ConversationCard({
   placeholder?: boolean;
   overlay?: boolean;
   age?: string;
+  startedAt?: number;
   rowId?: string;
   onOpen?: (id: string) => void;
   onSelect?: (id: string, mods: { toggle: boolean; range: boolean }) => void;
   onDelete?: (id: string) => void;
   place: ChatPlace;
+  agents?: ConversationSummary[];
+  runningIds?: Readonly<Record<string, { startedAt?: number }>>;
+  runningPreview?: (id: string) => string;
 }) {
   const caption = conversationCaption({
     running,
@@ -373,13 +407,14 @@ const ConversationCard = memo(function ConversationCard({
             ? "border border-transparent opacity-0"
             : unseen && !selected
               ? "border border-transparent bg-warn/15 hover:bg-warn/25"
-              : selected || running
+              : selected
                 ? "border border-transparent bg-wash-strong"
                 : "border border-transparent hover:bg-wash"
       }`}
     >
       <button
         type="button"
+        tabIndex={-1}
         disabled={placeholder || overlay}
         onClick={(ev) => {
           if (onSelect && (ev.metaKey || ev.ctrlKey || ev.shiftKey)) {
@@ -390,15 +425,38 @@ const ConversationCard = memo(function ConversationCard({
           onSelect?.(rowId, { toggle: false, range: false });
           onOpen?.(rowId);
         }}
-        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 py-1.5 pr-2 pl-2 text-left text-ink disabled:cursor-default"
+        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2 py-1.5 pr-2 pl-2 text-left text-ink outline-none disabled:cursor-default"
       >
-        <ChatLogo model={row.model} kind={row.kind} />
+        <ChatLogo model={row.model} />
         <span className={`min-w-0 flex-1 ${onDelete ? "transition-[padding] duration-150 ease-out group-hover/chat:pr-4" : ""}`}>
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-[13px] leading-4 font-medium">{row.title}</span>
-            {age ? (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={`min-w-0 truncate text-[13px] leading-4 font-medium ${
+                agents.length && !overlay && !placeholder ? "" : "flex-1"
+              }`}
+            >
+              {row.title}
+            </span>
+            {agents.length && !overlay && !placeholder ? (
+              <SubagentCount
+                agents={agents}
+                runningIds={runningIds}
+                runningPreview={runningPreview}
+                onOpen={onOpen}
+              />
+            ) : null}
+            {running && startedAt ? (
+              <RunningElapsed
+                startedAt={startedAt}
+                className={`shrink-0 text-[11px] leading-none tabular-nums text-muted ${
+                  agents.length && !overlay && !placeholder ? "ml-auto" : ""
+                }`}
+              />
+            ) : age ? (
               <span
-                className="shrink-0 text-[11px] leading-none tabular-nums text-muted"
+                className={`shrink-0 text-[11px] leading-none tabular-nums text-muted ${
+                  agents.length && !overlay && !placeholder ? "ml-auto" : ""
+                }`}
                 title={Number.isFinite(Date.parse(row.updated_at)) ? new Date(row.updated_at).toLocaleString() : undefined}
               >
                 {age}
@@ -406,7 +464,7 @@ const ConversationCard = memo(function ConversationCard({
             ) : null}
           </span>
           {place.worktree && place.branch.trim() ? (
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
+            <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
               <Symbol name="arrow.triangle.branch" className="size-3 shrink-0 text-ok" />
               <span className="max-w-[46%] shrink-0 truncate text-ok" title={place.branch.trim()}>
                 {place.branch.trim()}
@@ -418,8 +476,8 @@ const ConversationCard = memo(function ConversationCard({
               ) : null}
             </span>
           ) : caption ? (
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
-              <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0 opacity-70" />
+            <span className={`mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 ${running ? "text-ink" : "text-muted"}`}>
+              <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0" />
               <span className="min-w-0 truncate" title={caption}>
                 {caption}
               </span>
@@ -438,6 +496,7 @@ const ConversationCard = memo(function ConversationCard({
       {onDelete && !overlay && !placeholder ? (
         <button
           type="button"
+          tabIndex={-1}
           aria-label="Delete conversation"
           onClick={() => onDelete?.(rowId)}
           className="absolute top-1/2 right-1.5 flex size-4 -translate-y-1/2 items-center justify-center text-muted opacity-0 transition-opacity duration-150 ease-out group-hover/chat:opacity-100 hover:text-ink"
@@ -448,6 +507,159 @@ const ConversationCard = memo(function ConversationCard({
     </div>
   );
 });
+
+function SubagentCount({
+  agents,
+  runningIds,
+  runningPreview,
+  onOpen,
+}: {
+  agents: ConversationSummary[];
+  runningIds?: Readonly<Record<string, { startedAt?: number }>>;
+  runningPreview?: (id: string) => string;
+  onOpen?: (id: string) => void;
+}) {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ top: number; left: number } | null>(null);
+  const hideTimer = useRef(0);
+
+  function place() {
+    const rect = anchor.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 240;
+    const left = rect.right + 8 + width > window.innerWidth ? Math.max(8, rect.left - width - 8) : rect.right + 8;
+    setBox({ top: Math.max(8, rect.top - 4), left });
+  }
+
+  function show() {
+    window.clearTimeout(hideTimer.current);
+    place();
+    setOpen(true);
+  }
+
+  function scheduleHide() {
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = window.setTimeout(() => setOpen(false), 140);
+  }
+
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+
+  const runningAgents: ConversationSummary[] = [];
+  const finishedAgents: ConversationSummary[] = [];
+  for (const agent of agents) {
+    if (runningIds && agent.id in runningIds) runningAgents.push(agent);
+    else finishedAgents.push(agent);
+  }
+
+  return (
+    <>
+      <span
+        ref={anchor}
+        role="button"
+        tabIndex={-1}
+        aria-label={`${agents.length} subagent${agents.length === 1 ? "" : "s"}`}
+        onMouseEnter={show}
+        onMouseLeave={scheduleHide}
+        onFocus={show}
+        onBlur={scheduleHide}
+        onClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          event.stopPropagation();
+          show();
+        }}
+        className="inline-flex shrink-0 cursor-pointer items-center gap-0.5 text-[11px] leading-none tabular-nums text-muted hover:text-ink"
+      >
+        <Symbol name="person.2" className="size-3 shrink-0" />
+        {agents.length}
+      </span>
+      {open && box
+        ? createPortal(
+            <div
+              role="menu"
+              style={{ top: box.top, left: box.left }}
+              onMouseEnter={show}
+              onMouseLeave={scheduleHide}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              className="fixed z-50 w-60 rounded-xl border border-line/60 bg-panel p-1 shadow-card"
+            >
+              {runningAgents.map((agent) => (
+                <SubagentMenuItem
+                  key={agent.id}
+                  agent={agent}
+                  running
+                  caption={runningPreview?.(agent.id) || "Working…"}
+                  onPick={() => {
+                    setOpen(false);
+                    onOpen?.(agent.id);
+                  }}
+                />
+              ))}
+              {finishedAgents.map((agent) => (
+                <SubagentMenuItem
+                  key={agent.id}
+                  agent={agent}
+                  onPick={() => {
+                    setOpen(false);
+                    onOpen?.(agent.id);
+                  }}
+                />
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+function SubagentMenuItem({
+  agent,
+  running = false,
+  caption = "",
+  onPick,
+}: {
+  agent: ConversationSummary;
+  running?: boolean;
+  caption?: string;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onMouseDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onPick();
+      }}
+      className={`flex w-full min-w-0 cursor-pointer gap-2 rounded-lg px-1.5 text-left hover:bg-wash ${
+        running ? "items-start py-1.5" : "items-center py-0.5"
+      }`}
+    >
+      <ChatLogo model={agent.model} />
+      <span className="min-w-0 flex-1">
+        <span
+          className={`block truncate leading-4 font-medium ${
+            running ? "text-[13px] text-ink" : "text-[12px] text-ink/75"
+          }`}
+        >
+          {agent.title}
+        </span>
+        {running && caption ? (
+          <span className="mt-0.5 block truncate text-[11px] leading-4 text-muted">{caption}</span>
+        ) : null}
+      </span>
+      {running ? (
+        <span className="mt-0.5 size-3.5 shrink-0 animate-spin rounded-full border border-muted/55 border-t-transparent" />
+      ) : null}
+    </button>
+  );
+}
 
 function ChatContextMenu({
   x,
@@ -523,10 +735,7 @@ function conversationCaption({
   return place.branch.trim();
 }
 
-const ChatLogo = memo(function ChatLogo({ model, kind }: { model?: string | null; kind?: string }) {
-  if ((kind ?? "").trim() === "terminal") {
-    return <Symbol name="terminal" className="size-5 shrink-0 text-muted" />;
-  }
+export const ChatLogo = memo(function ChatLogo({ model }: { model?: string | null }) {
   const id = model?.trim() ?? "";
   const profile = providerProfile(id);
   const name = id ? formatModelName(id) : profile.agentName;

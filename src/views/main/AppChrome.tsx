@@ -1,111 +1,57 @@
 import {
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import {
-  DndContext,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-} from "@dnd-kit/core";
-import { restrictToHorizontalAxis, restrictToParentElement } from "@dnd-kit/modifiers";
-import { SortableContext, horizontalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
-import { CSS, type Transform } from "@dnd-kit/utilities";
-import { ChromeTab, ChromeTabGroup, ChromeTabStrip } from "../../components/ChromeTabs";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
+import { ChromeTab, ChromeTabStrip } from "../../components/ChromeTabs";
 import { AnchoredMenu } from "../../components/ContextMenu";
+import { ProjectMark } from "../../components/ProjectMark";
 import { Symbol } from "../../components/Symbol";
+import { MODEL_MENU_EASE } from "../../components/composer/menuEase";
 import { isMacOS } from "../../components/WindowButtons";
 import type { EditorState } from "../../lib/editor";
 import { projectKey } from "../../lib/core";
-import { CODE_TAB_KEY, tabItemKey, type TabItem, type TabMenu } from "../../lib/split-pane";
+import {
+  projectChromeTabs,
+  projectMenuEntries,
+  rememberProjectChat,
+  type ProjectTabChat,
+} from "../../lib/project-tabs";
+import { subagentParentLinks, subscribeSubagentParents } from "../../lib/subagent-parent";
+import { type TabItem, type TabMenu } from "../../lib/split-pane";
 import { chatHasRunningTurn, type RunningTurn } from "../../lib/turn";
-import type { ConversationKind } from "../../lib/terminal-chat";
 
-export function NewChatMenu({
-  disabled,
-  onPick,
-}: {
-  disabled: boolean;
-  onPick: (kind: ConversationKind) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+const MENU_EASE = MODEL_MENU_EASE;
+const HIDE_MS = 140;
+/** Blur grows with opacity. A parent fade turns backdrop-filter off until the last frame. */
+const GLASS_HIDE = { opacity: 0, y: -6, "--cloud-glass-blur": "0px" };
+const GLASS_SHOW = { opacity: 1, y: 0, "--cloud-glass-blur": "24px" };
+const GLASS_LEAVE = { opacity: 0, y: -4, "--cloud-glass-blur": "0px" };
 
-  useEffect(() => {
-    function onDoc(ev: MouseEvent) {
-      if (ref.current && !ref.current.contains(ev.target as Node)) setOpen(false);
-    }
-    function onKey(ev: KeyboardEvent) {
-      if (ev.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
-
+export function NewChatMenu({ disabled, onNew }: { disabled: boolean; onNew: () => void }) {
   return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        disabled={disabled}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-        title={isMacOS() ? "New chat ⌘N" : "New chat Ctrl+N"}
-        className="text-[11px] text-muted hover:text-ink disabled:opacity-35"
-      >
-        New chat
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute top-full right-0 z-30 mt-1 min-w-[148px] overflow-hidden rounded-md border border-line bg-canvas py-1 shadow-card"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onPick("chat");
-              setOpen(false);
-            }}
-            className="flex w-full items-center justify-between gap-4 px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-          >
-            <span className="flex items-center gap-2">
-              <Symbol name="bubble.dots" className="size-3.5 text-muted" />
-              Chat
-            </span>
-            <span className="text-[11px] text-muted">{isMacOS() ? "⌘N" : "Ctrl+N"}</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onPick("terminal");
-              setOpen(false);
-            }}
-            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
-          >
-            <Symbol name="terminal" className="size-3.5 text-muted" />
-            Terminal (deprecated)
-          </button>
-        </div>
-      ) : null}
-    </div>
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onNew}
+      title={isMacOS() ? "New chat ⌘N" : "New chat Ctrl+N"}
+      className="text-[11px] font-medium text-ink disabled:opacity-35"
+    >
+      New chat
+    </button>
   );
 }
 
 export type CenterChat = {
   id: string;
   title: string;
-  kind: ConversationKind;
   running?: boolean;
 };
 
@@ -114,17 +60,17 @@ export function CenterTabs({
   chats,
   items,
   activeChatId,
-  splitChatIds,
   runningTurns,
   tabHomes,
+  projectGroups,
   menu,
   onChat,
   onCloseChat,
+  onCloseProject,
   onCode,
   onMenu,
   onSplit,
   onSplitSelected,
-  onMoveTab,
   onUnsplit,
   onCloseMenu,
 }: {
@@ -132,33 +78,62 @@ export function CenterTabs({
   chats: CenterChat[];
   items: TabItem[];
   activeChatId: string;
-  /** Both chats in the open split, when one is showing. */
-  splitChatIds?: readonly string[];
   runningTurns?: Readonly<Record<string, RunningTurn>>;
   /** Workspace path for each open chat, used to keep one project's tabs together. */
   tabHomes: Readonly<Record<string, string>>;
+  /** Sidebar rows, so a project tab matches the project list. */
+  projectGroups?: readonly {
+    path: string;
+    name: string;
+    remote?: boolean;
+    conversations?: readonly { id?: string; kind?: string | null }[];
+  }[];
   menu: TabMenu | null;
   onChat: (id: string) => void;
   onCloseChat: (id: string) => void;
+  /** Middle-click on the project tab closes every conversation it has open. */
+  onCloseProject: (ids: string[]) => void;
   onCode: () => void;
   onMenu: (menu: TabMenu) => void;
   onSplit: (id: string) => void;
   onSplitSelected: (ids: string[]) => void;
-  onMoveTab: (fromKey: string, toKey: string) => void;
   onUnsplit: (groupId: string) => void;
   onCloseMenu: () => void;
 }) {
-  const chatOn = editor.focus === "chat";
   const codeOn = editor.focus === "file";
-  const byId = new Map(chats.map((chat) => [chat.id, chat]));
-  const splitOpen = Boolean(splitChatIds && splitChatIds.length > 1);
+  const names = useMemo(() => namesFromGroups(projectGroups), [projectGroups]);
+  const remoteProjects = useMemo(() => remoteProjectKeys(projectGroups), [projectGroups]);
+  const subagentIds = useMemo(() => subagentIdsFromGroups(projectGroups), [projectGroups]);
+  const parents = useSyncExternalStore(subscribeSubagentParents, subagentParentLinks, subagentParentLinks);
+  const titles = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const chat of chats) out[chat.id] = chat.title;
+    return out;
+  }, [chats]);
+  const runningIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const chat of chats) {
+      if (chat.running || chatHasRunningTurn(runningTurns, chat.id)) ids.add(chat.id);
+    }
+    for (const id of Object.keys(runningTurns ?? {})) ids.add(id);
+    return ids;
+  }, [chats, runningTurns]);
+  const [lastOpen, setLastOpen] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<string[]>([]);
-  const [draggingKey, setDraggingKey] = useState("");
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const anchors = useRef(new Map<string, HTMLElement>());
+  const pointerInside = useRef(false);
+  const hideTimer = useRef(0);
+
+  useEffect(() => {
+    setLastOpen((prev) => rememberProjectChat(prev, tabHomes, activeChatId));
+  }, [activeChatId, tabHomes]);
 
   useEffect(() => {
     function onKey(ev: KeyboardEvent) {
-      if (ev.key === "Escape") setPicked([]);
+      if (ev.key !== "Escape") return;
+      setPicked([]);
+      setHoverId(null);
     }
     function onPointer(ev: MouseEvent) {
       const target = ev.target;
@@ -166,7 +141,7 @@ export function CenterTabs({
         setPicked([]);
         return;
       }
-      const onTab = Boolean(target.closest("[data-tab-key], .chrome-tab"));
+      const onTab = Boolean(target.closest("[data-tab-key], .chrome-tab, [data-project-chat]"));
       if (ev.button === 2 && onTab) return;
       if (onTab && (ev.metaKey || ev.ctrlKey)) return;
       setPicked([]);
@@ -179,119 +154,149 @@ export function CenterTabs({
     };
   }, []);
 
+  useEffect(() => () => window.clearTimeout(hideTimer.current), []);
+
+  useEffect(() => {
+    if (menu || pointerInside.current) return;
+    setHoverId(null);
+  }, [menu]);
+
+  const entries = projectChromeTabs({
+    items,
+    homes: tabHomes,
+    titles,
+    runningIds,
+    activeChatId,
+    lastOpen,
+    codeFocused: codeOn,
+    names,
+  });
+  const hovered = entries.find((entry) => entry.kind === "project" && entry.id === hoverId);
+  const hoveredProject = hovered?.kind === "project" ? hovered : null;
+  const projectIds = entries.flatMap((entry) => (entry.kind === "project" ? [entry.id] : [])).join("\0");
+
+  useEffect(() => {
+    if (hoverId && !projectIds.split("\0").includes(hoverId)) setHoverId(null);
+  }, [projectIds, hoverId]);
+
+  function clearHide() {
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = 0;
+  }
+
+  function showProject(id: string) {
+    pointerInside.current = true;
+    clearHide();
+    setHoverId(id);
+  }
+
+  function scheduleHide() {
+    pointerInside.current = false;
+    clearHide();
+    if (menu) return;
+    hideTimer.current = window.setTimeout(() => {
+      if (!pointerInside.current) setHoverId(null);
+    }, HIDE_MS);
+  }
+
   function togglePick(id: string) {
     setPicked((current) => (current.includes(id) ? current.filter((row) => row !== id) : [...current, id]));
   }
 
-  function onDragStart(event: DragStartEvent) {
-    setDraggingKey(String(event.active.id));
+  function choose(id: string) {
+    setPicked([]);
+    setHoverId(null);
+    onChat(id);
   }
-
-  function onDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    setDraggingKey("");
-    if (!over || active.id === over.id) return;
-    onMoveTab(String(active.id), String(over.id));
-  }
-
-  const keys = items.map((item) => tabItemKey(item));
 
   return (
-    <DndContext
-      sensors={sensors}
-      modifiers={[restrictToHorizontalAxis, restrictToParentElement]}
-      onDragStart={onDragStart}
-      onDragCancel={() => setDraggingKey("")}
-      onDragEnd={onDragEnd}
-    >
-    <SortableContext items={keys} strategy={horizontalListSortingStrategy}>
     <ChromeTabStrip>
-      {items.map((item, index) => {
-        const projectBreak = tabProjectBreak(items, index, tabHomes);
-        let body: ReactNode;
-        if (item.kind === "split") {
-          const [leftId, rightId] = item.group.chatIds;
-          const groupOn = chatOn && splitOpen && splitChatIds?.includes(leftId) && splitChatIds.includes(rightId);
-          body = (
-            <SortableTab key={item.group.id} id={tabItemKey(item)} dragging={draggingKey === tabItemKey(item)}>
-              <ChromeTabGroup selected={Boolean(groupOn)}>
-                <SplitTab
-                  chat={byId.get(leftId)}
-                  id={leftId}
-                  selected={Boolean(groupOn) && leftId === activeChatId}
-                  running={chatHasRunningTurn(runningTurns, leftId)}
-                  onChat={onChat}
-                  onClose={() => onCloseChat(leftId)}
-                  onMenu={(event) =>
-                    onMenu({ kind: "split", groupId: item.group.id, pane: 0, x: event.clientX, y: event.clientY })
-                  }
+      {entries.map((entry) =>
+        entry.kind === "code" ? (
+          <ChromeTab
+            key={entry.id}
+            selected={codeOn}
+            label="Code"
+            icon={<Symbol name="doc.fill" className="size-3.5 shrink-0" />}
+            onClick={onCode}
+          />
+        ) : (
+          <div
+            key={entry.id}
+            ref={(node) => {
+              if (node) anchors.current.set(entry.id, node);
+              else anchors.current.delete(entry.id);
+            }}
+            className="group shrink-0"
+            data-tauri-drag-region="false"
+            onMouseEnter={() => showProject(entry.id)}
+            onMouseLeave={scheduleHide}
+            onMouseDown={(event) => {
+              if (event.button !== 1) return;
+              event.preventDefault();
+            }}
+            onAuxClick={(event) => {
+              if (event.button !== 1) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onCloseProject(entry.chats.map((chat) => chat.id));
+            }}
+          >
+            <ChromeTab
+              selected={entry.selected}
+              label={entry.name}
+              tip=""
+              expanded={hoverId === entry.id}
+              running={entry.running}
+              icon={
+                <ProjectMark
+                  path={entry.path}
+                  remote={remoteProjects.has(entry.key)}
+                  active={entry.selected}
+                  className="size-3.5"
                 />
-                <SplitTab
-                  chat={byId.get(rightId)}
-                  id={rightId}
-                  selected={Boolean(groupOn) && rightId === activeChatId}
-                  running={chatHasRunningTurn(runningTurns, rightId)}
-                  onChat={onChat}
-                  onClose={() => onCloseChat(rightId)}
-                  onMenu={(event) =>
-                    onMenu({ kind: "split", groupId: item.group.id, pane: 1, x: event.clientX, y: event.clientY })
-                  }
-                />
-              </ChromeTabGroup>
-            </SortableTab>
-          );
-        } else if (item.kind === "code") {
-          body = (
-            <SortableTab key={CODE_TAB_KEY} id={CODE_TAB_KEY} dragging={draggingKey === CODE_TAB_KEY}>
-              <ChromeTab
-                selected={codeOn}
-                label="Code"
-                icon={<Symbol name="doc.fill" className="size-3.5 shrink-0" />}
-                onClick={onCode}
-              />
-            </SortableTab>
-          );
-        } else {
-        const chat = byId.get(item.id);
-        body = (
-          <SortableTab key={item.id} id={tabItemKey(item)} dragging={draggingKey === tabItemKey(item)}>
-            <ChatChromeTab
-              chat={chat}
-              id={item.id}
-              selected={chatOn && item.id === activeChatId && !splitOpen}
-              marked={picked.includes(item.id)}
-              running={chat?.running ?? chatHasRunningTurn(runningTurns, item.id)}
-              onChat={(id, event) => {
-                if (event.metaKey && chat?.kind !== "terminal") {
-                  togglePick(id);
-                  return;
-                }
+              }
+              accessory={<ProjectTabCue count={entry.chats.length} open={hoverId === entry.id} />}
+              onClick={(event) => {
+                if (event.metaKey || event.ctrlKey || !entry.openId) return;
                 setPicked([]);
-                onChat(id);
+                onChat(entry.openId);
               }}
-              onClose={() => onCloseChat(item.id)}
-              onMenu={(event) => onMenu({ kind: "chat", id: item.id, x: event.clientX, y: event.clientY })}
             />
-          </SortableTab>
-        );
-        }
-        return (
-          <span key={tabItemKey(item)} className="contents">
-            {projectBreak ? (
-              <span aria-hidden className="mx-1 h-3 w-px shrink-0 self-center bg-line" />
-            ) : null}
-            {body}
-          </span>
-        );
-      })}
+          </div>
+        ),
+      )}
+      <ProjectChatMenu
+        open={Boolean(hoveredProject)}
+        anchor={hoveredProject ? anchors.current.get(hoveredProject.id) ?? null : null}
+        label={hoveredProject ? `${hoveredProject.name} conversations` : "Conversations"}
+        onEnter={() => {
+          pointerInside.current = true;
+          clearHide();
+        }}
+        onLeave={scheduleHide}
+      >
+        <ProjectMenuRows
+          chats={hoveredProject?.chats ?? []}
+          parents={parents}
+          subagentIds={subagentIds}
+          picked={picked}
+          onChoose={(id, event) => {
+            if (event.metaKey || event.ctrlKey) {
+              togglePick(id);
+              return;
+            }
+            choose(id);
+          }}
+          onClose={onCloseChat}
+          onMenu={onMenu}
+        />
+      </ProjectChatMenu>
       {menu ? (
         <ChatTabMenu
           menu={menu}
           canSplit={
-            menu.kind === "chat" &&
-            (picked.includes(menu.id)
-              ? picked.length > 1
-              : chats.filter((chat) => chat.kind !== "terminal").length > 1)
+            menu.kind === "chat" && (picked.includes(menu.id) ? picked.length > 1 : chats.length > 1)
           }
           onSplit={() => {
             if (menu.kind !== "chat") return;
@@ -311,79 +316,293 @@ export function CenterTabs({
             onCloseMenu();
           }}
           onCloseMenu={onCloseMenu}
-          copyId={
-            menu.kind === "chat" ? menu.id : splitPaneChatId(items, menu.groupId, menu.pane)
-          }
+          copyId={menu.kind === "chat" ? menu.id : splitPaneChatId(items, menu.groupId, menu.pane)}
         />
       ) : null}
     </ChromeTabStrip>
-    </SortableContext>
-    </DndContext>
   );
 }
 
-function tabProject(item: TabItem, homes: Readonly<Record<string, string>>): string {
-  const path =
-    item.kind === "chat"
-      ? homes[item.id] ?? ""
-      : item.kind === "split"
-        ? homes[item.group.chatIds[0]] || homes[item.group.chatIds[1]] || ""
-        : "";
-  return path ? projectKey(path) : "";
+function subagentIdsFromGroups(
+  groups: readonly { conversations?: readonly { id?: string; kind?: string | null }[] }[] | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(groups)) return ids;
+  for (const group of groups) {
+    for (const row of group?.conversations ?? []) {
+      if (row?.kind === "subagent" && row.id) ids.add(row.id);
+    }
+  }
+  return ids;
 }
 
-/** A hairline before a tab when the project changes. The Code tab does not count. */
-function tabProjectBreak(items: TabItem[], index: number, homes: Readonly<Record<string, string>>): boolean {
-  if (index <= 0) return false;
-  const here = tabProject(items[index]!, homes);
-  const prev = tabProject(items[index - 1]!, homes);
-  return Boolean(here && prev && here !== prev);
+function namesFromGroups(
+  groups: readonly { path: string; name: string; remote?: boolean }[] | undefined,
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  if (!Array.isArray(groups)) return names;
+  for (const group of groups) {
+    const name = group?.name?.trim();
+    if (!group?.path || !name) continue;
+    const key = projectKey(group.path);
+    if (!names[key]) names[key] = name;
+  }
+  return names;
 }
 
-/** Move the held tab without scaling it to the tab it passes over. */
-function tabDragTransform(transform: Transform | null): string | undefined {
-  if (!transform) return undefined;
-  return CSS.Translate.toString({ ...transform, scaleX: 1, scaleY: 1 });
+function remoteProjectKeys(
+  groups: readonly { path: string; name: string; remote?: boolean }[] | undefined,
+): Set<string> {
+  const remote = new Set<string>();
+  if (!Array.isArray(groups)) return remote;
+  for (const group of groups) {
+    if (!group?.remote || !group.path) continue;
+    remote.add(projectKey(group.path));
+  }
+  return remote;
 }
 
-function SortableTab({
-  id,
-  dragging,
-  children,
+function ProjectTabCue({ count, open }: { count: number; open: boolean }) {
+  return (
+    <span className="flex shrink-0 items-center gap-0.5">
+      {count > 1 ? <span className="text-[11px] tabular-nums text-muted">{count}</span> : null}
+      <Symbol
+        name="chevron.down"
+        className={`size-2.5 text-muted transition-transform duration-150 ${open ? "rotate-180 opacity-80" : "opacity-40 group-hover:opacity-70"}`}
+      />
+    </span>
+  );
+}
+
+function ProjectMenuRows({
+  chats,
+  parents,
+  subagentIds,
+  picked,
+  onChoose,
+  onClose,
+  onMenu,
 }: {
-  id: string;
-  dragging: boolean;
-  children: ReactNode;
+  chats: ProjectTabChat[];
+  parents: Readonly<Record<string, string>>;
+  subagentIds: ReadonlySet<string>;
+  picked: readonly string[];
+  onChoose: (id: string, event: ReactMouseEvent<HTMLElement>) => void;
+  onClose: (id: string) => void;
+  onMenu: (menu: TabMenu) => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id });
-  const [heldWidth, setHeldWidth] = useState(0);
+  const entries = projectMenuEntries(
+    chats,
+    (id) => parents[id] ?? "",
+    (id) => subagentIds.has(id) || Boolean(parents[id]),
+  );
+  return entries.map((entry) => {
+    if (entry.kind === "chat") {
+      return (
+        <ProjectChatRow
+          key={entry.chat.id}
+          chat={entry.chat}
+          depth={entry.depth}
+          marked={picked.includes(entry.chat.id)}
+          onChoose={onChoose}
+          onClose={() => onClose(entry.chat.id)}
+          onMenu={(event) => openChatMenu(onMenu, entry.chat, event)}
+        />
+      );
+    }
+    return (
+      <div key={entry.groupId} role="group" aria-label="Split panes" className="mx-1 my-0.5 overflow-hidden rounded-md border border-line/35">
+        {entry.rows.map((row, index) => (
+          <ProjectChatRow
+            key={row.chat.id}
+            chat={row.chat}
+            depth={row.depth}
+            divided={index > 0 && row.depth === 0}
+            marked={picked.includes(row.chat.id)}
+            onChoose={onChoose}
+            onClose={() => onClose(row.chat.id)}
+            onMenu={(event) => openChatMenu(onMenu, row.chat, event)}
+          />
+        ))}
+      </div>
+    );
+  });
+}
+
+function openChatMenu(
+  onMenu: (menu: TabMenu) => void,
+  chat: ProjectTabChat,
+  event: ReactMouseEvent<HTMLElement>,
+) {
+  if (chat.split) {
+    onMenu({ kind: "split", groupId: chat.split.groupId, pane: chat.split.pane, x: event.clientX, y: event.clientY });
+    return;
+  }
+  onMenu({ kind: "chat", id: chat.id, x: event.clientX, y: event.clientY });
+}
+
+function ProjectChatRow({
+  chat,
+  depth = 0,
+  divided = false,
+  marked,
+  onChoose,
+  onClose,
+  onMenu,
+}: {
+  chat: ProjectTabChat;
+  /** 0 for a normal chat. Subagents sit one step in for each parent. */
+  depth?: number;
+  /** A rule above this pane, separating it from the other side of the split. */
+  divided?: boolean;
+  marked: boolean;
+  onChoose: (id: string, event: ReactMouseEvent<HTMLElement>) => void;
+  onClose: () => void;
+  onMenu: (event: ReactMouseEvent<HTMLElement>) => void;
+}) {
   return (
     <div
-      ref={setNodeRef}
-      data-tab-key={id}
-      data-tauri-drag-region="false"
-      draggable={false}
-      style={{
-        transform: tabDragTransform(transform),
-        transition,
-        touchAction: "none",
-        width: dragging && heldWidth > 0 ? heldWidth : undefined,
-        flexShrink: 0,
+      role="menuitem"
+      data-project-chat=""
+      title={chat.title}
+      aria-current={chat.selected ? "true" : undefined}
+      style={depth > 0 ? { paddingLeft: 10 + depth * 14 } : undefined}
+      onClick={(event) => onChoose(chat.id, event)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onMenu(event);
       }}
-      className={dragging ? "chrome-tab-holding cursor-grabbing opacity-60" : "cursor-grab"}
-      {...attributes}
-      {...listeners}
-      onPointerDown={(event) => {
-        // Only a plain left click starts a drag. Middle-click closes the tab.
-        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey) return;
-        if (event.target instanceof Element && event.target.closest(".chrome-tab-close")) return;
-        const width = event.currentTarget.getBoundingClientRect().width;
-        if (width > 0) setHeldWidth(width);
-        listeners?.onPointerDown?.(event);
+      onMouseDown={(event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
       }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+      }}
+      className={`group/row relative flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-[13px] ${
+        divided ? "border-t border-line/30 " : ""
+      }${chat.selected || marked ? "bg-wash text-ink" : "text-ink/80 hover:bg-wash hover:text-ink"}`}
     >
-      {children}
+      {chat.running ? (
+        <span
+          className="size-3.5 shrink-0 animate-spin rounded-full border border-current/40 border-t-transparent"
+          aria-label="Running"
+        />
+      ) : (
+        <Symbol name={chat.split ? "rectangle.split.2x1" : "bubble.dots"} className="size-3.5 shrink-0 text-muted" />
+      )}
+      <span className="min-w-0 flex-1 truncate pr-4">{chat.title}</span>
+      {chat.selected ? (
+        <Symbol
+          name="checkmark.thick"
+          className="pointer-events-none absolute right-2 size-3 text-muted group-hover/row:opacity-0"
+        />
+      ) : null}
+      <button
+        type="button"
+        aria-label={`Close ${chat.title}`}
+        title={`Close ${chat.title}`}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+        className="pointer-events-none absolute right-1.5 flex size-4 items-center justify-center rounded text-[13px] leading-none text-muted opacity-0 hover:bg-inset hover:text-ink group-hover/row:pointer-events-auto group-hover/row:opacity-80"
+      >
+        <span aria-hidden>×</span>
+      </button>
     </div>
+  );
+}
+
+function ProjectChatMenu({
+  open,
+  anchor,
+  label,
+  onEnter,
+  onLeave,
+  children,
+}: {
+  open: boolean;
+  anchor: HTMLElement | null;
+  label: string;
+  onEnter: () => void;
+  onLeave: () => void;
+  children: ReactNode;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ left: number; top: number } | null>(null);
+  const reduce = useRef(false);
+
+  useLayoutEffect(() => {
+    reduce.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const node = anchor;
+      const menu = panel.current;
+      if (!node || !menu) return;
+      const frame = node.getBoundingClientRect();
+      const width = menu.getBoundingClientRect().width;
+      const left = Math.min(Math.max(8, frame.left), Math.max(8, window.innerWidth - width - 8));
+      const top = frame.bottom + 5;
+      setBox((current) => (current && current.left === left && current.top === top ? current : { left, top }));
+    }
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, anchor, children]);
+
+  useLayoutEffect(() => {
+    if (!open || !box) return;
+    const list = panel.current?.querySelector("[data-project-list]");
+    const row = list?.querySelector<HTMLElement>("[aria-current='true']");
+    if (!(list instanceof HTMLElement) || !row) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    if (rowRect.top < listRect.top) list.scrollTop -= listRect.top - rowRect.top;
+    else if (rowRect.bottom > listRect.bottom) list.scrollTop += rowRect.bottom - listRect.bottom;
+  }, [open, box, children]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          ref={panel}
+          role="menu"
+          aria-label={label}
+          data-tauri-drag-region="false"
+          initial={GLASS_HIDE}
+          animate={GLASS_SHOW}
+          exit={GLASS_LEAVE}
+          transition={{ duration: reduce.current ? 0 : 0.16, ease: MENU_EASE }}
+          style={{ left: box?.left ?? -9999, top: box?.top ?? 0, visibility: box ? "visible" : "hidden" }}
+          className="cloud-card fixed z-50 min-w-[14rem] max-w-[18rem] rounded-xl bg-canvas/60"
+          onMouseEnter={onEnter}
+          onMouseLeave={onLeave}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {/* Covers the gap to the tab. Kept outside overflow clip so the pointer can travel. */}
+          <div className="absolute inset-x-0 -top-1.5 h-1.5" aria-hidden />
+          <div data-project-list="" className="max-h-72 overflow-y-auto overscroll-contain rounded-[inherit]">
+            {children}
+          </div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>,
+    document.body,
   );
 }
 
@@ -392,80 +611,6 @@ function splitPaneChatId(items: TabItem[], groupId: string, pane: 0 | 1): string
     if (item.kind === "split" && item.group.id === groupId) return item.group.chatIds[pane];
   }
   return "";
-}
-
-function SplitTab({
-  chat,
-  id,
-  selected,
-  running,
-  onChat,
-  onClose,
-  onMenu,
-}: {
-  chat: CenterChat | undefined;
-  id: string;
-  selected: boolean;
-  running: boolean;
-  onChat: (id: string, event: ReactMouseEvent<HTMLElement>) => void;
-  onClose: () => void;
-  onMenu: (event: ReactMouseEvent<HTMLElement>) => void;
-}) {
-  return (
-    <ChatChromeTab
-      chat={chat}
-      id={id}
-      selected={selected}
-      running={running}
-      grouped
-      onChat={onChat}
-      onClose={onClose}
-      onMenu={onMenu}
-    />
-  );
-}
-
-function ChatChromeTab({
-  chat,
-  id,
-  selected,
-  marked = false,
-  running,
-  grouped = false,
-  onChat,
-  onClose,
-  onMenu,
-}: {
-  chat: CenterChat | undefined;
-  id: string;
-  selected: boolean;
-  marked?: boolean;
-  running: boolean;
-  grouped?: boolean;
-  onChat: (id: string, event: ReactMouseEvent<HTMLElement>) => void;
-  onClose: () => void;
-  onMenu: (event: ReactMouseEvent<HTMLElement>) => void;
-}) {
-  const terminal = chat?.kind === "terminal";
-  const raw = chat?.title?.trim() || "";
-  const label = terminal ? raw || "Terminal" : raw && raw !== "New chat" ? raw : "New thread";
-  return (
-    <ChromeTab
-      selected={selected}
-      label={label}
-      icon={<Symbol name={terminal ? "terminal.fill" : "bubble.dots"} className="size-3.5 shrink-0" />}
-      running={running}
-      grouped={grouped}
-      marked={marked}
-      onClick={(event) => onChat(id, event)}
-      onClose={onClose}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onMenu(event);
-      }}
-    />
-  );
 }
 
 function ChatTabMenu({

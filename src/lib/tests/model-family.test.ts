@@ -4,14 +4,18 @@ import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "..
 
 describe("modelFamilyName", () => {
   it("splits a trailing version from the family", () => {
-    assert.deepEqual(modelFamilyName("Claude Opus 4.8"), { family: "Claude Opus", version: "4.8" });
-    assert.deepEqual(modelFamilyName("Claude Sonnet 5"), { family: "Claude Sonnet", version: "5" });
     assert.deepEqual(modelFamilyName("Grok 4.6"), { family: "Grok", version: "4.6" });
   });
 
   it("leaves a name with no trailing version alone", () => {
-    assert.deepEqual(modelFamilyName("Claude 3 Haiku"), { family: "Claude 3 Haiku", version: "" });
     assert.deepEqual(modelFamilyName("Grok"), { family: "Grok", version: "" });
+  });
+
+  it("keeps every Claude line under one family, including Fable", () => {
+    assert.deepEqual(modelFamilyName("Claude Fable 5.1"), { family: "Claude", version: "Fable 5.1" });
+    assert.deepEqual(modelFamilyName("Claude Opus 4.8"), { family: "Claude", version: "Opus 4.8" });
+    assert.deepEqual(modelFamilyName("Claude Sonnet 5"), { family: "Claude", version: "Sonnet 5" });
+    assert.deepEqual(modelFamilyName("Claude 3 Haiku"), { family: "Claude", version: "3 Haiku" });
   });
 
   it("keeps every MiniMax line under one family", () => {
@@ -43,6 +47,7 @@ describe("sharedModelCapabilities", () => {
 describe("groupModelFamilies", () => {
   it("keeps one row per family and preserves version order", () => {
     const groups = groupModelFamilies([
+      { id: "claude-fable-5-1", name: "Claude Fable 5.1" },
       { id: "claude-sonnet-5", name: "Claude Sonnet 5" },
       { id: "claude-opus-4-8", name: "Claude Opus 4.8" },
       { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
@@ -51,9 +56,10 @@ describe("groupModelFamilies", () => {
     assert.deepEqual(
       groups.map((group) => [group.label, group.models.map((model) => model.id)]),
       [
-        ["Claude Sonnet", ["claude-sonnet-5"]],
-        ["Claude Opus", ["claude-opus-4-8", "claude-opus-4-7"]],
-        ["Claude Haiku", ["claude-haiku-4-5"]],
+        [
+          "Claude",
+          ["claude-fable-5-1", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-haiku-4-5"],
+        ],
       ],
     );
   });

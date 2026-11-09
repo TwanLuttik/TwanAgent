@@ -20,6 +20,7 @@ import {
   watchFileRefresh,
 } from "../lib/file-exists";
 import { fileRefreshRevision, subscribeFileRefresh } from "../lib/file-structure";
+import { bareUrlLabel, linkifyBareUrls } from "../lib/bare-link";
 import * as api from "../lib/tauri";
 import {
   inlineCodeValues,
@@ -78,9 +79,9 @@ export const ChatMarkdown = memo(function ChatMarkdown({ text, live = false }: {
   if (!shown) return null;
   if (live && shown !== text) return <StreamingPlain text={text} />;
   return (
-    <div className="text-[13px] leading-[1.65] text-ink [overflow-wrap:anywhere]">
+    <div className="text-[13px] leading-[1.65] text-ink/80 [overflow-wrap:anywhere]">
       <Markdown remarkPlugins={[remarkGfm]} components={components}>
-        {closeOpenFence(shown)}
+        {linkifyBareUrls(closeOpenFence(shown))}
       </Markdown>
     </div>
   );
@@ -88,7 +89,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({ text, live = false }: {
 
 function StreamingPlain({ text }: { text: string }) {
   return (
-    <div className="text-[13px] leading-[1.65] whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">
+    <div className="text-[13px] leading-[1.65] whitespace-pre-wrap text-ink/80 [overflow-wrap:anywhere]">
       {closeOpenFence(text)}
     </div>
   );
@@ -183,6 +184,21 @@ function nodeText(node: ReactNode): string {
   return "";
 }
 
+/** Break a URL after punctuation so a long link wraps by segment, not mid-word. */
+function UrlText({ value }: { value: string }) {
+  const parts = value.split(/([/?&=#.-])/);
+  return parts.map((part, index) =>
+    part.length === 1 && "/?&=#.-".includes(part) ? (
+      <span key={index}>
+        {part}
+        <wbr />
+      </span>
+    ) : (
+      part
+    ),
+  );
+}
+
 function markdownComponents(
   existing: Set<string>,
   workspace: string | null,
@@ -191,22 +207,22 @@ function markdownComponents(
   return {
     p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
     h1: ({ children }) => (
-      <h1 className="mt-4 mb-2 text-[16px] font-semibold tracking-tight first:mt-0">{children}</h1>
+      <h1 className="mt-4 mb-2 text-[16px] font-semibold tracking-tight text-ink first:mt-0">{children}</h1>
     ),
     h2: ({ children }) => (
-      <h2 className="mt-3.5 mb-1.5 text-[15px] font-semibold tracking-tight first:mt-0">{children}</h2>
+      <h2 className="mt-3.5 mb-1.5 text-[15px] font-semibold tracking-tight text-ink first:mt-0">{children}</h2>
     ),
     h3: ({ children }) => (
-      <h3 className="mt-3 mb-1 text-[14px] font-semibold first:mt-0">{children}</h3>
+      <h3 className="mt-3 mb-1 text-[14px] font-semibold text-ink first:mt-0">{children}</h3>
     ),
     h4: ({ children }) => (
-      <h4 className="mt-2.5 mb-1 text-[13px] font-semibold first:mt-0">{children}</h4>
+      <h4 className="mt-2.5 mb-1 text-[13px] font-semibold text-ink first:mt-0">{children}</h4>
     ),
     h5: ({ children }) => (
-      <h5 className="mt-2 mb-1 text-[13px] font-semibold first:mt-0">{children}</h5>
+      <h5 className="mt-2 mb-1 text-[13px] font-semibold text-ink first:mt-0">{children}</h5>
     ),
     h6: ({ children }) => (
-      <h6 className="mt-2 mb-1 text-[13px] font-semibold text-muted first:mt-0">{children}</h6>
+      <h6 className="mt-2 mb-1 text-[13px] font-semibold text-ink first:mt-0">{children}</h6>
     ),
     ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ul>,
     ol: ({ children }) => (
@@ -215,21 +231,24 @@ function markdownComponents(
     li: ({ children }) => <li className="pl-0.5 [&>p]:my-1">{children}</li>,
     strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
     em: ({ children }) => <em>{children}</em>,
-    a: ({ href, children }) => (
-      <a
-        href={href}
-        title={href}
-        rel="noreferrer noopener"
-        className="cursor-pointer text-accent underline-offset-2 hover:underline"
-        onClick={(event) => {
-          if (!href || !browserLink(href)) return;
-          event.preventDefault();
-          void api.openUrl(href);
-        }}
-      >
-        {children}
-      </a>
-    ),
+    a: ({ href, children }) => {
+      const label = bareUrlLabel(href ?? "", nodeText(children));
+      return (
+        <a
+          href={href}
+          title={href}
+          rel="noreferrer noopener"
+          className="cursor-pointer rounded-[3px] bg-accent/20 px-[3px] text-accent box-decoration-clone hover:bg-accent/30 [&_strong]:text-accent"
+          onClick={(event) => {
+            if (!href || !browserLink(href)) return;
+            event.preventDefault();
+            void api.openUrl(href);
+          }}
+        >
+          {label ? <UrlText value={label} /> : children}
+        </a>
+      );
+    },
     code: ({ children }) => (
       <MarkdownCode existing={existing} workspace={workspace} onOpenFile={onOpenFile}>
         {children}
@@ -295,7 +314,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
       >
         <Symbol name={copied ? "checkmark" : "doc.on.doc"} className="size-3.5" />
       </button>
-      <pre className="overflow-x-hidden rounded-md bg-panel px-3 py-2.5 pr-9 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
+      <pre className="overflow-x-hidden rounded-md bg-panel px-3 py-2.5 pr-9 font-mono text-[12px] leading-relaxed break-words whitespace-pre-wrap text-ink first:mt-0 last:mb-0 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:p-0">
         {children}
       </pre>
     </div>
@@ -318,7 +337,7 @@ function MarkdownCode({
   const raw = nodeText(children);
   const path = normalizeWorkspacePath(raw);
   if (!looksLikeWorkspacePath(raw) || !existing.has(path)) {
-    return <code className="rounded-[4px] bg-inset px-[5px] py-px font-mono text-[12px]">{children}</code>;
+    return <code className="rounded-[4px] bg-inset px-[5px] py-px font-mono text-[12px] text-ink">{children}</code>;
   }
   const chipClass =
     "inline-flex max-w-full items-center gap-1 align-text-bottom rounded-[4px] bg-inset px-[5px] py-px font-mono text-[12px] text-accent [overflow-wrap:anywhere]";

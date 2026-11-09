@@ -9,15 +9,22 @@ export type ModelFamily<T extends ModelFamilyInput> = {
   models: T[];
 };
 
+const MODEL_BRANDS: { match: RegExp; family: string }[] = [
+  { match: /^(MiniMax)(?:\s+)(.+)$/i, family: "MiniMax" },
+  { match: /^(Claude)(?:\s+)(.+)$/i, family: "Claude" },
+];
+
 /**
- * "Claude Opus 4.8" and "Claude Opus 4.7" share a family. One model stays alone.
- * The version is the trailing number, so "Claude 3 Haiku" is its own name.
- * "MiniMax M3" and "MiniMax M2.7 Highspeed" share MiniMax even when the rest is not a version.
+ * "Claude Fable 5.1" and "Claude Opus 4.8" share Claude. MiniMax does the same
+ * for every MiniMax line. Other names split on a trailing version, so "Grok 4.6"
+ * sits under Grok and a single "Grok" stays alone.
  */
 export function modelFamilyName(name: string): { family: string; version: string } {
   const trimmed = name.trim();
-  const brand = trimmed.match(/^(MiniMax)(?:\s+)(.+)$/i);
-  if (brand) return { family: "MiniMax", version: brand[2] };
+  for (const brand of MODEL_BRANDS) {
+    const hit = trimmed.match(brand.match);
+    if (hit?.[2]) return { family: brand.family, version: hit[2] };
+  }
   const match = trimmed.match(/^(.*?)(?:\s+)(\d+(?:\.\d+)*)$/);
   const family = (match?.[1] ?? trimmed).trim();
   return { family: family || trimmed, version: match?.[2] ?? "" };

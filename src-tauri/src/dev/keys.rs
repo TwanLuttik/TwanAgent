@@ -111,6 +111,7 @@ pub async fn dev_claude_cli_info(state: State<'_, AppState>) -> Result<crate::an
     info.update = cli_update_version(crate::model_providers::cli_update::claude_update(
         &data_dir,
         info.version.as_deref(),
+        Some(std::path::Path::new(&info.path)),
     ))
     .await;
     Ok(info)
@@ -192,11 +193,16 @@ async fn cli_info_after_update(data_dir: &std::path::Path, provider: &str) -> Re
             Ok(info)
         }
         "anthropic" => {
-            crate::model_providers::cli_update::forget_cache(data_dir, "claude");
+            let bin = crate::anthropic::claude_bin();
+            crate::model_providers::cli_update::forget_cache(
+                data_dir,
+                &crate::model_providers::cli_update::claude_cache_id(bin.as_deref()),
+            );
             let mut info = crate::state::run_blocking(|| Ok(crate::anthropic::claude_cli_info())).await?;
             info.update = cli_update_version(crate::model_providers::cli_update::claude_update(
                 data_dir,
                 info.version.as_deref(),
+                Some(std::path::Path::new(&info.path)),
             ))
             .await;
             Ok(cli_info_fields(info.installed, info.path, info.version, info.logged_in, info.email, info.update))

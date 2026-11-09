@@ -1,7 +1,8 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { MODEL_MENU_EASE } from "./composer/menuEase";
 import { menuMotionOrigin, placeMenu } from "../lib/menu-place";
+import { Symbol } from "./Symbol";
 
 const MENU_EASE = `cubic-bezier(${MODEL_MENU_EASE.join(", ")})`;
 const MENU_MS = 160;
@@ -25,11 +26,15 @@ export function AnchoredMenu({
   x,
   y,
   label,
+  onMouseEnter,
+  onMouseLeave,
   children,
 }: {
   x: number;
   y: number;
   label?: string;
+  onMouseEnter?: () => void;
+  onMouseLeave?: () => void;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -108,7 +113,7 @@ export function AnchoredMenu({
       ref={ref}
       role="menu"
       aria-label={label}
-      className="fixed z-50 min-w-[168px] overflow-hidden rounded-lg border border-line/25 bg-canvas shadow-card"
+      className="cloud-card fixed z-50 min-w-[168px] overflow-hidden rounded-xl bg-canvas/60 p-1 backdrop-blur-xl"
       style={{
         left: pos?.left ?? x,
         top: pos?.top ?? y,
@@ -116,9 +121,102 @@ export function AnchoredMenu({
         transformOrigin: pos ? `${pos.originX} ${pos.originY}` : "top left",
       }}
       onMouseDown={(ev) => ev.stopPropagation()}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
       {children}
     </div>,
     document.body,
+  );
+}
+
+const ITEM =
+  "flex w-full items-center rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-wash disabled:cursor-default disabled:opacity-40";
+
+export function MenuItem({
+  danger,
+  disabled,
+  onClick,
+  children,
+}: {
+  danger?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={`${ITEM} ${danger ? "text-err" : "text-ink/80"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Nested menu that opens to the side of a parent row. Hover or click to keep it open. */
+export function MenuSubmenu({ label, children }: { label: string; children: ReactNode }) {
+  const itemRef = useRef<HTMLButtonElement>(null);
+  const closeAt = useRef<number | null>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+
+  function cancelClose() {
+    if (closeAt.current == null) return;
+    window.clearTimeout(closeAt.current);
+    closeAt.current = null;
+  }
+
+  function armClose() {
+    cancelClose();
+    closeAt.current = window.setTimeout(() => setOpen(false), 100);
+  }
+
+  function show() {
+    cancelClose();
+    const box = itemRef.current?.getBoundingClientRect();
+    if (!box) return;
+    setPos({ x: box.right - 4, y: box.top - 4 });
+    setOpen(true);
+  }
+
+  useEffect(() => () => cancelClose(), []);
+
+  return (
+    <div onMouseEnter={show} onMouseLeave={armClose}>
+      <button
+        ref={itemRef}
+        type="button"
+        role="menuitem"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(ev) => {
+          ev.preventDefault();
+          show();
+        }}
+        onKeyDown={(ev) => {
+          if (ev.key === "ArrowRight" || ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            show();
+          }
+          if (ev.key === "ArrowLeft") {
+            ev.preventDefault();
+            setOpen(false);
+          }
+        }}
+        className={`${ITEM} justify-between gap-3 ${open ? "bg-wash text-ink" : "text-ink/80"}`}
+      >
+        {label}
+        <Symbol name="chevron.right" className="size-3 shrink-0 text-muted" />
+      </button>
+      {open && pos ? (
+        <AnchoredMenu x={pos.x} y={pos.y} label={label} onMouseEnter={show} onMouseLeave={armClose}>
+          {children}
+        </AnchoredMenu>
+      ) : null}
+    </div>
   );
 }

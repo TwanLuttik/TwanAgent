@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "../../components/Button";
 import * as api from "../../lib/tauri";
 import type { SpeechModelStatus } from "../../lib/tauri";
@@ -226,8 +227,8 @@ export function VoiceModelDialog({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/25 p-6" onMouseDown={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[75] flex items-center justify-center bg-ink/25 p-6" onMouseDown={onClose}>
       <div
         role="dialog"
         aria-labelledby="voice-model-title"
@@ -294,7 +295,8 @@ export function VoiceModelDialog({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

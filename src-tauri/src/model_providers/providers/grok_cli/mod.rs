@@ -14,7 +14,7 @@ mod plan;
 
 pub use plan::{
     dev_grok_plan, dev_grok_plan_edit, dev_grok_plan_set, dev_grok_plan_write, edit_grok_plan_file,
-    encode_session_cwd, grok_home, grok_launch_args, read_grok_plan, session_exists, session_exists_in,
+    encode_session_cwd, grok_home, read_grok_plan, session_exists_in,
     session_id_safe, write_grok_plan_file, write_grok_plan_state, GrokPlanSnapshot, __cmd__dev_grok_plan,
     __cmd__dev_grok_plan_edit, __cmd__dev_grok_plan_set, __cmd__dev_grok_plan_write,
     __tauri_command_name_dev_grok_plan, __tauri_command_name_dev_grok_plan_edit,

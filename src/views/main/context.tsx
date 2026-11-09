@@ -18,7 +18,7 @@ export type MainModel = {
   assignDraftProject: MainFn;
   beginPendingEdit: MainFn;
   busy: any;
-  chatTabs: { id: string; title: string; kind: "chat" | "terminal"; running: boolean }[];
+  chatTabs: { id: string; title: string; running: boolean }[];
   tabItems: TabItem[];
   tabHomes: Record<string, string>;
   splitChatIds: string[];
@@ -31,6 +31,7 @@ export type MainModel = {
   unsplitChat: MainFn;
   focusSplitPane: MainFn;
   closeChatTab: MainFn;
+  closeProjectChats: MainFn;
   closeFileTab: MainFn;
   closePendingEdit: MainFn;
   closeProjectSettings: MainFn;

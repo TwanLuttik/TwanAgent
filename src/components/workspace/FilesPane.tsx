@@ -26,7 +26,7 @@ import {
   topLevelPaths,
 } from "../../lib/file-actions";
 import type { Entry, GitChange } from "../../lib/tauri";
-import { AnchoredMenu } from "../ContextMenu";
+import { AnchoredMenu, MenuItem } from "../ContextMenu";
 import { FileIcon } from "../FileIcon";
 import { Symbol } from "../Symbol";
 import { Tree } from "./FileTree";
@@ -226,37 +226,41 @@ export function FilesPane({
       {menu ? (
         <AnchoredMenu x={menu.x} y={menu.y}>
           <MenuItem
-            label="New file"
             onClick={() => {
               const parent = menuNodes.get(menu.path)?.kind === "dir" ? menu.path : fileParent(menu.path);
               onNewFile(parent);
               setMenu(null);
             }}
-          />
+          >
+            New file
+          </MenuItem>
           <MenuItem
-            label="New folder"
             onClick={() => {
               const parent = menuNodes.get(menu.path)?.kind === "dir" ? menu.path : fileParent(menu.path);
               onNewFolder(parent);
               setMenu(null);
             }}
-          />
+          >
+            New folder
+          </MenuItem>
           <MenuItem
-            label="Rename"
             disabled={!allowRename}
             onClick={() => {
               onRename(menuPaths[0]);
               setMenu(null);
             }}
-          />
+          >
+            Rename
+          </MenuItem>
           <MenuItem
-            label={menuPaths.length > 1 ? `Delete ${menuPaths.length}` : "Delete"}
             danger
             onClick={() => {
               onDelete(menuPaths);
               setMenu(null);
             }}
-          />
+          >
+            {menuPaths.length > 1 ? `Delete ${menuPaths.length}` : "Delete"}
+          </MenuItem>
           {!allowMove && menuPaths.length > 1 ? (
             <p className="m-0 px-2.5 py-1 text-[11px] text-muted">Move and rename need files or folders, not both.</p>
           ) : null}
@@ -265,19 +269,21 @@ export function FilesPane({
       {blankMenu ? (
         <AnchoredMenu x={blankMenu.x} y={blankMenu.y}>
           <MenuItem
-            label="New file"
             onClick={() => {
               onNewFile("");
               setBlankMenu(null);
             }}
-          />
+          >
+            New file
+          </MenuItem>
           <MenuItem
-            label="New folder"
             onClick={() => {
               onNewFolder("");
               setBlankMenu(null);
             }}
-          />
+          >
+            New folder
+          </MenuItem>
         </AnchoredMenu>
       ) : null}
     </div>
@@ -304,32 +310,6 @@ function FileListDrop({ children }: { children: ReactNode }) {
     <div ref={setNodeRef} className="flex min-h-0 flex-1 flex-col">
       {children}
     </div>
-  );
-}
-
-function MenuItem({
-  label,
-  disabled,
-  danger,
-  onClick,
-}: {
-  label: string;
-  disabled?: boolean;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      disabled={disabled}
-      onClick={onClick}
-      className={`flex w-full px-2.5 py-1.5 text-left text-[12px] disabled:cursor-default disabled:opacity-40 ${
-        danger ? "text-err hover:bg-inset" : "text-ink hover:bg-inset"
-      }`}
-    >
-      {label}
-    </button>
   );
 }
 

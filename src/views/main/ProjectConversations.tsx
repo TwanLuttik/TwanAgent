@@ -46,6 +46,7 @@ export function ProjectConversations({
   onSelectChat,
   onArchiveSelected,
   place = EMPTY_PLACE,
+  subagentChats = [],
 }: {
   conversations: ConversationSummary[];
   path?: string;
@@ -60,6 +61,8 @@ export function ProjectConversations({
   onArchiveSelected?: (id: string, archived: boolean) => void;
   /** Branch and location for every chat in this project. The pull request is filled from the cache. */
   place?: Omit<ChatPlace, "pr">;
+  /** Subagent chats for this project. They stay off the list and hang off the parent row. */
+  subagentChats?: ConversationSummary[];
 }) {
   const {
     activeId,
@@ -143,6 +146,7 @@ export function ProjectConversations({
       }
       {...handlers}
       place={footer}
+      subagentChats={subagentChats}
     />
   );
 }

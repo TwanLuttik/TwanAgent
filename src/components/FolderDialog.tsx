@@ -6,14 +6,17 @@ import {
   filterProjectRows,
   folderActionEnabled,
   folderActionHint,
+  folderClickAction,
+  folderEnterTarget,
+  folderFocusFromQuery,
   isExistingProjectName,
   looksLikeGitUrl,
   looksLikePath,
   pathWithSlash,
-  preferredFolderAction,
   repoNameFromUrl,
   sanitizeProjectName,
   type FolderActionId,
+  type FolderFocus,
   type ProjectRow,
 } from "../lib/core";
 import * as api from "../lib/tauri";
@@ -22,11 +25,7 @@ import { Symbol } from "./Symbol";
 
 const MENU_EASE = [0.22, 1, 0.36, 1] as const;
 const LOCAL = "local";
-
-type Focus =
-  | { kind: "action"; id: FolderActionId }
-  | { kind: "folder"; index: number }
-  | { kind: "project"; index: number };
+const HOVER_ARM_PX = 4;
 
 export function FolderDialog({
   onClose,
@@ -40,10 +39,12 @@ export function FolderDialog({
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState<FolderActionId>("open");
-  const [manual, setManual] = useState(false);
-  const [focus, setFocus] = useState<Focus>(
+  const [focus, setFocus] = useState<FolderFocus>(
     showProjects ? { kind: "project", index: 0 } : { kind: "action", id: "open" },
   );
+  const queryDriven = useRef(true);
+  const hoverArmed = useRef(false);
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
   const [folders, setFolders] = useState<FolderSuggestion[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [servers, setServers] = useState<AgentServer[]>([]);
@@ -115,19 +116,11 @@ export function FolderDialog({
   }, [dismiss]);
 
   useEffect(() => {
-    if (manual && (active === "clone" || active === "create" || folderActionEnabled(active, query))) {
-      return;
-    }
-    if (showProjects && !onServer && visibleProjects.length && !looksLikeGitUrl(query) && !looksLikePath(query)) {
-      setFocus({ kind: "project", index: 0 });
-      setManual(false);
-      return;
-    }
-    const next = onServer && preferredFolderAction(query) === "open" ? "create" : preferredFolderAction(query);
-    setActive(next);
-    setFocus({ kind: "action", id: next });
-    setManual(false);
-  }, [query, manual, active, showProjects, onServer, visibleProjects.length]);
+    if (!queryDriven.current) return;
+    const next = folderFocusFromQuery(query, visibleProjects.length, onServer);
+    setFocus(next);
+    setActive(next.kind === "action" ? next.id : looksLikeGitUrl(query) ? "clone" : looksLikePath(query) ? "open" : "open");
+  }, [query, onServer, visibleProjects.length]);
 
   useEffect(() => {
     if (onServer || !looksLikePath(query) || active === "clone") {
@@ -165,26 +158,49 @@ export function FolderDialog({
   }, [folders, visibleProjects.length, focus, onServer]);
 
   function focusSearch() {
-    const el = inputRef.current;
-    if (!el) return;
-    el.focus();
-    el.select();
+    inputRef.current?.focus();
+  }
+
+  function disarmHover() {
+    hoverArmed.current = false;
+    pointerAt.current = null;
+  }
+
+  function onListPointerMove(ev: { clientX: number; clientY: number }) {
+    const prev = pointerAt.current;
+    pointerAt.current = { x: ev.clientX, y: ev.clientY };
+    if (!prev) return;
+    if (Math.abs(ev.clientX - prev.x) + Math.abs(ev.clientY - prev.y) < HOVER_ARM_PX) return;
+    hoverArmed.current = true;
+  }
+
+  function sameFocus(a: FolderFocus, b: FolderFocus): boolean {
+    if (a.kind !== b.kind) return false;
+    if (a.kind === "action" && b.kind === "action") return a.id === b.id;
+    return a.kind !== "action" && b.kind !== "action" && a.index === b.index;
+  }
+
+  function highlightFromPointer(next: FolderFocus, ev?: { clientX: number; clientY: number }) {
+    if (ev) onListPointerMove(ev);
+    if (!hoverArmed.current) return;
+    queryDriven.current = false;
+    setFocus((current) => (sameFocus(current, next) ? current : next));
+    if (next.kind === "action") setActive(next.id);
+    else setActive("open");
   }
 
   function selectAction(id: FolderActionId) {
+    queryDriven.current = false;
     setActive(id);
     setFocus({ kind: "action", id });
-    setManual(true);
     setError(null);
-    if (id === "clone" && query && !looksLikeGitUrl(query)) setQuery("");
-    if (id === "create" && query && (looksLikePath(query) || looksLikeGitUrl(query))) setQuery("");
     window.setTimeout(focusSearch, 0);
   }
 
   function pickPlace(id: string) {
     if (id !== LOCAL && online[id] !== true) return;
     setPlace(id);
-    setManual(false);
+    queryDriven.current = true;
     setError(null);
     setFolders([]);
     if (id !== LOCAL) {
@@ -196,7 +212,7 @@ export function FolderDialog({
 
   function move(delta: number) {
     const actions = FOLDER_ACTIONS.filter((action) => !onServer || action.id !== "open");
-    const items: Focus[] = [
+    const items: FolderFocus[] = [
       ...visibleProjects.map((_, index) => ({ kind: "project" as const, index })),
       ...(onServer ? [] : [{ kind: "action" as const, id: "open" as const }]),
       ...folders.map((_, index) => ({ kind: "folder" as const, index })),
@@ -215,16 +231,10 @@ export function FolderDialog({
     );
     const idx = current < 0 ? 0 : (current + delta + items.length) % items.length;
     const next = items[idx];
+    queryDriven.current = false;
     setFocus(next);
-    if (next.kind === "action") {
-      setActive(next.id);
-      setManual(true);
-      if (next.id === "clone" && query && !looksLikeGitUrl(query)) setQuery("");
-      if (next.id === "create" && query && (looksLikePath(query) || looksLikeGitUrl(query))) setQuery("");
-    } else {
-      setActive("open");
-      setManual(true);
-    }
+    if (next.kind === "action") setActive(next.id);
+    else setActive("open");
     window.setTimeout(focusSearch, 0);
   }
 
@@ -233,10 +243,10 @@ export function FolderDialog({
       void runOpen(row.path);
       return;
     }
+    queryDriven.current = true;
     setQuery(pathWithSlash(row.path));
     setFocus({ kind: "action", id: "open" });
     setActive("open");
-    setManual(true);
     window.setTimeout(focusSearch, 0);
   }
 
@@ -278,6 +288,10 @@ export function FolderDialog({
         return;
       }
       if (id === "create") {
+        if (looksLikeGitUrl(query)) {
+          await run("clone");
+          return;
+        }
         if (!folderActionEnabled("create", query)) {
           selectAction("create");
           return;
@@ -318,6 +332,7 @@ export function FolderDialog({
   }
 
   function onSearchKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") disarmHover();
     if (e.key === "ArrowDown") {
       e.preventDefault();
       move(1);
@@ -331,18 +346,31 @@ export function FolderDialog({
       applyFolder(row, false);
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (focus.kind === "project" && visibleProjects[focus.index]) {
-        void runOpen(visibleProjects[focus.index].path);
-      } else if (focus.kind === "folder" && folders[focus.index]) {
-        void runOpen(folders[focus.index].path);
-      } else {
-        void run(active);
+      const target = folderEnterTarget(query, focus);
+      if (target.kind === "project" && visibleProjects[target.index]) {
+        void runOpen(visibleProjects[target.index].path);
+      } else if (target.kind === "folder" && folders[target.index]) {
+        void runOpen(folders[target.index].path);
+      } else if (target.kind === "clone" || target.kind === "create" || target.kind === "open") {
+        void run(target.kind);
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
       dismiss();
     }
   }
+
+  const searchPlaceholder = looksLikeGitUrl(query)
+    ? "https://github.com/org/repo.git"
+    : looksLikePath(query)
+      ? "Type a folder path"
+      : active === "clone"
+        ? "https://github.com/org/repo.git"
+        : active === "create"
+          ? "Type a project name"
+          : showProjects
+            ? "Search projects, or paste a git URL"
+            : "Type a folder path or project name";
 
   const actions = FOLDER_ACTIONS.filter((action) => !onServer || action.id !== "open");
 
@@ -374,20 +402,18 @@ export function FolderDialog({
                   ref={inputRef}
                   value={query}
                   onChange={(e) => {
+                    queryDriven.current = true;
+                    disarmHover();
                     setQuery(e.target.value);
                     setError(null);
                   }}
                   onKeyDown={onSearchKey}
                   disabled={busy}
-                  placeholder={
-                    active === "clone"
-                      ? "https://github.com/org/repo.git"
-                      : active === "create"
-                        ? "Type a project name"
-                        : showProjects
-                          ? "Search projects, or type a path"
-                          : "Type a folder path or project name"
-                  }
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={searchPlaceholder}
                   className={`h-10 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted disabled:opacity-60 ${
                     active === "create" && nameTaken ? "text-err" : "text-ink"
                   }`}
@@ -398,12 +424,17 @@ export function FolderDialog({
               <h2 id="folder-dialog-title" className="sr-only">
                 {onServer ? `New project on ${placeName}` : showProjects ? "Open a project" : "Open a folder"}
               </h2>
-              <div role="listbox" aria-label={showProjects ? "Projects" : "Folder actions"} className="min-h-0 flex-1 overflow-auto p-1">
+              <div
+                role="listbox"
+                aria-label={showProjects ? "Projects" : "Folder actions"}
+                className="min-h-0 flex-1 overflow-auto p-1"
+                onMouseMove={onListPointerMove}
+              >
                 {showProjects && !onServer && visibleProjects.length === 0 && !query.trim() && (
                   <p className="px-2.5 py-2 text-[12px] text-muted">No projects yet</p>
                 )}
                 {visibleProjects.map((row, index) => {
-                  const on = focus.kind === "project" && focus.index === index;
+                  const on = !looksLikeGitUrl(query) && focus.kind === "project" && focus.index === index;
                   const conflict = active === "create" && isExistingProjectName(query, [row]);
                   return (
                     <button
@@ -412,12 +443,10 @@ export function FolderDialog({
                       role="option"
                       aria-selected={on}
                       disabled={busy}
-                      onMouseEnter={() => {
-                        setFocus({ kind: "project", index });
-                        setManual(true);
-                      }}
+                      onMouseEnter={() => highlightFromPointer({ kind: "project", index })}
+                      onMouseMove={(ev) => highlightFromPointer({ kind: "project", index }, ev)}
                       onClick={() => void runOpen(row.path)}
-                      className={`flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 hover:bg-wash ${
+                      className={`flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors duration-150 ${
                         on ? "bg-wash" : ""
                       }`}
                     >
@@ -434,6 +463,7 @@ export function FolderDialog({
                     </button>
                   );
                 })}
+                {visibleProjects.length > 0 ? <div className="mx-2 my-1 h-px bg-line/25" /> : null}
                 {actions.map((action) => {
                   const createConflict = action.id === "create" && nameTaken;
                   const ready =
@@ -442,7 +472,9 @@ export function FolderDialog({
                       : action.id === "clone"
                         ? folderActionEnabled("clone", query)
                         : true;
-                  const selected = focus.kind === "action" && focus.id === action.id;
+                  const selected = looksLikeGitUrl(query)
+                    ? action.id === "clone"
+                    : focus.kind === "action" && focus.id === action.id;
                   const hint =
                     createConflict && createName
                       ? `${createName} already exists`
@@ -452,25 +484,29 @@ export function FolderDialog({
                       <div
                         role="option"
                         aria-selected={selected}
-                        onMouseEnter={() => {
-                          setActive(action.id);
-                          setFocus({ kind: "action", id: action.id });
-                          setManual(true);
-                        }}
+                        onMouseEnter={() => highlightFromPointer({ kind: "action", id: action.id })}
+                        onMouseMove={(ev) => highlightFromPointer({ kind: "action", id: action.id }, ev)}
                         className={`flex w-full items-center gap-1 rounded-lg pr-1.5 transition-colors duration-150 ${
-                          selected ? "bg-wash" : "hover:bg-wash"
+                          selected ? "bg-wash" : ""
                         } ${busy && !selected ? "opacity-40" : ""}`}
                       >
                         <button
                           type="button"
                           disabled={busy}
                           onClick={() => {
-                            if (action.id === "clone" || action.id === "create") {
-                              if (ready) void run(action.id);
-                              else selectAction(action.id);
+                            const id = folderClickAction(action.id, query);
+                            if (id === "clone" || id === "create") {
+                              if (folderActionEnabled(id, query) && !(id === "create" && nameTaken)) {
+                                void run(id);
+                              } else {
+                                selectAction(id);
+                                if (id === "clone" && query.trim() && !looksLikeGitUrl(query)) {
+                                  setError("Paste a git URL to clone.");
+                                }
+                              }
                               return;
                             }
-                            void run(action.id);
+                            void run(id);
                           }}
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
                         >
@@ -514,13 +550,10 @@ export function FolderDialog({
                                 role="option"
                                 aria-selected={on}
                                 disabled={busy}
-                                onMouseEnter={() => {
-                                  setFocus({ kind: "folder", index });
-                                  setActive("open");
-                                  setManual(true);
-                                }}
+                                onMouseEnter={() => highlightFromPointer({ kind: "folder", index })}
+                                onMouseMove={(ev) => highlightFromPointer({ kind: "folder", index }, ev)}
                                 onClick={() => applyFolder(row, true)}
-                                className={`flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
+                                className={`flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] transition-colors duration-150 ${
                                   on ? "bg-wash text-ink" : "text-ink/80"
                                 }`}
                               >

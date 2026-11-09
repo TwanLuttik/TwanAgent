@@ -4,7 +4,9 @@ import {
   chatIdsInTabs,
   clampSplitShare,
   closeSplitPane,
+  chatAfterClosing,
   closeTabChat,
+  closeTabChats,
   focusSplitChat,
   focusedSplitMessages,
   focusSplitPane,
@@ -116,6 +118,22 @@ describe("close and unsplit", () => {
       removed: false,
       next: null,
     });
+  });
+
+  it("closes every conversation a project had open", () => {
+    const items = tabItemsFromIds(["a", "b", "c", "d"]);
+    const closed = closeTabChats(items, ["b", "c"]);
+    assert.deepEqual(chatIdsInTabs(closed), ["a", "d"]);
+    assert.equal(chatAfterClosing(["a", "b", "c", "d"], ["a", "d"], "b"), "d");
+    assert.equal(chatAfterClosing(["a", "b", "c", "d"], ["a", "d"], "c"), "d");
+    assert.equal(chatAfterClosing(["a", "b", "c", "d"], ["a", "d"], "d"), null);
+    assert.equal(closeTabChats(items, ["missing"]), items);
+  });
+
+  it("keeps the other pane when a project close takes one side of a split", () => {
+    const split = splitChatTab(tabItemsFromIds(["left", "right", "after"]), "left", "split-1");
+    assert.deepEqual(chatIdsInTabs(closeTabChats(split, ["left"])), ["right", "after"]);
+    assert.deepEqual(chatIdsInTabs(closeTabChats(split, ["left", "right"])), ["after"]);
   });
 });
 

@@ -1,5 +1,17 @@
 import { projectKey } from "./core.ts";
-import { appendOutput, type TerminalPtyEvent } from "./terminal-chat.ts";
+
+const BUFFER_CAP = 200_000;
+
+export type TerminalPtyEvent = {
+  id: string;
+  kind: string;
+  data?: string | null;
+};
+
+export function appendOutput(buffer: string, chunk: string, max = BUFFER_CAP): string {
+  const next = buffer + chunk;
+  return next.length > max ? next.slice(next.length - max) : next;
+}
 
 export type ShellPhase = "starting" | "running" | "exited" | "error";
 

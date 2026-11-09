@@ -4,6 +4,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { Symbol } from "./Symbol";
 import { foldToolTrailRows, liveTranscriptItems, toolTrailKind, toolTrailTypeIcon, type ToolTrailRow } from "../lib/core";
 import { subagentTypeLabel, type SubagentRecord } from "../lib/subagent";
+import { ThinkingTrace } from "./ThinkingTrace";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 const DURATION = 0.32;
@@ -161,14 +162,7 @@ function SubagentWindow({ agent }: { agent: SubagentRecord }) {
           <div className="space-y-2">
             {items.map((item, i) => {
               if (item.kind === "thinking") {
-                return (
-                  <div
-                    key={i}
-                    className="whitespace-pre-wrap border-l border-line pl-2 text-[12px] leading-relaxed text-muted [overflow-wrap:anywhere]"
-                  >
-                    {item.content}
-                  </div>
-                );
+                return <ThinkingTrace key={i} text={item.content} live={item.live} />;
               }
               if (item.kind === "tools") {
                 return (

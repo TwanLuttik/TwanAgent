@@ -487,10 +487,7 @@ function ModelLane({
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const width = max > 0 ? Math.max(3, (row.total / max) * 100) : 0;
-  const serverShare = row.total > 0 ? (row.server / row.total) * 100 : 0;
-  const clientShare = row.total > 0 ? (row.client / row.total) * 100 : 0;
-  const place = `${formatTokenCount(row.client)} on this Mac, ${formatTokenCount(row.server)} on a server`;
+  const width = max > 0 ? Math.max(2, (row.total / max) * 100) : 0;
   return (
     <div
       tabIndex={0}
@@ -498,7 +495,7 @@ function ModelLane({
       onMouseLeave={onLeave}
       onFocus={onEnter}
       onBlur={onLeave}
-      className={`grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-line/30 py-2.5 outline-none transition-opacity ${
+      className={`grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-line/25 py-2 outline-none transition-opacity ${
         dim ? "opacity-35" : ""
       }`}
     >
@@ -510,26 +507,12 @@ function ModelLane({
           </span>
           <span className="shrink-0 text-[11px] tabular-nums text-muted">{shareLabel}</span>
         </div>
-        <div className="mt-1.5 h-[3px] overflow-hidden rounded-full bg-wash" title={place}>
-          <div className="flex h-full overflow-hidden rounded-full" style={{ width: `${width}%` }}>
-            {row.client > 0 ? (
-              <div className="h-full bg-ink/70" style={{ width: `${clientShare}%` }} />
-            ) : null}
-            {row.server > 0 ? (
-              <div className={`h-full bg-ink/30 ${row.client > 0 ? "border-l border-canvas" : ""}`} style={{ width: `${serverShare}%` }} />
-            ) : null}
-          </div>
+        <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/[0.06]">
+          <div className="h-full rounded-full bg-ink/45" style={{ width: `${width}%` }} />
         </div>
-        <div className="mt-1 flex gap-3 text-[11px] text-muted">
-          <span className="flex items-center gap-1.5">
-            <span className="size-1.5 rounded-full bg-ink/70" />
-            <span className="tabular-nums">{formatTokenCount(row.client)} here</span>
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-1.5 rounded-full bg-ink/30" />
-            <span className="tabular-nums">{formatTokenCount(row.server)} server</span>
-          </span>
-        </div>
+        {row.server > 0 ? (
+          <div className="mt-1 text-[11px] tabular-nums text-muted">{formatTokenCount(row.server)} on a server</div>
+        ) : null}
       </div>
       <div className="text-right">
         <div className="text-[13px] tabular-nums">{formatTokenCount(row.total)}</div>

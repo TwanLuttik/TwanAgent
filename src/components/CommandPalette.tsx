@@ -381,14 +381,13 @@ function PaletteMark({ item }: { item: PaletteItem }) {
   return (
     <span className="flex shrink-0 items-center gap-1">
       <ProjectMark path={item.path} remote={item.remote} className="size-4" />
-      <ConversationMark model={item.model} kind={item.chatKind} />
+      <ConversationMark model={item.model} />
     </span>
   );
 }
 
-/** Same provider mark the conversation list uses. A terminal chat keeps the terminal glyph. */
-function ConversationMark({ model, kind }: { model: string; kind: string }) {
-  if (kind === "terminal") return <Symbol name="terminal" className="size-3.5 shrink-0 text-muted" />;
+/** Same provider mark the conversation list uses. */
+function ConversationMark({ model }: { model: string }) {
   const profile = providerProfile(model);
   const tone =
     profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "minimax" ? "group/minimax" : "usage-mark-xai";

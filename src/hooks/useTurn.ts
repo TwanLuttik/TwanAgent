@@ -62,11 +62,13 @@ import {
   worktreeListsFor,
 } from "../lib/worktree.ts";
 import type { DetectedSkill } from "../lib/skill";
+import { rememberSubagentParent, subagentChildIds, subagentParentId } from "../lib/subagent-parent";
 import {
   applySubagentToChat,
   emptySubagentDock,
   subagentFromLocalEvent,
   type SubagentDockState,
+  type SubagentEvent,
   type SubagentRecord,
 } from "../lib/subagent";
 import { beginTurnClock, endTurnClock } from "../lib/turn-clock";
@@ -111,6 +113,8 @@ import {
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Model, Runtime } from "../lib/tauri";
+
+const subagentSaves = new Map<string, Promise<void>>();
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 type ShellRequest = { chatId: string; command: string; resolve: (ok: boolean) => void };
@@ -256,6 +260,15 @@ function systemForDetached(ws: string, id: string, settings: { model: string; pe
   );
 }
 
+/** One epoch per run of a chat. A sealed epoch ignores later snapshots. */
+const turnEpoch = new Map<string, number>();
+const sealedEpoch = new Map<string, number>();
+
+function turnHasSealed(id: string): boolean {
+  const epoch = turnEpoch.get(id);
+  return epoch !== undefined && sealedEpoch.get(id) === epoch;
+}
+
 function applyDetachedEvent(
   id: string,
   ws: string,
@@ -268,6 +281,16 @@ function applyDetachedEvent(
     usage?: ChatUsage | null;
   },
 ) {
+  // The seal already painted and saved the reply. A tool snapshot that was
+  // still in flight lands after that and used to replace the screen. The
+  // database kept the answer, which is why a restart showed it.
+  if (turnHasSealed(id)) {
+    if (event.kind === "saved" && event.usage) {
+      setUsageByChat((prev) => (sameChatUsage(prev[id], event.usage!) ? prev : { ...prev, [id]: event.usage! }));
+      setUsageTick((n) => n + 1);
+    }
+    return;
+  }
   if (event.kind === "reply" && (event.text || event.messages?.length)) {
     const live = liveByChatRef.current.get(id);
     // The reply event can land on a short snapshot from before the tool results.
@@ -326,11 +349,7 @@ function applyDetachedEvent(
   if (event.kind === "subagent" && event.text) {
     const subagent = subagentFromLocalEvent(event.text);
     if (!subagent) return;
-    const dock = applySubagentToChat(subagentsByChatRef.current, id, subagent);
-    if (visible()) {
-      setSubagents(dock.agents);
-      setExpandedAgents(dock.expanded);
-    }
+    noteSubagent(id, ws, subagent, visible());
     return;
   }
   if (event.kind === "tool" && event.tool) {
@@ -1208,6 +1227,9 @@ async function runTurn(
   next: ChatMessage[],
   after?: (done: ChatMessage[]) => Promise<void>,
 ) {
+  const epoch = (turnEpoch.get(id) ?? 0) + 1;
+  turnEpoch.set(id, epoch);
+  sealedEpoch.delete(id);
   rememberLive(id, { messages: next, streamText: "", streamReasoning: "", liveTools: [], activity: null });
   showLive(id);
   const ac = new AbortController();
@@ -1520,11 +1542,7 @@ async function runTurn(
         if (visible()) setLiveTools(next);
       },
       onSubagent: (event) => {
-        const dock = applySubagentToChat(subagentsByChatRef.current, id, event);
-        if (visible()) {
-          setSubagents(dock.agents);
-          setExpandedAgents(dock.expanded);
-        }
+        noteSubagent(id, ws, event, visible());
       },
       onUpdate: (nextMessages) => {
         saveMessages(nextMessages);
@@ -1576,6 +1594,9 @@ async function runTurn(
       },
       signal: ac.signal,
     });
+    // Close the epoch before the first await. A saved event queued behind the
+    // persist must not paint a tool list over the reply.
+    sealedEpoch.set(id, epoch);
     const partial = partialReply(id);
     const painted = liveByChatRef.current.get(id)?.messages ?? [];
     latestMessages = stampTurnDuration(
@@ -1604,6 +1625,16 @@ async function runTurn(
       setRunningActivity(null);
     }
     await persistQueue;
+    // Paint the sealed transcript again. A snapshot that slipped in during the
+    // save would otherwise leave the tools up and the answer gone.
+    if (visible() && turnEpoch.get(id) === epoch) {
+      setMessages(latestMessages);
+      if (covered) {
+        setStreamText("");
+        setStreamReasoning("");
+        setLiveTools([]);
+      }
+    }
     const last = latestMessages[latestMessages.length - 1];
     const failed = Boolean(last && isTurnFailureMessage(last));
     const looking = visible() && viewingChatRef.current;
@@ -1630,6 +1661,7 @@ async function runTurn(
     if (abortRef.current === ac) abortRef.current = null;
     liveByChatRef.current.delete(id);
     subagentsByChatRef.current.delete(id);
+    settleSubagentRuns(id);
     clearRunning(id);
     if (visible()) {
       setRunningActivity(null);
@@ -1668,8 +1700,105 @@ async function runTurn(
 function stop(targetId = activeIdRef.current) {
   const visibleId = targetId || activeIdRef.current;
   const target = visibleId ? turnsRef.current.get(visibleId) : undefined;
-  (target ?? (visibleId === activeIdRef.current ? abortRef.current : null))?.abort();
+  const parentId = visibleId ? subagentParentId(visibleId) : "";
+  const parentTurn = parentId ? turnsRef.current.get(parentId) : undefined;
+  (target ?? parentTurn ?? (visibleId === activeIdRef.current ? abortRef.current : null))?.abort();
   if (visibleId) rejectShells(visibleId);
+}
+
+function parentModel(parentId: string): string {
+  const stored = conversationsRef.current.find((item) => item.id === parentId)?.model?.trim() ?? "";
+  return stored || modelRef.current;
+}
+
+function mirrorSubagent(agent: SubagentRecord) {
+  const messages: ChatMessage[] = agent.messages.length
+    ? agent.messages
+    : agent.prompt.trim()
+      ? [{ role: "user", content: agent.prompt }]
+      : [];
+  const liveTools: LiveToolRow[] = agent.tools.map((label) => ({ label, change: null, detail: "" }));
+  const activity: ConversationActivity | null =
+    agent.status === "running" ? { kind: "tool", label: agent.description.trim() || "Subagent" } : null;
+  rememberLive(agent.id, {
+    messages,
+    streamText: agent.streamText,
+    streamReasoning: agent.streamReasoning,
+    liveTools,
+    activity,
+  });
+  if (activeIdRef.current !== agent.id) return;
+  setMessages(messages);
+  setStreamText(agent.streamText);
+  setStreamReasoning(agent.streamReasoning);
+  setLiveTools(liveTools);
+  setRunningActivity(activity);
+  setRunningId(agent.id);
+}
+
+function queueSubagentSave(workspace: string, parentId: string, agent: SubagentRecord) {
+  if (!agent.id || !workspace) return;
+  rememberSubagentParent(agent.id, parentId);
+  const now = nowIso();
+  const existing = conversationsRef.current.find((row) => row.id === agent.id);
+  const model = (existing?.model || parentModel(parentId) || "").trim();
+  const summary = agent.summary.trim();
+  const row: ConversationSummary = {
+    id: agent.id,
+    title: agent.description.trim() || "Subagent",
+    created_at: existing?.created_at || now,
+    updated_at: now,
+    kind: "subagent",
+    model: model || null,
+    effort: existing?.effort ?? null,
+    permission: existing?.permission ?? null,
+    context_window: existing?.context_window ?? null,
+    sort_order: existing?.sort_order ?? nextTopSort(conversationsRef.current.map((item) => item.sort_order)),
+    ...(summary ? { preview: summary.slice(0, 240) } : {}),
+  };
+  const rows = existing
+    ? conversationsRef.current.map((item) =>
+        item.id === agent.id ? { ...item, ...row, sort_order: item.sort_order, created_at: item.created_at } : item,
+      )
+    : [row, ...conversationsRef.current];
+  conversationsRef.current = rows;
+  setConversations(rows);
+  const messages: ChatMessage[] = agent.messages.length
+    ? agent.messages
+    : agent.prompt.trim()
+      ? [{ role: "user", content: agent.prompt }]
+      : [];
+  const prev = subagentSaves.get(agent.id) ?? Promise.resolve();
+  const next = prev
+    .catch(() => undefined)
+    .then(() => api.saveConversation(workspace, { ...row, messages }))
+    .then(() => undefined)
+    .catch(() => undefined);
+  subagentSaves.set(agent.id, next);
+}
+
+function settleSubagentRuns(parentId: string) {
+  for (const child of subagentChildIds(parentId)) clearRunning(child);
+}
+
+function noteSubagent(parentId: string, workspace: string, event: SubagentEvent, showInParent: boolean) {
+  const dock = applySubagentToChat(subagentsByChatRef.current, parentId, event);
+  if (showInParent) {
+    setSubagents(dock.agents);
+    setExpandedAgents(dock.expanded);
+  }
+  const agent = event.type === "start" ? event.record : dock.agents.find((row) => row.id === event.id);
+  if (!agent) return;
+  mirrorSubagent(agent);
+  if (event.type === "start") startRunningTurn(agent.id, Date.now());
+  if (agent.status === "running") {
+    const label = agent.tools[agent.tools.length - 1]?.trim() || agent.description.trim() || "Subagent";
+    markRunning(agent.id, { activity: { kind: "tool", label } });
+  }
+  if (event.type === "done" || event.type === "error") clearRunning(agent.id);
+  if (event.type === "start" || event.type === "update" || event.type === "done") {
+    queueSubagentSave(workspace, parentId, agent);
+  }
 }
 
   return {

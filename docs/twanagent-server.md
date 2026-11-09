@@ -24,9 +24,19 @@ ssh <user>@<machine>@orb ~/.twanagent/bin/twanagent-server --version
 
 ## Build
 
-Building the app does not build the server. Run from the repo root. Keep `--target-dir`: without it Cargo writes to `src-tauri/service/target`, and the app copies the newest binary it finds. Rebuild before pressing Update.
+Building the app does not build the server. From the repo root:
 
-Mac server:
+```sh
+scripts/build-server.sh            # this Mac
+scripts/build-server.sh linux      # Linux arm64
+scripts/build-server.sh linux-x64  # Linux x86_64
+```
+
+`npm run build:server` is the Mac build. Pass the same argument through npm with `npm run build:server -- linux`.
+
+The script keeps `--target-dir src-tauri/target`. Without that, Cargo writes to `src-tauri/service/target`, and the app copies the newest binary it finds. Rebuild before pressing Update.
+
+Mac server. The binary lands at `src-tauri/target/release/twanagent-server`.
 
 ```sh
 cargo build --manifest-path src-tauri/service/Cargo.toml \
@@ -34,9 +44,7 @@ cargo build --manifest-path src-tauri/service/Cargo.toml \
   --release --bin twanagent-server
 ```
 
-`src-tauri/target/release/twanagent-server`
-
-Linux. The Mac binary will not run there. Add the target once, then build. Use `x86_64-unknown-linux-gnu` for x86_64.
+Linux. The Mac binary will not run there. `cargo-zigbuild` and Zig have to be installed (`brew install zig && cargo install cargo-zigbuild`). The arm64 binary lands at `src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`.
 
 ```sh
 rustup target add aarch64-unknown-linux-gnu
@@ -45,7 +53,7 @@ cargo zigbuild --manifest-path src-tauri/service/Cargo.toml \
   --release --target aarch64-unknown-linux-gnu --bin twanagent-server
 ```
 
-`src-tauri/target/aarch64-unknown-linux-gnu/release/twanagent-server`
+Use `x86_64-unknown-linux-gnu` for x86_64. That binary lands at `src-tauri/target/x86_64-unknown-linux-gnu/release/twanagent-server`.
 
 ## Run
 

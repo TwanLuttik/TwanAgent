@@ -71,12 +71,16 @@ html[data-theme-mode="light"] .sidebar-dock {
   box-shadow: 0 6px 14px -12px rgb(0 0 0 / 0.1);
 }
 
-/* Server card. A thin rim that catches light along the top, like the iOS glass edge. */
+/* Server card. A thin rim that catches light along the top, like the iOS glass edge.
+   Blur is a variable so a fade can grow it instead of popping it on. */
 .cloud-card {
+  --cloud-glass-blur: 24px;
   border: none;
   box-shadow:
     0 12px 32px rgb(0 0 0 / 0.28),
     inset 0 1px 0 rgb(255 255 255 / 0.08);
+  -webkit-backdrop-filter: blur(var(--cloud-glass-blur));
+  backdrop-filter: blur(var(--cloud-glass-blur));
 }
 .cloud-card::before {
   content: "";
@@ -116,6 +120,10 @@ html[data-theme-mode="light"] .cloud-card::before {
   );
 }
 
+.cloud-card[role="menu"] [role="menuitem"] {
+  border-radius: 6px;
+}
+
 /* Cloud projects. A soft glow on the right quarter, behind the server icon. */
 .cloud-zebra {
   background-image: linear-gradient(
@@ -131,6 +139,28 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+/* Tab focuses sidebar controls. WKWebView paints that focus as a filled selection. */
+aside button,
+aside [role="button"] {
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+aside button:focus,
+aside button:focus-visible,
+aside [role="button"]:focus,
+aside [role="button"]:focus-visible {
+  outline: none;
+}
+aside button::selection,
+aside button *::selection,
+aside [role="button"]::selection,
+aside [role="button"] *::selection {
+  background: transparent;
+  color: inherit;
 }
 
 /* WKWebView still offers macOS dictation and autocorrect unless the field opts out. */
@@ -561,6 +591,15 @@ html[data-theme-mode="dark"] .usage-swatch-7 {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, #e11d48 45%, transparent);
 }
 
+/* Soft diagonal grain on an allowance fill. The provider color stays underneath. */
+.account-usage-fill {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 4px,
+    rgb(0 0 0 / 0.14) 4px 6px
+  );
+}
+
 .model-mark {
   transition: color 150ms ease;
 }
@@ -636,6 +675,40 @@ html[data-theme-mode="light"] .model-tip {
 
 html[data-theme-mode="light"] .running-tip {
   border-color: rgb(0 0 0 / 0.5);
+}
+
+/* Live thinking. The mark breathes, and the two visible lines scroll upward. */
+.thinking-live {
+  animation: thinking-breathe 2.2s ease-in-out infinite;
+}
+
+.thinking-tail {
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 42%);
+  mask-image: linear-gradient(180deg, transparent, #000 42%);
+}
+
+.thinking-scroll {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes thinking-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-live {
+    animation: none;
+  }
+
+  .thinking-scroll {
+    transition: none;
+  }
 }
 
 .running-notch {

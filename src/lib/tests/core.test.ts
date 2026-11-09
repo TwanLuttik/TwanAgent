@@ -11,6 +11,9 @@ import {
   filterProjectRows,
   folderActionEnabled,
   folderActionHint,
+  folderClickAction,
+  folderEnterTarget,
+  folderFocusFromQuery,
   folderName,
   isExistingProjectName,
   gitChangeForPath,
@@ -846,6 +849,35 @@ describe("tool helpers", () => {
     assert.equal(live?.kind === "thinking" && live.live, true);
   });
 
+  it("keeps an in-progress thought after calls that are already running", () => {
+    const items = liveTranscriptItems(
+      [
+        { role: "user", content: "check the scene" },
+        { role: "assistant", content: "The taper is fine." },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "1", name: "run_command", arguments: '{"command":"npm test","description":"Run the taper check"}' }],
+        },
+      ],
+      "",
+      [
+        { label: "Read main.js", change: null },
+        { label: "Search noise", change: null },
+      ],
+      "test coverage:\n- No test for noise.",
+    );
+    assert.deepEqual(
+      items.map((item) => item.kind),
+      ["user", "assistant", "tools", "thinking"],
+    );
+    const tools = items.find((item) => item.kind === "tools");
+    assert.deepEqual(tools?.kind === "tools" ? tools.labels : [], ["Run the taper check", "Read main.js", "Search noise"]);
+    const thought = items.at(-1);
+    assert.equal(thought?.kind === "thinking" && thought.live, true);
+    assert.equal(thought?.kind === "thinking" && thought.content, "test coverage:\n- No test for noise.");
+  });
+
   it("does not send reasoning back to the model", () => {
     const out = toApiMessages([
       {
@@ -1103,13 +1135,15 @@ describe("splitLiveTranscript", () => {
     assert.ok(next.tail.length > first.tail.length);
     assert.deepEqual(
       next.tail.map((item) => item.kind),
-      ["user", "tools", "thinking", "assistant", "tools"],
+      ["user", "tools", "thinking", "assistant"],
     );
     const assistant = next.tail.find((item) => item.kind === "assistant");
     assert.equal(assistant?.kind === "assistant" && assistant.content, "partially done");
-    const liveToolsItem = next.tail.at(-1);
+    const liveToolsItem = next.tail.find((item) => item.kind === "tools");
     assert.equal(liveToolsItem?.kind, "tools");
-    if (liveToolsItem?.kind === "tools") assert.deepEqual(liveToolsItem.labels, ["Read b.ts"]);
+    if (liveToolsItem?.kind === "tools") assert.deepEqual(liveToolsItem.labels, ["Read a.ts", "Read b.ts"]);
+    const thought = next.tail.find((item) => item.kind === "thinking");
+    assert.equal(thought?.kind === "thinking" && thought.live, true);
     const replay = liveTranscriptItems(
       messages,
       "partially done",
@@ -1411,6 +1445,7 @@ describe("folder command helpers", () => {
     assert.match(folderActionHint("create", "demo", "Build"), /Build/);
     assert.match(folderActionHint("clone", "https://github.com/acme/app.git"), /app/);
     assert.match(folderActionHint("clone", "https://github.com/acme/app.git", "Build"), /Build/);
+    assert.match(folderActionHint("create", "https://github.com/acme/app.git"), /Clone/);
     assert.equal(pathWithSlash("/projects"), "/projects/");
     assert.equal(pathWithSlash("/projects/"), "/projects/");
   });
@@ -1425,6 +1460,23 @@ describe("folder command helpers", () => {
     assert.equal(isExistingProjectName("Demo-App", rows), true);
     assert.equal(isExistingProjectName("demo-app", rows), true);
     assert.equal(isExistingProjectName("Demo App", rows), true);
+  });
+
+  it("keeps clone as the enter target when a git URL is in the field", () => {
+    const url = "https://github.com/acme/app.git";
+    assert.deepEqual(folderFocusFromQuery(url, 4, false), { kind: "action", id: "clone" });
+    assert.deepEqual(folderEnterTarget(url, { kind: "action", id: "create" }), { kind: "clone" });
+    assert.deepEqual(folderEnterTarget(url, { kind: "project", index: 0 }), { kind: "clone" });
+    assert.equal(folderClickAction("create", url), "clone");
+    assert.equal(folderClickAction("clone", url), "clone");
+    assert.equal(folderClickAction("create", "fresh-app"), "create");
+  });
+
+  it("highlights a matching project for a name, and create when nothing matches", () => {
+    assert.deepEqual(folderFocusFromQuery("demo", 2, false), { kind: "project", index: 0 });
+    assert.deepEqual(folderFocusFromQuery("fresh-app", 0, false), { kind: "action", id: "create" });
+    assert.deepEqual(folderEnterTarget("fresh-app", { kind: "action", id: "create" }), { kind: "create" });
+    assert.deepEqual(folderEnterTarget("demo", { kind: "project", index: 1 }), { kind: "project", index: 1 });
   });
 });
 

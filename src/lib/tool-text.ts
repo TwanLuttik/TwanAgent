@@ -192,6 +192,25 @@ export function toolActivityLabel(call: ChatToolCall): string {
   return toolSummary(call.name, parseToolArgs(call.arguments));
 }
 
+const SUBAGENT_CONVERSATION_PREFIX = "Subagent conversation:";
+
+/** First line of a subagent tool result. The id is the conversation that row opens. */
+export function subagentToolResult(id: string, body: string): string {
+  const text = body.trim();
+  const conversationId = id.trim();
+  if (!conversationId || text.startsWith(SUBAGENT_CONVERSATION_PREFIX)) return text;
+  return `${SUBAGENT_CONVERSATION_PREFIX} ${conversationId}\n${text}`;
+}
+
+/** Conversation id stored on a finished `spawn_subagent` result. Empty when this run was not saved. */
+export function subagentConversationIdFromResult(content: string): string {
+  const line = content.replace(/\r\n/g, "\n").split("\n", 1)[0]?.trim() ?? "";
+  if (!line.startsWith(SUBAGENT_CONVERSATION_PREFIX)) return "";
+  const id = line.slice(SUBAGENT_CONVERSATION_PREFIX.length).trim();
+  if (!id || /\s/.test(id)) return "";
+  return id;
+}
+
 const WEB_SEARCH_SITE_CAP = 8;
 
 /** Hosts the model asked to search, before any results come back. */

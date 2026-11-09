@@ -8,14 +8,6 @@ import { providerProfile } from "../../lib/provider";
 
 const TIP_EASE = [0.22, 1, 0.36, 1] as const;
 
-/** First word of an activity line, for the minimized pill. "Run tests…" becomes "Run". */
-function activityBadge(preview: string): string {
-  const clean = preview.replace(/(…|\.\.\.)$/u, "").trim();
-  if (!clean) return "Running";
-  const head = clean.split(/\s+/)[0] ?? "Running";
-  return head.length > 16 ? `${head.slice(0, 15)}…` : head;
-}
-
 /** Running and finished chats, stacked on the top edge of the usage card. Finished sits under running. */
 export function ActivityDock({
   items,
@@ -40,7 +32,7 @@ export function ActivityDock({
         <DockPill
           items={running}
           activeId={activeId}
-          label={one ? activityBadge(runningPreview(one.id)) : `${running.length} running`}
+          label={one ? one.title : `${running.length} running`}
           ariaLabel={one ? one.title : `${running.length} running chats`}
           clock={one ? runningStartedAt(one.id) : 0}
           running
@@ -116,16 +108,18 @@ function DockPill({
                   {running ? `${items.length} running` : `${items.length} finished`}
                 </div>
               ) : null}
-              {items.map((item) => (
-                <RunningTipRow
-                  key={`${item.path}\t${item.id}`}
-                  item={item}
-                  selected={item.id === activeId}
-                  preview={previewFor(item.id)}
-                  running={running}
-                  onOpen={onOpen}
-                />
-              ))}
+              <div className="flex flex-col gap-1">
+                {items.map((item) => (
+                  <RunningTipRow
+                    key={`${item.path}\t${item.id}`}
+                    item={item}
+                    selected={item.id === activeId}
+                    preview={previewFor(item.id)}
+                    running={running}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
             </div>
           </motion.div>
         ) : null}
@@ -137,18 +131,18 @@ function DockPill({
         onClick={() => {
           if (only) onOpen(only.path, only.id);
         }}
-        className={`flex h-[22px] max-w-[11rem] items-center gap-1.5 rounded-full border px-2 ${
-          open ? "border-line/70 bg-panel shadow-card" : "border-line/45 bg-panel/80"
+        className={`flex h-[22px] max-w-[11rem] items-center gap-1.5 rounded-full border bg-panel px-2 text-ink ${
+          open ? "border-line shadow-card" : "border-line/70"
         }`}
       >
         {running ? (
-          <span className="size-3 shrink-0 animate-spin rounded-full border border-muted/55 border-t-transparent" />
+          <span className="size-3 shrink-0 animate-spin rounded-full border border-ok border-t-transparent" />
         ) : model != null ? (
           <ProviderMark model={model} />
         ) : null}
-        <span className="min-w-0 truncate text-[11px] font-medium text-ink">{label}</span>
+        <span className="min-w-0 truncate text-[11px] leading-none font-medium">{label}</span>
         {clock > 0 ? (
-          <RunningElapsed startedAt={clock} className="shrink-0 text-[11px] tabular-nums text-muted" />
+          <RunningElapsed startedAt={clock} className="shrink-0 text-[11px] leading-none tabular-nums text-muted" />
         ) : null}
       </button>
     </div>
@@ -198,8 +192,8 @@ function RunningTipRow({
       <ProviderMark model={item.model} large />
       <span className="min-w-0 flex-1">
         <span className="block min-w-0 truncate text-[13px] leading-4 font-medium text-ink">{item.title}</span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted">
-          <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0 opacity-70" />
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] leading-4 text-ink">
+          <Symbol name="arrow.turn.down.right" className="size-2.5 shrink-0" />
           <span className="min-w-0 truncate" title={caption}>
             {caption}
           </span>
@@ -207,7 +201,7 @@ function RunningTipRow({
       </span>
       {running ? (
         <span
-          className="mt-0.5 size-3.5 shrink-0 self-center animate-spin rounded-full border border-muted/55 border-t-transparent"
+          className="mt-0.5 size-3.5 shrink-0 self-center animate-spin rounded-full border-2 border-ok border-t-transparent"
           aria-hidden
         />
       ) : null}

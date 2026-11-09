@@ -178,6 +178,37 @@ export function closeTabChat(
   return { items: next, removed: true, next: neighbor ? primaryChatId(neighbor) : null };
 }
 
+/** Drop every listed chat. A split that loses one side collapses to the chat that remains. */
+export function closeTabChats(items: TabItem[], ids: readonly string[]): TabItem[] {
+  const drop = new Set(ids.map((id) => id.trim()).filter(Boolean));
+  if (!drop.size) return items;
+  let next = items;
+  for (const id of drop) {
+    const result = closeTabChat(next, id);
+    if (result.removed) next = result.items;
+  }
+  return next;
+}
+
+/**
+ * The chat to show after `activeId` leaves the strip.
+ * The neighbor after it wins, then the one before it.
+ */
+export function chatAfterClosing(before: readonly string[], after: readonly string[], activeId: string): string | null {
+  if (!activeId || after.includes(activeId)) return null;
+  const index = before.indexOf(activeId);
+  if (index < 0) return after[0] ?? null;
+  for (let i = index + 1; i < before.length; i++) {
+    const id = before[i] ?? "";
+    if (id && after.includes(id)) return id;
+  }
+  for (let i = index - 1; i >= 0; i--) {
+    const id = before[i] ?? "";
+    if (id && after.includes(id)) return id;
+  }
+  return null;
+}
+
 /**
  * Drop a chat only after its own project has listed conversations and the chat is gone.
  * A tab from any other project stays, so switching projects does not clear the strip.

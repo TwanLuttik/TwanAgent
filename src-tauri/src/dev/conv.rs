@@ -215,10 +215,10 @@ fn last_line_from_messages(messages: &[serde_json::Value]) -> String {
     String::new()
 }
 
-/// An empty chat saved in the local mount. A titled chat, or a terminal, is real.
+/// An empty chat saved in the local mount. A titled chat is real.
 fn is_local_cloud_draft(row: &ConversationSummary) -> bool {
     let title = row.title.trim();
-    (title.is_empty() || title == "New chat") && row.kind != "terminal"
+    title.is_empty() || title == "New chat"
 }
 
 /// A cloud project's chats live on the server. The local cache is a copy of that list,

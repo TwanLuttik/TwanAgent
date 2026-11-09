@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AnchoredMenu } from "../../components/ContextMenu";
 import { Symbol } from "../../components/Symbol";
@@ -13,7 +13,6 @@ import type { GitWorktree } from "../../lib/tauri.ts";
 import type { TodoBadge } from "../../lib/todo";
 import { SIDEBAR_DEFAULT, loadProjectFavorites, loadSidebarChatOrder, loadSidebarFocus, saveProjectFavorites, saveSidebarChatOrder, saveSidebarFocus, saveSidebarWidth } from "../../lib/prefs";
 import type { ConversationSummary } from "../../lib/tauri";
-import { SETTINGS_TABS } from "../SettingsView";
 import { ProjectFocusButton } from "./ProjectFocusButton";
 import { useMain, useSidebar } from "./context";
 import { ProjectsNav } from "./ProjectsNav";
@@ -21,14 +20,11 @@ import { ProjectsNav } from "./ProjectsNav";
 export function AppSidebar() {
   const {
     closeServers,
-    closeSettings,
     onSidebarResizeStart,
     openFolder,
     openServers,
     showServers,
     setSidebarWidth,
-    settingsTab,
-    setSettingsTab,
     openSettings,
     openUsage,
     openDocs,
@@ -39,7 +35,6 @@ export function AppSidebar() {
     usageTick,
     workspace,
   } = useMain();
-  const { showSettings } = useSidebar();
   const [usageHover, setUsageHover] = useState(false);
   const [chatOrder, setChatOrder] = useState<SidebarChatOrder>(loadSidebarChatOrder);
   const chooseChatOrder = useCallback((next: SidebarChatOrder) => {
@@ -52,6 +47,21 @@ export function AppSidebar() {
     saveSidebarFocus(path);
   }, []);
   const focusedWorkspace = useRef(workspace);
+  const sidebarRef = useRef<HTMLElement>(null);
+  // Rows are clicked, not tabbed. A focused control is what WKWebView paints as a selection bar.
+  useLayoutEffect(() => {
+    const root = sidebarRef.current;
+    if (!root) return;
+    const skip = () => {
+      for (const el of root.querySelectorAll<HTMLElement>("button, [role='button']")) {
+        if (el.tabIndex !== -1) el.tabIndex = -1;
+      }
+    };
+    skip();
+    const observer = new MutationObserver(skip);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
   // A tab from another project opens that project. The sidebar filter has to
   // follow, or the highlight stays on the project that was focused before.
   useEffect(() => {
@@ -80,6 +90,7 @@ export function AppSidebar() {
 
   return (
     <aside
+      ref={sidebarRef}
       className={`relative flex shrink-0 flex-col overflow-hidden bg-transparent ${sidebarCollapsed ? "z-10" : "z-0"} ${sidebarDragging ? "" : "transition-[width] duration-200 ease-out"}`}
       style={{ width: sidebarCollapsed ? 44 : sidebarWidth }}
     >
@@ -109,51 +120,42 @@ export function AppSidebar() {
         {isWindows() ? null : <WindowButtons />}
         <SidebarOrderButton order={chatOrder} onChange={chooseChatOrder} />
         <div className="min-w-0 flex-1" data-tauri-drag-region />
-        {!showSettings ? (
-          <ProjectFocusButton
+        <ProjectFocusButton
           focusPath={focusPath}
           onFocus={chooseFocus}
           hidden={sidebarCollapsed}
           favoritePaths={favoritePaths}
           onToggleFavorite={toggleFavorite}
         />
-        ) : null}
         <PanelToggle
           label="Hide sidebar"
           icon="sidebar.left"
           pressed
           onClick={() => setSidebarCollapsed(true)}
         />
-        {!showSettings ? (
-          <>
-            <button
-              type="button"
-              aria-label="Servers"
-              aria-pressed={showServers}
-              title="Servers"
-              onClick={showServers ? closeServers : openServers}
-              className={`flex size-7 items-center justify-center rounded-[6px] hover:bg-wash ${
-                showServers ? "bg-wash-strong text-ink" : "text-ink"
-              }`}
-            >
-              <Symbol name="server.rack" className="size-3.5" />
-            </button>
-            <button
-              type="button"
-              aria-label="Open project"
-              title="Open project"
-              onClick={openFolder}
-              className="mr-2 flex size-7 items-center justify-center rounded-[6px] text-ink hover:bg-wash"
-            >
-              <Symbol name="plus" className="size-3.5" />
-            </button>
-          </>
-        ) : null}
+        <button
+          type="button"
+          aria-label="Servers"
+          aria-pressed={showServers}
+          title="Servers"
+          onClick={showServers ? closeServers : openServers}
+          className={`flex size-7 items-center justify-center rounded-[6px] hover:bg-wash ${
+            showServers ? "bg-wash-strong text-ink" : "text-ink"
+          }`}
+        >
+          <Symbol name="server.rack" className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label="Open project"
+          title="Open project"
+          onClick={openFolder}
+          className="mr-2 flex size-7 items-center justify-center rounded-[6px] text-ink hover:bg-wash"
+        >
+          <Symbol name="plus" className="size-3.5" />
+        </button>
       </div>
-      {showSettings ? <SettingsNav tab={settingsTab} onTab={setSettingsTab} onBack={closeSettings} /> : null}
-      {/* Stay mounted while settings covers it. Unmounting restarts the account
-          usage poll and rebuilds the project list, which is the pause on Escape. */}
-      <div className="relative z-10 flex min-h-0 flex-1 flex-col" style={showSettings ? { display: "none" } : undefined}>
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
         <ProjectsNav
           usageHover={usageHover}
           setUsageHover={setUsageHover}
@@ -337,61 +339,5 @@ function PanelToggle({
     >
       <Symbol name={icon} className="size-3.5" />
     </button>
-  );
-}
-
-function SettingsNav({
-  tab,
-  onTab,
-  onBack,
-}: {
-  tab: string;
-  onTab: (id: (typeof SETTINGS_TABS)[number]["id"]) => void;
-  onBack: () => void;
-}) {
-  return (
-    <>
-      <div className="relative z-20 flex items-center gap-1 px-2 pt-1.5 pb-1">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
-          aria-label="Back to projects"
-          title="Back"
-        >
-          <Symbol name="chevron.left" className="size-3.5" />
-        </button>
-        <span className="min-w-0 truncate text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">
-          Settings
-        </span>
-      </div>
-      <nav className="relative z-10 flex min-h-0 flex-1 flex-col overflow-auto px-2 pb-3" aria-label="Settings">
-        {SETTINGS_TABS.map((opt, index) => {
-          const on = tab === opt.id;
-          const groupStart = index === 0 || SETTINGS_TABS[index - 1]?.group !== opt.group;
-          return (
-            <div key={opt.id} className={groupStart && index > 0 ? "mt-2" : undefined}>
-              {groupStart ? (
-                <div className="px-2 pt-1.5 pb-1 text-[10px] font-semibold tracking-[0.08em] text-muted uppercase">
-                  {opt.group}
-                </div>
-              ) : null}
-              <button
-                type="button"
-                aria-current={on ? "page" : undefined}
-                title={opt.hint}
-                onClick={() => onTab(opt.id)}
-                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] ${
-                  on ? "bg-wash-strong text-ink" : "text-ink/85 hover:bg-wash"
-                }`}
-              >
-                <Symbol name={opt.icon} className={`size-4 shrink-0 ${on ? "text-ink" : "text-muted"}`} />
-                <span className="min-w-0 truncate">{opt.label}</span>
-              </button>
-            </div>
-          );
-        })}
-      </nav>
-    </>
   );
 }

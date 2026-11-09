@@ -28,6 +28,7 @@ import {
   placeProjectChats,
   sidebarTodoKey,
   stampProjectServer,
+  syncOpenProjectSidebar,
   prependChatInGroups,
   prependProjectChat,
   upsertProjectGroup,
@@ -395,7 +396,7 @@ describe("mergeLoadedProjectGroups", () => {
     assert.equal(next[0]?.remote, true);
     assert.equal(isLocalCloudDraft(chat("draft", "New chat")), true);
     assert.equal(isLocalCloudDraft(chat("real", "what is the specs of this machine")), false);
-    assert.equal(isLocalCloudDraft({ ...chat("term", "New chat"), kind: "terminal" }), false);
+    assert.equal(isLocalCloudDraft({ ...chat("term", "New chat"), kind: "terminal" }), true);
     const open = preferredOpenConversation(
       [chat("draft", "New chat"), chat("real", "what is the specs of this machine")],
       "draft",
@@ -562,6 +563,91 @@ describe("stampProjectServer", () => {
     assert.equal(next[0]?.server?.machineName, "box");
     assert.equal(next[1]?.remote, undefined);
     assert.equal(sidebarTodoKey("/App/Local/", "chat-1"), "/app/local\tchat-1");
+  });
+
+  it("replaces a cloud mark that has not loaded its model keys yet", () => {
+    const groups = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true, server }],
+      [],
+      {},
+    );
+    const next = stampProjectServer(
+      groups,
+      "/mounts/cloud",
+      { ...server, providers: [] },
+      "/mounts/cloud",
+    );
+    assert.notEqual(next, groups);
+    assert.deepEqual(next[0]?.server?.providers, []);
+  });
+});
+
+describe("syncOpenProjectSidebar", () => {
+  const server = {
+    machineName: "box",
+    host: "box.local",
+    user: "me",
+    port: 22,
+    remotePath: "/srv/cloud",
+    online: true,
+    providers: ["minimax"],
+  };
+
+  it("stamps the cloud machine onto a project that has no chats yet", () => {
+    const groups = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [],
+      {},
+    );
+    const next = syncOpenProjectSidebar(groups, "/mounts/cloud", [], server, "", "/mounts/cloud");
+    assert.equal(next[0]?.remote, true);
+    assert.equal(next[0]?.server?.host, "box.local");
+    assert.equal(next[0]?.server?.online, true);
+    assert.deepEqual(next[0]?.server?.providers, ["minimax"]);
+    assert.deepEqual(next[0]?.conversations, []);
+  });
+
+  it("does not put another project's chats onto a cloud folder that has not loaded", () => {
+    const groups = buildProjectGroups(
+      [
+        { name: "local", path: "/app/local" },
+        { name: "cloud", path: "/mounts/cloud", remote: true },
+      ],
+      [],
+      {
+        "/app/local": { conversations: [chat("a1", "Local chat")], journeys: [] },
+        "/mounts/cloud": { conversations: [], journeys: [] },
+      },
+    );
+    const next = syncOpenProjectSidebar(
+      groups,
+      "/mounts/cloud",
+      [chat("a1", "Local chat")],
+      server,
+      "",
+      "/mounts/cloud",
+    );
+    assert.deepEqual(next[1]?.conversations, []);
+    assert.equal(next[1]?.server?.host, "box.local");
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["a1"]);
+  });
+
+  it("still places chats once that project has loaded", () => {
+    const groups = buildProjectGroups(
+      [{ name: "cloud", path: "/mounts/cloud", remote: true }],
+      [],
+      { "/mounts/cloud": { conversations: [], journeys: [] } },
+    );
+    const next = syncOpenProjectSidebar(
+      groups,
+      "/mounts/cloud",
+      [chat("c1", "First")],
+      server,
+      "/mounts/cloud",
+      "/mounts/cloud",
+    );
+    assert.deepEqual(next[0]?.conversations.map((row) => row.id), ["c1"]);
+    assert.equal(next[0]?.server?.host, "box.local");
   });
 });
 

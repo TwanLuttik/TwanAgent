@@ -232,6 +232,7 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                 let data_child = data_dir.to_path_buf();
                 let workspace_key = request.workspace.clone();
                 let arguments = call.arguments.clone();
+                let call_id = call.id.clone();
                 let permission_child = permission.clone();
                 let journey_child = request.journey_id.clone();
                 let model_child = model.clone();
@@ -250,6 +251,7 @@ pub(super) fn drive(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
                             &data_child,
                             &workspace_key,
                             &arguments,
+                            &call_id,
                             &permission_child,
                             journey_child.as_deref(),
                             plan_child,
@@ -558,12 +560,13 @@ pub(super) fn run_tool(
             live,
         ),
         "web_search" => search(app, data_dir, &call.arguments),
-        "list_chats" => list_group_chats(data_dir, workspace, &args),
-        "read_chat" => read_group_chat(data_dir, workspace, &args),
+        "list_chats" => list_group_chats(data_dir, workspace, workspace_key, &args, conversation_id),
+        "read_chat" => read_group_chat(data_dir, workspace, workspace_key, &args),
         "create_chat" => create_group_chat(
             app,
             data_dir,
             workspace,
+            workspace_key,
             &args,
             model,
             effort,
@@ -586,6 +589,7 @@ pub(super) fn run_tool(
                 data_dir,
                 workspace_key,
                 &call.arguments,
+                &call.id,
                 permission,
                 journey_id,
                 plan,

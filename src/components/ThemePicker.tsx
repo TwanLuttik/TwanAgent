@@ -182,7 +182,7 @@ function ColorField({
             id={pickerId}
             role="dialog"
             aria-label={`${label} picker`}
-            className="color-picker fixed z-50 rounded-lg border border-line bg-canvas p-2.5 shadow-card"
+            className="color-picker fixed z-[90] rounded-lg border border-line bg-canvas p-2.5 shadow-card"
             style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
           >
             <HexColorPicker color={value} onChange={apply} />

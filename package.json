@@ -10,6 +10,7 @@
     "tauri": "node scripts/tauri.mjs",
     "bundle": "node scripts/tauri.mjs build && node scripts/name-bundle.mjs",
     "dev:mac": "sh scripts/dev-macos-app.sh",
+    "build:server": "sh scripts/build-server.sh",
     "test": "node --experimental-strip-types --test src/lib/tests/*.test.ts"
   },
   "dependencies": {

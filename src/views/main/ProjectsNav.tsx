@@ -19,7 +19,7 @@ import type { GitWorktree } from "../../lib/tauri.ts";
 import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, withoutLinkedWorktrees, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import { useApp } from "../../state/app-state";
 import { NewChatMenu } from "./AppChrome";
-import { useSidebar } from "./context";
+import { useMain, useSidebar } from "./context";
 import { ProjectConversations } from "./ProjectConversations";
 import { ActivityDock, todoSignature } from "./SidebarActivity";
 import { SidebarSearch } from "./SidebarSearch";
@@ -101,7 +101,8 @@ export function ProjectsNav({
     toggleProjectCollapsed,
     workspace,
   } = useSidebar();
-  const fullPage = Boolean(showSettings || showUsage || showDocs || projectSettings);
+  const { closeDocs, closeSettings } = useMain();
+  const fullPage = Boolean(showUsage || projectSettings);
   const [picked, setPicked] = useState<ChatSelection[]>([]);
   const pickAnchor = useRef<ChatSelection | null>(null);
   const pickedRef = useRef(picked);
@@ -605,10 +606,7 @@ export function ProjectsNav({
         >
           {focusedName || "Projects"}
         </span>
-        <NewChatMenu
-          disabled={!activeFocus && !workspace}
-          onPick={(kind) => void startNewChat(kind, activeFocus || undefined)}
-        />
+        <NewChatMenu disabled={!activeFocus && !workspace} onNew={() => void startNewChat()} />
       </div>
       <div className="no-scrollbar relative z-10 min-h-0 flex-1 overflow-auto px-2">
         {sidebarReady ? <AllProjectsList
@@ -622,7 +620,7 @@ export function ProjectsNav({
           collapsed={collapsedProjects}
           onToggleCollapsed={toggleProjectCollapsed}
           onOpenProject={openProjectFromSidebar}
-          onNewChat={(path) => void startNewChat("chat", path)}
+          onNewChat={() => void startNewChat()}
           onOpenSettings={openProjectSettings}
           onDeleteProject={(path, mode) => {
             const gone = mode === "worktrees"
@@ -663,6 +661,7 @@ export function ProjectsNav({
                   visibleConversations(worktreeChats[projectKey(child.path)] ?? [], false),
                   chatOrder,
                 )}
+                subagentChats={(worktreeChats[projectKey(child.path)] ?? []).filter((row) => row.kind === "subagent")}
                 path={child.path}
                 place={{
                   branch: child.branch,
@@ -688,6 +687,7 @@ export function ProjectsNav({
           renderList={(group, { showArchived, place }) => (
             <ProjectConversations
               conversations={orderSidebarChats(visibleConversations(group.conversations, showArchived), chatOrder)}
+              subagentChats={group.conversations.filter((row) => row.kind === "subagent")}
               path={group.path}
               place={place}
               dimmed={fullPage}
@@ -728,7 +728,7 @@ export function ProjectsNav({
         <AccountUsageRow refresh={usageTick} />
         <button
           type="button"
-          onClick={openDocs}
+          onClick={() => (showDocs ? closeDocs() : openDocs())}
           className={`flex w-full items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] ${
             showDocs ? "bg-wash-strong text-ink" : "text-ink/90 hover:bg-wash"
           }`}
@@ -740,7 +740,7 @@ export function ProjectsNav({
           <button
             type="button"
             title={isMacOS() ? "Settings ⌘," : "Settings Ctrl+,"}
-            onClick={openSettings}
+            onClick={() => (showSettings ? closeSettings() : openSettings())}
             className={`flex min-w-0 flex-1 items-center gap-2 rounded-[6px] px-2 py-[5px] text-left text-[13px] ${
               showSettings ? "bg-wash-strong text-ink" : "text-ink/90 hover:bg-wash"
             }`}

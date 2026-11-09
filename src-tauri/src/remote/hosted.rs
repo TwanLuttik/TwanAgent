@@ -724,7 +724,7 @@ pub fn dev_hosted_sidebar_cached(
     let (rows, journeys) = crate::appdb::sidebar_for(&conn, &workspace)?;
     let rows: Vec<_> = rows.into_iter().filter(|row| {
         let title = row.title.trim();
-        !((title.is_empty() || title == "New chat") && row.kind != "terminal")
+        !(title.is_empty() || title == "New chat")
     }).collect();
     let keep: std::collections::HashSet<_> = rows.iter().map(|row| row.id.clone()).collect();
     let transcripts = crate::appdb::sidebar_transcripts(&conn, &workspace)?

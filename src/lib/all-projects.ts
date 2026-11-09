@@ -52,11 +52,10 @@ export function isArchivedConversation(row: { archived?: boolean }): boolean {
 }
 
 /** Chats shown in the normal sidebar, or only the archived ones when the archive is open. */
-export function visibleConversations<T extends { archived?: boolean; journey_id?: string | null }>(
-  conversations: T[],
-  showArchived: boolean,
-): T[] {
-  return conversations.filter((row) => isArchivedConversation(row) === showArchived);
+export function visibleConversations<
+  T extends { archived?: boolean; journey_id?: string | null; kind?: string | null },
+>(conversations: T[], showArchived: boolean): T[] {
+  return conversations.filter((row) => row.kind !== "subagent" && isArchivedConversation(row) === showArchived);
 }
 
 /**
@@ -68,7 +67,7 @@ export function preferredOpenConversation<T extends { id: string; title?: string
   rows: T[],
   savedId = "",
 ): T | undefined {
-  const visible = rows.filter((row) => row.archived !== true);
+  const visible = rows.filter((row) => row.archived !== true && row.kind !== "subagent");
   const saved = visible.find((row) => row.id === savedId);
   if (saved) return saved;
   return visible.find((row) => !isEmptyChatDraft(row)) ?? visible[0];
@@ -421,14 +420,14 @@ export function mergeLoadedProjectGroups(
 
 /**
  * An empty "New chat" on a cloud project was saved in the local mount, not on the server.
- * A chat that already has a title, or is a terminal, stays.
+ * A chat that already has a title stays.
  */
-export function isLocalCloudDraft(row: { title?: string; kind?: string }): boolean {
+export function isLocalCloudDraft(row: { title?: string }): boolean {
   return isEmptyChatDraft(row);
 }
 
-export function isEmptyChatDraft(row: { title?: string; kind?: string }): boolean {
-  return (row.title || "New chat").trim() === "New chat" && (row.kind ?? "chat") !== "terminal";
+export function isEmptyChatDraft(row: { title?: string }): boolean {
+  return (row.title || "New chat").trim() === "New chat";
 }
 
 export type SidebarActivityStatus = "running" | "finished";
@@ -466,7 +465,7 @@ export function sidebarActivity(
   ];
   for (const source of sources) {
     for (const row of source.conversations) {
-      if (seen.has(row.id) || isArchivedConversation(row)) continue;
+      if (seen.has(row.id) || isArchivedConversation(row) || row.kind === "subagent") continue;
       const status: SidebarActivityStatus | null =
         row.id in runningIds ? "running" : unseenIds.has(row.id) ? "finished" : null;
       if (!status) continue;
@@ -639,10 +638,31 @@ export function stampProjectServer(
   return changed ? next : groups;
 }
 
+/**
+ * Keep the open project's chats and cloud mark in step with the window.
+ * An empty conversation list is the gap between two projects, so it must not
+ * replace chats already on screen. The server stamp is independent of that:
+ * a cloud project with no chats still needs its machine on the hover card.
+ */
+export function syncOpenProjectSidebar(
+  groups: ProjectChatGroup[],
+  path: string,
+  conversations: ConversationSummary[],
+  remote: ProjectServerMark | null,
+  chatsLoadedFor: string,
+  remoteLoadedFor: string,
+): ProjectChatGroup[] {
+  const placed =
+    path && isSameProject(chatsLoadedFor, path) && conversations.length > 0
+      ? placeProjectChats(groups, path, conversations, [], chatsLoadedFor)
+      : groups;
+  return stampProjectServer(placed, path, remote, remoteLoadedFor);
+}
+
 function sameProviders(a: string[] | undefined, b: string[] | undefined): boolean {
-  const left = a ?? [];
-  const right = b ?? [];
-  return left.length === right.length && left.every((name, index) => name === right[index]);
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.length === b.length && a.every((name, index) => name === b[index]);
 }
 
 function sameProjectServer(

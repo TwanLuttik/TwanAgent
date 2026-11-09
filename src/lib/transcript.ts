@@ -8,6 +8,7 @@ import {
   liveToolLabel,
   mergeToolFileChanges,
   skillTrailPreview,
+  subagentConversationIdFromResult,
   toolActivityLabel,
   toolDetail,
   toolFileChange,
@@ -31,6 +32,8 @@ export type TranscriptItem =
       details: (ToolFileChange | null)[];
       commands: string[];
       callIds: string[];
+      /** Conversation id for a subagent row, aligned with `callIds`. Empty until the run is saved. */
+      opens?: string[];
       /** Set when this tool batch is the end of the turn, so the finish line can follow it. */
       durationMs?: number;
       finishedAt?: string;
@@ -42,6 +45,8 @@ export type ToolTrailRow = {
   detail: string;
   /** Nested calls on the same file, shown under this row as a tree. */
   children?: ToolTrailRow[];
+  /** Conversation this row opens. Set for a subagent, empty for every other call. */
+  openId?: string;
 };
 
 function trailGroup(label: string): "read" | "list" | "search" | "find" | "edit" | null {
@@ -80,8 +85,11 @@ function trailFileLabel(group: "read" | "edit", path: string, count: number): st
   return count === 1 ? `Edit ${name}` : `Edit ${name} ×${count}`;
 }
 
-function oneTrailRow(label: string, change: ToolFileChange | null, detail: string): ToolTrailRow {
-  return { label, change, detail };
+function oneTrailRow(label: string, change: ToolFileChange | null, detail: string, openId = ""): ToolTrailRow {
+  const row: ToolTrailRow = { label, change, detail };
+  const id = openId.trim();
+  if (id) row.openId = id;
+  return row;
 }
 
 /**
@@ -92,20 +100,29 @@ export function foldToolTrailRows(
   labels: string[],
   details: (ToolFileChange | null)[] = [],
   commands: string[] = [],
+  openIds: string[] = [],
 ): ToolTrailRow[] {
   const rows: ToolTrailRow[] = [];
   let i = 0;
   while (i < labels.length) {
     const group = trailGroup(labels[i] ?? "");
     if (!group) {
-      rows.push(oneTrailRow(labels[i] ?? "", details[i] ?? null, commands[i] ?? ""));
+      rows.push(oneTrailRow(labels[i] ?? "", details[i] ?? null, commands[i] ?? "", openIds[i] ?? ""));
       i += 1;
       continue;
     }
     let j = i + 1;
     while (j < labels.length && trailGroup(labels[j] ?? "") === group) j += 1;
     if (group === "read" || group === "edit") {
-      rows.push(...foldFileToolRun(group, labels.slice(i, j), details.slice(i, j), commands.slice(i, j)));
+      rows.push(
+        ...foldFileToolRun(
+          group,
+          labels.slice(i, j),
+          details.slice(i, j),
+          commands.slice(i, j),
+          openIds.slice(i, j),
+        ),
+      );
     } else {
       const count = j - i;
       const paths = commands.slice(i, j).map((item) => item.trim()).filter(Boolean);
@@ -138,6 +155,7 @@ function foldFileToolRun(
   labels: string[],
   details: (ToolFileChange | null)[],
   commands: string[],
+  openIds: string[] = [],
 ): ToolTrailRow[] {
   const rows: ToolTrailRow[] = [];
   let i = 0;
@@ -154,18 +172,18 @@ function foldFileToolRun(
     }
     const count = j - i;
     if (!key) {
-      rows.push(oneTrailRow(labels[i] ?? "", null, commands[i] ?? ""));
+      rows.push(oneTrailRow(labels[i] ?? "", null, commands[i] ?? "", openIds[i] ?? ""));
       i += 1;
       continue;
     }
     const merged = mergeToolFileChanges(details.slice(i, j).flatMap((item) => (item ? [item] : [])))[0] ?? null;
     if (count === 1) {
-      rows.push(oneTrailRow(labels[i] ?? "", merged, commands[i] ?? ""));
+      rows.push(oneTrailRow(labels[i] ?? "", merged, commands[i] ?? "", openIds[i] ?? ""));
       i = j;
       continue;
     }
     const children = labels.slice(i, j).map((label, offset) =>
-      oneTrailRow(label, details[i + offset] ?? null, commands[i + offset] ?? ""),
+      oneTrailRow(label, details[i + offset] ?? null, commands[i + offset] ?? "", openIds[i + offset] ?? ""),
     );
     rows.push({
       label: trailFileLabel(group, group === "read" ? trailReadPath(commands[i] ?? "") : key, count),
@@ -262,6 +280,7 @@ export function transcriptItems(messages: ChatMessage[]): TranscriptItem[] {
       fillListedChats(out, msg);
       fillReadChat(out, msg);
       fillCreatedChat(out, msg);
+      fillSubagent(out, msg);
       continue;
     }
     if (msg.role === "system") continue;
@@ -433,6 +452,22 @@ function fillListedChats(items: TranscriptItem[], toolMessage: ChatMessage): voi
   found.item.commands[found.index] = listedChatsDetail(rows);
 }
 
+/** Remember the conversation a subagent run saved, so the row can open it later. */
+function fillSubagent(items: TranscriptItem[], toolMessage: ChatMessage): void {
+  const found = chatToolIndex(
+    items,
+    toolMessage,
+    (label) => label === "Subagent" || label.startsWith("Subagent:") || label.startsWith("Subagent "),
+  );
+  if (!found) return;
+  const id = subagentConversationIdFromResult(String(toolMessage.content ?? ""));
+  if (!id) return;
+  const opens = found.item.opens ? [...found.item.opens] : found.item.labels.map(() => "");
+  while (opens.length < found.item.labels.length) opens.push("");
+  opens[found.index] = id;
+  found.item.opens = opens;
+}
+
 /** Put the created chat's title on the row once the tool returns. */
 function fillCreatedChat(items: TranscriptItem[], toolMessage: ChatMessage): void {
   const found = chatToolIndex(items, toolMessage, (label) => label === "Create chat" || label.startsWith("Create "));
@@ -534,11 +569,36 @@ function openTurnItems(committed: CommittedTranscript): TranscriptItem[] {
   return items;
 }
 
+/** Merge pending calls into a new tools item so the committed row stays intact. */
+function pushLiveTools(out: TranscriptItem[], pending: LiveToolInput[]): void {
+  if (!pending.length) return;
+  const labels = pending.map(liveToolLabel);
+  const details = pending.map(liveToolChange);
+  const commands = pending.map(liveToolDetail);
+  const callIds = pending.map((tool) => (typeof tool === "string" ? "" : tool.callId ?? ""));
+  const files = mergeToolFileChanges(details.flatMap((change) => (change ? [change] : [])));
+  const tail = out[out.length - 1];
+  if (tail?.kind === "tools") {
+    out[out.length - 1] = {
+      kind: "tools",
+      labels: [...tail.labels, ...labels],
+      details: [...tail.details, ...details],
+      commands: [...tail.commands, ...commands],
+      callIds: [...tail.callIds, ...callIds],
+      files: mergeToolFileChanges([...tail.files, ...files]),
+      ...(tail.opens?.length ? { opens: [...tail.opens, ...labels.map(() => "")] } : {}),
+    };
+    return;
+  }
+  out.push({ kind: "tools", labels, files, details, commands, callIds });
+}
+
 /**
  * Append live reasoning, text, and tools onto an already-parsed item list.
  * Does not walk messages. Copies a trailing tools item before merging so the
  * committed list stays intact. `seenTools` is every committed tool label, including
  * ones outside `out`, so a settled call is not shown again on the open turn.
+ * A thought that is still streaming stays last. Calls already running sit above it.
  */
 function appendLiveTranscript(
   out: TranscriptItem[],
@@ -548,32 +608,16 @@ function appendLiveTranscript(
   seenTools: Set<string>,
 ): TranscriptItem[] {
   const pending = liveTools.filter((tool) => !seenTools.has(liveToolLabel(tool)));
-  if (streamReasoning && !thinkingAlreadyShown(out, streamReasoning)) {
+  const showThought = Boolean(streamReasoning) && !thinkingAlreadyShown(out, streamReasoning);
+  if (showThought) pushLiveTools(out, pending);
+  if (showThought) {
     out.push({ kind: "thinking", content: streamReasoning, live: true });
   }
   const last = out[out.length - 1];
   if (streamText && !(last?.kind === "assistant" && last.content === streamText)) {
     out.push({ kind: "assistant", content: streamText });
   }
-  if (pending.length) {
-    const labels = pending.map(liveToolLabel);
-    const details = pending.map(liveToolChange);
-    const commands = pending.map(liveToolDetail);
-    const callIds = pending.map((tool) => (typeof tool === "string" ? "" : tool.callId ?? ""));
-    const files = mergeToolFileChanges(details.flatMap((change) => (change ? [change] : [])));
-    const tail = out[out.length - 1];
-    if (tail?.kind === "tools") {
-      const merged: TranscriptItem = {
-        kind: "tools",
-        labels: [...tail.labels, ...labels],
-        details: [...tail.details, ...details],
-        commands: [...tail.commands, ...commands],
-        callIds: [...tail.callIds, ...callIds],
-        files: mergeToolFileChanges([...tail.files, ...files]),
-      };
-      out[out.length - 1] = merged;
-    } else out.push({ kind: "tools", labels, files, details, commands, callIds });
-  }
+  if (!showThought) pushLiveTools(out, pending);
   return out;
 }
 

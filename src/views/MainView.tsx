@@ -8,8 +8,10 @@ import { type ChatUsage } from "../lib/context";
 import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
 import { setSkillEnabledInToml, type DetectedSkill } from "../lib/skill";
 import {
+  chatAfterClosing,
   chatIdsInTabs,
   closeTabChat,
+  closeTabChats,
   primaryChatId,
   rememberSplitPane,
   tabItemKey,
@@ -43,7 +45,6 @@ import { bumpFileRefresh, fileStructureFiles, fileStructureSignature, publishFil
 import { attachmentPathsFromDrop, imagesForChat } from "../lib/image";
 import { isSameProject } from "../lib/all-projects";
 
-import { parseConversationKind } from "../lib/terminal-chat";
 import { codeTabEditor, emptyEditor, mcpEditorPath, pinEditorTab, previewEditorTab, setEditorFileView, skillEditorPath, type EditorState } from "../lib/editor";
 import {
   SIDEBAR_MAX,
@@ -1162,7 +1163,6 @@ export function MainView() {
     return {
       id,
       title,
-      kind: row?.kind === "terminal" ? ("terminal" as const) : ("chat" as const),
       running: chatHasRunningTurn(runningTurns, id),
     };
   });
@@ -1195,11 +1195,42 @@ export function MainView() {
     [openStrip.items, activeId, openChat],
   );
 
+  const closeProjectChats = useCallback(
+    (ids: string[]) => {
+      const items = closeTabChats(openStrip.items, ids);
+      if (items === openStrip.items) return;
+      const before = chatIdsInTabs(openStrip.items);
+      const after = chatIdsInTabs(items);
+      setOpenStrip((prev) => ({ ...prev, items }));
+      for (const id of ids) {
+        if (!id || !before.includes(id)) continue;
+        forgetSplitPane(id);
+        forgetChatScroll(id);
+      }
+      setTabMenu(null);
+      if (!ids.includes(activeId)) return;
+      const next = chatAfterClosing(before, after, activeId);
+      if (next) {
+        void openChat(next);
+        return;
+      }
+      setActiveId("");
+      setMessages([]);
+      clearLiveStream();
+      clearSecondaryLiveStream();
+      setTurnStartedAt(0);
+      setSubagents([]);
+      setExpandedAgents({});
+      runningIdRef.current = "";
+      setRunningId("");
+      abortRef.current = null;
+    },
+    [openStrip.items, activeId, openChat],
+  );
+
   const splitSelected = useCallback(
     (ids: string[]) => {
       if (ids.length < 2) return;
-      const blocked = ids.some((id) => conversations.find((item) => item.id === id)?.kind === "terminal");
-      if (blocked) return;
       setOpenStrip((prev) => {
         const next = splitSelectedChats(prev.items, ids, undefined, prev.homes);
         return next === prev.items ? prev : { ...prev, items: next };
@@ -1207,7 +1238,7 @@ export function MainView() {
       setTabMenu(null);
       setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
     },
-    [conversations],
+    [],
   );
 
   const moveChatTab = useCallback((fromKey: string, toKey: string) => {
@@ -1228,8 +1259,6 @@ export function MainView() {
   const splitChat = useCallback(
     (id: string) => {
       if (!id) return;
-      const row = conversations.find((item) => item.id === id);
-      if (row?.kind === "terminal") return;
       setOpenStrip((prev) => {
         const next = splitChatTab(prev.items, id, undefined, prev.homes);
         return next === prev.items ? prev : { ...prev, items: next };
@@ -1237,7 +1266,7 @@ export function MainView() {
       setTabMenu(null);
       setEditor((prev) => (prev.focus === "chat" ? prev : { ...prev, focus: "chat" }));
     },
-    [conversations],
+    [],
   );
 
   const unsplitChat = useCallback((groupId: string) => {
@@ -1399,9 +1428,8 @@ export function MainView() {
   );
 
   const showLanding = false;
-  const chatKind = parseConversationKind(conversations.find((c) => c.id === activeId)?.kind);
   const chatAcceptsDrop =
-    !showSettings && !showUsage && !showDocs && !showServers && (showLanding || (editor.focus !== "file" && chatKind !== "terminal"));
+    !showSettings && !showUsage && !showDocs && !showServers && (showLanding || editor.focus !== "file");
   const addImagePathsRef = useRef(addPromptImagePaths);
   addImagePathsRef.current = addPromptImagePaths;
   const fileDragRef = useRef(fileDrag);
@@ -1606,6 +1634,7 @@ export function MainView() {
     focusSplitPane: focusSplitChatPane,
     openListedChat,
     closeChatTab,
+    closeProjectChats,
     closeFileTab,
     closePendingEdit,
     closeProjectSettings,

@@ -4,6 +4,7 @@
 //! in the app database so opening Settings does not fetch again until it is stale.
 //! A failed fetch leaves the last good result in place.
 
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -219,6 +220,101 @@ pub async fn claude_latest() -> Option<String> {
     parse_channel_version(&fetch_text(CLAUDE_LATEST_URL).await?)
 }
 
+/// The cask name in a Homebrew path, after symlinks are resolved.
+/// `/opt/homebrew/bin/claude` is a link into `Caskroom/claude-code/...`.
+pub fn homebrew_cask_name(path: &Path) -> Option<String> {
+    cask_name_in_path(&resolve_bin(path))
+}
+
+fn resolve_bin(path: &Path) -> std::path::PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let mut current = path.to_path_buf();
+    for _ in 0..8 {
+        let Ok(next) = std::fs::read_link(&current) else {
+            break;
+        };
+        current = if next.is_absolute() {
+            next
+        } else {
+            current.parent().unwrap_or(Path::new("/")).join(next)
+        };
+    }
+    current
+}
+
+fn cask_name_in_path(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let marker = "/Caskroom/";
+    let start = text.find(marker)? + marker.len();
+    let name = text[start..].split('/').next()?.trim();
+    let ok = !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '@' | '+' | '_' | '-' | '.'));
+    ok.then(|| name.to_string())
+}
+
+/// `version` from a Homebrew cask document.
+pub fn parse_brew_cask_version(body: &str) -> Option<String> {
+    let json: serde_json::Value = serde_json::from_str(body).ok()?;
+    let version = json.get("version")?.as_str()?.trim();
+    parse_channel_version(version)
+}
+
+/// A Homebrew install tracks its cask. The native channel is only the fallback
+/// when that lookup fails, because the cask lags it by hours or days.
+pub fn claude_channel_version(brew: Option<&str>, native: Option<&str>) -> Option<String> {
+    brew.filter(|version| !version.is_empty())
+        .or(native.filter(|version| !version.is_empty()))
+        .map(str::to_string)
+}
+
+/// Cache key for this install. A cask check must not reuse a native-channel result.
+pub fn claude_cache_id(bin: Option<&Path>) -> String {
+    match bin.and_then(homebrew_cask_name) {
+        Some(cask) => format!("claude.brew.{cask}"),
+        None => "claude".into(),
+    }
+}
+
+fn brew_cask_url(name: &str) -> String {
+    format!(
+        "https://formulae.brew.sh/api/cask/{}.json",
+        name.replace('@', "%40")
+    )
+}
+
+async fn fetch_brew_cask_version(name: &str) -> Option<String> {
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .ok()?
+        .get(brew_cask_url(name))
+        .header("accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    parse_brew_cask_version(&response.text().await.ok()?)
+}
+
+async fn claude_latest_for(bin: Option<&Path>) -> Option<String> {
+    let brew = match bin.and_then(homebrew_cask_name) {
+        Some(cask) => fetch_brew_cask_version(&cask).await,
+        None => None,
+    };
+    let native = if brew.is_some() {
+        None
+    } else {
+        claude_latest().await
+    };
+    claude_channel_version(brew.as_deref(), native.as_deref())
+}
+
 pub async fn minimax_latest() -> Option<String> {
     parse_npm_latest(&fetch_text(MINIMAX_LATEST_URL).await?)
 }
@@ -227,8 +323,13 @@ pub async fn grok_update(data_dir: &std::path::Path, installed: Option<&str>) ->
     cached_update(data_dir, "grok", installed, grok_latest()).await
 }
 
-pub async fn claude_update(data_dir: &std::path::Path, installed: Option<&str>) -> Option<CliUpdate> {
-    cached_update(data_dir, "claude", installed, claude_latest()).await
+pub async fn claude_update(
+    data_dir: &std::path::Path,
+    installed: Option<&str>,
+    bin: Option<&Path>,
+) -> Option<CliUpdate> {
+    let id = claude_cache_id(bin);
+    cached_update(data_dir, &id, installed, claude_latest_for(bin)).await
 }
 
 pub async fn minimax_update(data_dir: &std::path::Path, installed: Option<&str>) -> Option<CliUpdate> {
@@ -314,6 +415,9 @@ fn node_bin_dir() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -373,6 +477,50 @@ mod tests {
         );
         assert!(parse_npm_latest(r#"{"name":"mmx-cli"}"#).is_none());
         assert!(parse_npm_latest("nope").is_none());
+    }
+
+    #[test]
+    fn a_homebrew_cask_is_not_behind_the_native_channel() {
+        assert_eq!(
+            homebrew_cask_name(Path::new("/opt/homebrew/Caskroom/claude-code/2.1.311/claude")).as_deref(),
+            Some("claude-code")
+        );
+        assert_eq!(
+            homebrew_cask_name(Path::new("/home/linuxbrew/.linuxbrew/Caskroom/claude-code@latest/2.1.319/claude"))
+                .as_deref(),
+            Some("claude-code@latest")
+        );
+        assert_eq!(homebrew_cask_name(Path::new("/tmp/twanagent-not-a-cask/claude")), None);
+        assert_eq!(
+            parse_brew_cask_version(r#"{"token":"claude-code","version":"2.1.311"}"#).as_deref(),
+            Some("2.1.311")
+        );
+        assert!(parse_brew_cask_version(r#"{"token":"claude-code"}"#).is_none());
+        // The native channel can be ahead of the cask for days. A cask install updates through brew.
+        assert_eq!(
+            claude_channel_version(Some("2.1.311"), Some("2.1.319")).as_deref(),
+            Some("2.1.311")
+        );
+        assert_eq!(claude_channel_version(None, Some("2.1.319")).as_deref(), Some("2.1.319"));
+        assert_eq!(claude_cache_id(None), "claude");
+        assert_eq!(
+            claude_cache_id(Some(Path::new("/opt/homebrew/Caskroom/claude-code/2.1.311/claude"))),
+            "claude.brew.claude-code"
+        );
+        assert!(newer_version("2.1.311", "2.1.311").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_homebrew_symlink_resolves_to_its_cask() {
+        let dir = tempfile::tempdir().unwrap();
+        let cask = dir.path().join("Caskroom").join("claude-code").join("2.1.311");
+        fs::create_dir_all(&cask).unwrap();
+        let bin = cask.join("claude");
+        fs::write(&bin, b"").unwrap();
+        let link = dir.path().join("claude");
+        std::os::unix::fs::symlink(&bin, &link).unwrap();
+        assert_eq!(homebrew_cask_name(&link).as_deref(), Some("claude-code"));
     }
 
     #[test]

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createShellSessionStore, shellSessionId } from "../shell-sessions.ts";
+import { appendOutput, createShellSessionStore, shellSessionId } from "../shell-sessions.ts";
+
+describe("appendOutput", () => {
+  it("keeps the tail when the buffer exceeds the cap", () => {
+    assert.equal(appendOutput("hello ", "world"), "hello world");
+    assert.equal(appendOutput("abcdef", "ghij", 8), "cdefghij");
+  });
+});
 
 describe("shellSessionId", () => {
   it("keys a tab by the project path", () => {

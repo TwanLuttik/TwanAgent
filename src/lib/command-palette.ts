@@ -39,8 +39,6 @@ export type PaletteChatItem = {
   preview: string;
   /** Model id for the provider mark. Empty when the chat has not stored one. */
   model: string;
-  /** Conversation kind. Terminal chats use the terminal glyph instead of a project mark. */
-  chatKind: string;
   /** The chat's project is remote, so its logo stays the folder glyph. */
   remote: boolean;
 };
@@ -77,7 +75,6 @@ type ChatRow = {
   emptyDraft: boolean;
   remote: boolean;
   model: string;
-  chatKind: string;
 };
 
 /**
@@ -199,7 +196,7 @@ function collectChats(groups: PaletteGroup[]): ChatRow[] {
     if (!group.path) continue;
     const project = group.name.trim() || folderName(group.path);
     for (const row of group.conversations) {
-      if (!row.id) continue;
+      if (!row.id || row.kind === "subagent") continue;
       if (!byId.has(row.id)) order.push(row.id);
       const title = (row.title || "New chat").trim() || "New chat";
       byId.set(row.id, {
@@ -213,7 +210,6 @@ function collectChats(groups: PaletteGroup[]): ChatRow[] {
         emptyDraft: isEmptyChatDraft(row),
         remote: group.remote === true,
         model: row.model?.trim() ?? "",
-        chatKind: (row.kind ?? "chat").trim() || "chat",
       });
     }
   }
@@ -248,7 +244,6 @@ function toChat(row: ChatRow, running: boolean): PaletteChatItem {
     running,
     preview: row.preview,
     model: row.model,
-    chatKind: row.chatKind,
     remote: row.remote,
   };
 }

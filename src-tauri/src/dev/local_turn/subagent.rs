@@ -10,7 +10,7 @@ use super::context::{context_failure_text, fit_prompt, recover_overflow, Fit};
 use super::tools::{cap_tool_text, turn_tools};
 use super::drive::{run_tool, stream_round};
 use super::{
-    assistant_value, close_dangling, emit, hold_provider_outage, live, normalize_permission, parse_args,
+    assistant_value, close_dangling, emit, hold_provider_outage, int_arg, live, normalize_permission, parse_args,
     record_round_usage, retryable_model_error, round_is_empty, stopped, stopped_flag, str_arg, LiveTurn,
     LocalTurnStart, ProviderHold, CONTEXT_LIMIT_MESSAGE, EMPTY_REPLY,
 };
@@ -24,6 +24,7 @@ pub(super) fn spawn_subagent(
     data_dir: &Path,
     workspace_key: &str,
     arguments: &str,
+    call_id: &str,
     permission: &str,
     journey_id: Option<&str>,
     _plan: bool,
@@ -60,6 +61,7 @@ pub(super) fn spawn_subagent(
             "type": child_type,
             "status": "running",
             "prompt": prompt,
+            "callId": call_id,
             "streamText": "",
             "streamReasoning": "",
             "tools": [],
@@ -97,7 +99,7 @@ pub(super) fn spawn_subagent(
         children.retain(|child| !Arc::ptr_eq(child, &cancel));
     }
     match outcome {
-        Ok(summary) => summary,
+        Ok(summary) => with_conversation(&child_id, summary),
         Err(_) => {
             let error = "the subagent stopped unexpectedly".to_string();
             emit_subagent(app, conversation_id, "error", &child_id, json!({ "error": error }));
@@ -108,9 +110,17 @@ pub(super) fn spawn_subagent(
                 &child_id,
                 json!({ "status": "error", "summary": error, "messages": [] }),
             );
-            format!("Error: {error}")
+            with_conversation(&child_id, format!("Error: {error}"))
         }
     }
+}
+
+/// The parent row opens this id. The rest of the text stays the summary the model reads.
+fn with_conversation(child_id: &str, body: String) -> String {
+    if body.starts_with("Subagent conversation:") {
+        return body;
+    }
+    format!("Subagent conversation: {child_id}\n{body}")
 }
 
 fn drive_subagent(
@@ -583,46 +593,139 @@ fn build_child_prompt(transcript: &[Value], compaction: Option<&super::super::ty
     messages
 }
 
+/// Same words as the transcript's `toolSummary`, so a live label matches the saved call.
 fn tool_activity_label(call: &DevToolCall) -> String {
     let args = parse_args(&call.arguments);
+    let path = str_arg(&args, "path");
     match call.name.as_str() {
-        "read_file" => format!("Read {}", file_base(str_arg(&args, "path"))),
-        "write_file" => format!("Write {}", file_base(str_arg(&args, "path"))),
-        "edit_file" => format!("Edit {}", file_base(str_arg(&args, "path"))),
-        "list_dir" => format!("List {}", {
-            let path = str_arg(&args, "path");
-            if path.is_empty() { "." } else { path }
-        }),
-        "grep" => "Search".into(),
-        "glob" => "Find files".into(),
-        "git_status" => "Git status".into(),
-        "git_diff" => "Diff".into(),
-        "git_log" => "Git log".into(),
-        "git_commit" => "Commit".into(),
-        "web_search" => {
-            let query = str_arg(&args, "query").trim();
-            if query.is_empty() { "Web search".into() } else { format!("Web search: {query}") }
+        "read_file" => {
+            let range = read_range_label(&args);
+            if range.is_empty() { format!("Read {path}") } else { format!("Read {path} {range}") }
         }
-        "run_command" => {
-            let description = str_arg(&args, "description").trim().trim_start_matches("Run ").trim_start_matches("run ");
-            if description.is_empty() { "Run command".into() } else { format!("Run {description}") }
+        "write_file" => format!("Write {}", file_label(path)),
+        "edit_file" => format!("Edit {}", file_label(path)),
+        "list_dir" => format!("List {}", if path.is_empty() { "." } else { path }),
+        "grep" => {
+            let pattern = first_text(&args, &["pattern", "query"]);
+            if pattern.is_empty() { "Search".into() } else { format!("Search {pattern}") }
         }
-        "list_chats" => "List chats".into(),
+        "glob" => {
+            let pattern = str_arg(&args, "pattern").trim();
+            if pattern.is_empty() { "Find files".into() } else { format!("Find {pattern}") }
+        }
+        "list_chats" => {
+            let alias = str_arg(&args, "alias").trim();
+            if alias.is_empty() { "Chats".into() } else { format!("Chats in {alias}") }
+        }
         "read_chat" => {
             let alias = str_arg(&args, "alias").trim();
-            if alias.is_empty() { "Read chat".into() } else { format!("Read {alias} chat") }
+            let id = str_arg(&args, "id").trim();
+            if !alias.is_empty() && !id.is_empty() {
+                format!("Chat {alias} {id}")
+            } else if !alias.is_empty() {
+                format!("Chat {alias}")
+            } else {
+                "Chat".into()
+            }
         }
         "create_chat" => {
             let alias = str_arg(&args, "alias").trim();
-            if alias.is_empty() { "Create chat".into() } else { format!("Create {alias} chat") }
+            if alias.is_empty() { "Create chat".into() } else { format!("Create chat {alias}") }
         }
-        "todo_write" => "Updated todos".into(),
+        "git_status" => "Git status".into(),
+        "git_diff" => {
+            let commit = first_text(&args, &["commit", "hash"]);
+            if !commit.is_empty() {
+                let short: String = commit.chars().take(7).collect();
+                format!("Commit {short}")
+            } else if !path.is_empty() {
+                format!("Diff {}", file_label(path))
+            } else {
+                "Diff".into()
+            }
+        }
+        "git_log" => "Git log".into(),
+        "git_commit" => "Commit".into(),
+        "web_search" => {
+            let query = collapse_ws(&first_text(&args, &["query", "search_term"]));
+            if query.is_empty() { "Web search".into() } else { format!("Web search: {query}") }
+        }
+        "run_command" => {
+            let description = strip_run_prefix(&collapse_ws(str_arg(&args, "description")));
+            if !description.is_empty() {
+                format!("Run {description}")
+            } else {
+                let command = collapse_ws(str_arg(&args, "command"));
+                if command.is_empty() { "Run command".into() } else { format!("Run {command}") }
+            }
+        }
+        "spawn_subagent" => {
+            let label = str_arg(&args, "description").trim();
+            if label.is_empty() { "Subagent".into() } else { format!("Subagent: {label}") }
+        }
         "load_skill" => {
             let name = str_arg(&args, "name").trim();
-            if name.is_empty() { "Load skill".into() } else { format!("Load skill {name}") }
+            if name.is_empty() { "Skill".into() } else { format!("Skill {name}") }
         }
-        _ => call.name.clone(),
+        "todo_write" => "Updated todos".into(),
+        "enter_plan_mode" => "Enter plan mode".into(),
+        "exit_plan_mode" => "Exit plan mode".into(),
+        other if other.starts_with("mcp__") => mcp_label(other),
+        other => other.to_string(),
     }
+}
+
+fn file_label(path: &str) -> String {
+    let base = file_base(path);
+    if !base.is_empty() {
+        base.to_string()
+    } else if !path.is_empty() {
+        path.to_string()
+    } else {
+        "file".into()
+    }
+}
+
+fn read_range_label(args: &serde_json::Map<String, Value>) -> String {
+    let offset = int_arg(args, "offset").filter(|line| *line > 0);
+    let limit = int_arg(args, "limit").filter(|line| *line > 0);
+    if offset.is_none() && limit.is_none() {
+        return String::new();
+    }
+    let start = offset.unwrap_or(1);
+    match limit {
+        Some(limit) => format!("({start} - {})", start + limit - 1),
+        None => format!("({start}+)"),
+    }
+}
+
+fn first_text(args: &serde_json::Map<String, Value>, keys: &[&str]) -> String {
+    for key in keys {
+        let text = str_arg(args, key).trim();
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+fn collapse_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_run_prefix(text: &str) -> String {
+    let mut chars = text.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    if prefix.eq_ignore_ascii_case("run") && chars.next().is_some_and(char::is_whitespace) {
+        return text.chars().skip(4).collect::<String>().trim_start().to_string();
+    }
+    text.to_string()
+}
+
+fn mcp_label(name: &str) -> String {
+    let rest = name.trim_start_matches("mcp__").replace("__", " ");
+    let rest = rest.trim();
+    if rest.is_empty() { "MCP".into() } else { format!("MCP {rest}") }
 }
 
 fn file_base(path: &str) -> &str {
@@ -632,6 +735,28 @@ fn file_base(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_tool_labels_match_the_saved_transcript() {
+        let read = DevToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: r#"{"path":"scripts/shot.mjs","offset":1,"limit":80}"#.into(),
+        };
+        assert_eq!(tool_activity_label(&read), "Read scripts/shot.mjs (1 - 80)");
+        let skill = DevToolCall {
+            id: "2".into(),
+            name: "load_skill".into(),
+            arguments: r#"{"name":"using-superpowers"}"#.into(),
+        };
+        assert_eq!(tool_activity_label(&skill), "Skill using-superpowers");
+        let search = DevToolCall {
+            id: "3".into(),
+            name: "grep".into(),
+            arguments: r#"{"pattern":"const"}"#.into(),
+        };
+        assert_eq!(tool_activity_label(&search), "Search const");
+    }
 
     #[test]
     fn a_child_cannot_spawn_or_edit_when_it_is_only_exploring() {
@@ -684,6 +809,14 @@ mod tests {
         assert_eq!(
             summarize_subagent(&[json!({ "role": "user", "content": "look" })]),
             "Subagent finished with no summary."
+        );
+        assert_eq!(
+            with_conversation("child-1", "Subagent Find parser finished:\nDone".into()),
+            "Subagent conversation: child-1\nSubagent Find parser finished:\nDone"
+        );
+        assert_eq!(
+            with_conversation("child-1", "Subagent conversation: child-1\nkept".into()),
+            "Subagent conversation: child-1\nkept"
         );
     }
 }

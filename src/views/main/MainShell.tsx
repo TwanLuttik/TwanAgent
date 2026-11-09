@@ -10,12 +10,15 @@ import { AppSidebar } from "./AppSidebar";
 import { ChatStage } from "./ChatStage";
 import { useMain } from "./context";
 import { LandingScreen } from "./LandingScreen";
+import { DocsDialog } from "../docs/DocsDialog";
+import { SettingsDialog } from "../settings/SettingsDialog";
 
 export function MainShell() {
   const { showLanding } = useMain();
   return (
     <>
       <CommandPalette />
+      <DocsDialog />
       {showLanding ? <LandingScreen /> : <WorkspaceShell />}
     </>
   );
@@ -62,6 +65,7 @@ function WorkspaceShell() {
           />
         ) : null}
         <AppSidebar />
+        <SettingsDialog />
         {projectMenu ? (
           <ProjectContextMenu
             x={projectMenu.x}
@@ -69,7 +73,7 @@ function WorkspaceShell() {
             name={projectMenu.name}
             path={projectMenu.path}
             onNewChat={() => {
-              void startNewChat("chat", projectMenu.path);
+              void startNewChat();
               setProjectMenu(null);
             }}
             onSettings={() => {

@@ -26,7 +26,7 @@ import { serverDisplayName, type ChatPlace } from "../lib/chat-place";
 import { projectGitKey, type ProjectGit } from "../lib/project-git";
 import type { WorktreeChild } from "../lib/worktree.ts";
 import * as api from "../lib/tauri";
-import { AnchoredMenu } from "./ContextMenu";
+import { AnchoredMenu, MenuItem } from "./ContextMenu";
 import { GroupProjectsDialog, RemoveGroupDialog } from "./GroupProjectsDialog";
 import { ProjectMark } from "./ProjectMark";
 import { Symbol } from "./Symbol";
@@ -525,28 +525,22 @@ export function AllProjectsList({
       ) : null}
       {memberMenu ? (
         <AnchoredMenu x={memberMenu.x} y={memberMenu.y} label={memberMenu.member.name}>
-          <button
-            type="button"
-            role="menuitem"
+          <MenuItem
             onClick={() => {
               onNewChat(memberMenu.member.path);
               setMemberMenu(null);
             }}
-            className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
           >
             New chat
-          </button>
-          <button
-            type="button"
-            role="menuitem"
+          </MenuItem>
+          <MenuItem
             onClick={() => {
               onRemoveMember?.(memberMenu.groupPath, memberMenu.member.path);
               setMemberMenu(null);
             }}
-            className="flex w-full px-2.5 py-1.5 text-left text-[13px] text-ink/80 hover:bg-inset"
           >
             Remove from group
-          </button>
+          </MenuItem>
         </AnchoredMenu>
       ) : null}
       {groupDraft ? (

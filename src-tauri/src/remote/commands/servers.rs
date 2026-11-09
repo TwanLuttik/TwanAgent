@@ -658,8 +658,9 @@ pub async fn dev_pair_agent_server(state: State<'_, AppState>, id: String) -> Re
 }
 
 /// Drop the server from this desktop. `wipe` deletes the token file on the machine, which logs
-/// every paired desktop out. `rotate` writes a fresh token that only this desktop keeps, so the
-/// other clients stop working and this one stays paired. Neither touches the program or the keys.
+/// every paired desktop out, then forgets the server here. `rotate` writes a fresh token that
+/// only this desktop keeps, so the other clients stop working and this one stays paired.
+/// Neither touches the program or the provider keys.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn dev_remove_agent_server(
     state: State<'_, AppState>,
@@ -672,14 +673,16 @@ pub async fn dev_remove_agent_server(
     let rotate = rotate.unwrap_or(false);
     crate::state::run_blocking(move || {
         let conn = super::work_db(&work)?;
-        if wipe || rotate {
+        if rotate {
+            let server = agent_server_by_id(&conn, &id)?;
+            let machine = super::machine_for_server(&work, &server)?;
+            write_token_mode(&work, &machine, &id, "replace")?;
+            return Ok(());
+        }
+        if wipe {
             if let Ok(server) = agent_server_by_id(&conn, &id) {
                 if let Ok(machine) = super::machine_for_server(&work, &server) {
-                    if rotate {
-                        let _ = write_token_mode(&work, &machine, &id, "replace");
-                    } else {
-                        let _ = super::require_exec(&work, &machine, &super::super::agent_server::forget_token_script(false), 20);
-                    }
+                    let _ = super::require_exec(&work, &machine, &super::super::agent_server::forget_token_script(false), 20);
                 }
             }
         }

@@ -20,12 +20,12 @@ export function LandingScreen() {
     showServers,
     openUsage,
     openDocs,
+    closeDocs,
+    showDocs,
     recents,
     runtime,
     model,
     setFolderOpen,
-    startNewChat,
-    workspace,
   } = useMain();
   const signedIn = providerReadyFor(model, runtime?.providers, runtime?.ready);
   return (
@@ -50,9 +50,12 @@ export function LandingScreen() {
         <button
           type="button"
           aria-label="Docs"
+          aria-pressed={showDocs}
           title="Docs"
-          onClick={openDocs}
-          className="mr-1 flex size-7 items-center justify-center self-center rounded-[6px] text-muted hover:bg-wash hover:text-ink"
+          onClick={showDocs ? closeDocs : openDocs}
+          className={`mr-1 flex size-7 items-center justify-center self-center rounded-[6px] hover:bg-wash hover:text-ink ${
+            showDocs ? "bg-wash-strong text-ink" : "text-muted"
+          }`}
         >
           <Symbol name="book" className="size-3.5" />
         </button>
@@ -99,17 +102,6 @@ export function LandingScreen() {
           {runtime && !signedIn.ready && (signedIn.hint || runtime.hint) && (
             <p className="mt-3 text-center text-[12px] text-muted">{signedIn.hint || runtime.hint}</p>
           )}
-          {workspace ? (
-            <p className="mt-4 text-center">
-              <button
-                type="button"
-                onClick={() => void startNewChat("terminal")}
-                className="text-[12px] text-muted hover:text-ink"
-              >
-                Open a Grok terminal (deprecated)
-              </button>
-            </p>
-          ) : null}
         </div>
         </div>
       )}

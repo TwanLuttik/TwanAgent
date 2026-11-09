@@ -125,7 +125,7 @@ describe("buildPalette search", () => {
     assert.equal(items[0]?.kind === "chat" ? items[0].id : "", "exact");
   });
 
-  it("keeps the model, kind, and remote flag the row icons need", () => {
+  it("keeps the model and remote flag the row icons need", () => {
     const { items } = buildPalette({
       mode: "browse",
       query: "app",
@@ -134,7 +134,7 @@ describe("buildPalette search", () => {
           name: "App",
           path: "/repo/app",
           remote: true,
-          conversations: [chat("notes", "App notes", "2026-11-01T00:00:00Z", { model: "claude-sonnet-4-6", kind: "terminal" })],
+          conversations: [chat("notes", "App notes", "2026-11-01T00:00:00Z", { model: "claude-sonnet-4-6" })],
         },
       ],
       files: [],
@@ -143,7 +143,6 @@ describe("buildPalette search", () => {
     const conversation = items.find((item) => item.kind === "chat");
     const project = items.find((item) => item.kind === "project");
     assert.equal(conversation?.kind === "chat" ? conversation.model : "", "claude-sonnet-4-6");
-    assert.equal(conversation?.kind === "chat" ? conversation.chatKind : "", "terminal");
     assert.equal(project?.kind === "project" ? project.remote : false, true);
   });
 });
@@ -199,7 +198,6 @@ describe("fileSearchProject", () => {
       running: false,
       preview: "",
       model: "",
-      chatKind: "chat",
     };
     assert.deepEqual(fileSearchProject(project, "/repo/other", ""), { path: "/repo/other", name: "other" });
     assert.deepEqual(fileSearchProject(project, "/repo/other", "app"), { path: "/repo/app", name: "App" });

@@ -15,14 +15,6 @@ pub fn grok_home() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".grok"))
 }
 
-pub fn grok_launch_args(session_id: Option<&str>, existing: bool) -> Vec<String> {
-    match session_id.map(str::trim).filter(|id| !id.is_empty()) {
-        Some(id) if existing => vec!["--resume".into(), id.into()],
-        Some(id) => vec!["--session-id".into(), id.into()],
-        None => Vec::new(),
-    }
-}
-
 pub fn session_id_safe(session_id: &str) -> bool {
     let id = session_id.trim();
     !id.is_empty()
@@ -43,10 +35,6 @@ pub fn session_exists_in(home: &Path, session_id: &str) -> bool {
     entries
         .flatten()
         .any(|entry| entry.path().join(session_id).is_dir())
-}
-
-pub fn session_exists(session_id: &str) -> bool {
-    grok_home().is_some_and(|home| session_exists_in(&home, session_id))
 }
 
 const PLAN_CAP: usize = 400_000;
@@ -321,14 +309,6 @@ pub fn dev_grok_plan_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn launch_args_bind_or_resume_a_session() {
-        assert_eq!(grok_launch_args(None, false), Vec::<String>::new());
-        assert_eq!(grok_launch_args(Some("c1"), false), ["--session-id", "c1"]);
-        assert_eq!(grok_launch_args(Some("c1"), true), ["--resume", "c1"]);
-        assert_eq!(grok_launch_args(Some("  "), false), Vec::<String>::new());
-    }
 
     #[test]
     fn read_grok_plan_returns_the_session_plan() {

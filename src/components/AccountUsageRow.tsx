@@ -138,8 +138,8 @@ function ProviderAccountUsage({
   const wide = usage.windows.some((window) => window.label.length > 4);
 
   return (
-    <div className="px-2 pt-0.5 pb-1" title={title} aria-label={title} aria-busy={loading}>
-      <div className="flex items-center gap-1.5 px-0.5 pb-1 text-[11px] text-muted">
+    <div className="px-2 pt-0.5 pb-0.5" title={title} aria-label={title} aria-busy={loading}>
+      <div className="flex items-center gap-1.5 px-0.5 pb-0.5 text-[11px] text-muted">
         <Symbol name={logo} colored className={`size-3 shrink-0 ${logoClass}`} />
         <span className="min-w-0 flex-1 truncate">{usage.label === fallback ? fallback : usage.label}</span>
         {loading ? (
@@ -149,7 +149,7 @@ function ProviderAccountUsage({
       {usage.windows.length === 0 ? (
         <AccountBalance usage={usage} />
       ) : (
-      <div className="grid gap-1">
+      <div className="grid gap-0.5">
         {usage.windows.map((window) => {
           const reset = formatAccountReset(window.resetsAt);
           return (
@@ -157,12 +157,12 @@ function ProviderAccountUsage({
               key={window.id}
               className={`grid items-center gap-1.5 ${wide ? "grid-cols-[minmax(0,5.5rem)_minmax(0,1fr)_auto]" : "grid-cols-[1.75rem_minmax(0,1fr)_auto]"}`}
             >
-              <span className="truncate text-[10px] tabular-nums text-muted" title={window.label}>
+              <span className="truncate text-[10px] leading-none tabular-nums text-muted" title={window.label}>
                 {window.label}
               </span>
               <span className="h-1 overflow-hidden rounded-full bg-wash-strong">
                 <span
-                  className={`block h-full rounded-full ${barClass}`}
+                  className={`account-usage-fill block h-full rounded-full ${barClass}`}
                   style={{ width: `${Math.max(2, Math.min(100, window.usedPercent))}%` }}
                 />
               </span>

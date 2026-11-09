@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { SettingsTab } from "../views/SettingsView";
 
-/** Which full-page screen covers the chat. Opening one closes the others. */
+/** Settings and docs are dialogs. Usage, servers, and project settings cover the chat. Opening one closes the others. */
 export function useOverlays() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");

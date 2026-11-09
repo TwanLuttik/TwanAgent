@@ -256,7 +256,7 @@ pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProj
 
 fn is_local_cloud_draft(row: &crate::dev::ConversationSummary) -> bool {
     let title = row.title.trim();
-    (title.is_empty() || title == "New chat") && row.kind != "terminal"
+    title.is_empty() || title == "New chat"
 }
 
 fn conversation_summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, crate::dev::ConversationSummary)> {

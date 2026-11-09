@@ -23,7 +23,7 @@ export function AccountForecastView({
         <h2 className="m-0 text-[18px] font-semibold tracking-tight text-ink">{headlineTitle(headline)}</h2>
         <p className="mt-1 mb-0 text-[12px] text-muted">{headlineDetail(headline, nowMs)}</p>
       </header>
-      <div className="grid gap-2">
+      <div className="grid gap-0.5">
         {rows.map((row) => (
           <ForecastRow key={`${row.account.id}:${row.window?.id ?? "none"}`} row={row} nowMs={nowMs} />
         ))}
@@ -48,7 +48,7 @@ function ForecastRow({ row, nowMs }: { row: AccountForecast; nowMs: number }) {
   const summary = rowSummary(row, nowMs);
   const used = Math.max(0, Math.min(100, row.usedPercent));
   return (
-    <div className="grid grid-cols-[9.5rem_minmax(0,1fr)_8.5rem] items-center gap-3 px-1 py-1.5">
+    <div className="grid grid-cols-[9.5rem_minmax(0,1fr)_8.5rem] items-center gap-2.5 px-1 py-1">
       <span className="flex min-w-0 items-center gap-2">
         <Symbol name={row.account.logo} colored className="size-3.5 shrink-0 text-muted" />
         <span className="min-w-0">
@@ -58,7 +58,7 @@ function ForecastRow({ row, nowMs }: { row: AccountForecast; nowMs: number }) {
       </span>
       <span className="block h-1.5 overflow-hidden rounded-full bg-wash-strong" title={summary.title}>
         {row.window ? (
-          <span className="block h-full rounded-full bg-ink/70" style={{ width: `${Math.max(used, 2)}%` }} />
+          <span className="account-usage-fill block h-full rounded-full bg-ink/70" style={{ width: `${Math.max(used, 2)}%` }} />
         ) : null}
       </span>
       <span className="min-w-0 text-right">

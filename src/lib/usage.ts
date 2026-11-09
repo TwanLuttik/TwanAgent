@@ -224,6 +224,22 @@ export const MODEL_RATES: Record<string, ModelRate> = {
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-sonnet-4-5": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
+  // MiniMax pay-as-you-go, per million tokens.
+  // M3's long rate starts once the prompt is over 512k. The table uses >=, so the threshold is 512,001.
+  // https://platform.minimax.io/docs/pricing/overview
+  "minimax-m3": {
+    input: 0.3,
+    cachedInput: 0.06,
+    output: 1.2,
+    longContextFrom: 512_001,
+    longInput: 0.6,
+    longCachedInput: 0.12,
+    longOutput: 2.4,
+  },
+  "minimax-m3.1-flash": { input: 0.15, cachedInput: 0.015, output: 0.6 },
+  // Last list price for the retired M2.7 family. Highspeed is a separate rate, not a dated M2.7.
+  "minimax-m2.7": { input: 0.3, cachedInput: 0.06, output: 1.2 },
+  "minimax-m2.7-highspeed": { input: 0.6, cachedInput: 0.06, output: 2.4 },
 };
 
 const PER_MILLION = 1_000_000;
@@ -828,6 +844,56 @@ export function chartCeiling(max: number): number {
   const steps = [1, 2, 2.5, 5, 10];
   const step = steps.find((value) => value + 1e-9 >= n) ?? 10;
   return step * pow;
+}
+
+/**
+ * Smooth SVG path through points, left to right.
+ * A monotone curve, so a peak stays the high point instead of bowing past it.
+ * Fewer than two points is an empty path.
+ */
+export function smoothCurve(points: { x: number; y: number }[]): string {
+  if (points.length < 2) return "";
+  const fmt = (n: number) => n.toFixed(1);
+  if (points.length === 2) {
+    return `M ${fmt(points[0].x)} ${fmt(points[0].y)} L ${fmt(points[1].x)} ${fmt(points[1].y)}`;
+  }
+  const n = points.length;
+  const delta: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = points[i + 1].x - points[i].x;
+    delta.push(dx === 0 ? 0 : (points[i + 1].y - points[i].y) / dx);
+  }
+  const slope = new Array<number>(n);
+  slope[0] = delta[0];
+  slope[n - 1] = delta[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    slope[i] = delta[i - 1] * delta[i] <= 0 ? 0 : (delta[i - 1] + delta[i]) / 2;
+  }
+  for (let i = 0; i < n - 1; i++) {
+    if (Math.abs(delta[i]) < 1e-9) {
+      slope[i] = 0;
+      slope[i + 1] = 0;
+      continue;
+    }
+    const a = slope[i] / delta[i];
+    const b = slope[i + 1] / delta[i];
+    const h = a * a + b * b;
+    if (h > 9) {
+      const scale = 3 / Math.sqrt(h);
+      slope[i] = scale * a * delta[i];
+      slope[i + 1] = scale * b * delta[i];
+    }
+  }
+  let path = `M ${fmt(points[0].x)} ${fmt(points[0].y)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const dx = (points[i + 1].x - points[i].x) / 3;
+    const c1x = points[i].x + dx;
+    const c1y = points[i].y + slope[i] * dx;
+    const c2x = points[i + 1].x - dx;
+    const c2y = points[i + 1].y - slope[i + 1] * dx;
+    path += ` C ${fmt(c1x)} ${fmt(c1y)}, ${fmt(c2x)} ${fmt(c2y)}, ${fmt(points[i + 1].x)} ${fmt(points[i + 1].y)}`;
+  }
+  return path;
 }
 
 export function linePath(values: number[], width: number, height: number, pad = 0): string {

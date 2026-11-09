@@ -41,6 +41,9 @@ export function ChromeTab({
   running = false,
   grouped = false,
   marked = false,
+  accessory,
+  expanded,
+  tip,
   onClick,
   onClose,
   onContextMenu,
@@ -53,6 +56,11 @@ export function ChromeTab({
   grouped?: boolean;
   /** Command-clicked, waiting to be grouped into a split. */
   marked?: boolean;
+  accessory?: ReactNode;
+  /** Set when the tab has a menu. True while that menu is open. */
+  expanded?: boolean;
+  /** Native tooltip. Pass "" to suppress it. Defaults to the label. */
+  tip?: string;
   onClick: (event: MouseEvent<HTMLElement>) => void;
   onClose?: () => void;
   onContextMenu?: (event: MouseEvent<HTMLElement>) => void;
@@ -62,7 +70,9 @@ export function ChromeTab({
       role="tab"
       aria-selected={selected}
       aria-busy={running || undefined}
-      title={label}
+      aria-haspopup={expanded === undefined ? undefined : "menu"}
+      aria-expanded={expanded}
+      title={tip ?? label}
       data-tauri-drag-region="false"
       onClick={onClick}
       onContextMenu={onContextMenu}
@@ -80,6 +90,7 @@ export function ChromeTab({
           icon
         )}
         <span className="chrome-tab-label max-w-[9rem]">{label}</span>
+        {accessory}
       </span>
       {onClose ? (
         <button

@@ -1,10 +1,13 @@
-import { memo, useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
 import { motion } from "motion/react";
 import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
-import { ConversationDocks, SubagentDock } from "../../components/SubagentDock";
+import { ConversationDocks } from "../../components/SubagentDock";
 import { ActivityStatus, ChatTranscript, DropImagesHint, PendingUserMessage } from "../../components/ChatTranscript";
+import { SubagentCrumb, useSubagentParentId } from "../../components/SubagentCrumb";
 import { conversationActivityLabel } from "../../lib/core";
+import { rememberSubagentParent } from "../../lib/subagent-parent";
+import { subagentRunInfo, type SubagentRecord } from "../../lib/subagent";
 import { holdTranscript } from "../../lib/chat-window";
 import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
 import { chatHasRunningTurn, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
@@ -28,7 +31,6 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     editingPending,
     editMcpServer,
     editSkill,
-    expandedAgents,
     fileDrag,
     holdScrollForOlder,
     mcpBusy,
@@ -37,6 +39,7 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     messages,
     model,
     models,
+    conversations,
     openingId,
     pendingPlan,
     pendingShell,
@@ -47,16 +50,20 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     runningTurns,
     savePendingEdit,
     scroller,
-    toggleSubagent,
     skillBusy,
     skills,
     subagents,
+    openChat,
     toggleMcpServer,
     toggleSkill,
     turnStartedAt,
     workspace,
   } = useMain();
   const activeRunning = chatHasRunningTurn(runningTurns, activeId);
+  const subagentRuns = useMemo(() => subagentRunInfo(subagents, runningTurns), [subagents, runningTurns]);
+  const subagentParent = useSubagentParentId(activeId);
+  const subagentTitle = conversations.find((row: { id: string; title?: string }) => row.id === activeId)?.title?.trim() || "Subagent";
+  const parentTitle = conversations.find((row: { id: string; title?: string }) => row.id === subagentParent)?.title?.trim() || "Chat";
   const heldRef = useRef({ id: activeId, messages, model });
   const held = holdTranscript(heldRef.current, messages, activeId, model);
   heldRef.current = held;
@@ -82,13 +89,6 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        {activeRunning ? (
-          <SubagentDock
-            agents={subagents}
-            expanded={expandedAgents}
-            onToggle={(id) => toggleSubagent(id)}
-          />
-        ) : null}
         <div className="relative min-h-0 flex-1">
         <ConversationDocks align="end" insetEnd={paneClosed}>
           <McpDock
@@ -106,6 +106,17 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
           />
         </ConversationDocks>
         {fileDrag === activeId ? <DropImagesHint /> : null}
+        {showingTranscript && subagentParent ? (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 bg-gradient-to-b from-canvas from-65% to-transparent pb-4">
+            <div className="mx-auto w-full min-w-0 max-w-[720px] px-6 pt-3">
+              <SubagentCrumb
+                parentTitle={parentTitle}
+                title={subagentTitle}
+                onOpenParent={() => void openChat(subagentParent)}
+              />
+            </div>
+          </div>
+        ) : null}
         <div
           ref={scroller}
           onScroll={() => {
@@ -114,7 +125,7 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
           }}
           className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         >
-          <div className="relative mx-auto w-full min-w-0 max-w-[720px] px-6 pt-5">
+          <div className={`relative mx-auto w-full min-w-0 max-w-[720px] px-6 ${showingTranscript && subagentParent ? "pt-14" : "pt-5"}`}>
             {showingTranscript ? (
               <LiveTranscript
                 key={held.id}
@@ -126,6 +137,12 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
                 transcriptPending={transcriptPending}
                 conversationId={held.id}
                 mentionFiles={mentionFiles}
+                subagents={subagents}
+                subagentRuns={subagentRuns}
+                onOpenConversation={(id) => {
+                  if (activeId && activeId !== id) rememberSubagentParent(id, activeId);
+                  void openChat(id);
+                }}
                 onLoadOlder={holdScrollForOlder}
                 pendingShell={Boolean(pendingShell)}
                 pendingPlan={Boolean(pendingPlan)}
@@ -277,6 +294,9 @@ export const LiveTranscript = memo(function LiveTranscript({
   transcriptPending,
   conversationId,
   mentionFiles,
+  subagents = [],
+  subagentRuns,
+  onOpenConversation,
   onLoadOlder,
   pendingShell,
   pendingPlan,
@@ -296,6 +316,9 @@ export const LiveTranscript = memo(function LiveTranscript({
   transcriptPending: boolean;
   conversationId: string;
   mentionFiles: Parameters<typeof ChatTranscript>[0]["mentionFiles"];
+  subagents?: SubagentRecord[];
+  subagentRuns?: ReturnType<typeof subagentRunInfo>;
+  onOpenConversation?: (id: string) => void;
   onLoadOlder: () => void;
   pendingShell: boolean;
   pendingPlan: boolean;
@@ -329,6 +352,9 @@ export const LiveTranscript = memo(function LiveTranscript({
         mentionFiles={mentionFiles}
         model={model}
         modelName={modelName}
+        subagents={subagents}
+        subagentRuns={subagentRuns}
+        onOpenConversation={onOpenConversation}
         onLoadOlder={onLoadOlder}
       />
       {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}

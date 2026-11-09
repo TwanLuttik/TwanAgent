@@ -16,7 +16,9 @@ import { imageTextParts, imageTokenLabel } from "../lib/image";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
+import { subagentOpenId, type SubagentRecord, type SubagentRun } from "../lib/subagent";
 import { RunningElapsed } from "./RunningElapsed";
+import { ThinkingTrace } from "./ThinkingTrace";
 
 function FinishedLine({ durationMs, finishedAt }: { durationMs?: number; finishedAt?: string }) {
   const time = finishedAt ? formatMessageTime(finishedAt) : "";
@@ -203,6 +205,9 @@ export function ChatTranscript({
   model = "",
   modelName = "",
   onLoadOlder,
+  subagents = [],
+  subagentRuns,
+  onOpenConversation,
 }: {
   messages: ChatMessage[];
   streamText: string;
@@ -217,6 +222,11 @@ export function ChatTranscript({
   modelName?: string;
   /** Called before older turns mount so the scroller can keep its place. */
   onLoadOlder?: () => void;
+  /** Live subagents for this chat. A running row opens before its result is saved. */
+  subagents?: SubagentRecord[];
+  /** Latest tool and start time, keyed by subagent conversation id. */
+  subagentRuns?: Readonly<Record<string, SubagentRun>>;
+  onOpenConversation?: (id: string) => void;
 }) {
   // splitLiveTranscript parses messages once and returns the same settled turns
   // while only the stream changes, so SettledTurn does not rebuild per token.
@@ -233,6 +243,13 @@ export function ChatTranscript({
     chatRef.current = conversationId;
     if (revealed !== 0) setRevealed(0);
   }
+  const runningOpenIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const agent of subagents) {
+      if (agent.status === "running" && agent.id) ids.add(agent.id);
+    }
+    return ids;
+  }, [subagents]);
   const slice = chatTurnSlice(turnCount, revealed);
   const older = hasOlderTurns(turnCount, revealed);
   const settledFrom = Math.min(slice.start, split.settled.length);
@@ -262,6 +279,9 @@ export function ChatTranscript({
           conversationId={conversationId}
           model={model}
           modelName={modelName}
+          runningOpenIds={runningOpenIds}
+          subagentRuns={subagentRuns}
+          onOpenConversation={onOpenConversation}
         />
       ))}
       {showTail ? (
@@ -272,8 +292,21 @@ export function ChatTranscript({
           conversationId={conversationId}
           model={model}
           modelName={modelName}
+          subagents={subagents}
+          runningOpenIds={runningOpenIds}
+          subagentRuns={subagentRuns}
+          onOpenConversation={onOpenConversation}
         />
       ) : null}
+      <EarlySubagentCards
+        items={showTail ? split.tail : []}
+        subagents={subagents}
+        runningOpenIds={runningOpenIds}
+        subagentRuns={subagentRuns}
+        model={model}
+        modelName={modelName}
+        onOpenConversation={onOpenConversation}
+      />
     </>
   );
 }
@@ -284,12 +317,20 @@ const SettledTurn = memo(function SettledTurn({
   conversationId,
   model,
   modelName,
+  subagents = [],
+  runningOpenIds,
+  subagentRuns,
+  onOpenConversation,
 }: {
   turn: TranscriptTurn;
   mentionFiles?: MentionFile[];
   conversationId?: string;
   model?: string;
   modelName?: string;
+  subagents?: SubagentRecord[];
+  runningOpenIds?: ReadonlySet<string>;
+  subagentRuns?: Readonly<Record<string, SubagentRun>>;
+  onOpenConversation?: (id: string) => void;
 }) {
   return (
     <TranscriptTurn
@@ -298,9 +339,54 @@ const SettledTurn = memo(function SettledTurn({
       conversationId={conversationId}
       model={model}
       modelName={modelName}
+      subagents={subagents}
+      runningOpenIds={runningOpenIds}
+      subagentRuns={subagentRuns}
+      onOpenConversation={onOpenConversation}
     />
   );
 });
+
+/** Agents that have started but whose tool call is not in the transcript yet. */
+function EarlySubagentCards({
+  items,
+  subagents,
+  runningOpenIds,
+  subagentRuns,
+  model,
+  modelName,
+  onOpenConversation,
+}: {
+  items: TranscriptItem[];
+  subagents: SubagentRecord[];
+  runningOpenIds?: ReadonlySet<string>;
+  subagentRuns?: Readonly<Record<string, SubagentRun>>;
+  model: string;
+  modelName: string;
+  onOpenConversation?: (id: string) => void;
+}) {
+  const shown = new Set<string>();
+  for (const item of items) {
+    if (item.kind !== "tools") continue;
+    for (const id of item.callIds) {
+      if (id) shown.add(id);
+    }
+  }
+  const pending = subagents.filter((agent) => agent.callId && !shown.has(agent.callId) && agent.status !== "error");
+  if (!pending.length) return null;
+  return (
+    <ToolTrail
+      labels={pending.map((agent) => (agent.description.trim() ? `Subagent: ${agent.description.trim()}` : "Subagent"))}
+      openIds={pending.map((agent) => agent.id)}
+      live={false}
+      model={model}
+      modelName={modelName}
+      runningOpenIds={runningOpenIds}
+      runs={subagentRuns}
+      onOpen={onOpenConversation}
+    />
+  );
+}
 
 function LiveTail({
   items,
@@ -309,6 +395,10 @@ function LiveTail({
   conversationId,
   model,
   modelName,
+  subagents = [],
+  runningOpenIds,
+  subagentRuns,
+  onOpenConversation,
 }: {
   items: TranscriptItem[];
   busy: boolean;
@@ -316,6 +406,10 @@ function LiveTail({
   conversationId?: string;
   model?: string;
   modelName?: string;
+  subagents?: SubagentRecord[];
+  runningOpenIds?: ReadonlySet<string>;
+  subagentRuns?: Readonly<Record<string, SubagentRun>>;
+  onOpenConversation?: (id: string) => void;
 }) {
   const head = items[0];
   const hasUser = head?.kind === "user";
@@ -333,6 +427,10 @@ function LiveTail({
       conversationId={conversationId}
       model={model}
       modelName={modelName}
+      subagents={subagents}
+      runningOpenIds={runningOpenIds}
+      subagentRuns={subagentRuns}
+      onOpenConversation={onOpenConversation}
     />
   );
 }
@@ -442,80 +540,6 @@ export function PendingUserMessage({
   );
 }
 
-const THINKING_FOLLOW_PX = 16;
-
-function thinkingCap(el: HTMLElement): number {
-  const max = Number.parseFloat(getComputedStyle(el).maxHeight);
-  return Number.isFinite(max) && max > 0 ? max : 256;
-}
-
-/**
- * A long trace scrolls inside itself instead of stretching the chat.
- * While it is still streaming, the box eases open up to that cap and keeps the latest lines in view.
- */
-function ThinkingTrace({ text, live = false }: { text: string; live?: boolean }) {
-  const scroller = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number | null>(live ? 0 : null);
-  const stick = useRef(true);
-  const fromUs = useRef(false);
-
-  useLayoutEffect(() => {
-    const outer = scroller.current;
-    if (!outer || !live) return;
-    const previous = outer.style.height;
-    outer.style.height = "auto";
-    const content = outer.scrollHeight;
-    outer.style.height = previous;
-    const next = Math.min(content, thinkingCap(outer));
-    setHeight((prev) => (prev === next ? prev : next));
-  }, [text, live]);
-
-  useEffect(() => {
-    if (!live) return;
-    let frame = 0;
-    const tick = () => {
-      const outer = scroller.current;
-      if (outer && stick.current) {
-        const max = Math.max(0, outer.scrollHeight - outer.clientHeight);
-        if (Math.abs(outer.scrollTop - max) > 1) {
-          fromUs.current = true;
-          outer.scrollTop = max;
-          fromUs.current = false;
-        }
-      }
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [live]);
-
-  return (
-    <div
-      ref={scroller}
-      onWheel={(event) => {
-        if (live && event.deltaY < 0) stick.current = false;
-      }}
-      onPointerDown={() => {
-        if (live) stick.current = false;
-      }}
-      onScroll={() => {
-        const outer = scroller.current;
-        if (!outer || !live || fromUs.current) return;
-        const gap = outer.scrollHeight - outer.scrollTop - outer.clientHeight;
-        if (gap <= THINKING_FOLLOW_PX) stick.current = true;
-      }}
-      style={live && height != null ? { height } : undefined}
-      className={`mb-3 max-h-64 overflow-y-auto overscroll-contain whitespace-pre-wrap border-l border-line pl-2.5 text-[13px] leading-relaxed text-muted [overflow-wrap:anywhere] ${
-        live
-          ? "transition-[height] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
-          : ""
-      }`}
-    >
-      {text}
-    </div>
-  );
-}
-
 function TranscriptTurn({
   turn,
   liveIndex = -1,
@@ -523,6 +547,10 @@ function TranscriptTurn({
   conversationId,
   model = "",
   modelName = "",
+  subagents = [],
+  runningOpenIds,
+  subagentRuns,
+  onOpenConversation,
 }: {
   turn: TranscriptTurn;
   /** Index of the streaming tool row, or -1 when nothing in this turn is live. */
@@ -531,6 +559,10 @@ function TranscriptTurn({
   conversationId?: string;
   model?: string;
   modelName?: string;
+  subagents?: SubagentRecord[];
+  runningOpenIds?: ReadonlySet<string>;
+  subagentRuns?: Readonly<Record<string, SubagentRun>>;
+  onOpenConversation?: (id: string) => void;
 }) {
   const userOffset = turn.user ? 1 : 0;
   const finalReply = finalAssistantIndex(turn.rest);
@@ -559,8 +591,16 @@ function TranscriptTurn({
                 files={item.files}
                 details={item.details}
                 commands={item.commands}
+                openIds={item.labels.map((label, index) =>
+                  subagentOpenId(label, item.opens?.[index] ?? "", item.callIds[index] ?? "", subagents),
+                )}
                 live={live}
                 conversationId={conversationId}
+                model={model}
+                modelName={modelName}
+                runningOpenIds={runningOpenIds}
+                runs={subagentRuns}
+                onOpen={onOpenConversation}
               />
               {!live && (typeof item.durationMs === "number" || item.finishedAt) ? (
                 <FinishedLine durationMs={item.durationMs} finishedAt={item.finishedAt} />
