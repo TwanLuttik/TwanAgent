@@ -174,6 +174,69 @@ jobs:
       - name: Check Windows target
         run: cargo check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
 
+      # Tauri downloads NSIS from GitHub the first time it bundles. A 504 there
+      # fails the job after the app has already compiled. Seed the cache Tauri
+      # checks, and retry the download, so a gateway timeout is not a failed release.
+      - name: Cache NSIS
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/.nsis-cache
+          key: nsis-3.11-EF7FF767E5CBD9EDD22ADD3A32C9B8F4500BB10D
+
+      - name: Install NSIS for the bundler
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path (Get-Location) 'src-tauri\.nsis-cache'
+          $tools = Join-Path $env:LOCALAPPDATA 'tauri'
+          $dest = Join-Path $tools 'NSIS'
+          $dll = Join-Path $root 'Plugins\x86-unicode\additional\nsis_tauri_utils.dll'
+
+          function Save-Verified($url, $out, $sha1) {
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              if (Test-Path $out) { Remove-Item -Force $out }
+              Write-Host "Downloading $url (attempt $attempt)"
+              & curl.exe --fail --location --retry 5 --retry-all-errors --retry-delay 5 -o $out $url
+              if ($LASTEXITCODE -ne 0) {
+                Start-Sleep -Seconds (5 * $attempt)
+                continue
+              }
+              $hash = (Get-FileHash -Algorithm SHA1 $out).Hash
+              if ($hash -eq $sha1) { return }
+              Write-Host "SHA1 $hash did not match $sha1"
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+            throw "Could not download $url"
+          }
+
+          if (-not (Test-Path (Join-Path $root 'makensis.exe')) -or -not (Test-Path $dll)) {
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+            $zip = Join-Path $env:RUNNER_TEMP 'nsis-3.11.zip'
+            Save-Verified `
+              'https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip' `
+              $zip `
+              'EF7FF767E5CBD9EDD22ADD3A32C9B8F4500BB10D'
+            $unpack = Join-Path $env:RUNNER_TEMP 'nsis-unpack'
+            if (Test-Path $unpack) { Remove-Item -Recurse -Force $unpack }
+            Expand-Archive -Path $zip -DestinationPath $unpack
+            $extracted = Join-Path $unpack 'nsis-3.11'
+            if (-not (Test-Path $extracted)) { throw 'nsis-3.11.zip did not contain nsis-3.11' }
+            if (Test-Path $root) { Remove-Item -Recurse -Force $root }
+            Move-Item $extracted $root
+            $dllDir = Split-Path $dll
+            New-Item -ItemType Directory -Force -Path $dllDir | Out-Null
+            Save-Verified `
+              'https://github.com/tauri-apps/nsis-tauri-utils/releases/download/nsis_tauri_utils-v0.5.3/nsis_tauri_utils.dll' `
+              $dll `
+              '75197FEE3C6A814FE035788D1C34EAD39349B860'
+          }
+
+          if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          Copy-Item -Recurse $root $dest
+          if (-not (Test-Path (Join-Path $dest 'makensis.exe'))) {
+            throw 'NSIS cache is missing makensis.exe'
+          }
+
       - name: Build unsigned NSIS installer
         run: bun run tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign --ci
 
