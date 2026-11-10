@@ -7,17 +7,20 @@ export function GitSectionTabs({
   section,
   hasRequest,
   onSelect,
+  changesCount = 0,
   trailing,
 }: {
   section: GitSection;
   hasRequest: boolean;
   onSelect: (section: GitSection) => void;
+  /** Files in the working tree. Shown on Changes so the count is not a second label. */
+  changesCount?: number;
   trailing?: ReactNode;
 }) {
   const tabs: GitSection[] = hasRequest ? ["changes", "commits", "request"] : ["changes", "commits"];
   return (
-    <div className="flex h-8 shrink-0 items-end justify-between gap-2 px-2">
-      <div role="tablist" aria-label="Git" className="flex min-w-0 items-center gap-0.5">
+    <div className="flex h-9 shrink-0 items-end justify-between gap-2 border-b border-line/30 px-2">
+      <div role="tablist" aria-label="Git" className="flex min-w-0 items-center gap-1">
         {tabs.map((id) => {
           const active = section === id;
           return (
@@ -27,9 +30,14 @@ export function GitSectionTabs({
               role="tab"
               aria-selected={active}
               onClick={() => onSelect(id)}
-              className={`rounded-md px-2 py-1 text-[13px] ${active ? "text-ink" : "text-muted hover:text-ink"}`}
+              className={`-mb-px flex items-center gap-1.5 border-b px-1.5 py-1.5 text-[13px] ${
+                active ? "border-ink text-ink" : "border-transparent text-muted hover:text-ink"
+              }`}
             >
               {gitSectionLabel(id)}
+              {id === "changes" && changesCount > 0 ? (
+                <span className={`text-[11px] tabular-nums ${active ? "text-muted" : "text-muted/70"}`}>{changesCount}</span>
+              ) : null}
             </button>
           );
         })}

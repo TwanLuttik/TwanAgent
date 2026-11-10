@@ -15,9 +15,59 @@ export type HostedEvent =
   | { type: "done"; messages: ChatMessage[] }
   | { type: "error"; message: string };
 
+export type ProjectLinkPhase =
+  | "no-workspace"
+  | "looking"
+  | "local"
+  | "offline"
+  | "unpaired"
+  | "warming"
+  | "hosted"
+  | "assumed";
+
+/** Where this folder's chats and turns live. One phase, so the sidebar and send cannot disagree. */
+export type ProjectLink = { phase: ProjectLinkPhase };
+
+export type LinkRemote = { paired?: boolean; online?: boolean; machineName?: string } | null | undefined;
+
+/**
+ * `looking` is the lookup, before any remote row exists.
+ * `warming` is a paired server whose socket is not ready.
+ * `assumed` is a row that never said it was unpaired or offline. Older callers treated that as hosted.
+ */
+export function projectLink(input: {
+  hasWorkspace: boolean;
+  known: boolean;
+  remote: LinkRemote;
+  linkReady: boolean;
+}): ProjectLink {
+  if (!input.hasWorkspace) return { phase: "no-workspace" };
+  if (!input.known) return { phase: "looking" };
+  const remote = input.remote;
+  if (!remote) return { phase: "local" };
+  if (remote.online === false) return { phase: "offline" };
+  if (remote.paired === false) return { phase: "unpaired" };
+  if (remote.paired !== true) return { phase: "assumed" };
+  if (!input.linkReady) return { phase: "warming" };
+  return { phase: "hosted" };
+}
+
+export function linkSendWaiting(link: ProjectLink): boolean {
+  return link.phase === "looking" || link.phase === "warming";
+}
+
+/** The sidebar reads the server list only after the link is up. Offline does not count. */
+export function linkChatsOnServer(link: ProjectLink): boolean {
+  return link.phase === "hosted";
+}
+
+export function linkTurnOnServer(link: ProjectLink): boolean {
+  return link.phase === "hosted" || link.phase === "warming" || link.phase === "assumed";
+}
+
 /** A paired cloud project never runs the model or tools in the GUI. */
-export function hostedTurnStaysOnServer(remote: { paired?: boolean; online?: boolean } | null | undefined): boolean {
-  return Boolean(remote && remote.paired !== false && remote.online !== false);
+export function hostedTurnStaysOnServer(remote: LinkRemote): boolean {
+  return linkTurnOnServer(projectLink({ hasWorkspace: true, known: true, remote, linkReady: true }));
 }
 
 /**
@@ -28,13 +78,31 @@ export function hostedTurnStaysOnServer(remote: { paired?: boolean; online?: boo
 export function cloudSendWaiting(
   hasWorkspace: boolean,
   known: boolean,
-  remote: { paired?: boolean; online?: boolean } | null | undefined,
+  remote: LinkRemote,
   linkReady: boolean,
 ): boolean {
-  if (!hasWorkspace) return false;
-  if (!known) return true;
-  if (!remote?.paired || remote.online === false) return false;
-  return !linkReady;
+  return linkSendWaiting(projectLink({ hasWorkspace, known, remote, linkReady }));
+}
+
+/** Why send must stop, or null when the turn may start. Same words the composer already shows. */
+export function linkSendBlock(input: {
+  hasWorkspace: boolean;
+  known: boolean;
+  remote: LinkRemote;
+  linkReady: boolean;
+}): { kind: "err"; text: string } | null {
+  const link = projectLink(input);
+  if (linkSendWaiting(link)) {
+    return { kind: "err", text: "Still connecting to the server. Try again in a moment." };
+  }
+  const name = input.remote?.machineName || "The server";
+  if (link.phase === "offline") {
+    return { kind: "err", text: `${name} is offline. Messages stay here until it answers.` };
+  }
+  if (link.phase === "unpaired") {
+    return { kind: "err", text: `Pair ${name} before sending. Cloud chats run on that server.` };
+  }
+  return null;
 }
 
 export type HostedServer = {

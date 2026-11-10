@@ -89,13 +89,27 @@ export function getCommandRuns(): CommandRun[] {
   return snapshot;
 }
 
+/** Foreground, left in the background, output open, or finished and gone. */
+export type CommandPhase = "running" | "background" | "watching" | "exited";
+
+/**
+ * Background wins, even if a foreground exit cleared `running` first.
+ * A finished command is `watching` only while its output is open.
+ */
+export function commandPhase(run: Pick<CommandRun, "running" | "watching" | "background">): CommandPhase {
+  if (run.background) return "background";
+  if (run.running) return "running";
+  if (run.watching) return "watching";
+  return "exited";
+}
+
 /**
  * A command stays above the input while it runs. Once it finishes, it stays
  * only when its output is open. A background command is still running.
  */
 export function commandRunVisible(run: CommandRun | null, _now = Date.now()): boolean {
   if (!run) return false;
-  return run.running || run.watching;
+  return commandPhase(run) !== "exited";
 }
 
 /**
@@ -146,6 +160,9 @@ export function appendCommandOutput(id: string, chunk: string): void {
 export function finishCommandRun(id: string, exitCode: number | null = null): void {
   const row = runs.get(id);
   if (!row || !row.running) return;
+  // A background command is still running. An exit before the runner's note
+  // must not hide it or take the Stop button away.
+  if (row.background) return;
   runs.set(id, { ...row, running: false, exitCode });
   publish();
 }

@@ -3,7 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
-import { cloudSendWaiting } from "../lib/hosted";
+import { cloudSendWaiting, linkChatsOnServer, projectLink } from "../lib/hosted";
 import { type ChatUsage } from "../lib/context";
 import { setMcpEnabledInToml, type DetectedMcpServer } from "../lib/mcp";
 import { setSkillEnabledInToml, type DetectedSkill } from "../lib/skill";
@@ -227,18 +227,15 @@ export function MainView() {
   const [opened, setOpened] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const {
+    overlay,
     showSettings,
-    setShowSettings,
     settingsTab,
     setSettingsTab,
     showServers,
-    setShowServers,
     showUsage,
-    setShowUsage,
     showDocs,
-    setShowDocs,
     projectSettings,
-    setProjectSettings,
+    closeOverlays,
     closeSettings,
     closeServers,
     closeUsage,
@@ -249,6 +246,7 @@ export function MainView() {
     openUsage,
     openDocs,
     openProjectSettings,
+    dismissProjectSettings,
   } = useOverlays();
   const [usageTick, setUsageTick] = useState(0);
   const [fileDrag, setFileDrag] = useState<string | boolean>(false);
@@ -299,7 +297,14 @@ export function MainView() {
   const [remoteWorkspace, setRemoteWorkspace] = useState<RemoteWorkspace | null>(null);
   const [remoteKnown, setRemoteKnown] = useState(false);
   const [linkReady, setLinkReady] = useState(false);
-  const hostedChats = Boolean(remoteWorkspace?.paired && linkReady);
+  const hostedChats = linkChatsOnServer(
+    projectLink({
+      hasWorkspace: Boolean(workspace),
+      known: remoteKnown,
+      remote: remoteWorkspace,
+      linkReady,
+    }),
+  );
   const remoteRef = useLiveRef(remoteWorkspace);
   /** The project `remoteWorkspace` was loaded for. Empty until that lookup returns. */
   const remoteForRef = useRef("");
@@ -707,6 +712,16 @@ export function MainView() {
   const holdScrollForOlder = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
+    // Still at the end: the pin keeps up as older rows mount above. Scrolled up: hold that place.
+    if (
+      isNearBottom({
+        scrollTop: el.scrollTop,
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
+      })
+    ) {
+      return;
+    }
     stickToBottomRef.current = false;
     prependRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
   }, []);
@@ -862,11 +877,8 @@ export function MainView() {
     setDirtyFiles,
     setPendingClosePath,
     setFolderOpen,
-    setShowSettings,
-    setShowUsage,
-    setShowDocs,
-    setShowServers,
-    setProjectSettings,
+    closeOverlays,
+    dismissProjectSettings,
     setCollapsedProjects,
     setRecents,
     setDrafts,
@@ -1333,17 +1345,13 @@ export function MainView() {
 
   const openWorkspaceFile = useCallback(
     (path: string, mode: "preview" | "pin" = "pin", view: "edit" | "diff" = "edit") => {
-      setShowSettings(false);
-      setShowUsage(false);
-      setShowDocs(false);
-      setShowServers(false);
-      setProjectSettings(null);
+      closeOverlays();
       setEditor((prev) => {
         const next = mode === "preview" ? previewEditorTab(prev, path) : pinEditorTab(prev, path);
         return setEditorFileView(next, path, view);
       });
     },
-    [],
+    [closeOverlays],
   );
 
   const toggleMcpServer = useCallback(
@@ -1363,13 +1371,9 @@ export function MainView() {
   );
 
   const editMcpServer = useCallback((server: DetectedMcpServer) => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setShowDocs(false);
-    setShowServers(false);
-    setProjectSettings(null);
+    closeOverlays();
     setEditor((prev) => pinEditorTab(prev, mcpEditorPath(server.source)));
-  }, []);
+  }, [closeOverlays]);
 
   const reauthMcpServer = useCallback(
     async (server: DetectedMcpServer) => {
@@ -1416,15 +1420,11 @@ export function MainView() {
 
   const editSkill = useCallback(
     (skill: DetectedSkill) => {
-      setShowSettings(false);
-      setShowUsage(false);
-      setShowDocs(false);
-      setShowServers(false);
-      setProjectSettings(null);
+      closeOverlays();
       const path = skill.source.startsWith("~/") ? skillEditorPath(skill.source) : skill.source;
       setEditor((prev) => pinEditorTab(prev, path));
     },
-    [],
+    [closeOverlays],
   );
 
   const showLanding = false;
@@ -1640,6 +1640,7 @@ export function MainView() {
     closeProjectChats,
     closeFileTab,
     closePendingEdit,
+    closeOverlays,
     closeProjectSettings,
     closeServers,
     closeSettings,
@@ -1709,6 +1710,7 @@ export function MainView() {
     speechDownloading,
     refreshSpeech,
     downloadSpeech,
+    overlay,
     projectMenu,
     projectSettings,
     projectsRoot,
@@ -1745,9 +1747,6 @@ export function MainView() {
     setFolderOpen,
     setPendingDeleteProject,
     setProjectMenu,
-    setShowSettings,
-    setShowUsage,
-    setShowDocs,
     settingsTab,
     setSettingsTab,
     setSidebarWidth,

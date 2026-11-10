@@ -149,11 +149,14 @@ export function ActionsRow({
           type="button"
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 py-1 pr-1 pl-2.5 text-left"
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 pr-1 pl-2 text-left hover:bg-wash/70"
         >
           <StatusDot tone={tone} />
           <span className={`min-w-0 flex-1 truncate text-[12px] ${toneText(tone)}`}>{primary}</span>
-          <Symbol name={open ? "chevron.down" : "chevron.right"} className="size-2.5 shrink-0 text-muted" />
+          <Symbol
+            name={open ? "chevron.down" : "chevron.right"}
+            className={`size-2.5 shrink-0 text-muted ${open ? "" : "opacity-0 group-hover/actions:opacity-100"}`}
+          />
         </button>
         <button
           type="button"

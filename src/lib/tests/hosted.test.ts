@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTranscriptsToWarm, hostedTurnStaysOnServer, runHostedTurn, runPool, type HostedEvent, type HostedServer } from "../hosted.ts";
+import { cloudSendWaiting, frameRunsToolsOnClient, hostedPromptFrame, hostedTranscriptsToWarm, hostedTurnStaysOnServer, linkChatsOnServer, linkSendBlock, projectLink, runHostedTurn, runPool, type HostedEvent, type HostedServer } from "../hosted.ts";
 import type { ChatMessage } from "../core.ts";
 
 describe("hosted turns", () => {
@@ -86,6 +86,77 @@ describe("hosted turns", () => {
           permission: "ask",
         }),
       /Copy provider keys/,
+    );
+  });
+});
+
+describe("project link", () => {
+  it("names one phase for lookup, local, cloud, and a link that is still opening", () => {
+    assert.equal(projectLink({ hasWorkspace: false, known: false, remote: null, linkReady: false }).phase, "no-workspace");
+    assert.equal(projectLink({ hasWorkspace: true, known: false, remote: null, linkReady: false }).phase, "looking");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: null, linkReady: false }).phase, "local");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: { paired: true, online: false }, linkReady: true }).phase, "offline");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: { paired: false, online: true }, linkReady: false }).phase, "unpaired");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: { paired: true, online: true }, linkReady: false }).phase, "warming");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: { paired: true, online: true }, linkReady: true }).phase, "hosted");
+    assert.equal(projectLink({ hasWorkspace: true, known: true, remote: {}, linkReady: false }).phase, "assumed");
+  });
+
+  it("loads hosted chats only when the link is up", () => {
+    const hosted = projectLink({
+      hasWorkspace: true,
+      known: true,
+      remote: { paired: true, online: true },
+      linkReady: true,
+    });
+    assert.equal(linkChatsOnServer(hosted), true);
+    const offline = projectLink({
+      hasWorkspace: true,
+      known: true,
+      remote: { paired: true, online: false },
+      linkReady: true,
+    });
+    assert.equal(linkChatsOnServer(offline), false);
+    const closed = projectLink({
+      hasWorkspace: false,
+      known: true,
+      remote: { paired: true, online: true },
+      linkReady: true,
+    });
+    assert.equal(linkChatsOnServer(closed), false);
+  });
+
+  it("blocks send with the same reason the composer already shows", () => {
+    const looking = linkSendBlock({ hasWorkspace: true, known: false, remote: null, linkReady: false });
+    assert.equal(looking?.text, "Still connecting to the server. Try again in a moment.");
+    const warming = linkSendBlock({
+      hasWorkspace: true,
+      known: true,
+      remote: { paired: true, online: true, machineName: "box" },
+      linkReady: false,
+    });
+    assert.equal(warming?.text, "Still connecting to the server. Try again in a moment.");
+    const offline = linkSendBlock({
+      hasWorkspace: true,
+      known: true,
+      remote: { paired: true, online: false, machineName: "box" },
+      linkReady: false,
+    });
+    assert.equal(offline?.text, "box is offline. Messages stay here until it answers.");
+    const unpaired = linkSendBlock({
+      hasWorkspace: true,
+      known: true,
+      remote: { paired: false, online: true, machineName: "box" },
+      linkReady: false,
+    });
+    assert.equal(unpaired?.text, "Pair box before sending. Cloud chats run on that server.");
+    assert.equal(
+      linkSendBlock({ hasWorkspace: true, known: true, remote: null, linkReady: false }),
+      null,
+    );
+    assert.equal(
+      linkSendBlock({ hasWorkspace: false, known: false, remote: null, linkReady: false }),
+      null,
     );
   });
 });

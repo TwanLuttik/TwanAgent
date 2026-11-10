@@ -2,6 +2,7 @@ import { startTransition, useEffect, useLayoutEffect, useRef, useState } from "r
 import { Editor } from "../../components/Editor";
 import { Workspace } from "../../components/Workspace";
 import { afterInput } from "../../lib/after-input";
+import { overlayCoversChat } from "../../lib/overlay";
 import { holdPaneSelection, paneProjectFollow } from "../../lib/pane-follow";
 import { filePanePending } from "../../lib/pane-sessions";
 import {
@@ -34,23 +35,21 @@ export function ChatStage() {
     allProjectGroups,
     applyWorkspace,
     closeFileTab,
+    closeOverlays,
     closeProjectSettings,
     closeServers,
     closeUsage,
-    closeDocs,
     dirtyFiles,
     editor,
     folderOpen,
     opened,
     openChat,
     openWorkspaceFile,
+    overlay,
     pendingClosePath,
-    projectSettings,
     setDirtyFiles,
     setDrafts,
     setEditor,
-    setShowSettings,
-    setShowUsage,
     bumpFiles,
     chatTabs,
     tabItems,
@@ -65,8 +64,6 @@ export function ChatStage() {
     closeChatTab,
     closeProjectChats,
     runningTurns,
-    showServers,
-    showUsage,
     paneCollapsed,
     setPaneCollapsed,
     sidebarCollapsed,
@@ -74,7 +71,7 @@ export function ChatStage() {
     workspace,
   } = useMain();
   const { openProjectFromSidebar, rememberOpenedProject } = useSidebar();
-  const fullPage = Boolean(showUsage || showServers || projectSettings);
+  const fullPage = overlayCoversChat(overlay);
   const [paneWorkspace, setPaneWorkspace] = useState(workspace);
   // A click between chats in this project must not unmount the file pane.
   // `activeId` is empty for a frame while the next transcript loads.
@@ -189,17 +186,17 @@ export function ChatStage() {
         {/* Clip sits inside the stroke so the top-left curve is not cut off. */}
         <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-tl-[11px]">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {projectSettings && !showServers ? (
+          {overlay.kind === "project" ? (
             <ProjectSettingsView
-              name={projectSettings.name}
-              path={projectSettings.path}
+              name={overlay.name}
+              path={overlay.path}
               onClose={folderOpen ? undefined : closeProjectSettings}
             />
           ) : null}
-          {showUsage && !showServers ? (
+          {overlay.kind === "usage" ? (
             <UsageView onClose={folderOpen ? undefined : closeUsage} />
           ) : null}
-          {showServers ? (
+          {overlay.kind === "servers" ? (
             <ServersDialog
               onClose={folderOpen ? () => undefined : closeServers}
               onOpenProject={(path, name) => applyWorkspace(path, "", name, true)}
@@ -234,11 +231,7 @@ export function ChatStage() {
               onPinTab={(path) => setEditor((prev: typeof editor) => pinEditorTab(prev, path))}
               onCloseTab={closeFileTab}
               onSendToChat={(snippet) => {
-                setShowSettings(false);
-                setShowUsage(false);
-                closeDocs();
-                closeServers();
-                closeProjectSettings();
+                closeOverlays();
                 setEditor((prev: typeof editor) => selectChatTab(prev));
                 setDrafts((prev: Record<string, string>) => {
                   const next = appendSelectionToDraft(draftForChat(prev, activeId), snippet);

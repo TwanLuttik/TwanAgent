@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    insert_conversation, load_messages, next_sort, replace_messages_from, row_to_conversation,
-    sync_messages,
+    insert_conversation, load_messages, load_messages_tail, next_sort, replace_messages_from,
+    row_to_conversation, sync_messages,
 };
 use crate::dev::{Conversation, ConversationSummary, DevChatUsage, DevCompaction};
 use crate::error::{Error, Result};
@@ -188,6 +188,22 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
         return Err(Error::NotFound("conversation not found".into()));
     };
     let messages = load_messages(conn, &head.id)?;
+    conversation_from_head(head, messages)
+}
+
+/// The head row plus only the last `message_limit` messages. The full read can follow.
+pub fn get_conversation_tail(conn: &Connection, id: &str, message_limit: u32) -> Result<Conversation> {
+    let head = conn
+        .query_row(&format!("{HEAD_SQL} WHERE id = ?1"), [id], map_head)
+        .optional()?;
+    let Some(head) = head else {
+        return Err(Error::NotFound("conversation not found".into()));
+    };
+    let messages = load_messages_tail(conn, &head.id, message_limit)?;
+    conversation_from_head(head, messages)
+}
+
+fn conversation_from_head(head: ConvHead, messages: Vec<serde_json::Value>) -> Result<Conversation> {
     row_to_conversation(
         head.id,
         head.title,

@@ -1,74 +1,66 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import {
+  closeEveryOverlay,
+  closeOverlay,
+  dismissProjectOverlay,
+  openProjectOverlay,
+  overlayFlags,
+  overlayNone,
+  showOverlay,
+  type AppOverlay,
+} from "../lib/overlay";
 import type { SettingsTab } from "../views/SettingsView";
 
 /** Settings and docs are dialogs. Usage, servers, and project settings cover the chat. Opening one closes the others. */
 export function useOverlays() {
-  const [showSettings, setShowSettings] = useState(false);
+  const [overlay, setOverlay] = useState<AppOverlay>(overlayNone);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
-  const [showServers, setShowServers] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [showDocs, setShowDocs] = useState(false);
-  const [projectSettings, setProjectSettings] = useState<{ path: string; name: string } | null>(null);
+  const flags = useMemo(() => overlayFlags(overlay), [overlay]);
 
-  const closeSettings = useCallback(() => setShowSettings(false), []);
-  const closeServers = useCallback(() => setShowServers(false), []);
-  const closeUsage = useCallback(() => setShowUsage(false), []);
-  const closeDocs = useCallback(() => setShowDocs(false), []);
-  const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
+  const closeOverlays = useCallback(() => {
+    setOverlay((current) => closeEveryOverlay(current));
+  }, []);
+  const closeSettings = useCallback(() => {
+    setOverlay((current) => closeOverlay(current, "settings"));
+  }, []);
+  const closeServers = useCallback(() => {
+    setOverlay((current) => closeOverlay(current, "servers"));
+  }, []);
+  const closeUsage = useCallback(() => {
+    setOverlay((current) => closeOverlay(current, "usage"));
+  }, []);
+  const closeDocs = useCallback(() => {
+    setOverlay((current) => closeOverlay(current, "docs"));
+  }, []);
+  const closeProjectSettings = useCallback(() => {
+    setOverlay((current) => closeOverlay(current, "project"));
+  }, []);
 
   const openSettings = useCallback(() => {
-    setShowUsage(false);
-    setShowDocs(false);
-    setShowServers(false);
-    setProjectSettings(null);
-    setShowSettings(true);
+    setOverlay((current) => showOverlay(current, "settings"));
   }, []);
-
   const openServers = useCallback(() => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setShowDocs(false);
-    setProjectSettings(null);
-    setShowServers(true);
+    setOverlay((current) => showOverlay(current, "servers"));
   }, []);
-
   const openUsage = useCallback(() => {
-    setShowSettings(false);
-    setShowDocs(false);
-    setShowServers(false);
-    setProjectSettings(null);
-    setShowUsage(true);
+    setOverlay((current) => showOverlay(current, "usage"));
   }, []);
-
   const openDocs = useCallback(() => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setShowServers(false);
-    setProjectSettings(null);
-    setShowDocs(true);
+    setOverlay((current) => showOverlay(current, "docs"));
   }, []);
-
   const openProjectSettings = useCallback((path: string, name: string) => {
-    setShowSettings(false);
-    setShowUsage(false);
-    setShowDocs(false);
-    setShowServers(false);
-    setProjectSettings({ path, name });
+    setOverlay((current) => openProjectOverlay(current, path, name));
+  }, []);
+  const dismissProjectSettings = useCallback((path: string, same: (left: string, right: string) => boolean) => {
+    setOverlay((current) => dismissProjectOverlay(current, path, same));
   }, []);
 
   return {
-    showSettings,
-    setShowSettings,
+    overlay,
+    ...flags,
     settingsTab,
     setSettingsTab,
-    showServers,
-    setShowServers,
-    showUsage,
-    setShowUsage,
-    showDocs,
-    setShowDocs,
-    projectSettings,
-    setProjectSettings,
+    closeOverlays,
     closeSettings,
     closeServers,
     closeUsage,
@@ -79,5 +71,6 @@ export function useOverlays() {
     openUsage,
     openDocs,
     openProjectSettings,
+    dismissProjectSettings,
   };
 }

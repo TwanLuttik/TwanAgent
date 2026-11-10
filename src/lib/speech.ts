@@ -41,6 +41,44 @@ export function speechModel(id: string | null | undefined): SpeechModel {
   return SPEECH_MODELS.find((model) => model.id === next) ?? SPEECH_MODELS[0];
 }
 
+/** The download in flight. Idle has no model, so a second row cannot look busy. */
+export type SpeechDownload =
+  | { phase: "idle" }
+  | { phase: "downloading"; id: string; received: number; total: number };
+
+const SPEECH_DOWNLOAD_IDLE: SpeechDownload = { phase: "idle" };
+
+export function speechDownloadIdle(): SpeechDownload {
+  return SPEECH_DOWNLOAD_IDLE;
+}
+
+export function speechDownloadStart(id: string, total: number): SpeechDownload {
+  return { phase: "downloading", id, received: 0, total };
+}
+
+/** A finished or foreign download must not clear the model that is still coming down. */
+export function speechDownloadProgress(
+  current: SpeechDownload,
+  event: { id: string; received: number; total: number; done: boolean },
+): SpeechDownload {
+  if (current.phase === "downloading" && current.id !== event.id) return current;
+  if (event.done) return SPEECH_DOWNLOAD_IDLE;
+  return { phase: "downloading", id: event.id, received: event.received, total: event.total };
+}
+
+export function speechRowDownloading(download: SpeechDownload, modelId: string): boolean {
+  return download.phase === "downloading" && download.id === modelId;
+}
+
+/** Views that still pass a boolean and a progress row. A missing id is idle, not every row. */
+export function speechDownloadFrom(
+  downloading: boolean,
+  progress: { id?: string; received: number; total: number } | null | undefined,
+): SpeechDownload {
+  if (!downloading || !progress?.id) return SPEECH_DOWNLOAD_IDLE;
+  return { phase: "downloading", id: progress.id, received: progress.received, total: progress.total };
+}
+
 export function speechSizeLabel(bytes: number): string {
   const mb = Math.max(1, Math.round(bytes / (1024 * 1024)));
   return `${mb} MB`;

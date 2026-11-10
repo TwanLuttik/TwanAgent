@@ -302,6 +302,7 @@ pub async fn dev_get_conversation(
     state: State<'_, AppState>,
     id: String,
     workspace: Option<String>,
+    tail_messages: Option<u32>,
 ) -> Result<Conversation> {
     let workspace = workspace.unwrap_or_default();
     let data_dir = state.data_dir.clone();
@@ -315,7 +316,10 @@ pub async fn dev_get_conversation(
         }
         let _ = import_conversations_json(&data_dir, &workspace);
         let dir = conv_store_dir(&data_dir, &workspace);
-        store::with_conn(&dir, |conn| store::get_conversation(conn, &id))
+        store::with_conn(&dir, |conn| match tail_messages {
+            Some(limit) if limit > 0 => store::get_conversation_tail(conn, &id, limit),
+            _ => store::get_conversation(conn, &id),
+        })
     })
     .await
 }

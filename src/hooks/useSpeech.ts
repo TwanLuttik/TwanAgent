@@ -1,13 +1,21 @@
-import { useCallback, useEffect, useState } from "react";
-import { normalizeSpeechModel, speechModel, type SpeechModelInfo } from "../lib/speech";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  normalizeSpeechModel,
+  speechDownloadIdle,
+  speechDownloadProgress,
+  speechDownloadStart,
+  speechModel,
+  type SpeechDownload,
+  type SpeechModelInfo,
+} from "../lib/speech";
 import * as api from "../lib/tauri";
 
 /** Speech model choice, the download list, and dictation. Settings reads this. */
 export function useSpeech(setFlash: (flash: { kind: "err"; text: string }) => void) {
   const [speechModelId, setSpeechModelId] = useState(speechModel(null).id);
   const [speechRows, setSpeechRows] = useState<SpeechModelInfo[]>([]);
-  const [speechProgress, setSpeechProgress] = useState<{ id: string; received: number; total: number } | null>(null);
-  const [speechDownloading, setSpeechDownloading] = useState(false);
+  const [download, setDownload] = useState<SpeechDownload>(speechDownloadIdle);
+  const downloadGen = useRef(0);
 
   const refreshSpeech = useCallback(() => {
     void api
@@ -28,12 +36,15 @@ export function useSpeech(setFlash: (flash: { kind: "err"; text: string }) => vo
     let unlisten: (() => void) | undefined;
     void api
       .onSpeechDownload((event) => {
-        setSpeechProgress({ id: event.id, received: event.received, total: event.total });
-        if (event.done) {
-          setSpeechDownloading(false);
-          setSpeechProgress(null);
-          refreshSpeech();
-        }
+        setDownload((current) =>
+          speechDownloadProgress(current, {
+            id: event.id,
+            received: event.received,
+            total: event.total,
+            done: event.done,
+          }),
+        );
+        if (event.done) refreshSpeech();
       })
       .then((fn) => {
         if (gone) fn();
@@ -57,17 +68,19 @@ export function useSpeech(setFlash: (flash: { kind: "err"; text: string }) => vo
 
   const downloadSpeech = useCallback(
     (id: string) => {
-      setSpeechDownloading(true);
-      setSpeechProgress({ id: normalizeSpeechModel(id), received: 0, total: speechModel(id).bytes });
+      const modelId = normalizeSpeechModel(id);
+      const generation = downloadGen.current + 1;
+      downloadGen.current = generation;
+      setDownload(speechDownloadStart(modelId, speechModel(modelId).bytes));
       void api
-        .speechDownload(normalizeSpeechModel(id))
+        .speechDownload(modelId)
         .then((row) => {
           setSpeechRows((prev) => prev.map((item) => (item.id === row.id ? row : item)));
         })
         .catch((e) => setFlash({ kind: "err", text: String(e) }))
         .finally(() => {
-          setSpeechDownloading(false);
-          setSpeechProgress(null);
+          if (downloadGen.current !== generation) return;
+          setDownload(speechDownloadIdle());
           refreshSpeech();
         });
     },
@@ -78,11 +91,21 @@ export function useSpeech(setFlash: (flash: { kind: "err"; text: string }) => vo
     return api.transcribe(bytesBase64, filename);
   }, []);
 
+  const speech = useMemo(() => {
+    if (download.phase !== "downloading") {
+      return { speechDownloading: false, speechProgress: null as { id: string; received: number; total: number } | null };
+    }
+    return {
+      speechDownloading: true,
+      speechProgress: { id: download.id, received: download.received, total: download.total },
+    };
+  }, [download]);
+
   return {
     speechModelId,
     speechRows,
-    speechProgress,
-    speechDownloading,
+    speechProgress: speech.speechProgress,
+    speechDownloading: speech.speechDownloading,
     refreshSpeech,
     pickSpeechModel,
     downloadSpeech,

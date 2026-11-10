@@ -5,6 +5,7 @@ import {
   clearCommandRun,
   clearCommandRunsForChat,
   commandDetaches,
+  commandPhase,
   commandRunForChat,
   commandRunVisible,
   finishCommandRun,
@@ -39,6 +40,12 @@ describe("command runs", () => {
     assert.equal(commandRunVisible({ ...run, running: false }, started + 10_000), false);
     assert.equal(commandRunVisible({ ...run, running: false, watching: true }, started), true);
     assert.equal(commandRunVisible({ ...run, background: true }, started), true);
+    assert.equal(commandRunVisible({ ...run, running: false, background: true, watching: false }, started), true);
+    assert.equal(commandPhase({ running: true, watching: false, background: false }), "running");
+    assert.equal(commandPhase({ running: true, watching: true, background: true }), "background");
+    assert.equal(commandPhase({ running: false, watching: true, background: false }), "watching");
+    assert.equal(commandPhase({ running: false, watching: false, background: false }), "exited");
+    assert.equal(commandPhase({ running: false, watching: false, background: true }), "background");
     assert.equal(commandRunVisible(null), false);
   });
 
@@ -65,6 +72,9 @@ describe("command runs", () => {
     const settled = notices;
     settleCommandRun("a", "ready\nstill running in the background");
     assert.equal(notices, settled);
+    assert.equal(commandRunForChat("chat")?.running, true);
+    finishCommandRun("a", 0);
+    assert.equal(commandPhase(commandRunForChat("chat")!), "background");
     assert.equal(commandRunForChat("chat")?.running, true);
     stop();
   });

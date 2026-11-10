@@ -9,8 +9,10 @@ import {
   micAudioConstraints,
   meterLevel,
   saveMicDevice,
+  speechDownloadFrom,
   speechModel,
   speechNote,
+  speechRowDownloading,
   speechSizeLabel,
   type MicDevice,
   type SpeechModelInfo,
@@ -35,7 +37,7 @@ export function VoiceModelCard({
 }) {
   const model = speechModel(modelId);
   const status = speechRowStatus(models, model.id);
-  const active = downloading && (!progress?.id || progress.id === model.id);
+  const active = speechRowDownloading(speechDownloadFrom(Boolean(downloading), progress), model.id);
   return (
     <div className="px-3.5 py-2.5">
       <div className="text-[13px] font-medium text-ink">{model.label}</div>
@@ -213,7 +215,7 @@ export function VoiceModelDialog({
 }) {
   const [picked, setPicked] = useState(currentId);
   const status = speechRowStatus(models, picked);
-  const active = downloading && (!progress?.id || progress.id === picked);
+  const active = speechRowDownloading(speechDownloadFrom(downloading, progress), picked);
   const ready = status === "ready";
 
   useEffect(() => {

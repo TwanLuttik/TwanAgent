@@ -9,6 +9,15 @@ export type HeldTranscript<T> = {
  * The click changes the active id first. Rendering the previous chat under that id
  * parses it again, which is the hitch before the next conversation shows.
  */
+/**
+ * The selected chat is not the transcript on screen yet.
+ * The click should paint the row and a loading cover first. The next
+ * conversation renders on the following frame, so the window can take another click.
+ */
+export function chatSwitchPending(selectedId: string, shownId: string): boolean {
+  return selectedId !== "" && selectedId !== shownId;
+}
+
 export function holdTranscript<T>(
   held: HeldTranscript<T>,
   messages: T,
@@ -69,6 +78,66 @@ export function cachedTranscript<T>(
   if (cached === undefined) return undefined;
   if (id !== shownId && cached === shownMessages) return undefined;
   return cached;
+}
+
+/** How many messages to paint before the rest of a long turn. One turn can be hundreds of tool rows. */
+export const TRANSCRIPT_PAGE_MESSAGES = 48;
+
+/** Index of the first message in the last `limit` messages. */
+export function transcriptMessageStart(length: number, limit: number): number {
+  const cap = Math.max(1, Math.floor(limit) || 1);
+  if (!Number.isFinite(length) || length <= cap) return 0;
+  return Math.floor(length) - cap;
+}
+
+/** How many rows to mount on the next frame. Stays on `length` once the whole chat is up. */
+export function nextTranscriptLimit(length: number, shown: number, page = TRANSCRIPT_PAGE_MESSAGES): number {
+  const current = shown > 0 ? shown : page;
+  if (!Number.isFinite(length) || length <= current) return Math.max(0, Math.floor(length) || 0);
+  return Math.min(Math.floor(length), current + page);
+}
+
+type WindowTurn = { user?: unknown; rest: readonly unknown[] };
+
+function turnRows(turn: WindowTurn): number {
+  return (turn.user ? 1 : 0) + turn.rest.length;
+}
+
+/** Rows from the end of a parsed transcript. Full turns keep their object identity so memo can skip them. */
+export function visibleTranscriptEnd<T extends WindowTurn, I>(
+  settled: readonly T[],
+  tail: readonly I[],
+  limit: number,
+): { settled: T[]; tail: I[]; hidden: boolean } {
+  const cap = Math.max(1, Math.floor(limit) || 1);
+  let total = tail.length;
+  for (const turn of settled) total += turnRows(turn);
+  if (total <= cap) return { settled: settled.slice(), tail: tail.slice(), hidden: false };
+
+  let budget = cap;
+  const tailCount = Math.min(tail.length, budget);
+  budget -= tailCount;
+  const shownTail = tail.slice(tail.length - tailCount);
+  const shown: T[] = [];
+  for (let i = settled.length - 1; i >= 0 && budget > 0; i--) {
+    const turn = settled[i]!;
+    const size = turnRows(turn);
+    if (size <= budget) {
+      shown.push(turn);
+      budget -= size;
+      continue;
+    }
+    const keep = budget;
+    if (turn.user) {
+      const restKeep = Math.max(0, keep - 1);
+      shown.push({ ...turn, rest: turn.rest.slice(turn.rest.length - restKeep) });
+    } else {
+      shown.push({ ...turn, rest: turn.rest.slice(turn.rest.length - keep) });
+    }
+    budget = 0;
+  }
+  shown.reverse();
+  return { settled: shown, tail: shownTail, hidden: true };
 }
 
 /** How many turns stay mounted. Older turns stay in memory but are not rendered. */

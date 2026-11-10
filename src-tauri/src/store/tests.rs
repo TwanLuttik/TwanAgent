@@ -77,6 +77,34 @@ fn imports_conversations_json_once() {
 }
 
 #[test]
+fn conversation_tail_keeps_the_last_user_turns() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let row = conv(
+        "c1",
+        "Hello",
+        vec![
+            json!({"role":"user","content":"one"}),
+            json!({"role":"assistant","content":"a"}),
+            json!({"role":"user","content":"two"}),
+            json!({"role":"tool","content":"ran"}),
+            json!({"role":"user","content":"three"}),
+            json!({"role":"assistant","content":"c"}),
+        ],
+    );
+    save_conversation(&conn, &row).unwrap();
+    let tail = get_conversation_tail(&conn, "c1", 3).unwrap();
+    let text: Vec<String> = tail
+        .messages
+        .iter()
+        .map(|msg| msg["content"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(text, ["ran", "three", "c"]);
+    let short = get_conversation_tail(&conn, "c1", 9).unwrap();
+    assert_eq!(short.messages.len(), 6);
+}
+
+#[test]
 fn save_without_usage_keeps_stored_context_usage() {
     let dir = tempdir().unwrap();
     let conn = open(dir.path()).unwrap();

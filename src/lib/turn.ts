@@ -725,9 +725,17 @@ export function runningTurnStartedAt(
   return running[chatId]?.startedAt ?? 0;
 }
 
-/** Queue only while this conversation's own turn is running. Another chat's turn does not count. */
+/**
+ * Queue only while the foreground id is this conversation.
+ * A turn running in another chat is invisible here. `chatShouldQueue` is the check that sees it.
+ */
 export function shouldQueueForChat(runningId: string, chatId: string): boolean {
   return chatTurnIsRunning(runningId, chatId);
+}
+
+/** Queue when this chat has its own turn, even if the user is looking at a different chat. */
+export function chatShouldQueue(active: { has(id: string): boolean }, chatId: string): boolean {
+  return Boolean(chatId) && active.has(chatId);
 }
 
 export function takeNextPending(

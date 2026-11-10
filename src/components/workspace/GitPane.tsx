@@ -290,18 +290,19 @@ export function GitPane({
           section={showing}
           hasRequest={Boolean(request)}
           onSelect={setSection}
+          changesCount={changes.length}
           trailing={
             showing === "changes" ? (
-              <div className="mb-1 flex items-center gap-0.5" role="group" aria-label="Change list layout">
+              <div className="mb-1 flex items-center rounded-md bg-wash p-0.5" role="group" aria-label="Change list layout">
                 <button
                   type="button"
                   aria-pressed={view === "list"}
                   aria-label="List view"
                   title="List"
                   onClick={() => setChangesView("list")}
-                  className={`flex size-6 items-center justify-center rounded-md ${view === "list" ? "text-ink" : "text-muted hover:text-ink"}`}
+                  className={`flex size-5 items-center justify-center rounded-[5px] ${view === "list" ? "bg-canvas text-ink shadow-sm" : "text-muted hover:text-ink"}`}
                 >
-                  <Symbol name="list.bullet" className="size-3.5" />
+                  <Symbol name="list.bullet" className="size-3" />
                 </button>
                 <button
                   type="button"
@@ -309,11 +310,10 @@ export function GitPane({
                   aria-label="Tree view"
                   title="Tree"
                   onClick={() => setChangesView("tree")}
-                  className={`flex size-6 items-center justify-center rounded-md ${view === "tree" ? "text-ink" : "text-muted hover:text-ink"}`}
+                  className={`flex size-5 items-center justify-center rounded-[5px] ${view === "tree" ? "bg-canvas text-ink shadow-sm" : "text-muted hover:text-ink"}`}
                 >
-                  <Symbol name="list.tree" className="size-3.5" />
+                  <Symbol name="list.tree" className="size-3" />
                 </button>
-                <span className="pr-1 pl-0.5 text-[12px] text-muted tabular-nums">{changes.length}</span>
               </div>
             ) : null
           }
@@ -332,22 +332,9 @@ export function GitPane({
         />
       ) : null}
       {showing === "changes" && changes.length > 0 ? (
-        <div className="shrink-0 px-2 pt-1 pb-1">
-          <button
-            type="button"
-            onClick={onOpenAll}
-            className={`flex w-full items-baseline gap-2 rounded-md px-1.5 py-1 text-left text-[12px] ${
-              selected === ALL_DIFF_PATH ? "bg-wash text-ink" : "text-muted hover:text-ink"
-            }`}
-          >
-            <span>Diff</span>
-            <span className="ml-auto flex items-baseline gap-2 font-mono text-[11px] tabular-nums">
-              {totals.additions > 0 ? <span className="text-ok">+{formatDiffCount(totals.additions)}</span> : null}
-              {totals.deletions > 0 ? <span className="text-err">−{formatDiffCount(totals.deletions)}</span> : null}
-            </span>
-          </button>
+        <div className="shrink-0 px-2 pt-2 pb-1">
           <form
-            className="mt-1"
+            className="overflow-hidden rounded-xl border border-line/40 bg-canvas"
             onSubmit={(ev) => {
               ev.preventDefault();
               const text = message.trim();
@@ -356,53 +343,70 @@ export function GitPane({
               setMessage("");
             }}
           >
-            <textarea
-              value={message}
-              onChange={(ev) => setMessage(ev.target.value)}
-              placeholder="Commit message"
-              rows={2}
-              onKeyDown={(ev) => {
-                if (ev.key !== "Enter" || (!ev.metaKey && !ev.ctrlKey)) return;
-                ev.preventDefault();
-                ev.currentTarget.form?.requestSubmit();
-              }}
-              className="w-full resize-none rounded-lg bg-wash px-3 py-2 text-[13px] leading-5 text-ink outline-none placeholder:text-muted/80"
-            />
-            <div className="mt-1 flex items-center gap-1 px-0.5">
-              <button
-                type="button"
-                disabled={busy || unstaged.length === 0}
-                onClick={() => onStage(unstaged.map((row) => row.path))}
-                className="rounded-md px-1.5 py-1 text-[12px] text-ink hover:bg-wash disabled:text-muted disabled:hover:bg-transparent"
-              >
-                Stage all
-                {unstaged.length > 0 ? <span className="ml-1 text-muted tabular-nums">{unstaged.length}</span> : null}
-              </button>
-              {staged.length > 0 ? (
+            <button
+              type="button"
+              onClick={onOpenAll}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] ${
+                selected === ALL_DIFF_PATH ? "bg-wash text-ink" : "text-muted hover:bg-wash/60 hover:text-ink"
+              }`}
+            >
+              <span>All changes</span>
+              <span className="ml-auto flex items-baseline gap-2 font-mono text-[11px] tabular-nums">
+                {totals.additions > 0 ? <span className="text-ok">+{formatDiffCount(totals.additions)}</span> : null}
+                {totals.deletions > 0 ? <span className="text-err">−{formatDiffCount(totals.deletions)}</span> : null}
+              </span>
+            </button>
+            <div className="border-t border-line/30 px-2 pt-1.5 pb-2">
+              <textarea
+                value={message}
+                onChange={(ev) => setMessage(ev.target.value)}
+                placeholder="Commit message"
+                rows={2}
+                onKeyDown={(ev) => {
+                  if (ev.key !== "Enter" || (!ev.metaKey && !ev.ctrlKey)) return;
+                  ev.preventDefault();
+                  ev.currentTarget.form?.requestSubmit();
+                }}
+                className="w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-ink outline-none placeholder:text-muted/70"
+              />
+              <div className="mt-0.5 flex items-center gap-0.5 px-0.5">
                 <button
                   type="button"
-                  disabled={busy}
-                  onClick={() => onUnstage(staged.map((row) => row.path))}
-                  className="rounded-md px-1.5 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink disabled:opacity-40"
+                  disabled={busy || unstaged.length === 0}
+                  onClick={() => onStage(unstaged.map((row) => row.path))}
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[12px] text-ink hover:bg-wash disabled:text-muted disabled:hover:bg-transparent"
                 >
-                  Unstage
+                  Stage all
+                  {unstaged.length > 0 ? (
+                    <span className="rounded-full bg-wash px-1.5 py-px text-[11px] text-muted tabular-nums">{unstaged.length}</span>
+                  ) : null}
                 </button>
-              ) : null}
-              <GitIconButton
-                label="Discard all changes"
-                icon="trash"
-                disabled={busy || changes.length === 0}
-                onClick={() => {
-                  if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
-                }}
-              />
-              <button
-                type="submit"
-                disabled={busy || !message.trim() || staged.length === 0}
-                className="ml-auto rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-transparent disabled:text-muted"
-              >
-                {busy ? "Working…" : "Commit"}
-              </button>
+                {staged.length > 0 ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => onUnstage(staged.map((row) => row.path))}
+                    className="rounded-md px-1.5 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink disabled:opacity-40"
+                  >
+                    Unstage
+                  </button>
+                ) : null}
+                <GitIconButton
+                  label="Discard all changes"
+                  icon="trash"
+                  disabled={busy || changes.length === 0}
+                  onClick={() => {
+                    if (window.confirm("Discard all local changes? This cannot be undone.")) onDiscard(changes.map((row) => row.path));
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={busy || !message.trim() || staged.length === 0}
+                  className="ml-auto rounded-full bg-accent px-3 py-1 text-[12px] font-medium text-on-accent hover:bg-accent-hover disabled:bg-wash disabled:text-muted"
+                >
+                  {busy ? "Working…" : "Commit"}
+                </button>
+              </div>
             </div>
           </form>
         </div>

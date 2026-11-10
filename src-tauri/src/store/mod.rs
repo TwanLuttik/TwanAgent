@@ -665,6 +665,65 @@ fn load_message_at(
     row.map(message_from_row).transpose()
 }
 
+/// The last `message_limit` rows. One user turn can hold hundreds of tool messages,
+/// so a turn count still loads the whole chat.
+pub(super) fn load_messages_tail(
+    conn: &Connection,
+    conversation_id: &str,
+    message_limit: u32,
+) -> Result<Vec<Value>> {
+    if message_limit == 0 {
+        return load_messages(conn, conversation_id);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+        [conversation_id],
+        |row| row.get(0),
+    )?;
+    if count <= i64::from(message_limit) {
+        return load_messages(conn, conversation_id);
+    }
+    let offset = i64::from(message_limit.saturating_sub(1));
+    let start: Option<i64> = conn
+        .query_row(
+            "SELECT sort_order FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY sort_order DESC, id DESC
+             LIMIT 1 OFFSET ?2",
+            params![conversation_id, offset],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(start) = start else {
+        return load_messages(conn, conversation_id);
+    };
+    load_messages_from(conn, conversation_id, start)
+}
+
+fn load_messages_from(conn: &Connection, conversation_id: &str, min_sort: i64) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
+         WHERE conversation_id = ?1 AND sort_order >= ?2 ORDER BY sort_order ASC, id ASC",
+    )?;
+    let rows = stmt.query_map(params![conversation_id, min_sort], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(message_from_row(row?)?);
+    }
+    Ok(out)
+}
+
 fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
         "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
@@ -799,7 +858,8 @@ mod journeys;
 #[cfg(test)]
 pub use conversations::list_conversations;
 pub use conversations::{
-    conversation_summary, delete_conversation, get_conversation, list_conversation_summaries,
+    conversation_summary, delete_conversation, get_conversation, get_conversation_tail,
+    list_conversation_summaries,
     reorder_conversations, save_conversation, save_conversation_suffix_with_usage,
     set_conversation_archived, set_conversation_compaction,
 };

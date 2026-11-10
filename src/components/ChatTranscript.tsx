@@ -1,9 +1,9 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { FilePathTip, PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { forgetSeenToolSignature, ToolTrail } from "./ToolTrail";
-import { chatTurnSlice, hasOlderTurns, revealOlderTurns } from "../lib/chat-window";
+import { TRANSCRIPT_PAGE_MESSAGES, nextTranscriptLimit, visibleTranscriptEnd } from "../lib/chat-window";
 import {
   splitLiveTranscript,
   type ChatImage,
@@ -234,11 +234,6 @@ export function ChatTranscript({
 }) {
   // splitLiveTranscript parses messages once and returns the same settled turns
   // while only the stream changes, so SettledTurn does not rebuild per token.
-  const split = useMemo(
-    () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning),
-    [messages, streamText, liveTools, streamReasoning],
-  );
-  const turnCount = split.settled.length + (split.tail.length ? 1 : 0);
   const [revealed, setRevealed] = useState(0);
   const chatRef = useRef(conversationId);
   if (chatRef.current !== conversationId) {
@@ -247,6 +242,16 @@ export function ChatTranscript({
     chatRef.current = conversationId;
     if (revealed !== 0) setRevealed(0);
   }
+  // Parsed once per messages array. Streaming only replaces the open tail.
+  const split = useMemo(
+    () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning),
+    [messages, streamText, liveTools, streamReasoning],
+  );
+  const limit = revealed > 0 ? revealed : TRANSCRIPT_PAGE_MESSAGES;
+  const visible = useMemo(
+    () => visibleTranscriptEnd(split.settled, split.tail, limit),
+    [split, limit],
+  );
   const runningOpenIds = useMemo(() => {
     const ids = new Set<string>();
     for (const agent of subagents) {
@@ -254,30 +259,23 @@ export function ChatTranscript({
     }
     return ids;
   }, [subagents]);
-  const slice = chatTurnSlice(turnCount, revealed);
-  const older = hasOlderTurns(turnCount, revealed);
-  const settledFrom = Math.min(slice.start, split.settled.length);
-  const visibleSettled = split.settled.slice(settledFrom);
-  const showTail = split.tail.length > 0 && slice.start < turnCount;
+  useEffect(() => {
+    if (!visible.hidden) return;
+    const frame = requestAnimationFrame(() => {
+      onLoadOlder?.();
+      startTransition(() => {
+        setRevealed((current) => nextTranscriptLimit(Number.MAX_SAFE_INTEGER, current));
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [visible.hidden, limit, onLoadOlder]);
+  const showTail = visible.tail.length > 0;
+  const tailKeyStart = split.tail.length - visible.tail.length;
   return (
     <>
-      {older ? (
-        <div className="mb-4 flex justify-center">
-          <button
-            type="button"
-            onClick={() => {
-              onLoadOlder?.();
-              setRevealed((current) => revealOlderTurns(turnCount, current));
-            }}
-            className="rounded-full border border-line/70 px-3 py-1 text-[12px] text-muted hover:bg-wash hover:text-ink"
-          >
-            Load earlier messages
-          </button>
-        </div>
-      ) : null}
-      {visibleSettled.map((turn, i) => (
+      {visible.settled.map((turn, i) => (
         <SettledTurn
-          key={settledFrom + i}
+          key={`${conversationId}:turn:${visible.settled.length - i}`}
           turn={turn}
           mentionFiles={mentionFiles}
           conversationId={conversationId}
@@ -290,7 +288,8 @@ export function ChatTranscript({
       ))}
       {showTail ? (
         <LiveTail
-          items={split.tail}
+          items={visible.tail}
+          keyStart={tailKeyStart}
           busy={busy}
           mentionFiles={mentionFiles}
           conversationId={conversationId}
@@ -303,7 +302,7 @@ export function ChatTranscript({
         />
       ) : null}
       <EarlySubagentCards
-        items={showTail ? split.tail : []}
+        items={showTail ? visible.tail : []}
         subagents={subagents}
         runningOpenIds={runningOpenIds}
         subagentRuns={subagentRuns}
@@ -337,17 +336,19 @@ const SettledTurn = memo(function SettledTurn({
   onOpenConversation?: (id: string) => void;
 }) {
   return (
-    <TranscriptTurn
-      turn={turn}
-      mentionFiles={mentionFiles}
-      conversationId={conversationId}
-      model={model}
-      modelName={modelName}
-      subagents={subagents}
-      runningOpenIds={runningOpenIds}
-      subagentRuns={subagentRuns}
-      onOpenConversation={onOpenConversation}
-    />
+    <div className="[content-visibility:auto] [contain-intrinsic-size:auto_96px]">
+      <TranscriptTurn
+        turn={turn}
+        mentionFiles={mentionFiles}
+        conversationId={conversationId}
+        model={model}
+        modelName={modelName}
+        subagents={subagents}
+        runningOpenIds={runningOpenIds}
+        subagentRuns={subagentRuns}
+        onOpenConversation={onOpenConversation}
+      />
+    </div>
   );
 });
 
@@ -394,6 +395,7 @@ function EarlySubagentCards({
 
 function LiveTail({
   items,
+  keyStart = 0,
   busy,
   mentionFiles,
   conversationId,
@@ -405,6 +407,8 @@ function LiveTail({
   onOpenConversation,
 }: {
   items: TranscriptItem[];
+  /** Index of `items[0]` in the full open turn, so keys stay put as older rows mount. */
+  keyStart?: number;
   busy: boolean;
   mentionFiles?: MentionFile[];
   conversationId?: string;
@@ -426,6 +430,7 @@ function LiveTail({
   return (
     <TranscriptTurn
       turn={turn}
+      restKeyStart={keyStart + (hasUser ? 1 : 0)}
       liveIndex={liveIndex}
       mentionFiles={mentionFiles}
       conversationId={conversationId}
@@ -546,6 +551,7 @@ export function PendingUserMessage({
 
 function TranscriptTurn({
   turn,
+  restKeyStart = 0,
   liveIndex = -1,
   mentionFiles,
   conversationId,
@@ -557,6 +563,8 @@ function TranscriptTurn({
   onOpenConversation,
 }: {
   turn: TranscriptTurn;
+  /** Stable key for `rest[0]`. Older rows prepend above this without renumbering it. */
+  restKeyStart?: number;
   /** Index of the streaming tool row, or -1 when nothing in this turn is live. */
   liveIndex?: number;
   mentionFiles?: MentionFile[];
@@ -582,14 +590,15 @@ function TranscriptTurn({
       ) : null}
       {turn.rest.map((item, i) => {
         const index = userOffset + i;
+        const rowKey = restKeyStart + i;
         const last = i === turn.rest.length - 1;
         if (item.kind === "thinking") {
-          return <ThinkingTrace key={index} text={item.content} live={item.live} />;
+          return <ThinkingTrace key={rowKey} text={item.content} live={item.live} />;
         }
         if (item.kind === "tools") {
           const live = liveIndex === index;
           return (
-            <div key={index}>
+            <div key={rowKey} className="[content-visibility:auto] [contain-intrinsic-size:auto_64px]">
               <ToolTrail
                 labels={item.labels}
                 files={item.files}
@@ -614,7 +623,7 @@ function TranscriptTurn({
         }
         if (item.kind === "compaction") {
           return (
-            <div key={index} className="mb-4 flex items-center gap-2 text-[11px] text-muted/70">
+            <div key={rowKey} className="mb-4 flex items-center gap-2 text-[11px] text-muted/70">
               <span className="h-px min-w-4 flex-1 bg-line/70" />
               <span>Conversation compacted</span>
               <span className="h-px min-w-4 flex-1 bg-line/70" />
@@ -624,7 +633,7 @@ function TranscriptTurn({
         if (item.kind === "error") {
           return (
             <p
-              key={index}
+              key={rowKey}
               className={`text-[13px] leading-relaxed text-err [overflow-wrap:anywhere] ${last ? "" : "mb-4"}`}
             >
               {item.content}
@@ -633,7 +642,7 @@ function TranscriptTurn({
         }
         const streaming = liveIndex >= 0 && last && item.kind === "assistant" && typeof item.durationMs !== "number";
         return (
-          <div key={index} className={last ? undefined : "mb-4"}>
+          <div key={rowKey} className={last ? undefined : "mb-4"}>
             {i === finalReply ? (
               <div className="mb-1">
                 <ModelMark model={model} name={modelName} />

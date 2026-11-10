@@ -159,8 +159,14 @@ export function getConversationById(id: string): Promise<Conversation> {
   return invoke("dev_get_conversation", { id });
 }
 
-export function getConversation(workspace: string, id: string): Promise<Conversation> {
-  return invoke("dev_get_conversation", { id, workspace: workspace || null });
+export function getConversation(workspace: string, id: string, tailMessages?: number): Promise<Conversation> {
+  const limit = tailMessages && tailMessages > 0 ? Math.floor(tailMessages) : null;
+  return invoke("dev_get_conversation", {
+    id,
+    workspace: workspace || null,
+    tailMessages: limit,
+    tail_messages: limit,
+  });
 }
 
 export function saveConversation(workspace: string, conversation: Conversation): Promise<Conversation> {

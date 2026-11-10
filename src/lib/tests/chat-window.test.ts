@@ -5,13 +5,27 @@ import {
   CHAT_WINDOW_TURNS,
   cachedTranscript,
   chatTurnSlice,
+  chatSwitchPending,
   holdTranscript,
   hasOlderTurns,
   openedTranscriptIsCurrent,
   rememberShownTranscript,
   revealOlderTurns,
   scrollTopAfterPrepend,
+  TRANSCRIPT_PAGE_MESSAGES,
+  nextTranscriptLimit,
+  transcriptMessageStart,
+  visibleTranscriptEnd,
 } from "../chat-window.ts";
+
+describe("chatSwitchPending", () => {
+  it("is pending only while a different chat is selected", () => {
+    assert.equal(chatSwitchPending("b", "a"), true);
+    assert.equal(chatSwitchPending("a", "a"), false);
+    assert.equal(chatSwitchPending("", "a"), false);
+    assert.equal(chatSwitchPending("", ""), false);
+  });
+});
 
 describe("holdTranscript", () => {
   it("keeps the chat on screen until the next one's messages arrive", () => {
@@ -75,6 +89,32 @@ describe("openedTranscriptIsCurrent", () => {
     assert.equal(openedTranscriptIsCurrent(2, 2, "c", "b"), false);
     assert.equal(openedTranscriptIsCurrent(2, 2, "", "b"), false);
     assert.equal(openedTranscriptIsCurrent(2, 2, "b", ""), false);
+  });
+});
+
+describe("transcriptMessageStart", () => {
+  it("keeps only the last page when one turn holds the whole chat", () => {
+    assert.equal(transcriptMessageStart(2005, TRANSCRIPT_PAGE_MESSAGES), 2005 - 48);
+    assert.equal(transcriptMessageStart(48, 48), 0);
+    assert.equal(transcriptMessageStart(10, 48), 0);
+    assert.equal(transcriptMessageStart(0, 48), 0);
+  });
+});
+
+describe("visibleTranscriptEnd", () => {
+  it("mounts the end first and keeps earlier turns the same objects", () => {
+    const older = { user: "older", rest: ["a"] };
+    const recent = { user: "recent", rest: ["b"] };
+    const tail = ["live"];
+    const first = visibleTranscriptEnd([older, recent], tail, 3);
+    assert.equal(first.hidden, true);
+    assert.deepEqual(first.tail, ["live"]);
+    assert.equal(first.settled.length, 1);
+    assert.equal(first.settled[0], recent);
+    const grown = visibleTranscriptEnd([older, recent], tail, nextTranscriptLimit(5, 3));
+    assert.equal(grown.hidden, false);
+    assert.equal(grown.settled[0], older);
+    assert.equal(grown.settled[1], recent);
   });
 });
 

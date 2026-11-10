@@ -3,7 +3,7 @@ import { nextTopSort } from "../lib/all-projects";
 import { completeTurn, resumeLocalTurn } from "../lib/agent";
 import { noteCommandStream } from "../lib/command-run";
 import { keepCompaction } from "../lib/compact";
-import { cloudSendWaiting, hostedTurnStaysOnServer } from "../lib/hosted";
+import { hostedTurnStaysOnServer, linkSendBlock } from "../lib/hosted";
 import {
   activityFromToolCall,
   conversationTitleFrom,
@@ -71,11 +71,13 @@ import {
   type SubagentEvent,
   type SubagentRecord,
 } from "../lib/subagent";
+import { transcriptLoad } from "../lib/transcript-open";
 import { beginTurnClock, endTurnClock } from "../lib/turn-clock";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
 import { getLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
 import { rememberSplitPane } from "../lib/split-pane";
 import {
+  chatShouldQueue,
   clearPendingForChat,
   closeDanglingToolCalls,
   clearUnseenFinished,
@@ -591,7 +593,7 @@ function pickPlanMode(mode: "off" | "pending" | "on", chatId = activeIdRef.curre
     ? modelRef.current
     : conversationsRef.current.find((row) => row.id === chatId)?.model || modelRef.current;
   if (!chatId || !workspace || !providerProfile(modelId).planMode) return;
-  const running = turnsRef.current.has(chatId);
+  const running = chatShouldQueue(turnsRef.current, chatId);
   const state: PlanModeState =
     mode === "on"
       ? "Active"
@@ -1010,7 +1012,7 @@ async function continueWithPending(finishedId: string, ws: string, latestMessage
 }
 
 function flushPending(chatId: string) {
-  if (!workspace || !chatId || turnsRef.current.has(chatId)) return;
+  if (!workspace || !chatId || chatShouldQueue(turnsRef.current, chatId)) return;
   void continueWithPending(chatId, workspace, messages);
 }
 
@@ -1118,22 +1120,14 @@ async function send(targetId = activeIdRef.current) {
     : expandFileMentions(expandPasteTokens(draftForChat(draftsRef.current, imageKey) || draft, draftPastes), mentionFiles).trim();
   const images = persistableImages(heldImages);
   if (!canSendPrompt(text, images)) return;
-  if (cloudSendWaiting(Boolean(workspace), remoteKnownRef.current, remoteRef.current, linkReadyRef.current)) {
-    setFlash({ kind: "err", text: "Still connecting to the server. Try again in a moment." });
-    return;
-  }
-  if (remoteRef.current && remoteRef.current.online === false) {
-    setFlash({
-      kind: "err",
-      text: `${remoteRef.current.machineName} is offline. Messages stay here until it answers.`,
-    });
-    return;
-  }
-  if (remoteRef.current && remoteRef.current.paired === false) {
-    setFlash({
-      kind: "err",
-      text: `Pair ${remoteRef.current.machineName} before sending. Cloud chats run on that server.`,
-    });
+  const blocked = linkSendBlock({
+    hasWorkspace: Boolean(workspace),
+    known: remoteKnownRef.current,
+    remote: remoteRef.current,
+    linkReady: linkReadyRef.current,
+  });
+  if (blocked) {
+    setFlash(blocked);
     return;
   }
   if (!workspace) {
@@ -1202,12 +1196,20 @@ async function send(targetId = activeIdRef.current) {
   }
   if (turnAppliesToChat(id, activeIdRef.current)) stickToBottomRef.current = true;
   clearPrompt(id);
-  if (turnsRef.current.has(id)) {
+  if (chatShouldQueue(turnsRef.current, id)) {
     setPending(enqueuePending(pendingRef.current, id, text, images));
     return;
   }
   let history = closeDanglingToolCalls(messages);
-  if (!turnAppliesToChat(id, activeIdRef.current)) {
+  const pendingTranscript = transcriptLoad(id);
+  if (pendingTranscript && turnAppliesToChat(id, activeIdRef.current)) {
+    const full = await pendingTranscript;
+    if (!full) {
+      setFlash({ kind: "err", text: "This conversation is still loading." });
+      return;
+    }
+    history = closeDanglingToolCalls(full);
+  } else if (!turnAppliesToChat(id, activeIdRef.current)) {
     try {
       const full = hostedTurnStaysOnServer(remoteRef.current)
         ? await api.getConversationById(id)
@@ -1672,7 +1674,7 @@ async function runTurn(
         setStreamReasoning("");
       }
       setTurnStartedAt(0);
-      if (!turnsRef.current.has(id)) {
+      if (!chatShouldQueue(turnsRef.current, id)) {
         runningIdRef.current = "";
         setRunningId("");
       }

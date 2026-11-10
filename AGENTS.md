@@ -20,6 +20,18 @@ This repo stands on its own. Do not depend on another app's source tree.
 
 Frontend files do not use a `dev` or `dev-` prefix. Rust command names such as `dev_list_conversations` stay as they are.
 
+## Phases
+
+A phase is one value. Do not add a second boolean for the same lifecycle.
+
+- Screens are one overlay: settings, docs, usage, servers, or one project's settings. Open and close that. Do not set the flags yourself.
+- A cloud folder is one link phase in `src/lib/hosted.ts`. Send, the sidebar, and whether a turn stays on the server all read that phase.
+- A speech download names the model it is fetching. A missing id is idle, not every row.
+- A shell command the agent is running is one command phase. A background command is still running.
+- Queue a follow-up with `chatShouldQueue`. It sees every chat that has a turn, not only the one on screen.
+
+Leave wire formats, database columns, and the Grok CLI plan file alone. Those stay compatible with the server and the CLI.
+
 ## File size
 
 A view or component that keeps growing gets split into files. `MainView.tsx` wires the screen together. The shell, sidebar, chat stage, and each new screen live in `src/views/main/` as their own components. Do not add another screen inline in `MainView.tsx`.

@@ -15,7 +15,11 @@ import {
   micLevel,
   voiceBars,
   preferredRecorderMime,
+  speechDownloadIdle,
+  speechDownloadProgress,
+  speechDownloadStart,
   speechModel,
+  speechRowDownloading,
   speechSizeLabel,
 } from "../speech.ts";
 
@@ -138,5 +142,27 @@ describe("recorder mime", () => {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     assert.equal(String.fromCharCode(...bytes.slice(0, 4)), "RIFF");
     assert.equal(bytes.length, 44 + 6);
+  });
+});
+
+describe("speech download", () => {
+  it("marks only the model that is actually downloading", () => {
+    const idle = speechDownloadIdle();
+    assert.equal(speechRowDownloading(idle, "tiny.en"), false);
+    assert.equal(speechRowDownloading(idle, "base.en"), false);
+    const started = speechDownloadStart("base.en", 100);
+    assert.equal(speechRowDownloading(started, "base.en"), true);
+    assert.equal(speechRowDownloading(started, "tiny.en"), false);
+  });
+
+  it("ignores a late event from a download that was replaced", () => {
+    const current = speechDownloadStart("small.en", 400);
+    const late = speechDownloadProgress(current, { id: "tiny.en", received: 10, total: 80, done: true });
+    assert.deepEqual(late, current);
+    const moved = speechDownloadProgress(current, { id: "small.en", received: 40, total: 400, done: false });
+    assert.equal(speechRowDownloading(moved, "small.en"), true);
+    assert.equal(moved.phase === "downloading" ? moved.received : 0, 40);
+    const done = speechDownloadProgress(moved, { id: "small.en", received: 400, total: 400, done: true });
+    assert.equal(done.phase, "idle");
   });
 });

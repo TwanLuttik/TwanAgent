@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
 import { motion } from "motion/react";
 import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
@@ -9,6 +9,7 @@ import { conversationActivityLabel } from "../../lib/core";
 import { rememberSubagentParent } from "../../lib/subagent-parent";
 import { subagentRunInfo, type SubagentRecord } from "../../lib/subagent";
 import { holdTranscript } from "../../lib/chat-window";
+import { useTranscriptPreview } from "../../lib/transcript-open";
 import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
 import { chatHasRunningTurn, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
@@ -67,25 +68,41 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
   const heldRef = useRef({ id: activeId, messages, model });
   const held = holdTranscript(heldRef.current, messages, activeId, model);
   heldRef.current = held;
-  const showingTranscript = held.id === activeId;
+  const preview = useTranscriptPreview();
+  const previewMessages =
+    preview && preview.id === activeId && held.id !== activeId ? preview.messages : null;
+  const showingTranscript = held.id === activeId || previewMessages !== null;
+  const transcriptMessages = previewMessages ?? held.messages;
+  const transcriptId = previewMessages ? activeId : held.id;
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  const activeForOpen = useRef(activeId);
+  activeForOpen.current = activeId;
+  const onOpenConversation = useCallback((id: string) => {
+    const current = activeForOpen.current;
+    if (current && current !== id) rememberSubagentParent(id, current);
+    void openChatRef.current(id);
+  }, []);
   useLayoutEffect(() => {
     if (!showingTranscript) return;
     const el = scroller.current;
-    const saved = chatScrollFor(held.id);
+    const saved = chatScrollFor(transcriptId);
     if (!el || saved == null) return;
     el.scrollTop = saved;
-  }, [showingTranscript, held.id, scroller]);
+  }, [showingTranscript, transcriptId, scroller]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   useEffect(() => {
     // activeId changes before its messages arrive. Writing now would store the
-    // chat we left under the one just selected.
-    if (!showingTranscript || !held.id) return;
+    // chat we left under the one just selected. A switch keeps the old transcript
+    // up for one frame, so this must not file the incoming list under that chat.
+    if (!showingTranscript || !held.id || previewMessages) return;
     rememberSplitPane(held.id, { messages: messagesRef.current });
-  }, [showingTranscript, held.id, messages]);
-  const transcriptPending = Boolean(openingId) && openingId === activeId && (!showingTranscript || messages.length === 0);
+  }, [showingTranscript, held.id, messages, previewMessages]);
+  const transcriptPending =
+    Boolean(openingId) && openingId === activeId && previewMessages === null && (!showingTranscript || messages.length === 0);
   const centeredWithoutStream =
-    !transcriptPending && showingTranscript && messages.length === 0 && !activeRunning && queued.length === 0;
+    !transcriptPending && showingTranscript && transcriptMessages.length === 0 && !activeRunning && queued.length === 0;
   const dock = useRef({ id: activeId, centered: centeredWithoutStream, sliding: false });
     return (
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -120,34 +137,31 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
         <div
           ref={scroller}
           onScroll={() => {
-            if (!showingTranscript || !scroller.current || !held.id) return;
-            rememberChatScroll(held.id, scroller.current.scrollTop);
+            if (!showingTranscript || !scroller.current || !transcriptId) return;
+            rememberChatScroll(transcriptId, scroller.current.scrollTop);
           }}
           className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         >
           <div className={`relative mx-auto w-full min-w-0 max-w-[720px] px-6 ${showingTranscript && subagentParent ? "pt-14" : "pt-5"}`}>
             {showingTranscript ? (
               <LiveTranscript
-                key={held.id}
-                messages={held.messages}
-                model={held.model}
-                modelName={catalogModelName(models, held.model)}
+                key={transcriptId}
+                messages={transcriptMessages}
+                model={model}
+                modelName={catalogModelName(models, model)}
                 centeredWithoutStream={centeredWithoutStream}
                 activeRunning={activeRunning}
                 transcriptPending={transcriptPending}
-                conversationId={held.id}
+                conversationId={transcriptId}
                 mentionFiles={mentionFiles}
                 subagents={subagents}
                 subagentRuns={subagentRuns}
-                onOpenConversation={(id) => {
-                  if (activeId && activeId !== id) rememberSubagentParent(id, activeId);
-                  void openChat(id);
-                }}
+                onOpenConversation={onOpenConversation}
                 onLoadOlder={holdScrollForOlder}
                 pendingShell={Boolean(pendingShell)}
                 pendingPlan={Boolean(pendingPlan)}
-                activity={runningTurns[activeId]?.activity}
-                startedAt={runningTurnStartedAt(runningTurns, activeId) || turnStartedAt}
+                activity={runningTurns[transcriptId]?.activity}
+                startedAt={runningTurnStartedAt(runningTurns, transcriptId) || turnStartedAt}
               />
             ) : transcriptPending ? (
               <ActivityStatus label="Loading…" />

@@ -1,7 +1,8 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { isMacOS } from "../components/WindowButtons";
 import { scrollChatToEnd } from "../lib/chat-scroll";
-import { cachedTranscript, openedTranscriptIsCurrent, rememberShownTranscript } from "../lib/chat-window";
+import { TRANSCRIPT_PAGE_MESSAGES, cachedTranscript, openedTranscriptIsCurrent, rememberShownTranscript } from "../lib/chat-window";
+import { beginTranscriptLoad, clearTranscriptPreview, setTranscriptPreview } from "../lib/transcript-open";
 import {
   backfillFinishedAt,
   conversationTitleFrom,
@@ -150,11 +151,8 @@ export type LibraryDeps = {
   setDirtyFiles: Update<Record<string, boolean>>;
   setPendingClosePath: Update<string | null>;
   setFolderOpen: Update<boolean>;
-  setShowSettings: Update<boolean>;
-  setShowUsage: Update<boolean>;
-  setShowDocs: Update<boolean>;
-  setShowServers: Update<boolean>;
-  setProjectSettings: Update<{ path: string; name: string } | null>;
+  closeOverlays: () => void;
+  dismissProjectSettings: (path: string, same: (left: string, right: string) => boolean) => void;
   setCollapsedProjects: Update<string[]>;
   setRecents: Update<string[]>;
   setDrafts: Update<Record<string, string>>;
@@ -191,7 +189,7 @@ export function useLibrary(deps: LibraryDeps) {
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, scroller,
     runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
-    setDirtyFiles, setPendingClosePath, setFolderOpen, setShowSettings, setShowUsage, setShowDocs, setShowServers, setProjectSettings,
+    setDirtyFiles, setPendingClosePath, setFolderOpen, closeOverlays, dismissProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
     setRunningActivity, setTurnStartedAt,
     setSubagents, setExpandedAgents, setOpeningId, setUnseenFinished, setPendingByChat, setOpenTabs, setFlash, bumpFiles,
@@ -364,7 +362,7 @@ async function deleteProjectFromSidebar(path: string, mode: "list" | "files" | "
     }
     return;
   }
-  setProjectSettings((current) => (current && isSameProject(current.path, path) ? null : current));
+  dismissProjectSettings(path, isSameProject);
   try {
     // Deleting files removes the folder. Removing from the list only forgets it,
     // including a project the app created. The folder stays until the user asks.
@@ -597,11 +595,7 @@ function forgetEmptyComposer() {
 }
 
 async function startNewChat() {
-  setShowSettings(false);
-  setShowUsage(false);
-  setShowDocs(false);
-  setShowServers(false);
-  setProjectSettings(null);
+  closeOverlays();
   if (!runningWsRef.current) hideSubagents();
   // A new chat stays off every project until the first prompt. The selector
   // only chooses where that prompt will be saved.
@@ -624,11 +618,7 @@ async function startNewChat() {
 }
 
 async function openSidebarChat(path: string, id: string) {
-  setShowSettings(false);
-  setShowUsage(false);
-  setShowDocs(false);
-  setShowServers(false);
-  setProjectSettings(null);
+  closeOverlays();
   if (!path) return;
   if (isSameProject(path, workspace)) {
     // A chat already in a split stays in that pair. The list click only focuses it.
@@ -842,11 +832,7 @@ async function repairCachedReply(path: string, id: string, painted: ChatMessage[
 
 async function openChat(id: string, tabs = openTabsRef.current, path = workspace) {
   setUnseenFinished((prev) => clearUnseenFinished(prev, id));
-  setShowSettings(false);
-  setShowUsage(false);
-  setShowDocs(false);
-  setShowServers(false);
-  setProjectSettings(null);
+  closeOverlays();
   const home = tabHomesRef.current[id];
   // A saved home can be another spelling of the folder this click already
   // named, such as a lowercased TwanAgent path. Using it would open that
@@ -975,15 +961,31 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   const cachedLookup = hostedChatsRef.current && !painted
     ? api.hostedConversationCached(path, id).catch(() => null)
     : null;
-  const serverLookup = (hostedChatsRef.current
-    ? api.getHostedConversation(path, id)
-    : api.getConversation(path, id)
-  ).then(
-    (value) => ({ ok: true as const, value }),
-    (error: unknown) => ({ ok: false as const, error }),
-  );
+  // A local chat reads the tail first. Starting the full read now would hold the
+  // database lock, and the tail would wait behind every message in the chat.
+  const serverLookup = hostedChatsRef.current
+    ? api.getHostedConversation(path, id).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+    : null;
   setOpeningId(painted ? "" : id);
+  const finishLoad = hostedChatsRef.current ? null : beginTranscriptLoad(id);
   try {
+    if (generation !== openGeneration.current) return;
+    if (!hostedChatsRef.current) {
+      // The last turns are enough to paint. The full history follows, and send waits for it.
+      const tail = await api.getConversation(path, id, TRANSCRIPT_PAGE_MESSAGES).catch(() => null);
+      if (generation !== openGeneration.current) return;
+      const tailMessages = (tail?.messages as ChatMessage[] | undefined) ?? [];
+      if (
+        tailMessages.length > 0 &&
+        openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)
+      ) {
+        setTranscriptPreview(id, tailMessages);
+        setOpeningId("");
+      }
+    }
     if (generation !== openGeneration.current) return;
     const cachedTranscript = cachedLookup ? await cachedLookup : null;
     if (generation !== openGeneration.current) return;
@@ -1004,7 +1006,11 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
         setCompactionByChat((prev) => ({ ...prev, [id]: cachedTranscript.compaction! }));
       }
     }
-    const loaded = await serverLookup;
+    const loaded = await (serverLookup ??
+      api.getConversation(path, id).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ));
     if (!loaded.ok) throw loaded.error;
     const full = loaded.value;
     if (generation !== openGeneration.current) return;
@@ -1025,8 +1031,10 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
     // highlight already painted, so commit the transcript now. A transition
     // waits behind streaming updates and leaves that previous chat up.
     if (openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) {
+      clearTranscriptPreview(id);
       setOpeningId("");
       setMessages(shown);
+      finishLoad?.(shown);
     }
     showOpenedChatSettings(id, known, full);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
@@ -1073,6 +1081,8 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
       void watchHosted(path, id);
     }
   } finally {
+    finishLoad?.(null);
+    clearTranscriptPreview(id);
     if (generation === openGeneration.current) {
       finishOpen(generation, id);
       setOpeningId("");

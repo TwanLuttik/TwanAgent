@@ -39,6 +39,7 @@ import {
   localTurnsToRejoin,
   foregroundRunningId,
   runningTurnStartedAt,
+  chatShouldQueue,
   shouldQueueForChat,
   commitPartialReply,
   messagesShowStream,
@@ -674,6 +675,13 @@ describe("per-conversation pending queue", () => {
     assert.equal(shouldQueueForChat("chat-a", "chat-a"), true);
     assert.equal(shouldQueueForChat("chat-a", "chat-b"), false);
     assert.equal(shouldQueueForChat("", "chat-b"), false);
+  });
+
+  it("queues a background chat while another chat is in front", () => {
+    const active = new Set(["side"]);
+    assert.equal(chatShouldQueue(active, "side"), true);
+    assert.equal(chatShouldQueue(active, "front"), false);
+    assert.equal(chatShouldQueue(active, ""), false);
   });
 
   it("does not restart the turn clock when a message lands between tool calls", () => {

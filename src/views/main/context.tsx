@@ -2,6 +2,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import type { ProjectChatGroup } from "../../lib/all-projects";
 import type { TabItem, TabMenu } from "../../lib/split-pane";
 import type { ConversationSummary } from "../../lib/tauri";
+import type { AppOverlay } from "../../lib/overlay";
 import type { RunningTurn } from "../../lib/turn";
 
 type MainFn = (...args: any[]) => any;
@@ -34,6 +35,7 @@ export type MainModel = {
   closeProjectChats: MainFn;
   closeFileTab: MainFn;
   closePendingEdit: MainFn;
+  closeOverlays: MainFn;
   closeProjectSettings: MainFn;
   closeServers: MainFn;
   closeSettings: MainFn;
@@ -100,6 +102,7 @@ export type MainModel = {
   speechDownloading: any;
   refreshSpeech: MainFn;
   downloadSpeech: MainFn;
+  overlay: AppOverlay;
   projectMenu: any;
   projectSettings: any;
   projectsRoot: any;
@@ -138,9 +141,6 @@ export type MainModel = {
   setFolderOpen: MainFn;
   setPendingDeleteProject: MainFn;
   setProjectMenu: MainFn;
-  setShowSettings: MainFn;
-  setShowUsage: MainFn;
-  setShowDocs: MainFn;
   settingsTab: any;
   setSettingsTab: MainFn;
   setSidebarWidth: MainFn;
