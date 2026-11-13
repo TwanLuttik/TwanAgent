@@ -240,6 +240,13 @@ export const MODEL_RATES: Record<string, ModelRate> = {
   // Last list price for the retired M2.7 family. Highspeed is a separate rate, not a dated M2.7.
   "minimax-m2.7": { input: 0.3, cachedInput: 0.06, output: 1.2 },
   "minimax-m2.7-highspeed": { input: 0.6, cachedInput: 0.06, output: 2.4 },
+  // OpenAI list prices, per million tokens. The long rate applies to the whole request
+  // once the prompt passes 272k. The table uses >=, so the threshold is 272,001.
+  // Cache writes are not estimated.
+  "gpt-6-astra": { input: 10, cachedInput: 1, output: 50, longContextFrom: 272_001, longInput: 20, longCachedInput: 2, longOutput: 75 },
+  "gpt-6.1-sol": { input: 2, cachedInput: 0.1, output: 10, longContextFrom: 272_001, longInput: 4, longCachedInput: 0.2, longOutput: 15 },
+  "gpt-6.1-terra": { input: 1, cachedInput: 0.05, output: 5, longContextFrom: 272_001, longInput: 2, longCachedInput: 0.1, longOutput: 7.5 },
+  "gpt-6-luna": { input: 0.1, cachedInput: 0.01, output: 0.5, longContextFrom: 272_001, longInput: 0.2, longCachedInput: 0.02, longOutput: 0.75 },
 };
 
 const PER_MILLION = 1_000_000;
@@ -259,6 +266,10 @@ const MODEL_NAMES: Record<string, string> = {
   "minimax-m3.1-flash-preview": "MiniMax M3.1 Flash",
   "minimax-m2.7": "MiniMax M2.7",
   "minimax-m2.7-highspeed": "MiniMax M2.7 Highspeed",
+  "gpt-6-astra": "GPT-6 Astra",
+  "gpt-6.1-sol": "GPT-6.1 Sol",
+  "gpt-6.1-terra": "GPT-6.1 Terra",
+  "gpt-6-luna": "GPT-6 Luna",
 };
 
 /** Short name for a usage row. Unknown ids stay as stored, including an empty model. */
@@ -279,6 +290,11 @@ export function modelColorIndex(model: string): number {
   if (id.startsWith("claude")) return 5;
   if (id.startsWith("minimax-m3")) return 2;
   if (id.startsWith("minimax")) return 6;
+  if (id.startsWith("gpt-6-astra")) return 7;
+  if (id.startsWith("gpt-6.1-sol")) return 1;
+  if (id.startsWith("gpt-6.1-terra")) return 6;
+  if (id.startsWith("gpt-6-luna")) return 3;
+  if (id.startsWith("gpt-")) return 5;
   if (id.includes("grok-4.7") || id.includes("grok-4.6")) return 0;
   if (id.startsWith("grok-4.5") || id.startsWith("grok-4.3")) return 1;
   if (id.startsWith("grok-4")) return 2;
@@ -342,6 +358,8 @@ export type UsageCost = {
   anthropic: number;
   /** Priced tokens from MiniMax models. */
   minimax: number;
+  /** Priced tokens from OpenAI models. */
+  openai: number;
   /** Tokens whose model has no list price, so they are left out of the estimate. */
   unpricedTokens: number;
   /** List-price estimate for one model id. Missing when that model has no rate. */
@@ -364,6 +382,7 @@ export function estimateUsageCost(
   let xai = 0;
   let anthropic = 0;
   let minimax = 0;
+  let openai = 0;
   let unpricedTokens = 0;
   const byModel: Record<string, number> = {};
   for (const { ev, atMs, delta } of eachUsageDelta(events, (row, t) => {
@@ -383,9 +402,10 @@ export function estimateUsageCost(
     const provider = providerFor(ev.model);
     if (provider === "anthropic") anthropic += cost;
     else if (provider === "minimax") minimax += cost;
+    else if (provider === "openai") openai += cost;
     else xai += cost;
   }
-  return { usd, xai, anthropic, minimax, unpricedTokens, byModel };
+  return { usd, xai, anthropic, minimax, openai, unpricedTokens, byModel };
 }
 
 function eachUsageDelta(

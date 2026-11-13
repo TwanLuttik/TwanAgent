@@ -4,6 +4,7 @@ export {
   contextWindowForProvider,
   isClaudeModel,
   isMinimaxModel,
+  isOpenAiModel,
   providerFor,
   providerProfile,
   providerReadyFor,

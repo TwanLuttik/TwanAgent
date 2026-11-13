@@ -88,6 +88,7 @@ pub struct CollectedRound {
     pub reasoning: String,
     pub tool_calls: Vec<super::types::DevToolCall>,
     pub thinking: Vec<crate::model_providers::ThinkingBlock>,
+    pub reasoning_items: Vec<serde_json::Value>,
     pub usage: Option<DevChatUsage>,
     pub error: Option<String>,
 }
@@ -122,6 +123,7 @@ pub(crate) fn note_round_piece(stream_id: &str, kind: &str, text: &str) {
         tool_calls: None,
         usage: None,
         thinking: None,
+        reasoning_items: None,
         conversation: None,
     });
 }
@@ -152,6 +154,7 @@ pub async fn collect_chat_round(
     journey_id: Option<String>,
     cancel: Arc<AtomicBool>,
     extra_tools: Vec<serde_json::Value>,
+    service_tier: Option<String>,
     on_progress: impl Fn(RoundProgress) + Send + 'static,
 ) -> Result<CollectedRound> {
     let stream_id = {
@@ -183,6 +186,7 @@ pub async fn collect_chat_round(
         effort,
         context_window,
         journey_id,
+        service_tier,
     )
     .await;
     if let Err(err) = started {
@@ -211,6 +215,7 @@ fn wait_round(
     let mut reasoning = String::new();
     let mut tool_calls = Vec::new();
     let mut thinking = Vec::new();
+    let mut reasoning_items = Vec::new();
     let mut usage = None;
     let started = std::time::Instant::now();
     loop {
@@ -221,6 +226,7 @@ fn wait_round(
                 reasoning,
                 tool_calls,
                 thinking,
+                reasoning_items,
                 usage,
                 error: Some("the model stream timed out".into()),
             };
@@ -239,6 +245,7 @@ fn wait_round(
                         reasoning,
                         tool_calls,
                         thinking,
+                        reasoning_items,
                         usage,
                         error: Some("Stopped.".into()),
                     };
@@ -253,6 +260,7 @@ fn wait_round(
                         reasoning,
                         tool_calls,
                         thinking,
+                        reasoning_items,
                         usage,
                         error: Some("the model stream closed".into()),
                     };
@@ -265,6 +273,7 @@ fn wait_round(
                     reasoning,
                     tool_calls,
                     thinking,
+                    reasoning_items,
                     usage,
                     error: Some("the model stream closed".into()),
                 };
@@ -297,6 +306,9 @@ fn wait_round(
                 if let Some(blocks) = event.thinking {
                     thinking = blocks;
                 }
+                if let Some(items) = event.reasoning_items {
+                    reasoning_items = items;
+                }
                 if let Some(next) = event.usage {
                     usage = Some(next);
                 }
@@ -314,6 +326,7 @@ fn wait_round(
                     reasoning,
                     tool_calls,
                     thinking,
+                    reasoning_items,
                     usage,
                     error: None,
                 };
@@ -324,6 +337,7 @@ fn wait_round(
                     reasoning,
                     tool_calls,
                     thinking,
+                    reasoning_items,
                     usage,
                     error: Some(event.text.unwrap_or_else(|| "xAI request failed.".into())),
                 };
@@ -363,6 +377,7 @@ pub async fn dev_chat_start(
     effort: Option<String>,
     context_window: Option<u64>,
     journey_id: Option<String>,
+    service_tier: Option<String>,
 ) -> Result<()> {
     let extra_tools = take_extra_tools(&stream_id);
     let model = model
@@ -399,7 +414,18 @@ pub async fn dev_chat_start(
     } else {
         None
     };
+    let openai_auth = if provider == crate::model_providers::registry::ProviderId::OpenAi {
+        let Some(auth) = crate::openai::resolve_openai_auth(&state.data_dir) else {
+            return Err(Error::Other(
+                crate::model_providers::registry::sign_in_error(provider).into(),
+            ));
+        };
+        Some(auth)
+    } else {
+        None
+    };
     let effort = effort.filter(|s| !s.trim().is_empty());
+    let service_tier = service_tier.filter(|s| !s.trim().is_empty());
     let context_window = context_window.filter(|n| *n > 0);
     let pdf_documents = provider == crate::model_providers::registry::ProviderId::Anthropic;
     let data_dir = state.data_dir.clone();
@@ -454,6 +480,29 @@ pub async fn dev_chat_start(
                 extra_tools.clone(),
             )
             .await
+        } else if provider == crate::model_providers::registry::ProviderId::OpenAi {
+            let tools = merge_tools(
+                super::tool_schema::tools_json_for(
+                    include_journey,
+                    crate::model_providers::registry::plan_mode(
+                        crate::model_providers::registry::ProviderId::OpenAi,
+                    ),
+                ),
+                &extra_tools,
+            );
+            let token = openai_auth.expect("openai auth");
+            crate::openai::stream(
+                &app2,
+                &sid,
+                &token,
+                messages,
+                &model,
+                effort.as_deref(),
+                &tools,
+                cancel,
+                service_tier.as_deref(),
+            )
+            .await
         } else {
             stream_chat(
                 &app2,
@@ -477,6 +526,7 @@ pub async fn dev_chat_start(
                 tool_calls: None,
                 usage: None,
                 thinking: None,
+                reasoning_items: None,
                 conversation: None,
             };
             publish_round(&event);
@@ -686,6 +736,7 @@ async fn stream_chat(
                         tool_calls: None,
                         usage: None,
                         thinking: None,
+                        reasoning_items: None,
                         conversation: None,
                     },
                 );

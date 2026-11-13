@@ -20,6 +20,7 @@ pub struct HostedTurn {
     pub effort: String,
     pub permission: String,
     pub context_window: Option<u64>,
+    pub service_tier: String,
 }
 
 /// Build the only frame a send is allowed to produce.
@@ -44,6 +45,7 @@ pub fn prompt_frame(turn: &HostedTurn) -> Result<ClientFrame> {
         },
         project: String::new(),
         context_window: turn.context_window.filter(|value| *value > 0),
+        service_tier: turn.service_tier.trim().to_string(),
     }))
 }
 
@@ -83,6 +85,7 @@ fn emit_hosted(
             tool_calls: None,
             usage: None,
             thinking: None,
+            reasoning_items: None,
             conversation,
         },
     );
@@ -101,6 +104,7 @@ pub async fn dev_hosted_turn(
     effort: Option<String>,
     permission: Option<String>,
     context_window: Option<u64>,
+    service_tier: Option<String>,
 ) -> Result<()> {
     let root = state.require_workspace(&workspace)?;
     let project = crate::remote::project_for_workspace(&state, &root)?
@@ -128,6 +132,7 @@ pub async fn dev_hosted_turn(
         effort: effort.unwrap_or_default(),
         permission: permission.unwrap_or_else(|| "ask".into()),
         context_window: context_window.filter(|value| *value > 0),
+        service_tier: service_tier.unwrap_or_default(),
     })?;
     let bytes = resident_bytes(&project.remote_path, &frame, &token)?;
     let remote_path = project.remote_path.clone();
@@ -1192,6 +1197,7 @@ mod tests {
             effort: "low".into(),
             permission: "ask".into(),
             context_window: None,
+            service_tier: String::new(),
         })
         .unwrap();
         let bytes = twanagent_service::encode_frame(&frame).unwrap();

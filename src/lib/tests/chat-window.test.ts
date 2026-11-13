@@ -4,6 +4,7 @@ import {
   CHAT_WINDOW_PAGE,
   CHAT_WINDOW_TURNS,
   cachedTranscript,
+  cachedTranscriptIsLoaded,
   chatTurnSlice,
   chatSwitchPending,
   holdTranscript,
@@ -71,6 +72,15 @@ describe("rememberShownTranscript", () => {
     const shown = rememberShownTranscript(cache, "a", "a", streamed, first);
     assert.equal(shown, "a");
     assert.equal(cachedTranscript(cache, "a", shown, streamed), streamed);
+  });
+});
+
+describe("cachedTranscriptIsLoaded", () => {
+  it("does not treat a blank cache entry as the chat", () => {
+    assert.equal(cachedTranscriptIsLoaded(undefined), false);
+    assert.equal(cachedTranscriptIsLoaded(null), false);
+    assert.equal(cachedTranscriptIsLoaded([]), false);
+    assert.equal(cachedTranscriptIsLoaded(["saved reply"]), true);
   });
 });
 

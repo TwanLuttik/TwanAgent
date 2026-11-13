@@ -9,6 +9,7 @@ mod remote;
 pub use model_providers::anthropic;
 pub use model_providers::grok_cli;
 pub use model_providers::minimax;
+pub use model_providers::openai;
 mod attachment;
 mod command_surface;
 mod heic;
@@ -88,6 +89,9 @@ pub fn run() {
             dev::keys::dev_minimax_key_status,
             dev::keys::dev_set_minimax_key,
             dev::keys::dev_clear_minimax_key,
+            dev::keys::dev_openai_key_status,
+            dev::keys::dev_set_openai_key,
+            dev::keys::dev_clear_openai_key,
             dev::commands::project_cmds::dev_projects_root,
             dev::commands::project_cmds::dev_projects_location,
             dev::commands::project_cmds::dev_list_projects,
@@ -250,6 +254,9 @@ pub fn run() {
             minimax::dev_minimax_account_usage_cached,
             grok_cli::dev_xai_account_usage,
             grok_cli::dev_xai_account_usage_cached,
+            openai::dev_openai_account_usage,
+            openai::dev_openai_account_usage_cached,
+            appdb::commands::dev_account_usage_history,
             usage::dev_usage_record,
             usage::dev_usage_list,
             usage::dev_usage_cloud,

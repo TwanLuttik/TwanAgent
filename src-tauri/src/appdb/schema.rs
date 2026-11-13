@@ -159,6 +159,25 @@ fn ensure_compat(conn: &Connection) -> Result<()> {
     migrate_sidebar_cache(conn)?;
     migrate_project_groups(conn)?;
     migrate_action_runs(conn)?;
+    migrate_account_usage_samples(conn)?;
+    Ok(())
+}
+
+/// One row each time an allowance window is read. The usage page draws these as a line.
+fn migrate_account_usage_samples(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS account_usage_samples (
+            provider TEXT NOT NULL,
+            window_id TEXT NOT NULL,
+            resets_at TEXT NOT NULL,
+            used_percent REAL NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS account_usage_samples_lookup
+            ON account_usage_samples (provider, window_id, resets_at, recorded_at);
+        ",
+    )?;
     Ok(())
 }
 

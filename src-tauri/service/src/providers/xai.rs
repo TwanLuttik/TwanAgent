@@ -8,14 +8,21 @@ pub const CLI_URL: &str = "https://cli-chat-proxy.grok.com/v1/chat/completions";
 pub const KEY_REJECTED: &str = "xAI rejected the API key.";
 
 pub fn endpoint(via_cli: bool) -> &'static str {
-    if via_cli { CLI_URL } else { API_URL }
+    if via_cli {
+        CLI_URL
+    } else {
+        API_URL
+    }
 }
 
 pub fn http_error_message(status: u16, body: &str) -> String {
     if status == 401 {
         return KEY_REJECTED.into();
     }
-    format!("xAI error {status}: {}", body.chars().take(400).collect::<String>())
+    format!(
+        "xAI error {status}: {}",
+        body.chars().take(400).collect::<String>()
+    )
 }
 
 /// OpenAI-shaped messages stay OpenAI-shaped. Effort is omitted when empty.
@@ -108,7 +115,10 @@ pub fn text_from_content(value: &Value) -> String {
             out.push_str(text);
             continue;
         }
-        let kind = part.get("type").and_then(|item| item.as_str()).unwrap_or("");
+        let kind = part
+            .get("type")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
         if is_reasoning_part(kind) {
             continue;
         }
@@ -121,7 +131,10 @@ pub fn text_from_content(value: &Value) -> String {
 
 pub fn reasoning_from_delta(delta: &Value) -> String {
     let mut out = String::new();
-    if let Some(value) = delta.get("reasoning_content").filter(|item| !item.is_null()) {
+    if let Some(value) = delta
+        .get("reasoning_content")
+        .filter(|item| !item.is_null())
+    {
         out.push_str(&reasoning_text(value));
     } else if let Some(value) = delta.get("reasoning").filter(|item| !item.is_null()) {
         out.push_str(&reasoning_text(value));
@@ -136,7 +149,10 @@ pub fn message_reasoning(choice: &Value) -> String {
     let Some(message) = choice.get("message") else {
         return String::new();
     };
-    if let Some(value) = message.get("reasoning_content").filter(|item| !item.is_null()) {
+    if let Some(value) = message
+        .get("reasoning_content")
+        .filter(|item| !item.is_null())
+    {
         let text = reasoning_text(value);
         if !text.is_empty() {
             return text;
@@ -148,7 +164,10 @@ pub fn message_reasoning(choice: &Value) -> String {
             return text;
         }
     }
-    message.get("content").map(reasoning_text).unwrap_or_default()
+    message
+        .get("content")
+        .map(reasoning_text)
+        .unwrap_or_default()
 }
 
 pub fn fallback_choice_text(choice: &Value) -> String {
@@ -177,7 +196,10 @@ pub fn unseen_reply_tail(streamed: &str, fallback: &str) -> Option<String> {
         return None;
     }
     // The final message is the same reply with the ending the deltas never sent.
-    fallback.strip_prefix(streamed).filter(|tail| !tail.is_empty()).map(str::to_string)
+    fallback
+        .strip_prefix(streamed)
+        .filter(|tail| !tail.is_empty())
+        .map(str::to_string)
 }
 
 /// One OpenAI tool-call fragment inside a `delta.tool_calls` row.
@@ -221,7 +243,11 @@ pub fn stream_error_message(json: &Value) -> Option<String> {
     let message = err
         .as_str()
         .map(str::to_string)
-        .or_else(|| err.get("message").and_then(|item| item.as_str()).map(str::to_string))
+        .or_else(|| {
+            err.get("message")
+                .and_then(|item| item.as_str())
+                .map(str::to_string)
+        })
         .unwrap_or_default();
     let message = message.trim();
     if message.is_empty() {
@@ -234,7 +260,11 @@ pub fn stream_error_message(json: &Value) -> Option<String> {
 }
 
 pub fn choice_stop_error(choice: &Value) -> Option<&'static str> {
-    match choice.get("finish_reason").and_then(|item| item.as_str()).unwrap_or("") {
+    match choice
+        .get("finish_reason")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+    {
         "content_filter" => Some("xAI refused this reply."),
         "error" => Some("xAI request failed."),
         _ => None,
@@ -265,7 +295,11 @@ fn call_fragment(call: &Value, index_if_missing: u32) -> ToolFragment {
     };
     ToolFragment {
         index,
-        id: call.get("id").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+        id: call
+            .get("id")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .to_string(),
         name,
         arguments,
     }
@@ -292,7 +326,9 @@ fn api_message(message: &Value) -> Value {
 /// a plain string, which is what xAI accepted before.
 fn attach_images(message: &mut Value) {
     let images = message.get("images").and_then(Value::as_array).cloned();
-    message.as_object_mut().map(|fields| fields.remove("images"));
+    message
+        .as_object_mut()
+        .map(|fields| fields.remove("images"));
     let Some(images) = images.filter(|rows| !rows.is_empty()) else {
         return;
     };
@@ -320,7 +356,10 @@ fn attach_images(message: &mut Value) {
         Some(Value::Array(existing)) => {
             for part in existing {
                 if part.get("type").and_then(Value::as_str) == Some("text") {
-                    let text = strip_image_tokens(part.get("text").and_then(Value::as_str).unwrap_or(""), &images);
+                    let text = strip_image_tokens(
+                        part.get("text").and_then(Value::as_str).unwrap_or(""),
+                        &images,
+                    );
                     if text.is_empty() {
                         continue;
                     }
@@ -367,7 +406,11 @@ fn strip_image_tokens(text: &str, images: &[Value]) -> String {
     }
     let mut out = text.to_string();
     for image in images {
-        let name = image.get("name").and_then(Value::as_str).unwrap_or("").trim();
+        let name = image
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
         let label = name
             .rsplit(['/', '\\'])
             .next()
@@ -448,7 +491,10 @@ fn argument_text(value: Option<&Value>) -> String {
 }
 
 fn is_reasoning_part(kind: &str) -> bool {
-    matches!(kind, "reasoning" | "thinking" | "reasoning_text" | "reasoning_summary")
+    matches!(
+        kind,
+        "reasoning" | "thinking" | "reasoning_text" | "reasoning_summary"
+    )
 }
 
 fn reasoning_text(value: &Value) -> String {
@@ -458,14 +504,20 @@ fn reasoning_text(value: &Value) -> String {
     if let Some(parts) = value.as_array() {
         let mut out = String::new();
         for part in parts {
-            let kind = part.get("type").and_then(|item| item.as_str()).unwrap_or("");
+            let kind = part
+                .get("type")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
             if is_reasoning_part(kind) {
                 out.push_str(&part_text(part));
             }
         }
         return out;
     }
-    let kind = value.get("type").and_then(|item| item.as_str()).unwrap_or("");
+    let kind = value
+        .get("type")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     if kind.is_empty() || is_reasoning_part(kind) {
         return part_text(value);
     }
@@ -535,7 +587,10 @@ mod tests {
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "what is wrong in here");
         assert_eq!(content[1]["type"], "image_url");
-        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,iVBORw0KGgo");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgo"
+        );
         assert!(body["messages"][0].get("images").is_none());
     }
 
@@ -551,7 +606,12 @@ mod tests {
             "images": [{ "name": "a.jpg", "dataUrl": url }]
         }]);
         let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
-        assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
+        assert_eq!(
+            body["messages"][0]["content"]
+                .as_array()
+                .map(|rows| rows.len()),
+            Some(2)
+        );
         assert!(body["messages"][0].get("images").is_none());
     }
 
@@ -594,7 +654,10 @@ mod tests {
             }]
         }]);
         let body = chat_body("grok-4.6", None, &messages, &serde_json::json!([]));
-        assert_eq!(body["messages"][0]["tool_calls"][0]["function"]["name"], "read_file");
+        assert_eq!(
+            body["messages"][0]["tool_calls"][0]["function"]["name"],
+            "read_file"
+        );
         assert_eq!(body["messages"][0]["tool_calls"][0]["type"], "function");
     }
 
@@ -609,7 +672,12 @@ mod tests {
         assert_eq!(body["model"], "grok-4.6");
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["stream"], true);
-        let bare = chat_body("grok-4.6", Some("  "), &serde_json::json!([]), &serde_json::json!([]));
+        let bare = chat_body(
+            "grok-4.6",
+            Some("  "),
+            &serde_json::json!([]),
+            &serde_json::json!([]),
+        );
         assert!(bare.get("reasoning_effort").is_none());
     }
 
@@ -656,7 +724,10 @@ mod tests {
     fn a_final_message_keeps_the_ending_the_deltas_never_sent() {
         assert_eq!(unseen_reply_tail("", "Saved."), Some("Saved.".into()));
         assert_eq!(unseen_reply_tail("Saved.", "Saved."), None);
-        assert_eq!(unseen_reply_tail("Hello", "Hello world."), Some(" world.".into()));
+        assert_eq!(
+            unseen_reply_tail("Hello", "Hello world."),
+            Some(" world.".into())
+        );
         assert_eq!(unseen_reply_tail("Hello world.", "Hello"), None);
         assert_eq!(unseen_reply_tail("Hello", ""), None);
         assert_eq!(unseen_reply_tail("Hello", "A different reply."), None);
@@ -710,16 +781,24 @@ mod tests {
     #[test]
     fn stream_errors_are_not_an_empty_success() {
         assert_eq!(
-            stream_error_message(&serde_json::json!({ "error": { "message": "overloaded", "type": "server_error" } })),
+            stream_error_message(
+                &serde_json::json!({ "error": { "message": "overloaded", "type": "server_error" } })
+            ),
             Some("xAI request failed: overloaded".into())
         );
         assert_eq!(
             stream_error_message(&serde_json::json!({ "error": "rate limited" })),
             Some("xAI request failed: rate limited".into())
         );
-        assert_eq!(stream_error_message(&serde_json::json!({ "error": null })), None);
+        assert_eq!(
+            stream_error_message(&serde_json::json!({ "error": null })),
+            None
+        );
         assert_eq!(stream_error_message(&serde_json::json!({})), None);
-        assert_eq!(choice_stop_error(&serde_json::json!({ "finish_reason": "stop" })), None);
+        assert_eq!(
+            choice_stop_error(&serde_json::json!({ "finish_reason": "stop" })),
+            None
+        );
         assert_eq!(
             choice_stop_error(&serde_json::json!({ "finish_reason": "content_filter" })),
             Some("xAI refused this reply.")

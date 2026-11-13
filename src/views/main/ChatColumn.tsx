@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { motion } from "motion/react";
 import { McpDock } from "../../components/McpDock";
 import { SkillDock } from "../../components/SkillDock";
@@ -11,6 +11,7 @@ import { subagentRunInfo, type SubagentRecord } from "../../lib/subagent";
 import { holdTranscript } from "../../lib/chat-window";
 import { useTranscriptPreview } from "../../lib/transcript-open";
 import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
+import { composerDockPlace } from "../../lib/composer-dock";
 import { chatHasRunningTurn, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
 import { rememberSplitPane } from "../../lib/split-pane";
@@ -237,7 +238,23 @@ function StreamBottomPad({
   centeredWithoutStream: boolean;
 }) {
   const centered = useComposerCentered(centeredWithoutStream);
-  return <div style={{ paddingBottom: centered ? 24 : composerPad }} />;
+  return (
+    <div
+      data-chat-pad=""
+      data-chat-pad-mode={centered ? "center" : "dock"}
+      style={{ paddingBottom: centered ? 24 : composerPad }}
+    />
+  );
+}
+
+/** Enter scrolls overflow:hidden ancestors to chase a caret that sits below the clip. */
+function clearClippedAncestorScroll(start: HTMLElement | null) {
+  let parent = start?.parentElement ?? null;
+  while (parent && parent !== document.documentElement) {
+    const overflow = getComputedStyle(parent).overflowY;
+    if ((overflow === "hidden" || overflow === "clip") && parent.scrollTop) parent.scrollTop = 0;
+    parent = parent.parentElement;
+  }
 }
 
 /**
@@ -258,20 +275,55 @@ function StreamComposerDock({
   children: ReactNode;
 }) {
   const composerCentered = useComposerCentered(centeredWithoutStream);
+  const [placed, setPlaced] = useState(0);
   if (dock.current.id !== activeId) {
     dock.current = { id: activeId, centered: composerCentered, sliding: false };
   } else if (dock.current.centered && !composerCentered) {
     dock.current.sliding = true;
   }
   dock.current.centered = composerCentered;
+  const place = composerDockPlace(composerCentered, dock.current.sliding);
+  const docked = place.y == null;
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!el) return;
+    if (docked) {
+      el.style.top = "auto";
+      el.style.bottom = "0px";
+      el.style.transform = "none";
+    }
+    // Centered still uses a translate, so Enter can scroll this clip to chase the caret.
+    clearClippedAncestorScroll(el);
+  }, [dockRef, docked, placed, composerCentered]);
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el) return;
+    const clipped: HTMLElement[] = [];
+    let parent = el.parentElement;
+    while (parent && parent !== document.documentElement) {
+      const overflow = getComputedStyle(parent).overflowY;
+      if (overflow === "hidden" || overflow === "clip") clipped.push(parent);
+      parent = parent.parentElement;
+    }
+    const fix = () => {
+      for (const node of clipped) if (node.scrollTop) node.scrollTop = 0;
+    };
+    fix();
+    for (const node of clipped) node.addEventListener("scroll", fix, { passive: true });
+    return () => {
+      for (const node of clipped) node.removeEventListener("scroll", fix);
+    };
+  }, [dockRef, placed, composerCentered]);
   return (
     <motion.div
       ref={dockRef}
       initial={false}
-      animate={{ top: composerCentered ? "42%" : "100%", y: composerCentered ? "-50%" : "-100%" }}
+      animate={{ top: place.top, bottom: place.bottom, y: place.y ?? 0 }}
       transition={dock.current.sliding ? { duration: 0.42, ease: [0.22, 1, 0.36, 1] } : { duration: 0 }}
       onAnimationComplete={() => {
+        if (!dock.current.sliding) return;
         dock.current.sliding = false;
+        setPlaced((n) => n + 1);
       }}
       className="pointer-events-none absolute inset-x-0 z-10"
     >

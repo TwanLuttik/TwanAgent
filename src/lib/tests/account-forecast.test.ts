@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   accountFromUsage,
+  allowanceKind,
   allowedPerDay,
   forecastAccount,
   forecastHeadline,
@@ -13,7 +14,11 @@ import {
   primaryWindow,
   runOutAt,
   usedPercentOf,
+  historyPoints,
+  timelineSlices,
+  usageHistoryLine,
   windowDurationMs,
+  windowTimeline,
   type ForecastWindow,
 } from "../account-forecast.ts";
 import type { AccountUsage } from "../account-usage.ts";
@@ -175,6 +180,94 @@ describe("forecast", () => {
     assert.equal(headline.count, 1);
     assert.equal(headline.first?.account.id, "anthropic");
     assert.match(formatForecastWhen(soon.runsOut!.atMs, NOW), /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) /);
+  });
+
+  it("marks a balance with no window as credits", () => {
+    const credits = accountFromUsage(
+      "openai",
+      {
+        provider: "openai",
+        connected: true,
+        label: "GPT",
+        windows: [],
+        balanceCents: 1250,
+        balanceCurrency: "USD",
+        creditStatus: null,
+        fetchedAt: null,
+      },
+      NOW,
+    );
+    assert.equal(allowanceKind(credits), "credits");
+    assert.equal(credits.balanceCents, 1250);
+    const plan = accountFromUsage(
+      "minimax",
+      {
+        provider: "minimax",
+        connected: true,
+        label: "MiniMax",
+        windows: [{ id: "5h", label: "5h", usedPercent: 80, resetsAt: new Date(NOW + HOUR).toISOString() }],
+        balanceCents: null,
+        balanceCurrency: null,
+        creditStatus: null,
+        fetchedAt: null,
+      },
+      NOW,
+    );
+    assert.equal(allowanceKind(plan), "plan");
+  });
+
+  it("places used and now on the window clock", () => {
+    const window: ForecastWindow = {
+      id: "5h",
+      label: "5h",
+      usedPercent: 20,
+      windowMs: 5 * HOUR,
+      resetsAt: NOW + 4 * HOUR,
+      remaining: true,
+    };
+    const line = windowTimeline(window, 20, NOW);
+    assert.ok(line);
+    assert.equal(line.openedAt, NOW - HOUR);
+    assert.equal(line.now, 0.2);
+    assert.equal(line.used, 0.2);
+    assert.equal(windowTimeline({ ...window, windowMs: null }, 20, NOW), null);
+  });
+
+  it("splits a multi-day window into days and a short one into hours", () => {
+    const days = timelineSlices(NOW, NOW + 5 * DAY);
+    assert.ok(days.length >= 5 && days.length <= 6);
+    assert.equal(days[0]?.label.length, 3);
+    const width = days.reduce((sum, slice) => sum + slice.span, 0);
+    assert.ok(Math.abs(width - 1) < 0.001);
+    const hours = timelineSlices(NOW, NOW + 5 * HOUR);
+    assert.ok(hours.length >= 5 && hours.length <= 6);
+    assert.match(hours[0]?.label ?? "", /^\d{2}:\d{2}$/);
+  });
+
+  it("draws a usage line from stored readings and the live percent", () => {
+    const points = historyPoints([
+      {
+        provider: "minimax",
+        windowId: "5h",
+        resetsAt: new Date(NOW + 4 * HOUR).toISOString(),
+        usedPercent: 80,
+        recordedAt: new Date(NOW - 30 * 60 * 1000).toISOString(),
+      },
+      {
+        provider: "other",
+        windowId: "5h",
+        resetsAt: new Date(NOW + 4 * HOUR).toISOString(),
+        usedPercent: 10,
+        recordedAt: new Date(NOW - HOUR).toISOString(),
+      },
+    ]);
+    assert.equal(points.length, 1);
+    assert.equal(points[0]?.usedPercent, 20);
+    const line = usageHistoryLine(points, NOW - HOUR, NOW + 4 * HOUR, NOW, 30);
+    assert.equal(line.length, 2);
+    assert.equal(line[0]?.y, 0.2);
+    assert.equal(line[1]?.y, 0.3);
+    assert.ok((line[1]?.x ?? 0) > (line[0]?.x ?? 1));
   });
 
   it("leaves a disconnected account without a forecast", () => {

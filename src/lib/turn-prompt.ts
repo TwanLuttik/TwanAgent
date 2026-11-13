@@ -117,6 +117,8 @@ export type ApiChatMessage = {
   tool_call_id?: string;
   /** Signed Claude thinking blocks. Absent for Grok. */
   thinking?: ThinkingBlock[];
+  /** OpenAI reasoning items. Absent for Claude and Grok. */
+  reasoning_items?: Record<string, unknown>[];
   /**
    * Kept so the app can inline non-image files before the provider call.
    * Picture bytes are already content parts. The provider drops this field.
@@ -152,12 +154,13 @@ export function toApiMessages(messages: ChatMessage[]): ApiChatMessage[] {
         content: msg.content ?? "",
       };
     }
-    if (msg.role === "assistant" && (msg.tool_calls?.length || msg.thinking?.length)) {
+    if (msg.role === "assistant" && (msg.tool_calls?.length || msg.thinking?.length || msg.reasoning_items?.length)) {
       return {
         role: "assistant",
         content: msg.content?.trim() ? msg.content : null,
         ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls.map(toApiToolCall) } : {}),
         ...(msg.thinking?.length ? { thinking: msg.thinking } : {}),
+        ...(msg.reasoning_items?.length ? { reasoning_items: msg.reasoning_items } : {}),
       };
     }
     if (isCompactionSummary(msg)) {
@@ -255,7 +258,7 @@ function showsFinishedLine(message: ChatMessage): boolean {
 function isModelStep(message: ChatMessage): boolean {
   if (message.role !== "assistant" || message.error) return false;
   if (String(message.content ?? "").startsWith(TURN_FAILURE_PREFIX)) return false;
-  return Boolean((message.content ?? "").trim() || message.tool_calls?.length || message.thinking?.length);
+  return Boolean((message.content ?? "").trim() || message.tool_calls?.length || message.thinking?.length || message.reasoning_items?.length);
 }
 
 export function stampTurnDuration(

@@ -47,6 +47,7 @@ export type ChatEvent = {
   tool_calls?: ToolCall[] | null;
   usage?: ApiChatUsage | null;
   thinking?: ApiThinkingBlock[] | null;
+  reasoning_items?: Record<string, unknown>[] | null;
   /** Saved by the paired server. The GUI replaces its copy with this. */
   conversation?: Conversation | null;
 };
@@ -65,6 +66,7 @@ export function chatStart(
   effort?: string,
   journeyId?: string,
   contextWindow?: number,
+  serviceTier?: string,
 ): Promise<void> {
   const tokens = contextWindow && contextWindow > 0 ? Math.floor(contextWindow) : null;
   return invoke("dev_chat_start", {
@@ -77,6 +79,8 @@ export function chatStart(
     journey_id: journeyId ?? null,
     contextWindow: tokens,
     context_window: tokens,
+    serviceTier: serviceTier ?? null,
+    service_tier: serviceTier ?? null,
   });
 }
 
@@ -104,6 +108,7 @@ export function localTurnStart(input: {
   effort?: string;
   contextWindow?: number;
   permission?: string;
+  serviceTier?: string;
   system?: string;
   journeyId?: string;
   allowSpawn?: boolean;
@@ -118,6 +123,7 @@ export function localTurnStart(input: {
       effort: input.effort ?? "",
       context_window: tokens,
       permission: input.permission ?? "ask",
+      service_tier: input.serviceTier ?? "",
       system: input.system ?? "",
       journey_id: input.journeyId ?? null,
       allow_spawn: input.allowSpawn !== false,

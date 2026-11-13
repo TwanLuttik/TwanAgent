@@ -8,7 +8,11 @@ use crate::search::{self, GlobQuery, GrepQuery};
 
 pub fn tool_status(name: &str, arguments: &str) -> String {
     let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
-    let path = args.get("path").and_then(Value::as_str).unwrap_or("").trim();
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     match name {
         "read_file" => {
             let range = read_range_label(&args);
@@ -22,15 +26,35 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
         "edit_file" => format!("Editing {}", label(path)),
         "list_dir" => format!("Listing {}", if path.is_empty() { "." } else { path }),
         "grep" => {
-            let pattern = args.get("pattern").and_then(Value::as_str).unwrap_or("").trim();
-            if pattern.is_empty() { "Searching".into() } else { format!("Searching for {pattern}") }
+            let pattern = args
+                .get("pattern")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if pattern.is_empty() {
+                "Searching".into()
+            } else {
+                format!("Searching for {pattern}")
+            }
         }
         "glob" => {
-            let pattern = args.get("pattern").and_then(Value::as_str).unwrap_or("").trim();
-            if pattern.is_empty() { "Finding files".into() } else { format!("Finding {pattern}") }
+            let pattern = args
+                .get("pattern")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if pattern.is_empty() {
+                "Finding files".into()
+            } else {
+                format!("Finding {pattern}")
+            }
         }
         "run_command" => {
-            let description = args.get("description").and_then(Value::as_str).unwrap_or("").trim();
+            let description = args
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             if description.is_empty() {
                 "Running a command".into()
             } else {
@@ -38,18 +62,33 @@ pub fn tool_status(name: &str, arguments: &str) -> String {
             }
         }
         "load_skill" => {
-            let name = args.get("name").and_then(Value::as_str).unwrap_or("").trim();
-            if name.is_empty() { "Loading a skill".into() } else { format!("Loading {name}") }
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                "Loading a skill".into()
+            } else {
+                format!("Loading {name}")
+            }
         }
         other if other.starts_with("mcp__") => {
-            format!("MCP {}", other.trim_start_matches("mcp__").replace("__", " "))
+            format!(
+                "MCP {}",
+                other.trim_start_matches("mcp__").replace("__", " ")
+            )
         }
         other => format!("Using {other}"),
     }
 }
 
 fn label(path: &str) -> &str {
-    if path.is_empty() { "a file" } else { path }
+    if path.is_empty() {
+        "a file"
+    } else {
+        path
+    }
 }
 
 fn read_int(args: &Value, key: &str) -> Option<u32> {
@@ -135,7 +174,12 @@ pub fn dispatch(
     arguments: &str,
 ) -> Result<String> {
     let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
-    let text = |key: &str| args.get(key).and_then(Value::as_str).unwrap_or("").to_string();
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
     if permission == "read-only" && matches!(name, "write_file" | "edit_file" | "run_command") {
         return Ok(format!("Error: {name} is blocked in read-only mode."));
     }
@@ -184,7 +228,9 @@ mod tests {
                 false
             }
         }
-        let workspace = LocalWorkspace { root: dir.path().to_path_buf() };
+        let workspace = LocalWorkspace {
+            root: dir.path().to_path_buf(),
+        };
         let marker = dir.path().join("ran.txt");
         let result = dispatch(
             &workspace,
@@ -209,17 +255,36 @@ mod tests {
                 true
             }
         }
-        let workspace = LocalWorkspace { root: dir.path().to_path_buf() };
-        let found = dispatch(&workspace, &Allow, "read-only", "grep", r#"{"pattern":"answer","glob":"*.rs"}"#).unwrap();
+        let workspace = LocalWorkspace {
+            root: dir.path().to_path_buf(),
+        };
+        let found = dispatch(
+            &workspace,
+            &Allow,
+            "read-only",
+            "grep",
+            r#"{"pattern":"answer","glob":"*.rs"}"#,
+        )
+        .unwrap();
         assert!(found.contains("src/app.rs:1:"));
-        let paths = dispatch(&workspace, &Allow, "read-only", "glob", r#"{"pattern":"**/*.rs"}"#).unwrap();
+        let paths = dispatch(
+            &workspace,
+            &Allow,
+            "read-only",
+            "glob",
+            r#"{"pattern":"**/*.rs"}"#,
+        )
+        .unwrap();
         assert!(paths.contains("src/app.rs"));
     }
 
     #[test]
     fn read_file_can_return_a_numbered_line_range() {
         let dir = tempfile::tempdir().unwrap();
-        let body = (1..=60).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=60)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(dir.path().join("src.rs"), body).unwrap();
         struct Allow;
         impl ToolHost for Allow {
@@ -227,8 +292,17 @@ mod tests {
                 true
             }
         }
-        let workspace = LocalWorkspace { root: dir.path().to_path_buf() };
-        let whole = dispatch(&workspace, &Allow, "read-only", "read_file", r#"{"path":"src.rs"}"#).unwrap();
+        let workspace = LocalWorkspace {
+            root: dir.path().to_path_buf(),
+        };
+        let whole = dispatch(
+            &workspace,
+            &Allow,
+            "read-only",
+            "read_file",
+            r#"{"path":"src.rs"}"#,
+        )
+        .unwrap();
         assert_eq!(whole.lines().next(), Some("line 1"));
         let ranged = dispatch(
             &workspace,
@@ -245,6 +319,9 @@ mod tests {
             tool_status("read_file", r#"{"path":"src.rs","offset":10,"limit":51}"#),
             "Reading src.rs (10 - 60)",
         );
-        assert_eq!(tool_status("read_file", r#"{"path":"src.rs"}"#), "Reading src.rs");
+        assert_eq!(
+            tool_status("read_file", r#"{"path":"src.rs"}"#),
+            "Reading src.rs"
+        );
     }
 }

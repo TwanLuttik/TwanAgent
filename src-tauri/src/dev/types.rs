@@ -202,6 +202,9 @@ pub struct DevChatEvent {
     /// Signed Claude thinking blocks for the next request. Not used by Grok.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Vec<crate::model_providers::ThinkingBlock>>,
+    /// OpenAI reasoning items with encrypted_content. Replay them unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_items: Option<Vec<serde_json::Value>>,
     /// The conversation the paired server saved. Absent for a local model stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<serde_json::Value>,

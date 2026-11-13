@@ -10,6 +10,7 @@ const SERIES: { id: ProviderId | "other"; color: string }[] = [
   { id: "xai", color: "var(--usage-xai)" },
   { id: "anthropic", color: "#d97757" },
   { id: "minimax", color: "#e21680" },
+  { id: "openai", color: "#10a37f" },
   { id: "other", color: "#8d8d92" },
 ];
 
@@ -23,7 +24,7 @@ function seriesId(model: string): SeriesId {
 }
 
 function stackOf(point: UsageTrendPoint): Record<SeriesId, number> {
-  const parts: Record<SeriesId, number> = { xai: 0, anthropic: 0, minimax: 0, other: 0 };
+  const parts: Record<SeriesId, number> = { xai: 0, anthropic: 0, minimax: 0, openai: 0, other: 0 };
   for (const model of point.models) parts[seriesId(model.model)] += model.total;
   return parts;
 }
@@ -197,7 +198,7 @@ function seriesColor(id: SeriesId): string {
 }
 
 function dominantSeries(points: UsageTrendPoint[]): SeriesId {
-  const totals: Record<SeriesId, number> = { xai: 0, anthropic: 0, minimax: 0, other: 0 };
+  const totals: Record<SeriesId, number> = { xai: 0, anthropic: 0, minimax: 0, openai: 0, other: 0 };
   for (const point of points) {
     const parts = stackOf(point);
     for (const series of SERIES) totals[series.id] += parts[series.id];

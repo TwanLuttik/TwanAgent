@@ -307,6 +307,7 @@ export type TurnOpts = {
   model?: string;
   effort?: string;
   contextWindow?: number;
+  serviceTier?: string;
   system?: ChatMessage;
   allowSpawn?: boolean;
   childType?: SubagentType;
@@ -352,12 +353,13 @@ function planModeLine(plan: PlanToolIO): string {
 /** Keep the answer that had already arrived when the user stopped the turn. */
 function stoppedTranscript(
   transcript: ChatMessage[],
-  result: { text: string; reasoning: string; thinking: ThinkingBlock[] },
+  result: { text: string; reasoning: string; thinking: ThinkingBlock[]; reasoning_items?: Record<string, unknown>[] },
 ): ChatMessage[] {
   const text = result.text;
   const thought = result.reasoning.trim();
-  if (!text.trim() && !thought && !result.thinking.length) return transcript;
-  return [...transcript, assistantMessage(text, thought, [], result.thinking)];
+  const items = result.reasoning_items ?? [];
+  if (!text.trim() && !thought && !result.thinking.length && !items.length) return transcript;
+  return [...transcript, assistantMessage(text, thought, [], result.thinking, items)];
 }
 
 function assistantMessage(
@@ -365,6 +367,7 @@ function assistantMessage(
   reasoning: string,
   toolCalls: ToolCall[],
   thinking: ThinkingBlock[] = [],
+  reasoningItems: Record<string, unknown>[] = [],
 ): ChatMessage {
   const thought = reasoning.trim();
   return {
@@ -372,8 +375,13 @@ function assistantMessage(
     content: text,
     ...(thought ? { reasoning: thought } : {}),
     ...(thinking.length ? { thinking } : {}),
+    ...(reasoningItems.length ? { reasoning_items: reasoningItems } : {}),
     tool_calls: toolCalls.length ? toolCalls : undefined,
   };
+}
+
+function encryptedReasoning(items: Record<string, unknown>[] | null | undefined): Record<string, unknown>[] {
+  return (items ?? []).filter((item) => typeof item.encrypted_content === "string" && item.encrypted_content.length > 0);
 }
 
 function signedThinking(blocks: api.ApiThinkingBlock[] | null | undefined): ThinkingBlock[] {
@@ -415,6 +423,7 @@ export async function resumeLocalTurn(input: {
   effort?: string;
   contextWindow?: number;
   permission?: string;
+  serviceTier?: string;
   system?: string;
   journeyId?: string;
   allowSpawn?: boolean;
@@ -479,6 +488,7 @@ export async function resumeLocalTurn(input: {
         effort: input.effort,
         contextWindow: input.contextWindow,
         permission: input.permission,
+        serviceTier: input.serviceTier,
         system: input.system,
         journeyId: input.journeyId,
         allowSpawn: input.allowSpawn,
@@ -570,7 +580,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       opts.onError(result.error);
       if (result.error !== "Stopped.") {
         const thought = result.reasoning.trim();
-        if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
+        if (thought || result.thinking.length || result.reasoning_items.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking, result.reasoning_items)];
         transcript = [...transcript, turnFailureMessage(result.error)];
         opts.onUpdate?.(transcript);
         return transcript;
@@ -585,7 +595,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
         opts.onError(result.error);
         if (result.error !== "Stopped.") {
           const thought = result.reasoning.trim();
-          if (thought || result.thinking.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking)];
+          if (thought || result.thinking.length || result.reasoning_items.length) transcript = [...transcript, assistantMessage("", thought, [], result.thinking, result.reasoning_items)];
           transcript = [...transcript, turnFailureMessage(result.error)];
           opts.onUpdate?.(transcript);
           return transcript;
@@ -602,7 +612,7 @@ export async function completeTurn(opts: TurnOpts): Promise<ChatMessage[]> {
       promptTokens = result.usage.promptTokens;
       opts.onUsage?.(result.usage);
     }
-    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls, result.thinking)];
+    transcript = [...transcript, assistantMessage(result.text || "", result.reasoning, result.toolCalls, result.thinking, result.reasoning_items)];
     opts.onUpdate?.(transcript);
     if (!result.toolCalls.length) return transcript;
     const contents: string[] = new Array(result.toolCalls.length);
@@ -788,6 +798,7 @@ type StreamedRound = {
   reasoning: string;
   toolCalls: ToolCall[];
   thinking: ThinkingBlock[];
+  reasoning_items: Record<string, unknown>[];
   error?: string;
   usage?: ChatUsage;
 };
@@ -818,6 +829,7 @@ async function streamUntilUp(
     model?: string;
     effort?: string;
     contextWindow?: number;
+    serviceTier?: string;
     onDelta: (text: string) => void;
     onReasoning?: (text: string) => void;
     onError: (text: string) => void;
@@ -852,6 +864,7 @@ async function streamCompletion(
     model?: string;
     effort?: string;
     contextWindow?: number;
+    serviceTier?: string;
     onDelta: (text: string) => void;
     onReasoning?: (text: string) => void;
     onError: (text: string) => void;
@@ -860,12 +873,13 @@ async function streamCompletion(
     journeyId?: string;
   },
   imageCache: Map<string, string> = new Map(),
-): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; thinking: ThinkingBlock[]; error?: string; usage?: ChatUsage }> {
+): Promise<{ text: string; reasoning: string; toolCalls: ToolCall[]; thinking: ThinkingBlock[]; reasoning_items: Record<string, unknown>[]; error?: string; usage?: ChatUsage }> {
   const streamId = crypto.randomUUID();
   let text = "";
   let reasoning = "";
   let toolCalls: ToolCall[] = [];
   let thinking: ThinkingBlock[] = [];
+  let reasoningItems: Record<string, unknown>[] = [];
   let usage: ChatUsage | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -875,6 +889,7 @@ async function streamCompletion(
       reasoning: string;
       toolCalls: ToolCall[];
       thinking: ThinkingBlock[];
+      reasoning_items: Record<string, unknown>[];
       error?: string;
       usage?: ChatUsage;
     }) => {
@@ -886,7 +901,7 @@ async function streamCompletion(
     };
     const onAbort = () => {
       void api.chatCancel(streamId);
-      finish({ text, reasoning, toolCalls, thinking, error: "Stopped." });
+      finish({ text, reasoning, toolCalls, thinking, reasoning_items: reasoningItems, error: "Stopped." });
     };
     void (async () => {
       try {
@@ -905,10 +920,12 @@ async function streamCompletion(
             if (ev.tool_calls?.length) toolCalls = ev.tool_calls;
             const signed = signedThinking(ev.thinking);
             if (signed.length) thinking = signed;
+            const encrypted = encryptedReasoning(ev.reasoning_items);
+            if (encrypted.length) reasoningItems = encrypted;
             usage = parseChatUsage(ev.usage) ?? usage;
-            finish({ text: text || ev.text || "", reasoning, toolCalls, thinking, usage });
+            finish({ text: text || ev.text || "", reasoning, toolCalls, thinking, reasoning_items: reasoningItems, usage });
           } else if (ev.kind === "error") {
-            finish({ text, reasoning, toolCalls, thinking, error: ev.text || "xAI request failed.", usage });
+            finish({ text, reasoning, toolCalls, thinking, reasoning_items: reasoningItems, error: ev.text || "xAI request failed.", usage });
           }
         });
         opts.onReasoning?.("");
@@ -925,6 +942,7 @@ async function streamCompletion(
           opts.effort,
           opts.journeyId,
           opts.contextWindow,
+          opts.serviceTier,
         );
       } catch (e) {
         opts.signal.removeEventListener("abort", onAbort);

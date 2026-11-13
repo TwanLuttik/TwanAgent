@@ -6,7 +6,7 @@ import { DropImagesHint, PendingUserMessage } from "../../components/ChatTranscr
 import { SubagentCrumb, useSubagentParentId } from "../../components/SubagentCrumb";
 import { rememberSubagentParent } from "../../lib/subagent-parent";
 import { subagentRunInfo } from "../../lib/subagent";
-import { chatScrollFor, isNearBottom, pinChatToEnd, rememberChatScroll, stickToBottomAfterRestore } from "../../lib/chat-scroll";
+import { applyComposerPadResize, chatScrollFor, isNearBottom, pinChatToEnd, rememberChatScroll, stickToBottomAfterRestore } from "../../lib/chat-scroll";
 import { chatHasRunningTurn, mergeHostedTranscript, pendingForChat, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { rememberSplitPane, splitGroupForChat, splitPaneCache } from "../../lib/split-pane";
 import { useMain } from "./context";
@@ -203,7 +203,9 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
       if (!settledRef.current || !stickRef.current) return;
       followingRef.current = true;
       pinChatToEnd(el, true);
-      followingRef.current = false;
+      requestAnimationFrame(() => {
+        followingRef.current = false;
+      });
     };
     const pinAfterLayout = () => {
       if (!stickRef.current || frame) return;
@@ -229,9 +231,23 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   useLayoutEffect(() => {
     const el = dockRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const apply = () => setPad(Math.max(96, Math.round(el.getBoundingClientRect().height) + 24));
-    apply();
-    const ro = new ResizeObserver(apply);
+    const apply = (fromResize: boolean) => {
+      const next = Math.max(96, Math.round(el.getBoundingClientRect().height) + 24);
+      if (fromResize) {
+        const scrollerEl = scroller.current;
+        const top = applyComposerPadResize(scrollerEl, next, stickRef.current && settledRef.current);
+        if (scrollerEl && top != null && scrollerEl.scrollTop !== top) {
+          followingRef.current = true;
+          scrollerEl.scrollTop = top;
+          requestAnimationFrame(() => {
+            followingRef.current = false;
+          });
+        }
+      }
+      setPad(next);
+    };
+    apply(false);
+    const ro = new ResizeObserver(() => apply(true));
     ro.observe(el);
     return () => ro.disconnect();
   }, [centered]);
@@ -309,7 +325,11 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
               onRemove={() => removePendingAt(i)}
             />
           ))}
-          <div style={{ paddingBottom: centered ? 24 : pad }} />
+          <div
+            data-chat-pad=""
+            data-chat-pad-mode={centered ? "center" : "dock"}
+            style={{ paddingBottom: centered ? 24 : pad }}
+          />
         </div>
       </div>
       <div ref={dockRef} className={`pointer-events-none absolute inset-x-0 z-10 ${centered ? "top-[42%] -translate-y-1/2" : "bottom-0"}`}>

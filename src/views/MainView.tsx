@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { CHAT_BOTTOM_PAD_FALLBACK, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
+import { CHAT_BOTTOM_PAD_FALLBACK, applyComposerPadResize, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
 import { scrollTopAfterPrepend } from "../lib/chat-window";
 import { insertCompactionEvent } from "../lib/compact";
 import { cloudSendWaiting, linkChatsOnServer, projectLink } from "../lib/hosted";
@@ -343,6 +343,15 @@ export function MainView() {
   const stickToBottomRef = useRef(true);
   const holdEmptyChatRef = useRef(false);
   const followingRef = useRef(false);
+  const followHolds = useRef(0);
+  const holdFollow = useCallback(() => {
+    followHolds.current += 1;
+    followingRef.current = true;
+    requestAnimationFrame(() => {
+      followHolds.current = Math.max(0, followHolds.current - 1);
+      if (followHolds.current === 0) followingRef.current = false;
+    });
+  }, []);
   const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
   const draftsRef = useLiveRef(drafts);
@@ -698,16 +707,24 @@ export function MainView() {
   useLayoutEffect(() => {
     const el = composerDockRef.current;
     if (!el) return;
-    const apply = () => {
+    const apply = (fromResize: boolean) => {
       const next = chatBottomPadding(el.getBoundingClientRect().height);
+      if (fromResize) {
+        const scrollerEl = scroller.current;
+        const top = applyComposerPadResize(scrollerEl, next, stickToBottomRef.current);
+        if (scrollerEl && top != null && scrollerEl.scrollTop !== top) {
+          holdFollow();
+          scrollerEl.scrollTop = top;
+        }
+      }
       setComposerPad((prev) => (prev === next ? prev : next));
     };
-    apply();
+    apply(false);
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(apply);
+    const ro = new ResizeObserver(() => apply(true));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [editor.focus, showSettings, showUsage, showDocs, showServers, activeId]);
+  }, [editor.focus, showSettings, showUsage, showDocs, showServers, activeId, holdFollow]);
 
   const holdScrollForOlder = useCallback(() => {
     const el = scroller.current;
@@ -753,9 +770,8 @@ export function MainView() {
     // One jump to the end. Streaming must not ease across frames.
     const pin = () => {
       if (!stickToBottomRef.current) return;
-      followingRef.current = true;
+      holdFollow();
       pinChatToEnd(scroller.current, true);
-      followingRef.current = false;
     };
     const pinAfterLayout = () => {
       if (!stickToBottomRef.current || frame) return;
@@ -779,7 +795,7 @@ export function MainView() {
       stopStream();
       ro?.disconnect();
     };
-  }, [messages, pendingShell, openingId, pendingByChat, activeId, editor.focus, composerPad]);
+  }, [messages, pendingShell, openingId, pendingByChat, activeId, editor.focus, composerPad, holdFollow]);
 
   const onSidebarResizeStart = useCallback((ev: ReactPointerEvent<HTMLDivElement>) => {
     ev.preventDefault();

@@ -92,11 +92,18 @@ pub struct TurnRequest {
     /// Context size chosen in the composer. Empty keeps the size stored on the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// OpenAI speed. Empty on other providers. `standard` is sent as `default`.
+    #[serde(default)]
+    pub service_tier: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelStep {
-    Tool { id: String, name: String, arguments: String },
+    Tool {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     Text(String),
 }
 
@@ -159,7 +166,9 @@ pub fn run_scripted_turn(
         Err(Error::NotFound(_)) => new_conversation(id, prompt, request),
         Err(err) => return Err(err),
     };
-    conversation.messages.push(json!({ "role": "user", "content": prompt }));
+    conversation
+        .messages
+        .push(json!({ "role": "user", "content": prompt }));
     if conversation.title.is_empty() || conversation.title == "New chat" {
         conversation.title = title_from(prompt);
     }
@@ -170,7 +179,11 @@ pub fn run_scripted_turn(
     };
     for step in model.steps() {
         match step {
-            ModelStep::Tool { id, name, arguments } => {
+            ModelStep::Tool {
+                id,
+                name,
+                arguments,
+            } => {
                 conversation.messages.push(json!({
                     "role": "assistant",
                     "content": "",
@@ -184,7 +197,9 @@ pub fn run_scripted_turn(
                 }));
             }
             ModelStep::Text(text) => {
-                conversation.messages.push(json!({ "role": "assistant", "content": text }));
+                conversation
+                    .messages
+                    .push(json!({ "role": "assistant", "content": text }));
             }
         }
     }
@@ -220,7 +235,9 @@ pub fn run_live_turn_gated(
             if let Ok(mut slot) = pending.lock() {
                 *slot = Some((command.to_string(), description.to_string()));
             }
-            let allow = shell.wait(&cancel, Duration::from_secs(600)).unwrap_or(false);
+            let allow = shell
+                .wait(&cancel, Duration::from_secs(600))
+                .unwrap_or(false);
             if let Ok(mut slot) = pending.lock() {
                 *slot = None;
             }
@@ -228,12 +245,15 @@ pub fn run_live_turn_gated(
         }) as Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
     });
     let home = crate::capabilities::user_home();
-    let _session = crate::capabilities::install(request.conversation_id.trim(), &service.project, &home);
+    let _session =
+        crate::capabilities::install(request.conversation_id.trim(), &service.project, &home);
     run_live_turn_with(
         service,
         request,
         workspace,
-        &mut |messages, on_delta| model::run_round(keys, model_id(request), &request.effort, messages, on_delta),
+        &mut |messages, on_delta| {
+            model::run_round(keys, model_id(request), &request.effort, &request.service_tier, messages, on_delta)
+        },
         ask,
         gate.map(|gate| gate.cancel.clone()),
         on_event,
@@ -244,7 +264,10 @@ fn run_live_turn_with(
     service: &ProjectService,
     request: &TurnRequest,
     workspace: &dyn Workspace,
-    complete: &mut dyn FnMut(&[serde_json::Value], &mut dyn FnMut(&str)) -> Result<crate::model::Round>,
+    complete: &mut dyn FnMut(
+        &[serde_json::Value],
+        &mut dyn FnMut(&str),
+    ) -> Result<crate::model::Round>,
     ask: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
     cancel: Option<Arc<AtomicBool>>,
     mut on_event: impl FnMut(TurnEvent),
@@ -262,7 +285,9 @@ fn run_live_turn_with(
         Err(Error::NotFound(_)) => new_conversation(id, prompt, request),
         Err(err) => return Err(err),
     };
-    conversation.messages.push(json!({ "role": "user", "content": prompt }));
+    conversation
+        .messages
+        .push(json!({ "role": "user", "content": prompt }));
     if conversation.title.is_empty() || conversation.title == "New chat" {
         conversation.title = title_from(prompt);
     }
@@ -270,7 +295,10 @@ fn run_live_turn_with(
     if let Some(window) = request.context_window.filter(|value| *value > 0) {
         conversation.context_window = Some(window);
     }
-    let window = conversation.context_window.filter(|value| *value > 0).unwrap_or(0);
+    let window = conversation
+        .context_window
+        .filter(|value| *value > 0)
+        .unwrap_or(0);
     let mut prompt_tokens = stored_prompt_tokens(&conversation.context_usage);
     let mut compaction = stored_compaction(&conversation.compaction);
     let mut overflow_retries = 0u8;
@@ -284,7 +312,10 @@ fn run_live_turn_with(
     let model_name = model_id(request).to_string();
     // No tool-round cap. Compaction bounds context, and the user stops a runaway turn.
     loop {
-        if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
             return finish_cancelled(service, &mut conversation, &mut on_event);
         }
         match fit_prompt(
@@ -301,7 +332,8 @@ fn run_live_turn_with(
             Fit::Stopped => return finish_cancelled(service, &mut conversation, &mut on_event),
             Fit::TooBig => return stop_for_context(service, &mut conversation, &mut on_event),
         }
-        let context = crate::compact::messages_for_context(&conversation.messages, compaction.as_ref());
+        let context =
+            crate::compact::messages_for_context(&conversation.messages, compaction.as_ref());
         let mut prompt = crate::compact::api_messages(&context);
         let block = crate::capabilities::prompt_block(request.conversation_id.trim());
         if !block.is_empty() {
@@ -330,15 +362,25 @@ fn run_live_turn_with(
                 ) {
                     continue;
                 }
-                if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed))
+                {
                     return finish_cancelled(service, &mut conversation, &mut on_event);
                 }
                 match hold_transient_provider(&cancel, &mut on_event, &mut outage_tries, &message) {
                     ProviderHold::Retry => continue,
-                    ProviderHold::Stopped => return finish_cancelled(service, &mut conversation, &mut on_event),
+                    ProviderHold::Stopped => {
+                        return finish_cancelled(service, &mut conversation, &mut on_event)
+                    }
                     ProviderHold::Pass => {}
                 }
-                return stop_with_message(service, &mut conversation, &mut on_event, &context_failure_text(&message));
+                return stop_with_message(
+                    service,
+                    &mut conversation,
+                    &mut on_event,
+                    &context_failure_text(&message),
+                );
             }
         };
         if let Some(message) = round.error.clone() {
@@ -355,15 +397,25 @@ fn run_live_turn_with(
             ) {
                 continue;
             }
-            if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            {
                 return finish_cancelled(service, &mut conversation, &mut on_event);
             }
             match hold_transient_provider(&cancel, &mut on_event, &mut outage_tries, &message) {
                 ProviderHold::Retry => continue,
-                ProviderHold::Stopped => return finish_cancelled(service, &mut conversation, &mut on_event),
+                ProviderHold::Stopped => {
+                    return finish_cancelled(service, &mut conversation, &mut on_event)
+                }
                 ProviderHold::Pass => {}
             }
-            return stop_with_message(service, &mut conversation, &mut on_event, &context_failure_text(&message));
+            return stop_with_message(
+                service,
+                &mut conversation,
+                &mut on_event,
+                &context_failure_text(&message),
+            );
         }
         outage_tries = 0;
         record_round_usage(service, &conversation, &model_name, round.usage);
@@ -379,7 +431,9 @@ fn run_live_turn_with(
             } else {
                 round.text
             };
-            conversation.messages.push(json!({ "role": "assistant", "content": text }));
+            conversation
+                .messages
+                .push(assistant_message(&text, &round.reasoning_items));
             remember_compaction(&mut conversation, &compaction);
             conversation.updated_at = now();
             service.save_conversation(&conversation)?;
@@ -393,13 +447,14 @@ fn run_live_turn_with(
             .iter()
             .map(|call| json!({ "id": call.id, "name": call.name, "arguments": call.arguments }))
             .collect();
-        conversation.messages.push(json!({
-            "role": "assistant",
-            "content": round.text,
-            "tool_calls": calls,
-        }));
+        let mut message = assistant_message(&round.text, &round.reasoning_items);
+        message["tool_calls"] = serde_json::Value::Array(calls);
+        conversation.messages.push(message);
         for call in &round.tool_calls {
-            if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            {
                 conversation.messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call.id,
@@ -408,7 +463,11 @@ fn run_live_turn_with(
                 continue;
             }
             on_event(TurnEvent::Status(tool_status(&call.name, &call.arguments)));
-            if let Some(text) = crate::capabilities::call(request.conversation_id.trim(), &call.name, &call.arguments) {
+            if let Some(text) = crate::capabilities::call(
+                request.conversation_id.trim(),
+                &call.name,
+                &call.arguments,
+            ) {
                 conversation.messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call.id,
@@ -416,7 +475,13 @@ fn run_live_turn_with(
                 }));
                 continue;
             }
-            let result = match dispatch(workspace, &host, &request.permission, &call.name, &call.arguments) {
+            let result = match dispatch(
+                workspace,
+                &host,
+                &request.permission,
+                &call.name,
+                &call.arguments,
+            ) {
                 Ok(result) => result,
                 Err(err) => format!("Error: {err}"),
             };
@@ -429,7 +494,10 @@ fn run_live_turn_with(
         remember_compaction(&mut conversation, &compaction);
         conversation.updated_at = now();
         service.save_conversation(&conversation)?;
-        if cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
             return finish_cancelled(service, &mut conversation, &mut on_event);
         }
     }
@@ -462,17 +530,33 @@ enum FoldStep {
 
 fn model_id(request: &TurnRequest) -> &str {
     let name = request.model.trim();
-    if name.is_empty() { "grok-4.6" } else { name }
+    if name.is_empty() {
+        "grok-4.6"
+    } else {
+        name
+    }
 }
 
 fn stored_prompt_tokens(usage: &Option<serde_json::Value>) -> u64 {
-    usage.as_ref().and_then(|value| value.get("prompt_tokens")).and_then(|value| value.as_u64()).unwrap_or(0)
+    usage
+        .as_ref()
+        .and_then(|value| value.get("prompt_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
 }
 
 fn stored_compaction(value: &Option<serde_json::Value>) -> Option<crate::compact::Compaction> {
     let value = value.as_ref()?;
-    let summary = value.get("summary").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
-    let through = value.get("through").and_then(|item| item.as_u64()).unwrap_or(0);
+    let summary = value
+        .get("summary")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let through = value
+        .get("through")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0);
     if summary.is_empty() || through == 0 {
         None
     } else {
@@ -480,8 +564,13 @@ fn stored_compaction(value: &Option<serde_json::Value>) -> Option<crate::compact
     }
 }
 
-fn remember_compaction(conversation: &mut Conversation, compaction: &Option<crate::compact::Compaction>) {
-    conversation.compaction = compaction.as_ref().and_then(|state| serde_json::to_value(state).ok());
+fn remember_compaction(
+    conversation: &mut Conversation,
+    compaction: &Option<crate::compact::Compaction>,
+) {
+    conversation.compaction = compaction
+        .as_ref()
+        .and_then(|state| serde_json::to_value(state).ok());
 }
 
 fn usage_value(usage: crate::model::RoundUsage) -> serde_json::Value {
@@ -584,7 +673,9 @@ fn hold_transient_provider(
     if !transient_provider_error(message) {
         return ProviderHold::Pass;
     }
-    on_event(TurnEvent::Status(provider_retry_status(tries.saturating_add(1))));
+    on_event(TurnEvent::Status(provider_retry_status(
+        tries.saturating_add(1),
+    )));
     let attempt = *tries;
     *tries = tries.saturating_add(1);
     if !wait_for_provider(cancel, attempt) {
@@ -612,7 +703,9 @@ fn clear_prompt_measure(conversation: &mut Conversation, prompt_tokens: &mut u64
 }
 
 fn cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
-    cancel.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))
+    cancel
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Relaxed))
 }
 
 fn stop_for_context(
@@ -646,7 +739,10 @@ fn fit_prompt(
     model_name: &str,
     window: u64,
     cancel: &Option<Arc<AtomicBool>>,
-    complete: &mut dyn FnMut(&[serde_json::Value], &mut dyn FnMut(&str)) -> Result<crate::model::Round>,
+    complete: &mut dyn FnMut(
+        &[serde_json::Value],
+        &mut dyn FnMut(&str),
+    ) -> Result<crate::model::Round>,
     conversation: &mut Conversation,
     compaction: &mut Option<crate::compact::Compaction>,
     prompt_tokens: &mut u64,
@@ -659,7 +755,14 @@ fn fit_prompt(
         crate::compact::BudgetAction::Send => Fit::Ready,
         crate::compact::BudgetAction::Stop => Fit::TooBig,
         crate::compact::BudgetAction::Fold { times } => match fold_up_to(
-            service, model_name, cancel, complete, conversation, compaction, prompt_tokens, times,
+            service,
+            model_name,
+            cancel,
+            complete,
+            conversation,
+            compaction,
+            prompt_tokens,
+            times,
         ) {
             FoldStep::Folded => Fit::Ready,
             FoldStep::Stopped => Fit::Stopped,
@@ -678,7 +781,10 @@ fn recover_overflow(
     service: &ProjectService,
     model_name: &str,
     cancel: &Option<Arc<AtomicBool>>,
-    complete: &mut dyn FnMut(&[serde_json::Value], &mut dyn FnMut(&str)) -> Result<crate::model::Round>,
+    complete: &mut dyn FnMut(
+        &[serde_json::Value],
+        &mut dyn FnMut(&str),
+    ) -> Result<crate::model::Round>,
     conversation: &mut Conversation,
     compaction: &mut Option<crate::compact::Compaction>,
     prompt_tokens: &mut u64,
@@ -690,7 +796,16 @@ fn recover_overflow(
     }
     *overflow_retries = overflow_retries.saturating_add(1);
     matches!(
-        fold_up_to(service, model_name, cancel, complete, conversation, compaction, prompt_tokens, 4),
+        fold_up_to(
+            service,
+            model_name,
+            cancel,
+            complete,
+            conversation,
+            compaction,
+            prompt_tokens,
+            4
+        ),
         FoldStep::Folded
     )
 }
@@ -699,7 +814,10 @@ fn fold_up_to(
     service: &ProjectService,
     model_name: &str,
     cancel: &Option<Arc<AtomicBool>>,
-    complete: &mut dyn FnMut(&[serde_json::Value], &mut dyn FnMut(&str)) -> Result<crate::model::Round>,
+    complete: &mut dyn FnMut(
+        &[serde_json::Value],
+        &mut dyn FnMut(&str),
+    ) -> Result<crate::model::Round>,
     conversation: &mut Conversation,
     compaction: &mut Option<crate::compact::Compaction>,
     prompt_tokens: &mut u64,
@@ -710,20 +828,35 @@ fn fold_up_to(
         if cancelled(cancel) {
             return FoldStep::Stopped;
         }
-        match fold_once(service, model_name, cancel, complete, conversation, compaction, prompt_tokens) {
+        match fold_once(
+            service,
+            model_name,
+            cancel,
+            complete,
+            conversation,
+            compaction,
+            prompt_tokens,
+        ) {
             FoldStep::Folded => folded = true,
             FoldStep::None => break,
             FoldStep::Stopped => return FoldStep::Stopped,
         }
     }
-    if folded { FoldStep::Folded } else { FoldStep::None }
+    if folded {
+        FoldStep::Folded
+    } else {
+        FoldStep::None
+    }
 }
 
 fn fold_once(
     service: &ProjectService,
     model_name: &str,
     cancel: &Option<Arc<AtomicBool>>,
-    complete: &mut dyn FnMut(&[serde_json::Value], &mut dyn FnMut(&str)) -> Result<crate::model::Round>,
+    complete: &mut dyn FnMut(
+        &[serde_json::Value],
+        &mut dyn FnMut(&str),
+    ) -> Result<crate::model::Round>,
     conversation: &mut Conversation,
     compaction: &mut Option<crate::compact::Compaction>,
     prompt_tokens: &mut u64,
@@ -738,7 +871,13 @@ fn fold_once(
     let _hide = crate::capabilities::HideTools::new();
     let round = match complete(&prompt, &mut |_| {}) {
         Ok(round) => round,
-        Err(_) => return if cancelled(cancel) { FoldStep::Stopped } else { FoldStep::None },
+        Err(_) => {
+            return if cancelled(cancel) {
+                FoldStep::Stopped
+            } else {
+                FoldStep::None
+            }
+        }
     };
     record_round_usage(service, conversation, model_name, round.usage);
     if cancelled(cancel) {
@@ -752,7 +891,9 @@ fn fold_once(
     } else {
         round.reasoning.trim().to_string()
     };
-    let Some(next) = crate::compact::commit_fold(&mut conversation.messages, &summary, plan.through) else {
+    let Some(next) =
+        crate::compact::commit_fold(&mut conversation.messages, &summary, plan.through)
+    else {
         return FoldStep::None;
     };
     *compaction = Some(next);
@@ -811,14 +952,28 @@ fn finish_cancelled(
     Err(Error::Other("Stopped.".into()))
 }
 
+fn assistant_message(text: &str, reasoning_items: &[serde_json::Value]) -> serde_json::Value {
+    let mut message = json!({ "role": "assistant", "content": text });
+    if !reasoning_items.is_empty() {
+        message["reasoning_items"] = serde_json::Value::Array(reasoning_items.to_vec());
+    }
+    message
+}
+
 /// Keep only the text the GUI is allowed to see. Tool arguments stay on the server.
 pub fn public_messages(conversation: &Conversation) -> Vec<serde_json::Value> {
     conversation
         .messages
         .iter()
         .filter_map(|message| {
-            let role = message.get("role").and_then(|value| value.as_str()).unwrap_or("");
-            let text = message.get("content").and_then(|value| value.as_str()).unwrap_or("");
+            let role = message
+                .get("role")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let text = message
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
             match role {
                 "user" | "assistant" => {
                     if text.trim().is_empty() {
@@ -827,9 +982,9 @@ pub fn public_messages(conversation: &Conversation) -> Vec<serde_json::Value> {
                         Some(json!({ "role": role, "content": text }))
                     }
                 }
-                "system" if text.trim() == crate::compact::COMPACTION_EVENT_TEXT => {
-                    Some(json!({ "role": "system", "content": crate::compact::COMPACTION_EVENT_TEXT }))
-                }
+                "system" if text.trim() == crate::compact::COMPACTION_EVENT_TEXT => Some(
+                    json!({ "role": "system", "content": crate::compact::COMPACTION_EVENT_TEXT }),
+                ),
                 _ => None,
             }
         })
@@ -859,7 +1014,11 @@ fn new_conversation(id: &str, prompt: &str, request: &TurnRequest) -> Conversati
 
 fn blank(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn title_from(prompt: &str) -> String {
@@ -869,7 +1028,11 @@ fn title_from(prompt: &str) -> String {
     }
     let mut chars = text.chars();
     let short: String = chars.by_ref().take(41).collect();
-    if chars.next().is_some() { format!("{short}…") } else { short }
+    if chars.next().is_some() {
+        format!("{short}…")
+    } else {
+        short
+    }
 }
 
 fn now() -> String {
@@ -878,7 +1041,11 @@ fn now() -> String {
 
 #[cfg(test)]
 fn message_text(message: &Value) -> String {
-    message.get("content").and_then(Value::as_str).unwrap_or("").to_string()
+    message
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -935,6 +1102,7 @@ mod tests {
                     permission: "approve-all".into(),
                     project: String::new(),
                     context_window: None,
+                    service_tier: String::new(),
                 },
                 &ReadThenAnswer,
             )
@@ -952,7 +1120,8 @@ mod tests {
     #[test]
     fn a_tool_error_is_saved_and_the_turn_continues() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let service =
+            ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
         struct Missing;
         impl ScriptedModel for Missing {
             fn steps(&self) -> Vec<ModelStep> {
@@ -975,6 +1144,7 @@ mod tests {
                 permission: "ask".into(),
                 project: String::new(),
                 context_window: None,
+                service_tier: String::new(),
             },
             &Missing,
         );
@@ -990,14 +1160,18 @@ mod tests {
         let _service = ProjectService::open(&project, root.path().join("store")).unwrap();
         let gate = TurnGate::new();
         gate.shell.answer(true);
-        let workspace = LocalWorkspace { root: project.clone() };
+        let workspace = LocalWorkspace {
+            root: project.clone(),
+        };
         let marker = project.join("ran.txt");
         let host_result = {
             let ask = {
                 let shell = gate.shell.clone();
                 let cancel = gate.cancel.clone();
                 std::sync::Arc::new(move |_command: &str, _description: &str| {
-                    shell.wait(&cancel, std::time::Duration::from_secs(2)).unwrap_or(false)
+                    shell
+                        .wait(&cancel, std::time::Duration::from_secs(2))
+                        .unwrap_or(false)
                 }) as std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
             };
             let host = PermissionHost {
@@ -1020,7 +1194,8 @@ mod tests {
     #[test]
     fn a_denied_command_is_saved_as_skipped() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let service =
+            ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
         let saved = service
             .submit_prompt(
                 &TurnRequest {
@@ -1031,13 +1206,21 @@ mod tests {
                     permission: "ask".into(),
                     project: String::new(),
                     context_window: None,
+                    service_tier: String::new(),
                 },
                 &DenyShellModel,
             )
             .unwrap();
-        let tool = saved.messages.iter().find(|msg| msg["role"] == "tool").unwrap();
+        let tool = saved
+            .messages
+            .iter()
+            .find(|msg| msg["role"] == "tool")
+            .unwrap();
         assert_eq!(message_text(tool), "User skipped this command.");
-        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Stopped after the skip."));
+        assert!(saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg) == "Stopped after the skip."));
     }
 
     #[test]
@@ -1057,6 +1240,7 @@ mod tests {
                 permission: "approve-all".into(),
                 project: String::new(),
                 context_window: None,
+                service_tier: String::new(),
             },
             &LocalWorkspace { root: project },
             &mut |_messages: &[Value], _on_delta: &mut dyn FnMut(&str)| {
@@ -1076,6 +1260,7 @@ mod tests {
                             cache_read_tokens: 0,
                         }),
                         reasoning: String::new(),
+                        reasoning_items: Vec::new(),
                     });
                 }
                 Ok(text_round("Still working."))
@@ -1086,8 +1271,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(calls, 25);
-        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Still working."));
-        assert!(!saved.messages.iter().any(|msg| message_text(msg).contains("too many tool rounds")));
+        assert!(saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg) == "Still working."));
+        assert!(!saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg).contains("too many tool rounds")));
     }
 
     fn tool_loop() -> Vec<Value> {
@@ -1104,7 +1295,12 @@ mod tests {
         ]
     }
 
-    fn stored_chat(service: &ProjectService, messages: Vec<Value>, prompt_tokens: u64, window: u64) {
+    fn stored_chat(
+        service: &ProjectService,
+        messages: Vec<Value>,
+        prompt_tokens: u64,
+        window: u64,
+    ) {
         service
             .save_conversation(&Conversation {
                 id: "c1".into(),
@@ -1141,6 +1337,7 @@ mod tests {
                 cache_read_tokens: 0,
             }),
             reasoning: String::new(),
+            reasoning_items: Vec::new(),
         }
     }
 
@@ -1162,6 +1359,7 @@ mod tests {
                 permission: "approve-all".into(),
                 project: String::new(),
                 context_window: Some(500_000),
+                service_tier: String::new(),
             },
             &LocalWorkspace { root: project },
             &mut |messages: &[Value], _on_delta: &mut dyn FnMut(&str)| {
@@ -1177,14 +1375,25 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        assert!(seen.iter().any(|prompt| prompt.contains("Reply with the summary only")));
+        assert!(seen
+            .iter()
+            .any(|prompt| prompt.contains("Reply with the summary only")));
         let last = seen.last().unwrap();
         assert!(last.contains("Read the first files."));
         assert!(last.contains("last-file"));
         assert!(!last.contains("first-file"));
-        assert_eq!(saved.compaction.as_ref().unwrap()["summary"], "Read the first files.");
-        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Conversation compacted"));
-        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Continuing."));
+        assert_eq!(
+            saved.compaction.as_ref().unwrap()["summary"],
+            "Read the first files."
+        );
+        assert!(saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg) == "Conversation compacted"));
+        assert!(saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg) == "Continuing."));
     }
 
     #[test]
@@ -1206,6 +1415,7 @@ mod tests {
                 permission: "approve-all".into(),
                 project: String::new(),
                 context_window: Some(500_000),
+                service_tier: String::new(),
             },
             &LocalWorkspace { root: project },
             &mut |messages: &[Value], _on_delta: &mut dyn FnMut(&str)| {
@@ -1221,6 +1431,7 @@ mod tests {
                         error: Some(overflow.into()),
                         usage: None,
                         reasoning: String::new(),
+                        reasoning_items: Vec::new(),
                     });
                 }
                 assert!(!rendered.contains("first-file"), "{rendered}");
@@ -1232,8 +1443,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(real_calls, 2);
-        assert!(saved.messages.iter().any(|msg| message_text(msg) == "Continuing."));
-        assert!(!saved.messages.iter().any(|msg| message_text(msg).contains("input_too_large")));
+        assert!(saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg) == "Continuing."));
+        assert!(!saved
+            .messages
+            .iter()
+            .any(|msg| message_text(msg).contains("input_too_large")));
     }
 
     #[test]
@@ -1263,6 +1480,7 @@ mod tests {
                 permission: "approve-all".into(),
                 project: String::new(),
                 context_window: Some(500_000),
+                service_tier: String::new(),
             },
             &LocalWorkspace { root: project },
             &mut |_messages: &[Value], _on_delta: &mut dyn FnMut(&str)| {
@@ -1285,19 +1503,32 @@ mod tests {
         assert!(transient_provider_error("xAI error 503: unavailable"));
         assert!(transient_provider_error("xAI error 403: "));
         assert!(transient_provider_error("xAI error 403:"));
-        assert!(!transient_provider_error("xAI error 403: permission denied"));
+        assert!(!transient_provider_error(
+            "xAI error 403: permission denied"
+        ));
         assert!(transient_provider_error("xAI request failed: overloaded"));
         assert!(!transient_provider_error("error decoding response body"));
         assert!(!transient_provider_error("Stopped."));
-        assert!(!transient_provider_error("Grok CLI login expired. Run grok login."));
+        assert!(!transient_provider_error(
+            "Grok CLI login expired. Run grok login."
+        ));
         assert!(!transient_provider_error("xAI rejected the API key."));
         assert!(!transient_provider_error(
             "This model's maximum context length was exceeded (500000 tokens)"
         ));
         assert_eq!(provider_retry_pause(0).as_secs(), 2);
         assert_eq!(provider_retry_pause(4).as_secs(), 30);
-        assert_eq!(provider_retry_status(1), "The model is unavailable. Retry 1…");
-        assert_eq!(provider_retry_status(0), "The model is unavailable. Retry 1…");
-        assert_eq!(provider_retry_status(4), "The model is unavailable. Retry 4…");
+        assert_eq!(
+            provider_retry_status(1),
+            "The model is unavailable. Retry 1…"
+        );
+        assert_eq!(
+            provider_retry_status(0),
+            "The model is unavailable. Retry 1…"
+        );
+        assert_eq!(
+            provider_retry_status(4),
+            "The model is unavailable. Retry 4…"
+        );
     }
 }

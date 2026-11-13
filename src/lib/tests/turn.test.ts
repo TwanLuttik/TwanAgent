@@ -35,6 +35,7 @@ import {
   composerRowForOpen,
   composerSettingsForChat,
   effortForModel,
+  messagesForSend,
   modelForTurn,
   localTurnsToRejoin,
   foregroundRunningId,
@@ -49,6 +50,16 @@ import {
   turnAppliesToChat,
   turnFailureMessage,
 } from "../turn.ts";
+
+describe("messagesForSend", () => {
+  it("keeps the database copy when the screen is the empty prompt", () => {
+    const disk = ["older", "reply"];
+    assert.deepEqual(messagesForSend([], disk), disk);
+    assert.deepEqual(messagesForSend(["on screen"], disk), ["on screen"]);
+    assert.deepEqual(messagesForSend([], []), []);
+    assert.deepEqual(messagesForSend([], null), []);
+  });
+});
 
 describe("localTurnsToRejoin", () => {
   const live = [{ conversation_id: "chat-a" }, { conversation_id: "chat-b" }];

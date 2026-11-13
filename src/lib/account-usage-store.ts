@@ -8,7 +8,7 @@ export type AccountUsageSnapshot = {
   loading: boolean;
 };
 
-type ProviderId = "xai" | "anthropic" | "minimax";
+type ProviderId = "xai" | "anthropic" | "minimax" | "openai";
 
 const PROVIDERS: {
   id: ProviderId;
@@ -18,6 +18,7 @@ const PROVIDERS: {
   { id: "xai", loadCached: api.xaiAccountUsageCached, load: api.xaiAccountUsage },
   { id: "anthropic", loadCached: api.accountUsageCached, load: api.accountUsage },
   { id: "minimax", loadCached: api.minimaxAccountUsageCached, load: api.minimaxAccountUsage },
+  { id: "openai", loadCached: api.openaiAccountUsageCached, load: api.openaiAccountUsage },
 ];
 
 const EMPTY: AccountUsageSnapshot = { usage: null, loading: true };
@@ -67,7 +68,7 @@ function reload(id: ProviderId, load: () => Promise<api.ApiAccountUsage>) {
 }
 
 /**
- * Start the Grok, Claude, and MiniMax allowance checks. Safe to call more than once.
+ * Start the Grok, Claude, MiniMax, and GPT allowance checks. Safe to call more than once.
  * The poll is not tied to a component, so opening or closing settings cannot stop it.
  */
 export function startAccountUsage() {

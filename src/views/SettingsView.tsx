@@ -25,7 +25,7 @@ export type SettingsTab = "appearance" | "providers" | "voice" | "storage" | "pe
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string; hint: string; icon: string; group: string }[] = [
   { id: "appearance", label: "Appearance", hint: "Theme and display", icon: "paintbrush", group: "General" },
-  { id: "providers", label: "Providers", hint: "Grok, Claude, and MiniMax", icon: "sparkles", group: "Models" },
+  { id: "providers", label: "Providers", hint: "Grok, Claude, MiniMax, and OpenAI", icon: "sparkles", group: "Models" },
   { id: "voice", label: "Voice", hint: "Dictation", icon: "mic", group: "Models" },
   { id: "permissions", label: "Permissions", hint: "Folders and chats", icon: "lock", group: "System" },
   { id: "storage", label: "Storage", hint: "Projects and usage", icon: "externaldrive", group: "System" },
@@ -72,6 +72,7 @@ export function SettingsView({
     xai: "",
     anthropic: "",
     minimax: "",
+    openai: "",
   });
   const [savingProvider, setSavingProvider] = useState<ProviderCardId | null>(null);
   const [updatingCli, setUpdatingCli] = useState<ProviderCardId | "all" | null>(null);
@@ -102,6 +103,7 @@ export function SettingsView({
   }, [active, onClose, voicePicker]);
 
   function updateProvider(card: ProviderCard) {
+    if (card.id === "openai" || !card.cli) return Promise.resolve();
     const cli = providerStatus[card.cli];
     if (!cli?.installed || !cli.update || cli.update === cli.version) return Promise.resolve();
     return api.cliUpdate(card.id).then((info) => {
@@ -139,7 +141,7 @@ export function SettingsView({
               selectedId={selectedProvider}
               onSelect={setSelectedProvider}
               statusFor={(card) => providerStatus[card.id]}
-              cliFor={(card) => providerStatus[card.cli]}
+              cliFor={(card) => (card.cli ? providerStatus[card.cli] : null)}
               draftFor={(card) => providerKeys[card.id]}
               onDraft={(card, value) => setProviderKeys((prev) => ({ ...prev, [card.id]: value }))}
               savingId={savingProvider}
@@ -156,6 +158,7 @@ export function SettingsView({
               }}
               onUpdateAll={() => {
                 const due = PROVIDER_CARDS.filter((card) => {
+                  if (!card.cli) return false;
                   const cli = providerStatus[card.cli];
                   return Boolean(cli?.installed && cli.update && cli.update !== cli.version);
                 });

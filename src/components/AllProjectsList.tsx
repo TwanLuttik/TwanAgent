@@ -356,6 +356,8 @@ export function AllProjectsList({
                   const memberGit = gitByProject?.[projectGitKey(member.path)] ?? null;
                   const memberClosed = !chatQuery.trim() && isProjectCollapsed(collapsed, member.path);
                   const memberCurrent = isSameProject(member.path, activeWorkspace);
+                  const memberHasArchived = projectHasArchived(member.conversations);
+                  const memberShowArchived = !chatQuery.trim() && Boolean(archiveOpen[projectKey(member.path)]);
                   return (
                     <div key={projectKey(member.path)}>
                       <div
@@ -388,11 +390,48 @@ export function AllProjectsList({
                         >
                           <ProjectMark path={member.path} remote={Boolean(member.remote)} refresh={logoRefresh} className="size-3" />
                           <span className="min-w-0 flex-1 truncate">{member.name}</span>
-                          {memberGit ? <ProjectGitRow git={memberGit} /> : null}
+                          {memberGit && !memberShowArchived ? <ProjectGitRow git={memberGit} /> : null}
                         </button>
+                        {memberHasArchived ? (
+                          <button
+                            type="button"
+                            aria-label={memberShowArchived ? `Hide archived chats in ${member.name}` : `Show archived chats in ${member.name}`}
+                            aria-pressed={memberShowArchived}
+                            title={memberShowArchived ? "Hide archive" : "Archived chats"}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              if (memberClosed) onToggleCollapsed(member.path);
+                              onToggleArchive(member.path);
+                            }}
+                            className={`mr-0.5 flex size-6 shrink-0 items-center justify-center rounded ${
+                              memberShowArchived
+                                ? "bg-accent/15 text-accent"
+                                : "text-muted hover:bg-wash-strong hover:text-ink"
+                            }`}
+                          >
+                            <Symbol name="archivebox" className="size-3.5" />
+                          </button>
+                        ) : null}
                       </div>
-                      <Collapse open={!memberClosed}><div className="mt-1">{renderList(member, {
-                        showArchived: false,
+                      <Collapse open={!memberClosed}><div className="mt-1">
+                        {!memberShowArchived ? null : (
+                          <div className="mx-1 mb-1 flex items-center gap-1.5 rounded-[6px] bg-accent/10 px-2 py-1 text-accent">
+                            <Symbol name="archivebox" className="size-3 shrink-0" />
+                            <span className="min-w-0 flex-1 truncate text-[11px] font-semibold tracking-[0.04em] uppercase">
+                              Archived
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onToggleArchive(member.path)}
+                              className="shrink-0 rounded px-1 py-0.5 text-[11px] font-medium text-accent hover:bg-accent/15"
+                            >
+                              Back
+                            </button>
+                          </div>
+                        )}
+                        {renderList(member, {
+                        showArchived: memberShowArchived,
                         place: {
                           branch: gitByProject?.[projectGitKey(member.path)]?.branch ?? "",
                           worktree: false,

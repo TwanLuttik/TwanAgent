@@ -4,12 +4,14 @@ import {
   CHAT_BOTTOM_PAD_FALLBACK,
   CHAT_FOLLOW_EASE,
   CHAT_NEAR_BOTTOM_PX,
+  applyComposerPadResize,
   chatBottomPadding,
   easeChatToEnd,
   isNearBottom,
   panesThatFollow,
   pinChatToEnd,
   scrollChatToEnd,
+  scrollTopAfterComposerResize,
   stickToBottomAfterRestore,
 } from "../chat-scroll.ts";
 
@@ -122,6 +124,38 @@ describe("split panes follow on their own", () => {
     assert.equal(stickToBottomAfterRestore(atEnd, 700), true);
     const up = { scrollTop: 40, scrollHeight: 900, clientHeight: 200 };
     assert.equal(stickToBottomAfterRestore(up, 40), false);
+  });
+});
+
+describe("scrollTopAfterComposerResize", () => {
+  const atEnd = { scrollTop: 500, scrollHeight: 700, clientHeight: 200 };
+
+  it("follows the composer down when a pinned chat's field shrinks", () => {
+    // Enter clears a tall draft. The pad is still the old height here.
+    assert.equal(scrollTopAfterComposerResize(atEnd, 200, 80, true), 380);
+  });
+
+  it("does not move a reader who has scrolled up", () => {
+    const up = { scrollTop: 40, scrollHeight: 700, clientHeight: 200 };
+    assert.equal(scrollTopAfterComposerResize(up, 200, 80, false), 40);
+  });
+
+  it("clamps a position the shorter pad can no longer reach", () => {
+    const near = { scrollTop: 450, scrollHeight: 700, clientHeight: 200 };
+    assert.equal(scrollTopAfterComposerResize(near, 200, 80, false), 380);
+  });
+
+  it("writes the shorter pad before reporting the pinned scroll", () => {
+    const pad = { style: { paddingBottom: "200px" }, dataset: {} as { chatPadMode?: string } };
+    const scroller = {
+      scrollTop: 500,
+      scrollHeight: 700,
+      clientHeight: 200,
+      querySelector: () => pad,
+    };
+    assert.equal(applyComposerPadResize(scroller, 80, true), 380);
+    assert.equal(pad.style.paddingBottom, "80px");
+    assert.equal(applyComposerPadResize(scroller, 80, true), null);
   });
 });
 

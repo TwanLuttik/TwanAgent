@@ -912,6 +912,20 @@ describe("tool helpers", () => {
     assert.equal(out[0]?.tool_calls?.[0]?.id, "toolu_1");
   });
 
+  it("sends OpenAI reasoning items back unchanged and drops the visible summary", () => {
+    const reasoning_items = [{ type: "reasoning", id: "rs_1", encrypted_content: "enc", summary: [] }];
+    const out = toApiMessages([
+      {
+        role: "assistant",
+        content: "Done.",
+        reasoning: "Look first.",
+        reasoning_items,
+      },
+    ]);
+    assert.equal("reasoning" in (out[0] ?? {}), false);
+    assert.deepEqual(out[0]?.reasoning_items, reasoning_items);
+  });
+
   it("keeps committed tool calls above newly streaming text", () => {
     const items = liveTranscriptItems(
       [

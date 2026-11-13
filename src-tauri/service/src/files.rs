@@ -29,7 +29,9 @@ pub fn read_file(workspace: &Path, rel: &str) -> Result<String> {
     }
     let meta = fs::metadata(&path)?;
     if meta.len() > READ_LIMIT as u64 {
-        return Err(Error::Other(format!("file is larger than {READ_LIMIT} bytes")));
+        return Err(Error::Other(format!(
+            "file is larger than {READ_LIMIT} bytes"
+        )));
     }
     let mut file = fs::File::open(&path)?;
     let mut buf = Vec::new();
@@ -103,7 +105,9 @@ pub fn numbered_lines(text: &str, offset: Option<u32>, limit: Option<u32>) -> Re
 
 pub fn write_file(workspace: &Path, rel: &str, contents: &str) -> Result<()> {
     if contents.len() > WRITE_LIMIT {
-        return Err(Error::Other(format!("write is larger than {WRITE_LIMIT} bytes")));
+        return Err(Error::Other(format!(
+            "write is larger than {WRITE_LIMIT} bytes"
+        )));
     }
     let path = resolve(workspace, rel)?;
     if let Some(parent) = path.parent() {
@@ -123,7 +127,9 @@ pub fn edit_file(workspace: &Path, rel: &str, old: &str, new: &str) -> Result<()
         return Err(Error::Other("old_string was not found".into()));
     }
     if matches > 1 {
-        return Err(Error::Other(format!("old_string matched {matches} times — make it unique")));
+        return Err(Error::Other(format!(
+            "old_string matched {matches} times — make it unique"
+        )));
     }
     write_file(workspace, rel, &current.replacen(old, new, 1))
 }
@@ -140,7 +146,10 @@ pub fn list_dir(workspace: &Path, rel: &str) -> Result<Vec<(String, bool)>> {
         let dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
         rows.push((name, dir));
     }
-    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase())));
+    rows.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()))
+    });
     Ok(rows)
 }
 
@@ -163,7 +172,8 @@ fn run_command_timed(
 ) -> Result<String> {
     let mut cmd = std::process::Command::new("sh");
     cmd.arg("-c").arg(command).current_dir(workspace);
-    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -252,7 +262,11 @@ fn set_nonblocking(file: &impl std::os::fd::AsRawFd) {
     }
 }
 
-fn format_output(stdout: &[u8], stderr: &[u8], status: &std::process::ExitStatus) -> Result<String> {
+fn format_output(
+    stdout: &[u8],
+    stderr: &[u8],
+    status: &std::process::ExitStatus,
+) -> Result<String> {
     let mut text = String::new();
     let out = String::from_utf8_lossy(stdout);
     let err = String::from_utf8_lossy(stderr);
@@ -313,10 +327,9 @@ fn libc_kill(pid: i32, sig: i32) -> i32 {
     unsafe { kill(pid, sig) }
 }
 
-
-
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
-    let root = fs::canonicalize(root).map_err(|_| Error::Other("workspace folder is missing".into()))?;
+    let root =
+        fs::canonicalize(root).map_err(|_| Error::Other("workspace folder is missing".into()))?;
     let rel = normalize(rel)?;
     if rel.as_os_str().is_empty() {
         return Ok(root);
@@ -328,13 +341,16 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf> {
     let parts: Vec<_> = rel.components().collect();
     for (index, part) in parts.iter().enumerate() {
         let Component::Normal(name) = part else {
-            return Err(Error::Other("path must be relative to the workspace".into()));
+            return Err(Error::Other(
+                "path must be relative to the workspace".into(),
+            ));
         };
         let next = cursor.join(name);
         match fs::symlink_metadata(&next) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
-                    let canon = fs::canonicalize(&next).map_err(|_| Error::Other("path is outside the workspace".into()))?;
+                    let canon = fs::canonicalize(&next)
+                        .map_err(|_| Error::Other("path is outside the workspace".into()))?;
                     if !inside(&root, &canon) {
                         return Err(Error::Other("path is outside the workspace".into()));
                     }
@@ -385,11 +401,18 @@ mod tests {
             let err = resolve(root.path(), "link/planted.txt").unwrap_err();
             assert!(err.to_string().contains("outside"), "{err}");
             let nested = write_file(root.path(), "link/a/planted.txt", "nope");
-            assert!(nested.is_err(), "a nested write must not follow the symlink");
+            assert!(
+                nested.is_err(),
+                "a nested write must not follow the symlink"
+            );
             assert!(!outside.path().join("planted.txt").exists());
             assert!(!outside.path().join("a").exists());
             std::fs::write(outside.path().join("secret.txt"), "nope").unwrap();
-            std::os::unix::fs::symlink(outside.path().join("secret.txt"), root.path().join("filelink")).unwrap();
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.txt"),
+                root.path().join("filelink"),
+            )
+            .unwrap();
             assert!(read_file(root.path(), "filelink").is_err());
         }
         let _ = (root, outside);
@@ -414,16 +437,24 @@ mod tests {
 
     #[test]
     fn numbered_lines_slices_and_numbers_a_range() {
-        let text = (1..=60).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        let text = (1..=60)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let shown = numbered_lines(&text, Some(10), Some(51)).unwrap();
         let rows: Vec<&str> = shown.lines().collect();
         assert_eq!(rows.len(), 51);
         assert_eq!(rows[0], "    10|line 10");
         assert_eq!(rows[50], "    60|line 60");
         let from_offset = numbered_lines(&text, Some(58), None).unwrap();
-        assert_eq!(from_offset.lines().collect::<Vec<_>>(), ["    58|line 58", "    59|line 59", "    60|line 60"]);
+        assert_eq!(
+            from_offset.lines().collect::<Vec<_>>(),
+            ["    58|line 58", "    59|line 59", "    60|line 60"]
+        );
         let err = numbered_lines(&text, Some(61), Some(10)).unwrap_err();
-        assert!(err.to_string().contains("offset is past the end of the file (60 lines)"));
+        assert!(err
+            .to_string()
+            .contains("offset is past the end of the file (60 lines)"));
     }
 }
 
@@ -433,7 +464,9 @@ fn normalize(rel: &str) -> Result<PathBuf> {
         return Ok(PathBuf::new());
     }
     if trimmed.starts_with('/') || trimmed.starts_with('\\') || Path::new(trimmed).is_absolute() {
-        return Err(Error::Other("path must be relative to the workspace".into()));
+        return Err(Error::Other(
+            "path must be relative to the workspace".into(),
+        ));
     }
     let mut out = PathBuf::new();
     for component in Path::new(trimmed).components() {
@@ -445,7 +478,11 @@ fn normalize(rel: &str) -> Result<PathBuf> {
                     return Err(Error::Other("path is outside the workspace".into()));
                 }
             }
-            _ => return Err(Error::Other("path must be relative to the workspace".into())),
+            _ => {
+                return Err(Error::Other(
+                    "path must be relative to the workspace".into(),
+                ))
+            }
         }
     }
     Ok(out)

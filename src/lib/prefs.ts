@@ -361,6 +361,7 @@ const MODEL_KEY = "twanagent.model";
 const EFFORT_KEY = "twanagent.effort";
 const CONTEXT_WINDOW_KEY = "twanagent.contextWindow";
 const PERMISSION_KEY = "twanagent.permission";
+const OPENAI_SPEED_KEY = "twanagent.openaiSpeed";
 
 export function loadModel(): string {
   return localStorage.getItem(MODEL_KEY) ?? "";
@@ -390,6 +391,14 @@ export function saveEffort(id: string): void {
 
 export function loadPermission(): string {
   return localStorage.getItem(PERMISSION_KEY) ?? "";
+}
+
+export function loadOpenAiSpeed(): string {
+  return localStorage.getItem(OPENAI_SPEED_KEY) ?? "";
+}
+
+export function saveOpenAiSpeed(id: string): void {
+  localStorage.setItem(OPENAI_SPEED_KEY, id);
 }
 
 export function savePermission(id: string): void {

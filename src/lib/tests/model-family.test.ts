@@ -22,6 +22,21 @@ describe("modelFamilyName", () => {
     assert.deepEqual(modelFamilyName("MiniMax M3"), { family: "MiniMax", version: "M3" });
     assert.deepEqual(modelFamilyName("MiniMax M2.7 Highspeed"), { family: "MiniMax", version: "M2.7 Highspeed" });
   });
+
+  it("groups GPT display names under GPT without moving Grok", () => {
+    assert.deepEqual(modelFamilyName("GPT-6 Astra"), { family: "GPT", version: "6 Astra" });
+    assert.deepEqual(modelFamilyName("GPT-6.1 Sol"), { family: "GPT", version: "6.1 Sol" });
+    assert.deepEqual(modelFamilyName("GPT-6.1 Terra"), { family: "GPT", version: "6.1 Terra" });
+    assert.deepEqual(modelFamilyName("GPT-6 Luna"), { family: "GPT", version: "6 Luna" });
+    assert.deepEqual(modelFamilyName("Grok 4.6"), { family: "Grok", version: "4.6" });
+    const groups = groupModelFamilies([
+      { id: "a", name: "GPT-6 Astra" },
+      { id: "b", name: "GPT-6 Luna" },
+      { id: "c", name: "Grok 4.6" },
+    ]);
+    assert.deepEqual(groups.map((group) => group.label), ["GPT", "Grok"]);
+    assert.equal(groups[0]?.models.length, 2);
+  });
 });
 
 describe("sharedModelCapabilities", () => {

@@ -110,8 +110,9 @@ fn main() -> ExitCode {
         // The SSH session runs this through a shell, so a pipe never reaches this program.
         // The frame arrives as base64 on --frame instead.
         if let Some(encoded) = frame {
-            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
-                .unwrap_or_default();
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
+                    .unwrap_or_default();
             twanagent_service::serve_frame(&service, &keys, &bytes)
         } else {
             serve_once(&service, &keys)

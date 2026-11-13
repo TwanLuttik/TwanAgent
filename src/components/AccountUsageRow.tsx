@@ -39,7 +39,7 @@ function AccountBalance({ usage }: { usage: AccountUsage }) {
 }
 
 const ACCOUNT_ROWS: {
-  id: "xai" | "anthropic" | "minimax";
+  id: "xai" | "anthropic" | "minimax" | "openai";
   logo: string;
   logoClass: string;
   barClass: string;
@@ -69,9 +69,16 @@ const ACCOUNT_ROWS: {
     fallback: "MiniMax",
     remaining: true,
   },
+  {
+    id: "openai",
+    logo: "logo.openai",
+    logoClass: "text-[#10a37f]",
+    barClass: "bg-[#10a37f]",
+    fallback: "GPT",
+  },
 ];
 
-/** Grok, Claude, and MiniMax account allowance, shown under the sidebar Usage button. */
+/** Grok, Claude, MiniMax, and GPT account allowance, shown under the sidebar Usage button. */
 export function AccountUsageRow({ refresh = 0 }: { refresh?: number }) {
   const mode = useSidebarAccountUsage();
   if (mode !== "off") refreshAccountUsage(refresh);
@@ -94,7 +101,7 @@ function ProviderAccountUsage({
   remaining = false,
   minimized = false,
 }: {
-  id: "xai" | "anthropic" | "minimax";
+  id: "xai" | "anthropic" | "minimax" | "openai";
   logo: string;
   logoClass: string;
   barClass: string;

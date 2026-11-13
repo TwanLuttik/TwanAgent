@@ -1,7 +1,7 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { isMacOS } from "../components/WindowButtons";
 import { scrollChatToEnd } from "../lib/chat-scroll";
-import { TRANSCRIPT_PAGE_MESSAGES, cachedTranscript, openedTranscriptIsCurrent, rememberShownTranscript } from "../lib/chat-window";
+import { TRANSCRIPT_PAGE_MESSAGES, cachedTranscript, cachedTranscriptIsLoaded, openedTranscriptIsCurrent, rememberShownTranscript } from "../lib/chat-window";
 import { beginTranscriptLoad, clearTranscriptPreview, setTranscriptPreview } from "../lib/transcript-open";
 import {
   backfillFinishedAt,
@@ -847,7 +847,14 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   // This transcript is already on screen. Returning before the generation bump
   // matters: the old check incremented first, so clicking the chat you were
   // leaving cancelled the load and both rows kept that transcript.
-  if (here && id === activeIdRef.current && shownId.current === id) {
+  // An empty screen is not proof this chat has no messages. Reloading is what
+  // paints them. A chat that already has rows, or a turn that is running, stays.
+  if (
+    here &&
+    id === activeIdRef.current &&
+    shownId.current === id &&
+    (messages.length > 0 || chatHasRunningTurn(runningTurns, id))
+  ) {
     requestAnimationFrame(() => scrollChatToEnd(scroller.current, stickToBottomRef.current));
     return;
   }
@@ -930,7 +937,8 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
     ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${id}`)
     : undefined;
   const painted = cached ?? (remembered ? messagesFromCached(remembered) : undefined);
-  if (painted) {
+  const paintedLoaded = cachedTranscriptIsLoaded(painted);
+  if (paintedLoaded) {
     setMessages(painted);
     shownMessages.current.set(id, painted);
     paintedChatsRef.current.add(id);
@@ -941,7 +949,8 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   // This chat was already on screen. Painting it is the whole switch. Fetching
   // the transcript again is what freezes the window between projects. A cloud
   // copy we just remembered still has to be read from the server.
-  if (cached) {
+  // A blank cache is not that copy: `[]` is truthy and used to skip the read.
+  if (cachedTranscriptIsLoaded(cached)) {
     setActiveId(id);
     saveConversation(path, id);
     setOpeningId("");
@@ -969,7 +978,7 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
         (error: unknown) => ({ ok: false as const, error }),
       )
     : null;
-  setOpeningId(painted ? "" : id);
+  setOpeningId(paintedLoaded ? "" : id);
   const finishLoad = hostedChatsRef.current ? null : beginTranscriptLoad(id);
   try {
     if (generation !== openGeneration.current) return;

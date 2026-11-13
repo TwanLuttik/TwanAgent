@@ -14,32 +14,57 @@ pub const PROTOCOL_MARK: &str = "protocol-version 1\0";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
-    Hello { version: u32 },
+    Hello {
+        version: u32,
+    },
     ListConversations,
-    GetConversation { id: String },
+    GetConversation {
+        id: String,
+    },
     /// Frames written since `cursor` for a turn that is still running.
-    Follow { id: String, cursor: u64 },
+    Follow {
+        id: String,
+        cursor: u64,
+    },
     SaveConversation(Conversation),
-    DeleteConversation { id: String },
-    ReorderConversations { ids: Vec<String> },
-    SetArchived { id: String, archived: bool },
+    DeleteConversation {
+        id: String,
+    },
+    ReorderConversations {
+        ids: Vec<String>,
+    },
+    SetArchived {
+        id: String,
+        archived: bool,
+    },
     SubmitPrompt(TurnRequest),
     /// The user's answer to a shell prompt the server is waiting on.
-    ShellAnswer { id: String, allow: bool },
+    ShellAnswer {
+        id: String,
+        allow: bool,
+    },
     /// Stop the turn for this conversation. A command it started is killed.
-    CancelTurn { id: String },
+    CancelTurn {
+        id: String,
+    },
     CopyKeys(ProviderKeys),
     RemoveKeys,
     /// Usage rows written after `since_id`. Zero reads the whole log.
-    UsageSince { since_id: i64 },
+    UsageSince {
+        since_id: i64,
+    },
 }
 
 /// Frames the server sends. `status` is display text. The tool already ran on the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
-    Hello { version: u32 },
-    Conversations { rows: Vec<ConversationSummary> },
+    Hello {
+        version: u32,
+    },
+    Conversations {
+        rows: Vec<ConversationSummary>,
+    },
     Conversation(Conversation),
     /// `active` is true while the turn has not written done or error.
     Live {
@@ -48,18 +73,30 @@ pub enum ServerFrame {
         frames: Vec<crate::live::LiveFrame>,
     },
     Ok,
-    Status { text: String },
-    Delta { text: String },
-    Done { conversation: Conversation },
-    Keys { present: bool },
+    Status {
+        text: String,
+    },
+    Delta {
+        text: String,
+    },
+    Done {
+        conversation: Conversation,
+    },
+    Keys {
+        present: bool,
+    },
     /// Ask mode is waiting. The command has not run.
     ShellApproval {
         conversation_id: String,
         command: String,
         description: String,
     },
-    Error { message: String },
-    Usage { rows: Vec<crate::usage_log::UsageRow> },
+    Error {
+        message: String,
+    },
+    Usage {
+        rows: Vec<crate::usage_log::UsageRow>,
+    },
 }
 
 pub fn encode_frame<T: Serialize>(frame: &T) -> Result<Vec<u8>> {
@@ -107,6 +144,7 @@ mod tests {
             permission: "ask".into(),
             project: String::new(),
             context_window: None,
+            service_tier: String::new(),
         });
         let bytes = encode_frame(&frame).unwrap();
         let (decoded, used): (ClientFrame, usize) = decode_frame(&bytes).unwrap();

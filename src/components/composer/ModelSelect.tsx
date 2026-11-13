@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "re
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { contextWindowLabel } from "../../lib/context";
-import { groupModelFamilies, modelFamilyName, sharedModelCapabilities } from "../../lib/model-family";
+import { groupModelFamilies, modelFamilyName } from "../../lib/model-family";
 import { providerProfile, type ProviderId } from "../../lib/provider";
 import type { Model } from "../../lib/tauri";
 import { Symbol } from "../Symbol";
@@ -12,10 +12,11 @@ const MODEL_PROVIDERS: { id: ProviderId; label: string; icon: string }[] = [
   { id: "xai", label: "Grok", icon: "logo.grok" },
   { id: "anthropic", label: "Claude", icon: "logo.claude" },
   { id: "minimax", label: "MiniMax", icon: "logo.minimax" },
+  { id: "openai", label: "OpenAI", icon: "logo.openai" },
 ];
 
 // Same order as the provider rail, so a click scrolls downward through the list.
-const PROVIDER_ORDER: ProviderId[] = ["xai", "anthropic", "minimax"];
+const PROVIDER_ORDER: ProviderId[] = ["xai", "anthropic", "minimax", "openai"];
 
 export function orderModels(models: Model[]): Model[] {
   return [...models].sort((a, b) => {
@@ -44,7 +45,7 @@ function modelLocked(model: Model, providers: string[] | null): boolean {
 }
 
 function modelProvider(model: Model): ProviderId {
-  if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax") return model.provider;
+  if (model.provider === "anthropic" || model.provider === "xai" || model.provider === "minimax" || model.provider === "openai") return model.provider;
   return providerProfile(model.id).id;
 }
 
@@ -52,11 +53,12 @@ function providerIconClass(id: ProviderId, on: boolean): string {
   if (!on) return "text-muted hover:bg-wash hover:text-ink";
   if (id === "anthropic") return "bg-wash-strong text-[#d97757]";
   if (id === "minimax") return "bg-wash-strong text-[#e21680]";
+  if (id === "openai") return "bg-wash-strong text-[#10a37f]";
   return "bg-wash-strong text-ink";
 }
 
 function isProviderId(value: string | undefined): value is ProviderId {
-  return value === "xai" || value === "anthropic" || value === "minimax";
+  return value === "xai" || value === "anthropic" || value === "minimax" || value === "openai";
 }
 
 function providerSections(models: Model[]) {
@@ -307,7 +309,7 @@ export function ModelSelect({
             return !current;
           });
         }}
-        className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+        className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors duration-150 ease-out hover:bg-wash motion-reduce:transition-none ${
           open ? "bg-wash text-ink" : "text-muted hover:text-ink"
         }`}
       >
@@ -374,13 +376,11 @@ export function ModelSelect({
                   <div key={section.provider} data-provider-section={section.provider}>
                     {section.families.map((family) => {
                       const versions = family.models.length > 1;
-                      const shared = sharedModelCapabilities(family.models);
                       return (
                         <div key={family.key} data-family={family.key} role="group" aria-label={family.label} className="py-0.5">
                           {versions ? (
-                            <div className="flex items-center gap-2 px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
-                              <span className="min-w-0 flex-1 truncate">{family.label}</span>
-                              {shared ? <CapabilityIcons ids={shared} /> : null}
+                            <div className="px-2.5 pt-1.5 pb-0.5 text-[11px] font-medium text-muted">
+                              <span className="truncate">{family.label}</span>
                             </div>
                           ) : null}
                           {family.models.map((row) => {
@@ -416,14 +416,16 @@ export function ModelSelect({
                                 <ModelIcon model={row} className="size-3.5" />
                                 <span className="min-w-0 flex-1 truncate">{label}</span>
                                 {context ? (
-                                  <span className="shrink-0 text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
+                                  <span className="w-14 shrink-0 text-right text-[11px] font-normal text-muted tabular-nums" title={`${context} context window`}>
                                     {context} ctx
                                   </span>
-                                ) : null}
-                                <CapabilityIcons ids={row.capabilities} faded={Boolean(shared)} />
+                                ) : (
+                                  <span className="w-14 shrink-0" />
+                                )}
+                                <CapabilityIcons ids={row.capabilities} />
                                 <Symbol
                                   name="checkmark"
-                                  className={`size-3 shrink-0 text-accent transition-opacity duration-150 ${current ? "opacity-100" : "opacity-0"}`}
+                                  className={`size-3.5 shrink-0 text-accent transition-opacity duration-150 ${current ? "opacity-100" : "opacity-0"}`}
                                 />
                               </button>
                             );
@@ -448,40 +450,42 @@ export function ModelSelect({
 }
 
 const CAPABILITIES: { id: string; icon: string; label: string; detail: string; className: string }[] = [
-  { id: "vision", icon: "photo", label: "Images", detail: "Accepts image input.", className: "text-ok" },
-  { id: "pdf", icon: "doc", label: "PDFs", detail: "Reads PDF documents.", className: "text-[#d97757]" },
-  { id: "thinking", icon: "brain", label: "Thinking", detail: "Can think before it answers.", className: "text-accent" },
-  { id: "effort", icon: "sparkles", label: "Effort", detail: "Effort steers how thoroughly it works.", className: "text-warn" },
+  { id: "vision", icon: "eye.fill", label: "Images", detail: "Accepts image input.", className: "text-ok" },
+  { id: "pdf", icon: "doc.fill", label: "PDFs", detail: "Reads PDF documents.", className: "text-[#d97757]" },
+  { id: "thinking", icon: "brain.fill", label: "Thinking", detail: "Can think before it answers.", className: "text-accent" },
+  { id: "effort", icon: "chart.bars", label: "Effort", detail: "Effort steers how thoroughly it works.", className: "text-warn" },
 ];
 
-function CapabilityIcons({ ids, faded = false }: { ids?: string[] | null; faded?: boolean }) {
+function CapabilityIcons({ ids }: { ids?: string[] | null }) {
   const known = new Set(ids ?? []);
-  const shown = CAPABILITIES.filter((row) => known.has(row.id));
   const [tip, setTip] = useState<{ label: string; detail: string; className: string; icon: string; top: number; left: number } | null>(null);
-  if (!shown.length) return null;
   return (
-    <span className={`flex shrink-0 items-center gap-1 ${faded ? "opacity-40" : ""}`}>
-      {shown.map((row) => (
-        <span
-          key={row.id}
-          aria-label={row.label}
-          className={row.className}
-          onMouseEnter={(event) => {
-            const box = event.currentTarget.getBoundingClientRect();
-            setTip({
-              label: row.label,
-              detail: row.detail,
-              className: row.className,
-              icon: row.icon,
-              top: box.top - 8,
-              left: Math.min(Math.max(8, box.left - 40), window.innerWidth - 188),
-            });
-          }}
-          onMouseLeave={() => setTip(null)}
-        >
-          <Symbol name={row.icon} className="size-3" />
-        </span>
-      ))}
+    <span className="grid w-[4.5rem] shrink-0 grid-cols-4 place-items-center">
+      {CAPABILITIES.map((row) =>
+        known.has(row.id) ? (
+          <span
+            key={row.id}
+            aria-label={row.label}
+            className={`flex size-4 items-center justify-center rounded-full bg-current/10 ${row.className}`}
+            onMouseEnter={(event) => {
+              const box = event.currentTarget.getBoundingClientRect();
+              setTip({
+                label: row.label,
+                detail: row.detail,
+                className: row.className,
+                icon: row.icon,
+                top: box.top - 8,
+                left: Math.min(Math.max(8, box.left - 40), window.innerWidth - 188),
+              });
+            }}
+            onMouseLeave={() => setTip(null)}
+          >
+            <Symbol name={row.icon} className="size-3" />
+          </span>
+        ) : (
+          <span key={row.id} />
+        ),
+      )}
       {createPortal(
         <AnimatePresence>
           {tip ? (
@@ -511,7 +515,7 @@ function CapabilityIcons({ ids, faded = false }: { ids?: string[] | null; faded?
 
 function ModelIcon({ model, className }: { model: Model; className?: string }) {
   const id = modelProvider(model);
-  const symbol = id === "anthropic" ? "logo.claude" : id === "minimax" ? "logo.minimax" : "logo.grok";
-  const color = id === "anthropic" ? "text-[#d97757]" : id === "minimax" ? "text-[#e21680]" : "text-current";
+  const symbol = id === "anthropic" ? "logo.claude" : id === "minimax" ? "logo.minimax" : id === "openai" ? "logo.openai" : "logo.grok";
+  const color = id === "anthropic" ? "text-[#d97757]" : id === "minimax" ? "text-[#e21680]" : id === "openai" ? "text-[#10a37f]" : "text-current";
   return <Symbol name={symbol} colored className={`${className ?? "size-3.5"} shrink-0 ${color}`} />;
 }

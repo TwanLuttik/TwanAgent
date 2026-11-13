@@ -19,5 +19,6 @@ pub mod runner;
 pub use providers::anthropic;
 pub use providers::grok_cli;
 pub use providers::minimax;
+pub use providers::openai;
 
 pub use event::ThinkingBlock;

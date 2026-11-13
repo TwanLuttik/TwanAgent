@@ -23,13 +23,28 @@ pub const LIVE_PORT: u16 = 8731;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SocketMessage {
-    Subscribe { id: String, #[serde(default)] token: String },
-    Status { text: String },
-    Delta { text: String },
-    Done { conversation: serde_json::Value },
-    Error { message: String },
+    Subscribe {
+        id: String,
+        #[serde(default)]
+        token: String,
+    },
+    Status {
+        text: String,
+    },
+    Delta {
+        text: String,
+    },
+    Done {
+        conversation: serde_json::Value,
+    },
+    Error {
+        message: String,
+    },
     /// Ask mode. The desktop answers with a `shell_answer` frame on the fifo.
-    ShellApproval { command: String, description: String },
+    ShellApproval {
+        command: String,
+        description: String,
+    },
 }
 
 struct Hub {
@@ -59,7 +74,13 @@ fn data_root() -> &'static Mutex<PathBuf> {
 /// Frames already written for a turn that has not finished. A client that opens the chat
 /// halfway through sees these before the next live frame. A finished tail is not replayed.
 pub fn replay_frames(data_dir: &Path, conversation_id: &str) -> Vec<LiveFrame> {
-    if !crate::live::active(data_dir, conversation_id, std::time::Duration::from_secs(20)).unwrap_or(false) {
+    if !crate::live::active(
+        data_dir,
+        conversation_id,
+        std::time::Duration::from_secs(20),
+    )
+    .unwrap_or(false)
+    {
         return Vec::new();
     }
     crate::live::read_since(data_dir, conversation_id, 0)
@@ -77,7 +98,10 @@ fn frame_json(frame: &LiveFrame) -> Option<String> {
         LiveFrame::Error { message } => SocketMessage::Error {
             message: message.clone(),
         },
-        LiveFrame::ShellApproval { command, description } => SocketMessage::ShellApproval {
+        LiveFrame::ShellApproval {
+            command,
+            description,
+        } => SocketMessage::ShellApproval {
             command: command.clone(),
             description: description.clone(),
         },
@@ -102,7 +126,9 @@ pub fn ensure_started(data_dir: &Path) -> Result<(SocketAddr, bool)> {
     if let Ok(mut slot) = data_root().lock() {
         *slot = data_dir.to_path_buf();
     }
-    let addr: SocketAddr = format!("127.0.0.1:{LIVE_PORT}").parse().expect("live address");
+    let addr: SocketAddr = format!("127.0.0.1:{LIVE_PORT}")
+        .parse()
+        .expect("live address");
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return Ok((addr, false)),
@@ -149,11 +175,17 @@ async fn handle(stream: tokio::net::TcpStream) {
         if message.is_close() {
             break;
         }
-        let Message::Text(text) = message else { continue };
-        let Ok(SocketMessage::Subscribe { id: chat, token }) = serde_json::from_str(text.as_str()) else {
+        let Message::Text(text) = message else {
             continue;
         };
-        let root = data_root().lock().map(|slot| slot.clone()).unwrap_or_default();
+        let Ok(SocketMessage::Subscribe { id: chat, token }) = serde_json::from_str(text.as_str())
+        else {
+            continue;
+        };
+        let root = data_root()
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default();
         if root.as_os_str().is_empty() {
             continue;
         }
@@ -178,7 +210,9 @@ async fn handle(stream: tokio::net::TcpStream) {
         if let Some(sender) = sender {
             if !root.as_os_str().is_empty() {
                 for frame in replay_frames(&root, &chat) {
-                    let Some(text) = frame_json(&frame) else { continue };
+                    let Some(text) = frame_json(&frame) else {
+                        continue;
+                    };
                     if sender.send(text).is_err() {
                         break;
                     }
@@ -240,10 +274,22 @@ mod tests {
     fn subscribe_names_the_conversation() {
         let text = subscribe_text("c1");
         let message: SocketMessage = serde_json::from_str(&text).unwrap();
-        assert_eq!(message, SocketMessage::Subscribe { id: "c1".into(), token: String::new() });
+        assert_eq!(
+            message,
+            SocketMessage::Subscribe {
+                id: "c1".into(),
+                token: String::new()
+            }
+        );
         let authed = subscribe_text_with("c1", "abc");
         let message: SocketMessage = serde_json::from_str(&authed).unwrap();
-        assert_eq!(message, SocketMessage::Subscribe { id: "c1".into(), token: "abc".into() });
+        assert_eq!(
+            message,
+            SocketMessage::Subscribe {
+                id: "c1".into(),
+                token: "abc".into()
+            }
+        );
     }
 
     #[test]

@@ -494,6 +494,7 @@ fn provider_key_fingerprints(keys: &twanagent_service::ProviderKeys) -> String {
         ("xai", &keys.xai),
         ("anthropic", &keys.anthropic),
         ("minimax", &keys.minimax),
+        ("openai", &keys.openai),
     ] {
         let value = value.trim();
         if value.is_empty() {
@@ -509,7 +510,7 @@ fn provider_key_fingerprints(keys: &twanagent_service::ProviderKeys) -> String {
 
 /// `replaced xai` lines from a successful copy. Anything else is ignored. Order follows the providers.
 pub fn parse_replaced_providers(stdout: &str) -> Vec<String> {
-    const ORDER: &[&str] = &["xai", "anthropic", "minimax"];
+    const ORDER: &[&str] = &["xai", "anthropic", "minimax", "openai"];
     let found: std::collections::HashSet<&str> = stdout
         .lines()
         .filter_map(|line| line.trim().strip_prefix("replaced "))
@@ -719,7 +720,7 @@ if os.path.isfile(path):
             keys = loaded
     except (OSError, ValueError):
         keys = {}
-for name, env in (("xai", "XAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"), ("minimax", "MINIMAX_API_KEY")):
+for name, env in (("xai", "XAI_API_KEY"), ("anthropic", "ANTHROPIC_API_KEY"), ("minimax", "MINIMAX_API_KEY"), ("openai", "OPENAI_API_KEY")):
     value = keys.get(name)
     value = value.strip() if isinstance(value, str) else ""
     if not value:
@@ -774,7 +775,7 @@ pub fn parse_provider_keys(raw: Option<&str>) -> Vec<String> {
 }
 
 fn normalize_provider_keys(providers: &[String]) -> Vec<String> {
-    const ORDER: &[&str] = &["xai", "anthropic", "minimax"];
+    const ORDER: &[&str] = &["xai", "anthropic", "minimax", "openai"];
     let wanted: std::collections::HashSet<&str> =
         providers.iter().map(|name| name.trim()).collect();
     ORDER
@@ -1001,6 +1002,7 @@ mod tests {
             xai: "xai-secret".into(),
             anthropic: String::new(),
             minimax: "mini-secret".into(),
+            openai: String::new(),
         };
         let script = provider_keys_script();
         let payload = String::from_utf8(provider_keys_payload(&keys).unwrap()).unwrap();

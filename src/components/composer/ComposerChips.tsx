@@ -106,10 +106,11 @@ export function ChipSelect({
         title={title}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className={`flex cursor-pointer items-center gap-0.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+        className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors duration-150 ease-out hover:bg-wash motion-reduce:transition-none ${
           open ? "bg-wash text-ink" : "text-muted hover:text-ink"
         }`}
       >
+        <Symbol name={chipButtonIcon(title, value)} className="size-3" />
         <span className="max-w-[132px] truncate">{label}</span>
         <Symbol name="chevron.down" className="size-2.5 opacity-70" />
       </button>
@@ -156,7 +157,7 @@ export function PlanToggle({
       aria-pressed={on}
       title={title}
       onClick={onToggle}
-      className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] hover:bg-wash ${
+      className={`flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[11px] transition-colors duration-150 ease-out hover:bg-wash motion-reduce:transition-none ${
         on ? "bg-accent/15 text-accent" : "text-muted hover:text-ink"
       }`}
     >
@@ -164,6 +165,13 @@ export function PlanToggle({
       <span>Plan</span>
     </button>
   );
+}
+
+function chipButtonIcon(title: string, id: string): string {
+  if (title === "Speed") return "speedometer";
+  if (title === "Thinking") return "brain";
+  if (title === "Context size") return "text.lines";
+  return chipIcon(title, id) ?? "text.lines";
 }
 
 function chipIcon(title: string, id: string): string | undefined {

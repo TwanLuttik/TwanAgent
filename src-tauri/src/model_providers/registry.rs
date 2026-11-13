@@ -9,12 +9,14 @@ pub enum ProviderId {
     Xai,
     Anthropic,
     Minimax,
+    OpenAi,
 }
 
 pub fn find(model_id: &str) -> ProviderId {
     match twanagent_service::registry::find(model_id) {
         twanagent_service::registry::ProviderId::Minimax => ProviderId::Minimax,
         twanagent_service::registry::ProviderId::Anthropic => ProviderId::Anthropic,
+        twanagent_service::registry::ProviderId::OpenAi => ProviderId::OpenAi,
         twanagent_service::registry::ProviderId::Xai => ProviderId::Xai,
     }
 }
@@ -23,6 +25,7 @@ pub fn sign_in_error(id: ProviderId) -> &'static str {
     match id {
         ProviderId::Anthropic => super::anthropic::SIGN_IN_ERROR,
         ProviderId::Minimax => super::minimax::SIGN_IN_ERROR,
+        ProviderId::OpenAi => super::openai::SIGN_IN_ERROR,
         ProviderId::Xai => {
             "Grok isn’t signed in. Run grok login, or add an xAI API key in Settings."
         }
@@ -40,6 +43,7 @@ pub async fn list_models(_data_dir: &Path) -> Vec<DevModel> {
     rows.retain(|row| {
         row.provider != super::anthropic::PROVIDER_ANTHROPIC
             && row.provider != super::minimax::PROVIDER_MINIMAX
+            && row.provider != super::openai::PROVIDER_OPENAI
     });
     if let Some(auth) = super::anthropic::resolve_claude_auth_fresh().await {
         rows.extend(super::anthropic::available_models(&auth).await);
@@ -47,6 +51,7 @@ pub async fn list_models(_data_dir: &Path) -> Vec<DevModel> {
         rows.extend(super::anthropic::claude_models());
     }
     rows.extend(super::minimax::minimax_models());
+    rows.extend(super::openai::openai_models());
     rows
 }
 
@@ -61,9 +66,13 @@ mod tests {
         assert_eq!(find("claude-sonnet-4-5-20250929"), ProviderId::Anthropic);
         assert_eq!(find("MiniMax-M3"), ProviderId::Minimax);
         assert_eq!(find("MiniMax-M2.7"), ProviderId::Minimax);
+        assert_eq!(find("gpt-6.1-sol"), ProviderId::OpenAi);
+        assert_eq!(find("gpt-"), ProviderId::Xai);
         assert_eq!(find(""), ProviderId::Xai);
         assert!(plan_mode(ProviderId::Xai));
         assert!(!plan_mode(ProviderId::Anthropic));
         assert!(!plan_mode(ProviderId::Minimax));
+        assert!(!plan_mode(ProviderId::OpenAi));
+        assert!(sign_in_error(ProviderId::OpenAi).contains("OpenAI"));
     }
 }

@@ -503,6 +503,10 @@ export function ProjectsNav({
       const showArchived = Boolean(archiveOpenRef.current[projectKey(group.path)]);
       push(group.path, visibleConversations(group.conversations, showArchived));
       if (showArchived) continue;
+      for (const member of nested.byGroup.get(projectKey(group.path)) ?? []) {
+        const memberArchived = Boolean(archiveOpenRef.current[projectKey(member.path)]);
+        push(member.path, visibleConversations(member.conversations, memberArchived));
+      }
       for (const child of worktreesFor(group.path) ?? []) {
         push(child.path, visibleConversations(worktreeChatsRef.current[projectKey(child.path)] ?? [], false));
       }

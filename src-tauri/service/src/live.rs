@@ -17,12 +17,23 @@ use crate::store::Conversation;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LiveFrame {
-    Status { text: String },
-    Delta { text: String },
-    Done { conversation: Conversation },
-    Error { message: String },
+    Status {
+        text: String,
+    },
+    Delta {
+        text: String,
+    },
+    Done {
+        conversation: Conversation,
+    },
+    Error {
+        message: String,
+    },
     /// Ask mode is waiting on the desktop. The command has not run.
-    ShellApproval { command: String, description: String },
+    ShellApproval {
+        command: String,
+        description: String,
+    },
 }
 
 impl From<&ServerFrame> for Option<LiveFrame> {
@@ -36,7 +47,11 @@ impl From<&ServerFrame> for Option<LiveFrame> {
             ServerFrame::Error { message } => Some(LiveFrame::Error {
                 message: message.clone(),
             }),
-            ServerFrame::ShellApproval { command, description, .. } => Some(LiveFrame::ShellApproval {
+            ServerFrame::ShellApproval {
+                command,
+                description,
+                ..
+            } => Some(LiveFrame::ShellApproval {
                 command: command.clone(),
                 description: description.clone(),
             }),
@@ -130,7 +145,11 @@ pub fn active(data_dir: &Path, id: &str, fresh_for: Duration) -> Result<bool> {
     if meta.len() == 0 {
         return Ok(false);
     }
-    let fresh = meta.modified().ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age <= fresh_for);
+    let fresh = meta
+        .modified()
+        .ok()
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|age| age <= fresh_for);
     if !fresh {
         return Ok(false);
     }
@@ -177,7 +196,9 @@ mod tests {
         append(
             root.path(),
             "c1",
-            &LiveFrame::Done { conversation: chat("Hello") },
+            &LiveFrame::Done {
+                conversation: chat("Hello"),
+            },
         )
         .unwrap();
         let (rest, _) = read_since(root.path(), "c1", cursor).unwrap();

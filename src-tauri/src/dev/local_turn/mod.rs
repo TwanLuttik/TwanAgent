@@ -49,6 +49,9 @@ pub struct LocalTurnStart {
     pub journey_id: Option<String>,
     #[serde(default)]
     pub allow_spawn: bool,
+    /// OpenAI speed: standard, flex, fast, or ultrafast. Empty on other providers.
+    #[serde(default)]
+    pub service_tier: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -85,6 +88,7 @@ struct LiveTurn {
     child_streams: Mutex<Vec<String>>,
     /// Shell processes this chat started. Stop kills them instead of waiting out the command.
     commands: Mutex<Vec<String>>,
+    service_tier: String,
 }
 
 fn epoch_ms() -> u64 {
@@ -116,6 +120,7 @@ fn emit(
             tool_calls: tool.map(|call| vec![call]),
             usage: None,
             thinking: None,
+            reasoning_items: None,
             conversation: saved,
         },
     );
@@ -265,6 +270,7 @@ fn spawn_local_turn(app: &AppHandle, data_dir: &Path, workspace: &Path, request:
         children: Mutex::new(Vec::new()),
         child_streams: Mutex::new(Vec::new()),
         commands: Mutex::new(Vec::new()),
+        service_tier: request.service_tier.trim().to_string(),
     });
     if let Ok(mut map) = turns().lock() {
         map.insert(id.clone(), live_turn.clone());
@@ -314,6 +320,7 @@ fn keep_partial(transcript: &mut Vec<Value>, round: &Round) {
         &round.reasoning,
         &[],
         &round.thinking,
+        &round.reasoning_items,
     ));
 }
 
@@ -322,6 +329,7 @@ fn assistant_value(
     reasoning: &str,
     tools: &[DevToolCall],
     thinking: &[crate::model_providers::ThinkingBlock],
+    reasoning_items: &[Value],
 ) -> Value {
     let mut message = json!({ "role": "assistant", "content": text });
     if !reasoning.trim().is_empty() {
@@ -334,6 +342,9 @@ fn assistant_value(
         if let Ok(value) = serde_json::to_value(thinking) {
             message["thinking"] = value;
         }
+    }
+    if !reasoning_items.is_empty() {
+        message["reasoning_items"] = Value::Array(reasoning_items.to_vec());
     }
     message
 }
@@ -509,7 +520,9 @@ fn hold_provider_outage(
         app,
         id,
         "status",
-        Some(twanagent_service::provider_retry_status(tries.saturating_add(1))),
+        Some(twanagent_service::provider_retry_status(
+            tries.saturating_add(1),
+        )),
         None,
         None,
     );
@@ -649,6 +662,7 @@ mod tests {
             reasoning: String::new(),
             tool_calls: Vec::new(),
             thinking: Vec::new(),
+            reasoning_items: Vec::new(),
             usage: None,
             error: None,
             streamed_text: false,

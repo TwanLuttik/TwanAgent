@@ -326,6 +326,7 @@ pub(super) fn drive(
                     &round.reasoning,
                     &[],
                     &round.thinking,
+                    &round.reasoning_items,
                 ));
                 // The full transcript save is large after a tool round. Send the
                 // answer by itself first, or the window keeps the tool list and
@@ -357,6 +358,7 @@ pub(super) fn drive(
             &round.reasoning,
             &round.tool_calls,
             &round.thinking,
+            &round.reasoning_items,
         ));
         save(
             data_dir,
@@ -491,6 +493,7 @@ pub(super) struct Round {
     pub(super) reasoning: String,
     pub(super) tool_calls: Vec<DevToolCall>,
     pub(super) thinking: Vec<crate::model_providers::ThinkingBlock>,
+    pub(super) reasoning_items: Vec<serde_json::Value>,
     pub(super) usage: Option<super::super::types::DevChatUsage>,
     pub(super) error: Option<String>,
     /// True when the live stream already painted this text, so the dock must not append it again.
@@ -569,6 +572,14 @@ impl RoundWait {
             },
             cancel.clone(),
             extra_tools,
+            super::live(&conversation_id).and_then(|turn| {
+                let tier = turn.service_tier.trim();
+                if tier.is_empty() {
+                    None
+                } else {
+                    Some(tier.to_string())
+                }
+            }),
             move |progress| {
                 if quiet || progress.text.is_empty() {
                     return;
@@ -609,6 +620,7 @@ impl RoundWait {
             reasoning: collected.reasoning,
             tool_calls: collected.tool_calls,
             thinking: collected.thinking,
+            reasoning_items: collected.reasoning_items,
             usage: collected.usage,
             error,
             streamed_text: streamed_text_flag.load(Ordering::Relaxed),
@@ -796,6 +808,7 @@ pub(super) fn run_tool(
             effort,
             context_window,
             permission,
+            &live.service_tier,
         ),
         "todo_write" => Ok(todo_text(&call.arguments)),
         "update_journey_knowledge" => update_journey(data_dir, workspace_key, journey_id, &args),

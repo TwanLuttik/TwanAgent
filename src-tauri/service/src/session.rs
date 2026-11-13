@@ -3,10 +3,10 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::codec::{version_ok, ClientFrame, ServerFrame, PROTOCOL_VERSION};
-use crate::turn::TurnGate;
 use crate::error::{Error, Result};
 use crate::keys::{provider_keys_from_env, KeyFile};
 use crate::tools::LocalWorkspace;
+use crate::turn::TurnGate;
 use crate::turn::{ScriptedModel, TurnRequest};
 use crate::{ProjectService, TurnEvent};
 
@@ -18,33 +18,51 @@ pub(crate) fn handle_frame(
 ) -> ServerFrame {
     match frame {
         ClientFrame::Hello { version } => match version_ok(version) {
-            Ok(()) => ServerFrame::Hello { version: PROTOCOL_VERSION },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Ok(()) => ServerFrame::Hello {
+                version: PROTOCOL_VERSION,
+            },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::ListConversations => match service.list_conversations() {
             Ok(rows) => ServerFrame::Conversations { rows },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::GetConversation { id } => match service.get_conversation(&id) {
             Ok(conversation) => ServerFrame::Conversation(conversation),
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::Follow { id, cursor } => follow_live(service, &id, cursor),
-        ClientFrame::SaveConversation(conversation) => match service.save_conversation(&conversation) {
-            Ok(()) => ServerFrame::Conversation(conversation),
-            Err(err) => ServerFrame::Error { message: err.to_string() },
-        },
+        ClientFrame::SaveConversation(conversation) => {
+            match service.save_conversation(&conversation) {
+                Ok(()) => ServerFrame::Conversation(conversation),
+                Err(err) => ServerFrame::Error {
+                    message: err.to_string(),
+                },
+            }
+        }
         ClientFrame::DeleteConversation { id } => match service.delete_conversation(&id) {
             Ok(()) => ServerFrame::Ok,
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::ReorderConversations { ids } => match service.reorder_conversations(&ids) {
             Ok(rows) => ServerFrame::Conversations { rows },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::SetArchived { id, archived } => match service.set_archived(&id, archived) {
             Ok(()) => ServerFrame::Ok,
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::SubmitPrompt(request) => submit(service, keys, request, model),
         ClientFrame::ShellAnswer { .. } | ClientFrame::CancelTurn { .. } => ServerFrame::Ok,
@@ -52,18 +70,26 @@ pub(crate) fn handle_frame(
             Ok(()) => ServerFrame::Keys {
                 present: keys.load().map(|row| row.any()).unwrap_or(false),
             },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
         ClientFrame::RemoveKeys => match keys.remove() {
             Ok(()) => ServerFrame::Keys { present: false },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         },
-        ClientFrame::UsageSince { since_id } => match crate::store::with_conn(&service.store_dir, |conn| {
-            crate::usage_log::list_since(conn, since_id.max(0))
-        }) {
-            Ok(rows) => ServerFrame::Usage { rows },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
-        },
+        ClientFrame::UsageSince { since_id } => {
+            match crate::store::with_conn(&service.store_dir, |conn| {
+                crate::usage_log::list_since(conn, since_id.max(0))
+            }) {
+                Ok(rows) => ServerFrame::Usage { rows },
+                Err(err) => ServerFrame::Error {
+                    message: err.to_string(),
+                },
+            }
+        }
     }
 }
 
@@ -71,17 +97,23 @@ fn follow_live(service: &ProjectService, id: &str, cursor: u64) -> ServerFrame {
     let data_dir = service.data_dir.as_path();
     match crate::live::read_since(data_dir, id, cursor) {
         Ok((frames, next)) => {
-            let ended = frames
-                .iter()
-                .any(|frame| matches!(frame, crate::live::LiveFrame::Done { .. } | crate::live::LiveFrame::Error { .. }));
-            let fresh = crate::live::active(data_dir, id, std::time::Duration::from_secs(20)).unwrap_or(false);
+            let ended = frames.iter().any(|frame| {
+                matches!(
+                    frame,
+                    crate::live::LiveFrame::Done { .. } | crate::live::LiveFrame::Error { .. }
+                )
+            });
+            let fresh = crate::live::active(data_dir, id, std::time::Duration::from_secs(20))
+                .unwrap_or(false);
             ServerFrame::Live {
                 cursor: next,
                 active: fresh && !ended,
                 frames,
             }
         }
-        Err(err) => ServerFrame::Error { message: err.to_string() },
+        Err(err) => ServerFrame::Error {
+            message: err.to_string(),
+        },
     }
 }
 
@@ -98,24 +130,34 @@ fn submit(
             message: "Copy provider keys to this server in Settings.".into(),
         };
     }
-    let workspace = LocalWorkspace { root: service.project.clone() };
+    let workspace = LocalWorkspace {
+        root: service.project.clone(),
+    };
     if model.is_some() {
         // Tests inject a scripted model. A real turn calls the provider from the copied keys.
         let Some(model) = model else {
-            return ServerFrame::Error { message: "model is missing".into() };
+            return ServerFrame::Error {
+                message: "model is missing".into(),
+            };
         };
         return match crate::turn::run_scripted_turn(service, &request, &workspace, model) {
             Ok(conversation) => ServerFrame::Done { conversation },
-            Err(err) => ServerFrame::Error { message: err.to_string() },
+            Err(err) => ServerFrame::Error {
+                message: err.to_string(),
+            },
         };
     }
     match crate::turn::run_live_turn(service, &request, &workspace, &resolved, |_| {}) {
         Ok(conversation) => {
             let mut shown = conversation;
             shown.messages = crate::turn::public_messages(&shown);
-            ServerFrame::Done { conversation: shown }
+            ServerFrame::Done {
+                conversation: shown,
+            }
         }
-        Err(err) => ServerFrame::Error { message: err.to_string() },
+        Err(err) => ServerFrame::Error {
+            message: err.to_string(),
+        },
     }
 }
 
@@ -138,7 +180,9 @@ pub fn submit_streaming<W: Write>(
         )?;
         return Ok(());
     }
-    let workspace = LocalWorkspace { root: service.project.clone() };
+    let workspace = LocalWorkspace {
+        root: service.project.clone(),
+    };
     let (tx, rx) = std::sync::mpsc::channel();
     let id = request.conversation_id.clone();
     let data_dir = service.data_dir.clone();
@@ -177,29 +221,44 @@ pub fn submit_streaming<W: Write>(
             }
         });
     }
-    let result = crate::turn::run_live_turn_gated(service, &request, &workspace, &resolved, gate_for_turn.as_deref(), move |event| {
-        let frame = match event {
-            TurnEvent::Status(text) => ServerFrame::Status { text },
-            TurnEvent::Delta(text) => ServerFrame::Delta { text },
-            TurnEvent::Done(conversation) => ServerFrame::Done { conversation },
-            TurnEvent::Error(message) => ServerFrame::Error { message },
-            TurnEvent::ShellApproval { command, description } => ServerFrame::ShellApproval {
-                conversation_id: chat_id.clone(),
-                command,
-                description,
-            },
-        };
-        let _ = crate::live::append_server(&live_dir, &chat_id, &frame);
-        crate::realtime::publish_server(&chat_id, &frame);
-        let _ = frames.send(frame);
-    });
+    let result = crate::turn::run_live_turn_gated(
+        service,
+        &request,
+        &workspace,
+        &resolved,
+        gate_for_turn.as_deref(),
+        move |event| {
+            let frame = match event {
+                TurnEvent::Status(text) => ServerFrame::Status { text },
+                TurnEvent::Delta(text) => ServerFrame::Delta { text },
+                TurnEvent::Done(conversation) => ServerFrame::Done { conversation },
+                TurnEvent::Error(message) => ServerFrame::Error { message },
+                TurnEvent::ShellApproval {
+                    command,
+                    description,
+                } => ServerFrame::ShellApproval {
+                    conversation_id: chat_id.clone(),
+                    command,
+                    description,
+                },
+            };
+            let _ = crate::live::append_server(&live_dir, &chat_id, &frame);
+            crate::realtime::publish_server(&chat_id, &frame);
+            let _ = frames.send(frame);
+        },
+    );
     stop_watch.store(true, std::sync::atomic::Ordering::Relaxed);
     drop(tx);
     for frame in rx {
         write_server(output, &frame)?;
     }
     if let Err(err) = result {
-        write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+        write_server(
+            output,
+            &ServerFrame::Error {
+                message: err.to_string(),
+            },
+        )?;
     }
     if let Some(gate) = gate {
         forget_gate(&id, &gate);
@@ -214,7 +273,10 @@ fn turn_gates() -> &'static Mutex<HashMap<String, Arc<TurnGate>>> {
 
 /// True when this conversation already has a turn. A second prompt is refused, not run beside it.
 pub fn turn_busy(id: &str) -> bool {
-    turn_gates().lock().ok().is_some_and(|map| map.contains_key(id))
+    turn_gates()
+        .lock()
+        .ok()
+        .is_some_and(|map| map.contains_key(id))
 }
 
 fn remember_gate(id: &str, gate: Arc<TurnGate>) {
@@ -225,14 +287,20 @@ fn remember_gate(id: &str, gate: Arc<TurnGate>) {
 
 fn forget_gate(id: &str, gate: &Arc<TurnGate>) {
     if let Ok(mut map) = turn_gates().lock() {
-        if map.get(id).is_some_and(|current| Arc::ptr_eq(current, gate)) {
+        if map
+            .get(id)
+            .is_some_and(|current| Arc::ptr_eq(current, gate))
+        {
             map.remove(id);
         }
     }
 }
 
 fn gate_for(id: &str) -> Option<Arc<TurnGate>> {
-    turn_gates().lock().ok().and_then(|map| map.get(id).cloned())
+    turn_gates()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(id).cloned())
 }
 
 /// Frames for the resident process. Each prompt names its project. Store calls do too.
@@ -260,13 +328,20 @@ pub fn serve_projects<R: Read, W: Write>(
         let value: serde_json::Value = match serde_json::from_slice(&body) {
             Ok(value) => value,
             Err(err) => {
-                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                write_server(
+                    output,
+                    &ServerFrame::Error {
+                        message: err.to_string(),
+                    },
+                )?;
                 continue;
             }
         };
         let (project, token, inner) = split_resident(&value);
         // A frame that is not wrapped has no token. Treat it as a mismatch, not as a call.
-        if value.get("frame").is_none() || !crate::keys::token_matches_any(&keys.auth_tokens(), &token) {
+        if value.get("frame").is_none()
+            || !crate::keys::token_matches_any(&keys.auth_tokens(), &token)
+        {
             write_server(
                 output,
                 &ServerFrame::Error {
@@ -276,20 +351,35 @@ pub fn serve_projects<R: Read, W: Write>(
             continue;
         }
         if project.is_empty() {
-            write_server(output, &ServerFrame::Error { message: "project is empty".into() })?;
+            write_server(
+                output,
+                &ServerFrame::Error {
+                    message: "project is empty".into(),
+                },
+            )?;
             continue;
         }
         let service = match crate::open_server(std::path::Path::new(&project), data_dir) {
             Ok(service) => service,
             Err(err) => {
-                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                write_server(
+                    output,
+                    &ServerFrame::Error {
+                        message: err.to_string(),
+                    },
+                )?;
                 continue;
             }
         };
         let frame: ClientFrame = match serde_json::from_value(inner) {
             Ok(frame) => frame,
             Err(err) => {
-                write_server(output, &ServerFrame::Error { message: err.to_string() })?;
+                write_server(
+                    output,
+                    &ServerFrame::Error {
+                        message: err.to_string(),
+                    },
+                )?;
                 continue;
             }
         };
@@ -303,7 +393,8 @@ pub fn serve_projects<R: Read, W: Write>(
             }
             ClientFrame::CancelTurn { id } => {
                 if let Some(gate) = gate_for(&id) {
-                    gate.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    gate.cancel
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     gate.shell.answer(false);
                 }
                 write_server(output, &ServerFrame::Ok)?;
@@ -342,9 +433,22 @@ pub fn serve_projects<R: Read, W: Write>(
 /// The project is not part of `ClientFrame`, so a store call and a prompt share one shape.
 /// A body with no `frame` is not a call. The caller refuses it before the token is compared.
 fn split_resident(value: &serde_json::Value) -> (String, String, serde_json::Value) {
-    let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
-    let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("").trim().to_string();
-    let inner = value.get("frame").cloned().unwrap_or(serde_json::Value::Null);
+    let project = value
+        .get("project")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let token = value
+        .get("token")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let inner = value
+        .get("frame")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     (project, token, inner)
 }
 
@@ -426,15 +530,22 @@ mod tests {
             permission: "ask".into(),
             project: String::new(),
             context_window: None,
+            service_tier: String::new(),
         }
     }
 
     #[test]
     fn a_session_refuses_a_turn_until_keys_are_copied() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let service =
+            ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
         let keys = KeyFile::in_dir(&root.path().join("data"));
-        let blocked = handle_frame(&service, &keys, ClientFrame::SubmitPrompt(request()), Some(&Answer));
+        let blocked = handle_frame(
+            &service,
+            &keys,
+            ClientFrame::SubmitPrompt(request()),
+            Some(&Answer),
+        );
         assert!(matches!(blocked, ServerFrame::Error { .. }));
         let copied = handle_frame(
             &service,
@@ -446,7 +557,12 @@ mod tests {
             None,
         );
         assert_eq!(copied, ServerFrame::Keys { present: true });
-        let done = handle_frame(&service, &keys, ClientFrame::SubmitPrompt(request()), Some(&Answer));
+        let done = handle_frame(
+            &service,
+            &keys,
+            ClientFrame::SubmitPrompt(request()),
+            Some(&Answer),
+        );
         assert!(matches!(done, ServerFrame::Done { .. }));
         let store_bytes = std::fs::read(root.path().join("store/store.db")).unwrap_or_default();
         assert!(!String::from_utf8_lossy(&store_bytes).contains("xai-secret"));
@@ -455,37 +571,65 @@ mod tests {
     #[test]
     fn a_follow_reads_frames_written_while_the_turn_runs() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let service =
+            ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
         let data = service.data_dir.clone();
         crate::live::begin(&data, "c1").unwrap();
-        crate::live::append(&data, "c1", &crate::live::LiveFrame::Delta { text: "Hel".into() }).unwrap();
+        crate::live::append(
+            &data,
+            "c1",
+            &crate::live::LiveFrame::Delta { text: "Hel".into() },
+        )
+        .unwrap();
         let first = follow_live(&service, "c1", 0);
         let ServerFrame::Live { cursor, frames, .. } = first else {
             panic!("expected a live frame");
         };
         assert_eq!(frames.len(), 1);
-        crate::live::append(&data, "c1", &crate::live::LiveFrame::Delta { text: "lo".into() }).unwrap();
+        crate::live::append(
+            &data,
+            "c1",
+            &crate::live::LiveFrame::Delta { text: "lo".into() },
+        )
+        .unwrap();
         let second = follow_live(&service, "c1", cursor);
         let ServerFrame::Live { frames: more, .. } = second else {
             panic!("expected the next live frame");
         };
-        assert_eq!(more, vec![crate::live::LiveFrame::Delta { text: "lo".into() }]);
+        assert_eq!(
+            more,
+            vec![crate::live::LiveFrame::Delta { text: "lo".into() }]
+        );
     }
 
     #[test]
     fn stdin_frames_save_a_conversation() {
         let root = tempfile::tempdir().unwrap();
-        let service = ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
+        let service =
+            ProjectService::open(root.path().join("proj"), root.path().join("store")).unwrap();
         let keys = KeyFile::in_dir(&root.path().join("data"));
-        keys.save(&ProviderKeys { xai: "xai-secret".into(), ..ProviderKeys::default() }).unwrap();
+        keys.save(&ProviderKeys {
+            xai: "xai-secret".into(),
+            ..ProviderKeys::default()
+        })
+        .unwrap();
         let mut input = crate::codec::encode_frame(&ClientFrame::SubmitPrompt(TurnRequest {
             prompt: "hello from stdin".into(),
             ..request()
         }))
         .unwrap();
-        input.extend(crate::codec::encode_frame(&ClientFrame::GetConversation { id: "c1".into() }).unwrap());
+        input.extend(
+            crate::codec::encode_frame(&ClientFrame::GetConversation { id: "c1".into() }).unwrap(),
+        );
         let mut output = Vec::new();
-        serve(&service, &keys, &mut input.as_slice(), &mut output, Some(&Answer)).unwrap();
+        serve(
+            &service,
+            &keys,
+            &mut input.as_slice(),
+            &mut output,
+            Some(&Answer),
+        )
+        .unwrap();
         let (first, used): (ServerFrame, usize) = crate::codec::decode_frame(&output).unwrap();
         assert!(matches!(first, ServerFrame::Done { .. }));
         let (second, _): (ServerFrame, _) = crate::codec::decode_frame(&output[used..]).unwrap();
@@ -500,7 +644,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let data = root.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(data.join("auth-token"), "0123456789abcdef0123456789abcdef\n").unwrap();
+        std::fs::write(
+            data.join("auth-token"),
+            "0123456789abcdef0123456789abcdef\n",
+        )
+        .unwrap();
         let keys = KeyFile::in_dir(&data);
         let body = serde_json::json!({
             "project": root.path().join("proj"),

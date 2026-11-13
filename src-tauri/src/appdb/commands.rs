@@ -3,7 +3,8 @@
 use tauri::{AppHandle, Manager, State};
 
 use super::{
-    add_project, get_setting, list_projects, open, remove_project, reorder_projects, set_setting,
+    add_project, get_setting, list_account_usage_samples, list_projects, open, remove_project,
+    reorder_projects, set_setting, AccountUsageSample,
 };
 use crate::dev::{expand_folder_path, FolderSuggestion};
 use crate::error::Result;
@@ -54,4 +55,11 @@ pub fn dev_app_get_setting(state: State<'_, AppState>, key: String) -> Result<Op
 pub fn dev_app_set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<()> {
     let conn = open(&state.data_dir)?;
     set_setting(&conn, &key, &value)
+}
+
+/// Allowance readings saved as each account is refreshed. The usage page draws the line from these.
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_account_usage_history(state: State<'_, AppState>) -> Result<Vec<AccountUsageSample>> {
+    let conn = open(&state.data_dir)?;
+    list_account_usage_samples(&conn)
 }

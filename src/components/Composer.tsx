@@ -12,6 +12,9 @@ import {
   removeImageTokens,
 } from "../lib/image";
 import { contextWindowChoices, contextWindowLabel, type ChatUsage } from "../lib/context";
+import { isOpenAiModel } from "../lib/model-providers/openai";
+import { openaiSpeedChoice, openaiSpeedLabel, openaiSpeedsFor } from "../lib/openai-speed";
+import { loadOpenAiSpeed, saveOpenAiSpeed } from "../lib/prefs";
 import { shouldRemeasureComposer, textareaFitHeight } from "../lib/composer-size";
 import { PERMISSION_MODES, permissionLabel, parsePermissionMode } from "../lib/permission";
 import { openMicCapture, pushVoiceTrace, VOICE_TRACE, type MicCapture } from "../lib/mic-capture";
@@ -157,6 +160,13 @@ export function Composer({
   const mirror = useRef<HTMLDivElement>(null);
   const micRef = useRef<HTMLButtonElement>(null);
   const [usageHover, setUsageHover] = useState(false);
+  const [speed, setSpeed] = useState(() => openaiSpeedChoice(model, loadOpenAiSpeed()));
+  useEffect(() => {
+    const next = openaiSpeedChoice(model, speed);
+    if (next === speed) return;
+    setSpeed(next);
+    saveOpenAiSpeed(next);
+  }, [model, speed]);
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(0);
   const [recording, setRecording] = useState(false);
@@ -645,6 +655,19 @@ export function Composer({
         />
         <div className={`flex items-center gap-0.5 ${compact ? "px-1.5 pb-1.5" : "px-2 pb-2"}`}>
           <ModelSelect models={ordered} value={model} onChange={onModel} lockedProviders={lockedProviders} />
+          {isOpenAiModel(model) ? (
+            <ChipSelect
+              label={openaiSpeedLabel(speed)}
+              title="Speed"
+              items={openaiSpeedsFor(model)}
+              value={speed}
+              onChange={(id) => {
+                const next = openaiSpeedChoice(model, id);
+                setSpeed(next);
+                saveOpenAiSpeed(next);
+              }}
+            />
+          ) : null}
           {windows.length > 1 && onContextWindow ? (
             <ChipSelect
               label={windowLabel || "Context"}

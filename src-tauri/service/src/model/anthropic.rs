@@ -14,7 +14,11 @@ pub(super) fn round(
     on_delta: &mut dyn FnMut(&str),
 ) -> Result<Round> {
     let effort = effort.trim();
-    let effort = if effort.is_empty() { None } else { Some(effort) };
+    let effort = if effort.is_empty() {
+        None
+    } else {
+        Some(effort)
+    };
     let body = anthropic::to_messages_body(messages, model, effort, tools);
     let response = client
         .post(anthropic::MESSAGES_URL)
@@ -51,8 +55,17 @@ pub(super) fn apply_line(data: &str, open: &mut OpenRound) {
             open.tool_block(index as usize).arguments.push_str(&partial);
         }
         SseEvent::Stop => open.stop = true,
-        SseEvent::Usage { prompt_tokens, completion_tokens, cache_read_tokens, .. } => {
-            open.note_usage(Some(prompt_tokens), Some(completion_tokens), Some(cache_read_tokens));
+        SseEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+            ..
+        } => {
+            open.note_usage(
+                Some(prompt_tokens),
+                Some(completion_tokens),
+                Some(cache_read_tokens),
+            );
         }
         SseEvent::Reasoning(_)
         | SseEvent::ThinkingStart { .. }

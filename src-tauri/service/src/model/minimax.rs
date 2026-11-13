@@ -18,7 +18,10 @@ pub(super) fn round(
     let response = client
         .post(minimax::messages_url(""))
         .header("x-api-key", token)
-        .header("anthropic-version", crate::providers::anthropic::ANTHROPIC_VERSION)
+        .header(
+            "anthropic-version",
+            crate::providers::anthropic::ANTHROPIC_VERSION,
+        )
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -33,8 +36,8 @@ pub(super) fn round(
 
 #[cfg(test)]
 mod tests {
-    use super::super::OpenRound;
     use super::super::anthropic::apply_line;
+    use super::super::OpenRound;
 
     #[test]
     fn claude_events_fill_the_same_round() {

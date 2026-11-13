@@ -192,7 +192,11 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
 }
 
 /// The head row plus only the last `message_limit` messages. The full read can follow.
-pub fn get_conversation_tail(conn: &Connection, id: &str, message_limit: u32) -> Result<Conversation> {
+pub fn get_conversation_tail(
+    conn: &Connection,
+    id: &str,
+    message_limit: u32,
+) -> Result<Conversation> {
     let head = conn
         .query_row(&format!("{HEAD_SQL} WHERE id = ?1"), [id], map_head)
         .optional()?;
@@ -203,7 +207,10 @@ pub fn get_conversation_tail(conn: &Connection, id: &str, message_limit: u32) ->
     conversation_from_head(head, messages)
 }
 
-fn conversation_from_head(head: ConvHead, messages: Vec<serde_json::Value>) -> Result<Conversation> {
+fn conversation_from_head(
+    head: ConvHead,
+    messages: Vec<serde_json::Value>,
+) -> Result<Conversation> {
     row_to_conversation(
         head.id,
         head.title,

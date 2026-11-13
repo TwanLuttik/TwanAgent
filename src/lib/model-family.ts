@@ -12,11 +12,13 @@ export type ModelFamily<T extends ModelFamilyInput> = {
 const MODEL_BRANDS: { match: RegExp; family: string }[] = [
   { match: /^(MiniMax)(?:\s+)(.+)$/i, family: "MiniMax" },
   { match: /^(Claude)(?:\s+)(.+)$/i, family: "Claude" },
+  { match: /^(GPT)-(.+)$/i, family: "GPT" },
 ];
 
 /**
  * "Claude Fable 5.1" and "Claude Opus 4.8" share Claude. MiniMax does the same
- * for every MiniMax line. Other names split on a trailing version, so "Grok 4.6"
+ * for every MiniMax line. "GPT-6 Astra" does not end in a version number, so GPT
+ * is branded the same way. Other names split on a trailing version, so "Grok 4.6"
  * sits under Grok and a single "Grok" stays alone.
  */
 export function modelFamilyName(name: string): { family: string; version: string } {

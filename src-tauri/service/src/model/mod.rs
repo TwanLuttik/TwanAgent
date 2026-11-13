@@ -7,6 +7,7 @@
 
 mod anthropic;
 mod minimax;
+mod openai;
 mod xai;
 
 use std::io::BufRead;
@@ -33,6 +34,8 @@ pub struct Round {
     pub usage: Option<RoundUsage>,
     /// Not streamed to the desktop. A summary uses it when the reply text is empty.
     pub reasoning: String,
+    /// OpenAI reasoning items with `encrypted_content`. Replay them unchanged.
+    pub reasoning_items: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +173,7 @@ pub fn run_round(
     keys: &ProviderKeys,
     model: &str,
     effort: &str,
+    service_tier: &str,
     messages: &[Value],
     on_delta: &mut dyn FnMut(&str),
 ) -> Result<Round> {
@@ -186,8 +190,13 @@ pub fn run_round(
     }
     match provider {
         ProviderId::Xai => xai::round(&client, &token, model, effort, &messages, &tools, on_delta),
-        ProviderId::Anthropic => anthropic::round(&client, &token, model, effort, &messages, &tools, on_delta),
+        ProviderId::Anthropic => {
+            anthropic::round(&client, &token, model, effort, &messages, &tools, on_delta)
+        }
         ProviderId::Minimax => minimax::round(&client, &token, model, &messages, &tools, on_delta),
+        ProviderId::OpenAi => {
+            openai::round(&client, &token, model, effort, service_tier, &messages, &tools, on_delta)
+        }
     }
 }
 
@@ -196,9 +205,12 @@ fn key_for(keys: &ProviderKeys, provider: ProviderId) -> Result<String> {
         ProviderId::Xai => keys.xai.trim(),
         ProviderId::Anthropic => keys.anthropic.trim(),
         ProviderId::Minimax => keys.minimax.trim(),
+        ProviderId::OpenAi => keys.openai.trim(),
     };
     if value.is_empty() || value == "local-try" {
-        return Err(Error::Other("Copy provider keys to this server in Settings.".into()));
+        return Err(Error::Other(
+            "Copy provider keys to this server in Settings.".into(),
+        ));
     }
     Ok(value.to_string())
 }
@@ -213,6 +225,8 @@ pub(super) struct OpenRound {
     stop: bool,
     error: Option<String>,
     usage: Option<RoundUsage>,
+    pub(super) reasoning_items: Vec<Value>,
+    pub(super) sse: crate::providers::openai::SseState,
 }
 
 impl Default for OpenRound {
@@ -226,6 +240,8 @@ impl Default for OpenRound {
             stop: false,
             error: None,
             usage: None,
+            reasoning_items: Vec::new(),
+            sse: crate::providers::openai::SseState::default(),
         }
     }
 }
@@ -239,7 +255,7 @@ impl OpenRound {
         self.pending.push_str(text);
     }
 
-    fn push_reasoning(&mut self, text: &str) {
+    pub(super) fn push_reasoning(&mut self, text: &str) {
         if !text.is_empty() {
             self.reasoning.push_str(text);
         }
@@ -249,7 +265,11 @@ impl OpenRound {
     pub(super) fn ensure_call(&mut self, index: usize) -> &mut ToolCall {
         while self.calls.len() <= index {
             let id = format!("tool_{}", self.calls.len());
-            self.calls.push(ToolCall { id, name: String::new(), arguments: String::new() });
+            self.calls.push(ToolCall {
+                id,
+                name: String::new(),
+                arguments: String::new(),
+            });
         }
         &mut self.calls[index]
     }
@@ -264,17 +284,30 @@ impl OpenRound {
         }
         let slot = self.calls.len();
         let id = format!("tool_{slot}");
-        self.calls.push(ToolCall { id, name: String::new(), arguments: String::new() });
+        self.calls.push(ToolCall {
+            id,
+            name: String::new(),
+            arguments: String::new(),
+        });
         self.block_slots[block] = Some(slot);
         &mut self.calls[slot]
     }
 
     fn take_delta(&mut self) -> Option<String> {
-        if self.pending.is_empty() { None } else { Some(std::mem::take(&mut self.pending)) }
+        if self.pending.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(&mut self.pending))
+        }
     }
 
     /// A later usage event fills in only the sides it actually reported.
-    pub(super) fn note_usage(&mut self, prompt: Option<u64>, completion: Option<u64>, cache_read: Option<u64>) {
+    pub(super) fn note_usage(
+        &mut self,
+        prompt: Option<u64>,
+        completion: Option<u64>,
+        cache_read: Option<u64>,
+    ) {
         let usage = self.usage.get_or_insert(RoundUsage::default());
         if let Some(prompt) = prompt.filter(|value| *value != u64::MAX) {
             usage.prompt_tokens = prompt;
@@ -290,10 +323,15 @@ impl OpenRound {
     fn finish(self) -> Round {
         Round {
             text: self.text,
-            tool_calls: self.calls.into_iter().filter(|call| !call.name.is_empty()).collect(),
+            tool_calls: self
+                .calls
+                .into_iter()
+                .filter(|call| !call.name.is_empty())
+                .collect(),
             error: self.error,
             usage: self.usage,
             reasoning: self.reasoning,
+            reasoning_items: self.reasoning_items,
         }
     }
 
@@ -355,9 +393,17 @@ pub(super) fn failed(name: &str, status: reqwest::StatusCode, body: &str) -> Rou
     let message = match name {
         "xAI" => crate::providers::xai::http_error_message(status.as_u16(), body),
         "MiniMax" => crate::providers::minimax::http_error_message(status.as_u16(), body),
+        "OpenAI" => crate::providers::openai::http_error_message(status.as_u16(), body),
         _ => crate::providers::anthropic::http_error_message(status.as_u16(), body),
     };
-    Round { text: String::new(), tool_calls: Vec::new(), error: Some(message), usage: None, reasoning: String::new() }
+    Round {
+        text: String::new(),
+        tool_calls: Vec::new(),
+        error: Some(message),
+        usage: None,
+        reasoning: String::new(),
+        reasoning_items: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -369,6 +415,8 @@ mod tests {
         assert_eq!(providers::find("grok-4.6"), ProviderId::Xai);
         assert_eq!(providers::find("claude-sonnet-4-6"), ProviderId::Anthropic);
         assert_eq!(providers::find("MiniMax-M3"), ProviderId::Minimax);
+        assert_eq!(providers::find("gpt-6.1-sol"), ProviderId::OpenAi);
+        assert_eq!(providers::find("gpt-"), ProviderId::Xai);
         assert_eq!(providers::find("not-a-model"), ProviderId::Xai);
     }
 
@@ -377,7 +425,10 @@ mod tests {
         let err = key_for(&ProviderKeys::default(), ProviderId::Xai).unwrap_err();
         assert!(err.to_string().contains("Copy provider keys"));
         let marker = key_for(
-            &ProviderKeys { xai: "local-try".into(), ..ProviderKeys::default() },
+            &ProviderKeys {
+                xai: "local-try".into(),
+                ..ProviderKeys::default()
+            },
             ProviderId::Xai,
         );
         assert!(marker.is_err());

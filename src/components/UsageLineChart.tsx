@@ -16,6 +16,7 @@ const SERIES: { id: ProviderId | "other"; label: string; color: string }[] = [
   { id: "xai", label: "Grok", color: "var(--usage-xai)" },
   { id: "minimax", label: "MiniMax", color: "#e21680" },
   { id: "anthropic", label: "Claude", color: "#d97757" },
+  { id: "openai", label: "OpenAI", color: "#10a37f" },
   { id: "other", label: "Other", color: "#8d8d92" },
 ];
 
@@ -32,6 +33,7 @@ const chartConfig = {
   xai: { label: "Grok", color: "var(--usage-xai)" },
   minimax: { label: "MiniMax", color: "#e21680" },
   anthropic: { label: "Claude", color: "#d97757" },
+  openai: { label: "OpenAI", color: "#10a37f" },
   other: { label: "Other", color: "#8d8d92" },
   total: { label: "Total" },
   label: { label: "When" },
@@ -44,6 +46,7 @@ type ChartRow = {
   xai: number;
   minimax: number;
   anthropic: number;
+  openai: number;
   other: number;
 };
 
@@ -197,6 +200,7 @@ function chartRows(points: UsageTrendPoint[]): ChartRow[] {
       xai: 0,
       minimax: 0,
       anthropic: 0,
+      openai: 0,
       other: 0,
     };
     for (const model of point.models) {

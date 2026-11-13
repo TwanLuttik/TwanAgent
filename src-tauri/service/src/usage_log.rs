@@ -113,7 +113,15 @@ pub fn record_in_store(
     cache_read_tokens: u64,
 ) -> Result<i64> {
     store::with_conn(store_dir, |conn| {
-        record(conn, conversation_id, conversation_title, model, prompt_tokens, completion_tokens, cache_read_tokens)
+        record(
+            conn,
+            conversation_id,
+            conversation_title,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            cache_read_tokens,
+        )
     })
 }
 
@@ -136,7 +144,9 @@ mod tests {
         let tail = list_since(&conn, first).unwrap();
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].id, second);
-        assert_eq!(record(&conn, "c1", "Hello", "grok-4.6", 0, 0, 0).unwrap(), 0);
+        assert_eq!(
+            record(&conn, "c1", "Hello", "grok-4.6", 0, 0, 0).unwrap(),
+            0
+        );
     }
-
 }

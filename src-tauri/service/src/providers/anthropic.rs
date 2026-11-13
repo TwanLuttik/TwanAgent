@@ -9,19 +9,87 @@ pub const KEY_REJECTED: &str = "Anthropic rejected the API key.";
 
 /// One picker row: id, display name, context window, output cap, effort ids.
 const CLAUDE_MODELS: &[(&str, &str, u64, u32, &[&str])] = &[
-    ("claude-fable-5-1", "Claude Fable 5.1", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-opus-5-5", "Claude Opus 5.5", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000, 128_000, &["low", "medium", "high"]),
-    ("claude-opus-4-8", "Claude Opus 4.8", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-opus-4-7", "Claude Opus 4.7", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-opus-4-6", "Claude Opus 4.6", 1_000_000, 128_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-sonnet-4-6", "Claude Sonnet 4.6", 1_000_000, 64_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-sonnet-4-5", "Claude Sonnet 4.5", 200_000, 64_000, &["low", "medium", "high", "xhigh", "max"]),
-    ("claude-haiku-4-5", "Claude Haiku 4.5", 200_000, 64_000, &["low", "medium", "high"]),
+    (
+        "claude-fable-5-1",
+        "Claude Fable 5.1",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-5-5",
+        "Claude Opus 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-5-5",
+        "Claude Sonnet 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-haiku-5-5",
+        "Claude Haiku 5.5",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high"],
+    ),
+    (
+        "claude-opus-4-8",
+        "Claude Opus 4.8",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-4-7",
+        "Claude Opus 4.7",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-opus-4-6",
+        "Claude Opus 4.6",
+        1_000_000,
+        128_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-4-6",
+        "Claude Sonnet 4.6",
+        1_000_000,
+        64_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-sonnet-4-5",
+        "Claude Sonnet 4.5",
+        200_000,
+        64_000,
+        &["low", "medium", "high", "xhigh", "max"],
+    ),
+    (
+        "claude-haiku-4-5",
+        "Claude Haiku 4.5",
+        200_000,
+        64_000,
+        &["low", "medium", "high"],
+    ),
 ];
 
-pub fn claude_model(id: &str) -> Option<&'static (&'static str, &'static str, u64, u32, &'static [&'static str])> {
+pub fn claude_model(
+    id: &str,
+) -> Option<&'static (
+    &'static str,
+    &'static str,
+    u64,
+    u32,
+    &'static [&'static str],
+)> {
     let id = id.trim();
     CLAUDE_MODELS.iter().find(|(row_id, ..)| *row_id == id)
 }
@@ -33,7 +101,10 @@ pub fn is_claude_model(id: &str) -> bool {
         return true;
     }
     let rest = id.strip_prefix("claude-").unwrap_or("");
-    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
 }
 
 /// Output cap for the Messages API. Not the context window.
@@ -75,18 +146,31 @@ pub fn manual_thinking_budget(id: &str, effort: Option<&str>) -> Option<u32> {
         "high" | "xhigh" | "max" => 8_192,
         _ => return None,
     };
-    Some(budget.min(cap.saturating_sub(1)).max(1_024).min(cap.saturating_sub(1)))
+    Some(
+        budget
+            .min(cap.saturating_sub(1))
+            .max(1_024)
+            .min(cap.saturating_sub(1)),
+    )
 }
 
 pub fn http_error_message(status: u16, body: &str) -> String {
     if status == 401 {
         return KEY_REJECTED.into();
     }
-    format!("Anthropic error {status}: {}", body.chars().take(400).collect::<String>())
+    format!(
+        "Anthropic error {status}: {}",
+        body.chars().take(400).collect::<String>()
+    )
 }
 
 /// OpenAI-shaped chat messages become a Messages API body. No I/O.
-pub fn to_messages_body(messages: &Value, model: &str, effort: Option<&str>, tools: &Value) -> Value {
+pub fn to_messages_body(
+    messages: &Value,
+    model: &str,
+    effort: Option<&str>,
+    tools: &Value,
+) -> Value {
     to_messages_body_with_images(messages, model, effort, tools, true)
 }
 
@@ -122,7 +206,9 @@ pub fn to_messages_body_with_images(
             });
             if let Some(last) = out.last_mut() {
                 if last.get("role").and_then(|item| item.as_str()) == Some("user") {
-                    if let Some(content) = last.get_mut("content").and_then(|item| item.as_array_mut()) {
+                    if let Some(content) =
+                        last.get_mut("content").and_then(|item| item.as_array_mut())
+                    {
                         content.push(block);
                         continue;
                     }
@@ -158,7 +244,11 @@ pub fn to_messages_body_with_images(
             out.push(serde_json::json!({ "role": "assistant", "content": blocks }));
             continue;
         }
-        let images = if include_images { msg.get("images") } else { None };
+        let images = if include_images {
+            msg.get("images")
+        } else {
+            None
+        };
         let blocks = user_blocks(msg.get("content"), images);
         if blocks.is_empty() {
             continue;
@@ -192,14 +282,26 @@ pub fn to_messages_body_with_images(
 /// Desktop transcripts nest the call under `function`. The server stores `name` and `arguments` flat.
 fn tool_call_fields(call: &Value) -> (String, String) {
     if let Some(function) = call.get("function") {
-        let name = function.get("name").and_then(|item| item.as_str()).unwrap_or("");
+        let name = function
+            .get("name")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
         if !name.is_empty() {
-            let arguments = function.get("arguments").and_then(|item| item.as_str()).unwrap_or("");
+            let arguments = function
+                .get("arguments")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
             return (name.to_string(), arguments.to_string());
         }
     }
-    let name = call.get("name").and_then(|item| item.as_str()).unwrap_or("");
-    let arguments = call.get("arguments").and_then(|item| item.as_str()).unwrap_or("");
+    let name = call
+        .get("name")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    let arguments = call
+        .get("arguments")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     (name.to_string(), arguments.to_string())
 }
 
@@ -300,7 +402,10 @@ fn user_blocks(value: Option<&Value>, images: Option<&Value>) -> Vec<Value> {
         }
     } else if let Some(parts) = value.and_then(|item| item.as_array()) {
         for part in parts {
-            let kind = part.get("type").and_then(|item| item.as_str()).unwrap_or("");
+            let kind = part
+                .get("type")
+                .and_then(|item| item.as_str())
+                .unwrap_or("");
             if kind == "text" {
                 if let Some(text) = part.get("text").and_then(|item| item.as_str()) {
                     let text = strip_image_tokens(text, images);
@@ -338,7 +443,11 @@ fn strip_image_tokens(text: &str, images: Option<&Value>) -> String {
     }
     let mut labels = Vec::new();
     for row in rows {
-        let name = row.get("name").and_then(|item| item.as_str()).unwrap_or("").trim();
+        let name = row
+            .get("name")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .trim();
         let label = name
             .rsplit(['/', '\\'])
             .next()
@@ -398,7 +507,10 @@ fn image_field_blocks(images: Option<&Value>, already: &[Value]) -> Vec<Value> {
     };
     let mut out = Vec::new();
     for row in rows {
-        let url = row.get("dataUrl").and_then(|item| item.as_str()).unwrap_or("");
+        let url = row
+            .get("dataUrl")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
         let title = row.get("name").and_then(|item| item.as_str());
         let Some(image) = media_block(url, title) else {
             continue;
@@ -465,11 +577,26 @@ pub enum SseEvent {
         cache_read_tokens: u64,
         cache_creation_tokens: u64,
     },
-    ToolStart { index: u32, id: String, name: String },
-    ToolDelta { index: u32, partial: String },
-    ThinkingStart { index: u32 },
-    RedactedThinking { index: u32, data: String },
-    ThinkingSignature { index: u32, signature: String },
+    ToolStart {
+        index: u32,
+        id: String,
+        name: String,
+    },
+    ToolDelta {
+        index: u32,
+        partial: String,
+    },
+    ThinkingStart {
+        index: u32,
+    },
+    RedactedThinking {
+        index: u32,
+        data: String,
+    },
+    ThinkingSignature {
+        index: u32,
+        signature: String,
+    },
     Stop,
 }
 
@@ -482,50 +609,94 @@ pub fn parse_sse_data(data: &str) -> Option<SseEvent> {
     let json: Value = serde_json::from_str(data).ok()?;
     match json.get("type").and_then(|item| item.as_str())? {
         "content_block_start" => {
-            let index = json.get("index").and_then(|item| item.as_u64()).unwrap_or(0) as u32;
+            let index = json
+                .get("index")
+                .and_then(|item| item.as_u64())
+                .unwrap_or(0) as u32;
             let block = json.get("content_block")?;
             match block.get("type").and_then(|item| item.as_str())? {
                 "tool_use" => Some(SseEvent::ToolStart {
                     index,
-                    id: block.get("id").and_then(|item| item.as_str()).unwrap_or("").to_string(),
-                    name: block.get("name").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+                    id: block
+                        .get("id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    name: block
+                        .get("name")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 }),
                 "thinking" => Some(SseEvent::ThinkingStart { index }),
                 "redacted_thinking" => Some(SseEvent::RedactedThinking {
                     index,
-                    data: block.get("data").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+                    data: block
+                        .get("data")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 }),
                 _ => None,
             }
         }
         "content_block_delta" => {
-            let index = json.get("index").and_then(|item| item.as_u64()).unwrap_or(0) as u32;
+            let index = json
+                .get("index")
+                .and_then(|item| item.as_u64())
+                .unwrap_or(0) as u32;
             let delta = json.get("delta")?;
             match delta.get("type").and_then(|item| item.as_str())? {
                 "text_delta" => {
-                    let text = delta.get("text").and_then(|item| item.as_str()).unwrap_or("");
-                    if text.is_empty() { None } else { Some(SseEvent::Delta(text.to_string())) }
+                    let text = delta
+                        .get("text")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(SseEvent::Delta(text.to_string()))
+                    }
                 }
                 "thinking_delta" => {
-                    let text = delta.get("thinking").and_then(|item| item.as_str()).unwrap_or("");
-                    if text.is_empty() { None } else { Some(SseEvent::Reasoning(text.to_string())) }
+                    let text = delta
+                        .get("thinking")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(SseEvent::Reasoning(text.to_string()))
+                    }
                 }
                 "signature_delta" => {
-                    let signature = delta.get("signature").and_then(|item| item.as_str()).unwrap_or("");
+                    let signature = delta
+                        .get("signature")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("");
                     if signature.is_empty() {
                         None
                     } else {
-                        Some(SseEvent::ThinkingSignature { index, signature: signature.to_string() })
+                        Some(SseEvent::ThinkingSignature {
+                            index,
+                            signature: signature.to_string(),
+                        })
                     }
                 }
                 "input_json_delta" => Some(SseEvent::ToolDelta {
                     index,
-                    partial: delta.get("partial_json").and_then(|item| item.as_str()).unwrap_or("").to_string(),
+                    partial: delta
+                        .get("partial_json")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                 }),
                 _ => None,
             }
         }
-        "message_start" => usage_event(json.get("message").and_then(|message| message.get("usage"))),
+        "message_start" => {
+            usage_event(json.get("message").and_then(|message| message.get("usage")))
+        }
         "message_delta" => usage_event(json.get("usage")),
         "message_stop" => Some(SseEvent::Stop),
         _ => None,
@@ -547,7 +718,9 @@ fn usage_event(usage: Option<&Value>) -> Option<SseEvent> {
     }
     // Cached reads and writes still occupy the window. Anthropic leaves them out of input_tokens.
     let prompt_tokens = match fresh {
-        Some(fresh) => fresh.saturating_add(cache_read.unwrap_or(0)).saturating_add(cache_creation.unwrap_or(0)),
+        Some(fresh) => fresh
+            .saturating_add(cache_read.unwrap_or(0))
+            .saturating_add(cache_creation.unwrap_or(0)),
         None => u64::MAX,
     };
     Some(SseEvent::Usage {
@@ -576,8 +749,14 @@ mod tests {
     fn haiku_uses_a_fixed_budget() {
         assert!(supports_adaptive_thinking("claude-opus-4-8"));
         assert!(!supports_adaptive_thinking("claude-haiku-4-5"));
-        assert_eq!(manual_thinking_budget("claude-haiku-4-5", Some("high")), Some(8_192));
-        assert_eq!(manual_thinking_budget("claude-opus-4-8", Some("high")), None);
+        assert_eq!(
+            manual_thinking_budget("claude-haiku-4-5", Some("high")),
+            Some(8_192)
+        );
+        assert_eq!(
+            manual_thinking_budget("claude-opus-4-8", Some("high")),
+            None
+        );
         assert_eq!(max_tokens_for("claude-sonnet-4-6"), 64_000);
         assert_eq!(max_tokens_for("claude-3-haiku-20240307"), 64_000);
     }
@@ -634,8 +813,14 @@ mod tests {
             &serde_json::json!([]),
             128_000,
         );
-        assert_eq!(minimax["messages"][0]["content"][1]["source"]["media_type"], "image/png");
-        assert_eq!(minimax["messages"][0]["content"][1]["source"]["data"], "iVBORw0KGgo");
+        assert_eq!(
+            minimax["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(
+            minimax["messages"][0]["content"][1]["source"]["data"],
+            "iVBORw0KGgo"
+        );
     }
 
     #[test]
@@ -676,18 +861,28 @@ mod tests {
             None,
             &serde_json::json!([]),
         );
-        assert_eq!(body["messages"][0]["content"].as_array().map(|rows| rows.len()), Some(2));
+        assert_eq!(
+            body["messages"][0]["content"]
+                .as_array()
+                .map(|rows| rows.len()),
+            Some(2)
+        );
     }
 
     #[test]
     fn sse_reads_text_and_a_tool() {
-        let text = parse_sse_data(r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}"#);
+        let text = parse_sse_data(
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}"#,
+        );
         assert_eq!(text, Some(SseEvent::Delta("Hi".into())));
         let tool = parse_sse_data(
             r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_9","name":"read_file"}}"#,
         );
         assert!(matches!(tool, Some(SseEvent::ToolStart { name, .. }) if name == "read_file"));
         assert!(parse_sse_data("[DONE]").is_none());
-        assert_eq!(parse_sse_data(r#"{"type":"message_stop"}"#), Some(SseEvent::Stop));
+        assert_eq!(
+            parse_sse_data(r#"{"type":"message_stop"}"#),
+            Some(SseEvent::Stop)
+        );
     }
 }

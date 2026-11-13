@@ -124,7 +124,10 @@ impl Drop for Guard {
             }
         });
         if let Ok(mut map) = slots().lock() {
-            if map.get(&self.id).is_some_and(|slot| Arc::ptr_eq(slot, &self.slot)) {
+            if map
+                .get(&self.id)
+                .is_some_and(|slot| Arc::ptr_eq(slot, &self.slot))
+            {
                 map.remove(&self.id);
             }
         }
@@ -151,7 +154,10 @@ pub fn install_roots(id: &str, workspaces: &[PathBuf], home: &Path) -> Guard {
         map.insert(id.to_string(), slot.clone());
     }
     CURRENT.with(|current| *current.borrow_mut() = Some(id.to_string()));
-    Guard { id: id.to_string(), slot }
+    Guard {
+        id: id.to_string(),
+        slot,
+    }
 }
 
 pub fn prompt_block(conversation_id: &str) -> String {
@@ -178,7 +184,10 @@ pub fn call(conversation_id: &str, name: &str, arguments: &str) -> Option<String
     if name != "load_skill" && !name.starts_with("mcp__") {
         return None;
     }
-    let slot = slots().lock().ok().and_then(|map| map.get(conversation_id).cloned());
+    let slot = slots()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(conversation_id).cloned());
     let Some(slot) = slot else {
         return Some("Error: this turn has no skill or MCP session.".into());
     };
@@ -195,7 +204,11 @@ fn with_caps<T>(conversation_id: &str, f: impl FnOnce(&Capabilities) -> T) -> T
 where
     T: Default,
 {
-    let Some(slot) = slots().lock().ok().and_then(|map| map.get(conversation_id).cloned()) else {
+    let Some(slot) = slots()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(conversation_id).cloned())
+    else {
         return T::default();
     };
     let caps = slot.lock().unwrap_or_else(|err| err.into_inner());
@@ -334,7 +347,8 @@ fn prepare_full(workspaces: &[PathBuf], home: &Path) -> Capabilities {
     let mut used_names = HashSet::new();
     for join in joins {
         let Ok((name, result)) = join.join() else {
-            caps.failed.push(("mcp".into(), "connect thread stopped".into()));
+            caps.failed
+                .push(("mcp".into(), "connect thread stopped".into()));
             continue;
         };
         match result {
@@ -347,7 +361,11 @@ fn prepare_full(workspaces: &[PathBuf], home: &Path) -> Capabilities {
                         caps.omitted_tools += 1;
                         continue;
                     }
-                    let remote = tool.get("name").and_then(Value::as_str).unwrap_or("").trim();
+                    let remote = tool
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim();
                     if remote.is_empty() {
                         continue;
                     }
@@ -379,10 +397,8 @@ fn prepare_full(workspaces: &[PathBuf], home: &Path) -> Capabilities {
         }
     }
     if waiting > 0 {
-        caps.failed.push((
-            format!("{waiting} more"),
-            "not connected this turn".into(),
-        ));
+        caps.failed
+            .push((format!("{waiting} more"), "not connected this turn".into()));
     }
     caps
 }
@@ -412,7 +428,11 @@ impl Capabilities {
             } else {
                 String::new()
             };
-            let names = if list.is_empty() { "none".to_string() } else { list };
+            let names = if list.is_empty() {
+                "none".to_string()
+            } else {
+                list
+            };
             lines.push(format!(
                 "Call load_skill with a skill name to read its instructions before following it. Enabled: {names}.{disabled}"
             ));
@@ -450,7 +470,11 @@ impl Capabilities {
             .iter()
             .map(|tool| {
                 let description = if tool.description.is_empty() {
-                    format!("MCP tool {} from {}.", tool.remote, server_of(&tool.exposed))
+                    format!(
+                        "MCP tool {} from {}.",
+                        tool.remote,
+                        server_of(&tool.exposed)
+                    )
                 } else {
                     format!("{}: {}", server_of(&tool.exposed), tool.description)
                 };
@@ -481,7 +505,11 @@ impl Capabilities {
         let Some(session) = self.sessions.get_mut(session) else {
             return "Error: MCP session is gone.".into();
         };
-        match session.request("tools/call", json!({ "name": remote, "arguments": args }), CALL_TIMEOUT) {
+        match session.request(
+            "tools/call",
+            json!({ "name": remote, "arguments": args }),
+            CALL_TIMEOUT,
+        ) {
             Ok(result) => tool_result_text(&result),
             Err(err) => format!("Error: {err}"),
         }
@@ -496,7 +524,11 @@ impl Capabilities {
             let enabled = if self.skills.is_empty() {
                 "none".to_string()
             } else {
-                self.skills.iter().map(|skill| skill.name.as_str()).collect::<Vec<_>>().join(", ")
+                self.skills
+                    .iter()
+                    .map(|skill| skill.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
             return format!("Error: no enabled skill named {wanted}. Enabled: {enabled}.");
         };
@@ -523,7 +555,9 @@ fn connect_server(
 ) -> Result<(Session, Vec<Value>), String> {
     if !server.url.is_empty() {
         let mut headers = server.headers.clone();
-        let has_auth = headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("authorization"));
+        let has_auth = headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("authorization"));
         if !has_auth {
             if let Some(token) = token_for(credentials, &server.name, &server.url) {
                 headers.push(("Authorization".into(), format!("Bearer {token}")));
@@ -536,7 +570,12 @@ fn connect_server(
     if server.command.is_empty() {
         return Err("no command or url".into());
     }
-    let mut session = Session::Stdio(StdioSession::open(workspace, &server.command, &server.args, &server.env)?);
+    let mut session = Session::Stdio(StdioSession::open(
+        workspace,
+        &server.command,
+        &server.args,
+        &server.env,
+    )?);
     let tools = handshake(&mut session)?;
     Ok((session, tools))
 }
@@ -582,7 +621,12 @@ fn handshake(session: &mut Session) -> Result<Vec<Value>, String> {
 }
 
 impl StdioSession {
-    fn open(workspace: &Path, command: &str, args: &[String], env: &[(String, String)]) -> Result<Self, String> {
+    fn open(
+        workspace: &Path,
+        command: &str,
+        args: &[String],
+        env: &[(String, String)],
+    ) -> Result<Self, String> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .current_dir(workspace)
@@ -597,12 +641,19 @@ impl StdioSession {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000);
         }
-        let mut child = cmd.spawn().map_err(|err| format!("could not start {command}: {err}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("could not start {command}: {err}"))?;
         let stdin = child.stdin.take().ok_or("MCP server stdin is closed")?;
         let stdout = child.stdout.take().ok_or("MCP server stdout is closed")?;
         let (tx, incoming) = std::sync::mpsc::channel();
         std::thread::spawn(move || read_stdio(stdout, tx));
-        Ok(Self { child, stdin, incoming, next_id: 0 })
+        Ok(Self {
+            child,
+            stdin,
+            incoming,
+            next_id: 0,
+        })
     }
 
     fn notify(&mut self, method: &str) {
@@ -660,7 +711,11 @@ impl HttpSession {
         rpc_result(&parsed)
     }
 
-    fn post(&mut self, body: &Value, timeout: Duration) -> Result<(u16, String, String, Option<String>), String> {
+    fn post(
+        &mut self,
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<(u16, String, String, Option<String>), String> {
         let mut req = self
             .client
             .post(&self.url)
@@ -693,7 +748,11 @@ impl HttpSession {
     }
 }
 
-fn wait_id(incoming: &std::sync::mpsc::Receiver<Value>, id: i64, timeout: Duration) -> Result<Value, String> {
+fn wait_id(
+    incoming: &std::sync::mpsc::Receiver<Value>,
+    id: i64,
+    timeout: Duration,
+) -> Result<Value, String> {
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -707,14 +766,19 @@ fn wait_id(incoming: &std::sync::mpsc::Receiver<Value>, id: i64, timeout: Durati
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Err("timed out".into()),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err("MCP server closed".into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("MCP server closed".into())
+            }
         }
     }
 }
 
 fn rpc_result(msg: &Value) -> Result<Value, String> {
     if let Some(err) = msg.get("error") {
-        let text = err.get("message").and_then(Value::as_str).unwrap_or("MCP request failed");
+        let text = err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("MCP request failed");
         return Err(text.to_string());
     }
     Ok(msg.get("result").cloned().unwrap_or(Value::Null))
@@ -749,7 +813,12 @@ fn read_stdio(stdout: std::process::ChildStdout, tx: std::sync::mpsc::Sender<Val
             let mut discard = String::new();
             loop {
                 discard.clear();
-                if reader.read_line(&mut discard).ok().filter(|n| *n > 0).is_none() {
+                if reader
+                    .read_line(&mut discard)
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .is_none()
+                {
                     return;
                 }
                 if discard.trim().is_empty() {
@@ -789,7 +858,10 @@ fn sse_message(body: &str, id: i64) -> Result<Value, String> {
 }
 
 fn tool_result_text(result: &Value) -> String {
-    let error = result.get("isError").and_then(Value::as_bool).unwrap_or(false);
+    let error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut text = String::new();
     if let Some(rows) = result.get("content").and_then(Value::as_array) {
         for row in rows {
@@ -824,7 +896,11 @@ fn expose_name(server: &str, tool: &str, used: &mut HashSet<String>) -> String {
             }
         })
         .collect();
-    if !name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic()) {
+    if !name
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
         name = format!("m{name}");
     }
     name = clip(&name, 64);
@@ -897,8 +973,14 @@ fn push_command_dir(out: &mut Vec<(PathBuf, &'static str)>, dir: &Path, origin: 
     rows.sort_by_key(|entry| entry.file_name());
     for entry in rows {
         let path = entry.path();
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or("");
-        if path.is_file() && name.to_ascii_lowercase().ends_with(".md") && !name.eq_ignore_ascii_case("readme.md") {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if path.is_file()
+            && name.to_ascii_lowercase().ends_with(".md")
+            && !name.eq_ignore_ascii_case("readme.md")
+        {
             out.push((path, origin));
         }
     }
@@ -922,7 +1004,12 @@ fn read_skill(path: &Path) -> Option<Skill> {
                 .map(str::to_string)
         })
         .unwrap_or_default();
-    let name = normalize_skill_name(matter.get("name").map(String::as_str).unwrap_or(fallback.as_str()));
+    let name = normalize_skill_name(
+        matter
+            .get("name")
+            .map(String::as_str)
+            .unwrap_or(fallback.as_str()),
+    );
     if name.is_empty() || VENDOR_SKILLS.contains(&name.as_str()) {
         return None;
     }
@@ -962,7 +1049,10 @@ fn normalize_skill_name(raw: &str) -> String {
 
 fn frontmatter(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else {
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
         return map;
     };
     let end = rest.find("\n---").unwrap_or(rest.len());
@@ -970,7 +1060,10 @@ fn frontmatter(text: &str) -> HashMap<String, String> {
     let mut key = String::new();
     let mut folded = String::new();
     for line in body.lines() {
-        if let Some(name) = line.strip_suffix(": |").or_else(|| line.strip_suffix(": >")) {
+        if let Some(name) = line
+            .strip_suffix(": |")
+            .or_else(|| line.strip_suffix(": >"))
+        {
             if !key.is_empty() {
                 map.insert(std::mem::take(&mut key), folded.trim().to_string());
                 folded.clear();
@@ -1000,7 +1093,10 @@ fn frontmatter(text: &str) -> HashMap<String, String> {
 }
 
 fn strip_frontmatter(text: &str) -> String {
-    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else {
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
         return text.to_string();
     };
     let Some(end) = rest.find("\n---") else {
@@ -1022,7 +1118,9 @@ fn strip_quotes(value: &str) -> String {
     let value = value.trim().trim_end_matches(',');
     if value.len() >= 2 {
         let bytes = value.as_bytes();
-        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"') || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'') {
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
             return value[1..value.len() - 1].to_string();
         }
     }
@@ -1080,32 +1178,54 @@ fn servers_from_json(text: &str) -> Vec<ServerSpec> {
 }
 
 fn server_from_entry(name: &str, entry: &Value) -> ServerSpec {
-    let command = entry.get("command").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let command = entry
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let args = entry
         .get("args")
         .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     let env = entry
         .get("env")
         .and_then(Value::as_object)
         .map(|map| {
             map.iter()
-                .filter_map(|(key, value)| value.as_str().map(|text| (key.clone(), text.to_string())))
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|text| (key.clone(), text.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default();
-    let url = entry.get("url").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let url = entry
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let headers = entry
         .get("headers")
         .and_then(Value::as_object)
         .map(|map| {
             map.iter()
-                .filter_map(|(key, value)| value.as_str().map(|text| (key.clone(), text.to_string())))
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|text| (key.clone(), text.to_string()))
+                })
                 .collect()
         })
         .unwrap_or_default();
-    let enabled = entry.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+    let enabled = entry
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     ServerSpec {
         name: name.to_string(),
         command,
@@ -1245,7 +1365,10 @@ fn disabled_names(path: &Path, table: &str, key: &str) -> Vec<String> {
         text.as_str()
     } else if let Some(start) = text.find(&format!("[{table}]")) {
         let rest = &text[start..];
-        let end = rest[1..].find("\n[").map(|index| index + 1).unwrap_or(rest.len());
+        let end = rest[1..]
+            .find("\n[")
+            .map(|index| index + 1)
+            .unwrap_or(rest.len());
         &rest[..end]
     } else {
         return Vec::new();
@@ -1282,7 +1405,10 @@ fn read_credentials(path: &Path) -> HashMap<String, String> {
     };
     let mut out = HashMap::new();
     for (key, entry) in map {
-        let Some(token) = entry.pointer("/token_response/access_token").and_then(Value::as_str) else {
+        let Some(token) = entry
+            .pointer("/token_response/access_token")
+            .and_then(Value::as_str)
+        else {
             continue;
         };
         if !token.is_empty() {
@@ -1295,7 +1421,12 @@ fn read_credentials(path: &Path) -> HashMap<String, String> {
 fn token_for(credentials: &HashMap<String, String>, name: &str, url: &str) -> Option<String> {
     credentials
         .get(&format!("{name}:{url}"))
-        .or_else(|| credentials.iter().find(|(key, _)| key.split(':').next() == Some(name)).map(|(_, token)| token))
+        .or_else(|| {
+            credentials
+                .iter()
+                .find(|(key, _)| key.split(':').next() == Some(name))
+                .map(|(_, token)| token)
+        })
         .cloned()
 }
 
@@ -1343,14 +1474,22 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(home.path().join(".grok/skills/shell")).unwrap();
-        fs::write(home.path().join(".grok/skills/shell/SKILL.md"), "---\nname: shell\n---\n").unwrap();
+        fs::write(
+            home.path().join(".grok/skills/shell/SKILL.md"),
+            "---\nname: shell\n---\n",
+        )
+        .unwrap();
         fs::write(
             home.path().join(".grok/config.toml"),
             "[skills]\ndisabled = [\"hidden\"]\n\n[mcp_servers.linear]\nurl = \"https://mcp.linear.app/mcp\"\n\n[mcp_servers.old]\ncommand = \"nope\"\nenabled = false\n",
         )
         .unwrap();
         fs::create_dir_all(root.path().join(".grok/skills/hidden")).unwrap();
-        fs::write(root.path().join(".grok/skills/hidden/SKILL.md"), "---\nname: hidden\n---\n").unwrap();
+        fs::write(
+            root.path().join(".grok/skills/hidden/SKILL.md"),
+            "---\nname: hidden\n---\n",
+        )
+        .unwrap();
         let caps = discover(root.path(), home.path());
         assert_eq!(caps.skills.len(), 1);
         assert_eq!(caps.skills[0].name, "commit");
@@ -1370,7 +1509,9 @@ mod tests {
         let mut used = HashSet::new();
         let name = expose_name("linear", "list issues", &mut used);
         assert_eq!(name, "mcp__linear__list_issues");
-        assert!(name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
+        assert!(name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'));
         let again = expose_name("linear", "list issues", &mut used);
         assert_ne!(again, name);
         let root = tempfile::tempdir().unwrap();
@@ -1387,11 +1528,18 @@ mod tests {
         )
         .unwrap();
         let servers = read_servers(&[root.path().to_path_buf()], home.path());
-        assert!(servers.iter().any(|server| server.name == "railway" && server.args == ["-y", "srv"] && server.env == [("A".into(), "b".into())]));
-        assert!(servers.iter().any(|server| server.name == "notion" && server.url.contains("notion")));
+        assert!(servers.iter().any(|server| server.name == "railway"
+            && server.args == ["-y", "srv"]
+            && server.env == [("A".into(), "b".into())]));
+        assert!(servers
+            .iter()
+            .any(|server| server.name == "notion" && server.url.contains("notion")));
         let caps = discover(root.path(), home.path());
         assert!(caps.disabled_mcp.iter().any(|name| name == "railway"));
-        assert!(caps.prompt_block().contains("disabled railway") || caps.disabled_mcp.iter().any(|name| name == "railway"));
+        assert!(
+            caps.prompt_block().contains("disabled railway")
+                || caps.disabled_mcp.iter().any(|name| name == "railway")
+        );
     }
 
     #[test]
@@ -1435,7 +1583,11 @@ for line in sys.stdin:
         let (mut session, tools) = connect_server(root.path(), &server, &HashMap::new()).unwrap();
         assert_eq!(tools[0]["name"], "ping");
         let result = session
-            .request("tools/call", json!({ "name": "ping", "arguments": {} }), CALL_TIMEOUT)
+            .request(
+                "tools/call",
+                json!({ "name": "ping", "arguments": {} }),
+                CALL_TIMEOUT,
+            )
             .unwrap();
         assert_eq!(tool_result_text(&result), "pong");
     }
@@ -1473,7 +1625,9 @@ for line in sys.stdin:
         let mut seen = HashSet::new();
         let mut shared_from_api = false;
         for (path, _) in files {
-            let Some(skill) = read_skill(&path) else { continue };
+            let Some(skill) = read_skill(&path) else {
+                continue;
+            };
             if skill.name == "shared" && path.starts_with(api.path()) {
                 shared_from_api = true;
             }

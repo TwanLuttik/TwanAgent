@@ -218,8 +218,14 @@ fn save_conversation_in(conn: &Connection, conversation: &Conversation) -> Resul
     } else {
         conversation.kind.clone()
     };
-    let usage = conversation.context_usage.as_ref().map(|value| value.to_string());
-    let compaction = conversation.compaction.as_ref().map(|value| value.to_string());
+    let usage = conversation
+        .context_usage
+        .as_ref()
+        .map(|value| value.to_string());
+    let compaction = conversation
+        .compaction
+        .as_ref()
+        .map(|value| value.to_string());
     let window = conversation.context_window.map(|value| value as i64);
     if exists.is_some() {
         // Place, journey, and archive have their own commands. A finished turn must not
@@ -265,10 +271,12 @@ fn save_conversation_in(conn: &Connection, conversation: &Conversation) -> Resul
             ],
         )?;
     }
-    conn.execute("DELETE FROM messages WHERE conversation_id = ?1", [&conversation.id])?;
-    let mut stmt = conn.prepare(
-        "INSERT INTO messages (conversation_id, sort_order, body) VALUES (?1, ?2, ?3)",
+    conn.execute(
+        "DELETE FROM messages WHERE conversation_id = ?1",
+        [&conversation.id],
     )?;
+    let mut stmt = conn
+        .prepare("INSERT INTO messages (conversation_id, sort_order, body) VALUES (?1, ?2, ?3)")?;
     for (index, message) in conversation.messages.iter().enumerate() {
         stmt.execute(params![conversation.id, index as i64, message.to_string()])?;
     }
@@ -294,7 +302,10 @@ pub fn set_archived(conn: &Connection, id: &str, archived: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn reorder_conversations(conn: &Connection, ids: &[String]) -> Result<Vec<ConversationSummary>> {
+pub fn reorder_conversations(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<ConversationSummary>> {
     for (index, id) in ids.iter().enumerate() {
         conn.execute(
             "UPDATE conversations SET sort_order = ?1 WHERE id = ?2",
@@ -322,7 +333,8 @@ fn next_sort(conn: &Connection, journey_id: Option<&str>) -> Result<i64> {
             [],
             |row| row.get(0),
         )?;
-        let journey_min: Option<i64> = conn.query_row("SELECT MIN(sort_order) FROM journeys", [], |row| row.get(0))?;
+        let journey_min: Option<i64> =
+            conn.query_row("SELECT MIN(sort_order) FROM journeys", [], |row| row.get(0))?;
         match (conv_min, journey_min) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(a), None) => Some(a),
@@ -346,9 +358,8 @@ fn freeze_tied_orders(conn: &Connection) -> Result<()> {
     if tied.is_none() {
         return Ok(());
     }
-    let mut stmt = conn.prepare(
-        "SELECT id FROM conversations ORDER BY sort_order ASC, updated_at DESC, id ASC",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM conversations ORDER BY sort_order ASC, updated_at DESC, id ASC")?;
     let ids = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut ordered = Vec::new();
     for id in ids {

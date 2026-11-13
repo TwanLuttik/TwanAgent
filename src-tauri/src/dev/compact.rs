@@ -306,10 +306,16 @@ fn api_message(msg: &Value) -> Option<Value> {
                 .get("thinking")
                 .cloned()
                 .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()));
+            let reasoning_items = msg
+                .get("reasoning_items")
+                .cloned()
+                .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()));
             let text = content_str(msg);
             let mut out = serde_json::Map::new();
             out.insert("role".into(), Value::String("assistant".into()));
-            if (calls.is_some() || thinking.is_some()) && text.trim().is_empty() {
+            if (calls.is_some() || thinking.is_some() || reasoning_items.is_some())
+                && text.trim().is_empty()
+            {
                 out.insert("content".into(), Value::Null);
             } else {
                 out.insert("content".into(), Value::String(text));
@@ -319,6 +325,9 @@ fn api_message(msg: &Value) -> Option<Value> {
             }
             if let Some(thinking) = thinking {
                 out.insert("thinking".into(), thinking);
+            }
+            if let Some(reasoning_items) = reasoning_items {
+                out.insert("reasoning_items".into(), reasoning_items);
             }
             Some(Value::Object(out))
         }

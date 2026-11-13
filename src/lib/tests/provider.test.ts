@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { agentIdentityLine, agentNameFor, contextWindowForProvider, isClaudeModel, isMinimaxModel, providerFor, providerReadyFor } from "../provider.ts";
+import { agentIdentityLine, agentNameFor, contextWindowForProvider, isClaudeModel, isMinimaxModel, isOpenAiModel, providerFor, providerReadyFor } from "../provider.ts";
 
 describe("providerFor", () => {
   it("classifies only the Claude catalog as anthropic", () => {
@@ -29,6 +29,19 @@ describe("providerFor", () => {
     assert.equal(isMinimaxModel("not-a-model"), false);
     assert.equal(isMinimaxModel(""), false);
   });
+
+  it("classifies gpt ids as openai and leaves gpt- and grok on xai", () => {
+    assert.equal(providerFor("gpt-6.1-sol"), "openai");
+    assert.equal(providerFor(" gpt-6-astra "), "openai");
+    assert.equal(providerFor("gpt-6.1-terra"), "openai");
+    assert.equal(providerFor("gpt-6-luna"), "openai");
+    assert.equal(providerFor("gpt-future_1.0"), "openai");
+    assert.equal(isOpenAiModel("gpt-6.1-sol"), true);
+    assert.equal(providerFor("gpt-"), "xai");
+    assert.equal(providerFor("grok-4.6"), "xai");
+    assert.equal(isOpenAiModel("gpt-"), false);
+    assert.equal(isOpenAiModel(""), false);
+  });
 });
 
 describe("providerReadyFor", () => {
@@ -36,6 +49,7 @@ describe("providerReadyFor", () => {
     { id: "xai", ready: false, hint: "Install the Grok CLI, or add an xAI API key in Settings." },
     { id: "anthropic", ready: false, hint: "Claude isn’t signed in." },
     { id: "minimax", ready: true, hint: "Using MiniMax" },
+    { id: "openai", ready: false, hint: "OpenAI isn’t signed in." },
   ];
 
   it("lets MiniMax send when only MiniMax is signed in", () => {
@@ -52,6 +66,7 @@ describe("providerReadyFor", () => {
       hint: "Install the Grok CLI, or add an xAI API key in Settings.",
     });
     assert.equal(providerReadyFor("claude-sonnet-4-6", rows).ready, false);
+    assert.equal(providerReadyFor("gpt-6.1-sol", rows).ready, false);
   });
 
   it("uses the Grok flag only when provider rows are missing", () => {
@@ -68,6 +83,7 @@ describe("agentNameFor", () => {
     assert.equal(agentNameFor("claude-haiku-4-5-latest"), "Claude");
     assert.equal(agentNameFor("grok-4.6"), "Grok");
     assert.equal(agentNameFor("MiniMax-M3"), "MiniMax");
+    assert.equal(agentNameFor("gpt-6.1-sol"), "GPT");
     assert.equal(agentNameFor(""), "");
     assert.equal(agentNameFor("mystery-model"), "");
   });
@@ -85,6 +101,10 @@ describe("agentNameFor", () => {
       agentIdentityLine("MiniMax-M3"),
       "You are MiniMax (MiniMax-M3), a coding agent in TwanAgent.",
     );
+    assert.equal(
+      agentIdentityLine("gpt-6.1-sol"),
+      "You are GPT (gpt-6.1-sol), a coding agent in TwanAgent.",
+    );
     assert.equal(agentIdentityLine(""), "You are a coding agent in TwanAgent.");
     assert.equal(agentIdentityLine("mystery-model"), "You are a coding agent in TwanAgent.");
   });
@@ -100,6 +120,8 @@ describe("contextWindowForProvider", () => {
     assert.equal(contextWindowForProvider("claude-sonnet-4-6", 180_000), 180_000);
     assert.equal(contextWindowForProvider("grok-4.6", null), null);
     assert.equal(contextWindowForProvider("MiniMax-M3", null), 512_000);
+    assert.equal(contextWindowForProvider("gpt-6.1-sol", null), 922_000);
+    assert.equal(contextWindowForProvider("gpt-6-luna", 100), 100);
     assert.equal(contextWindowForProvider("MiniMax-M2.7", 200_000), 200_000);
   });
 });

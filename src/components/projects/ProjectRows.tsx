@@ -313,6 +313,7 @@ const CLOUD_MODELS: { id: string; label: string }[] = [
   { id: "xai", label: "Grok" },
   { id: "anthropic", label: "Claude" },
   { id: "minimax", label: "MiniMax" },
+  { id: "openai", label: "OpenAI" },
 ];
 
 const LAST_SEEN_KEY = "twanagent.server-last-seen";

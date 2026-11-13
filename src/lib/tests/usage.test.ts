@@ -351,6 +351,38 @@ describe("estimated cost", () => {
     assert.equal(modelColorIndex("MiniMax-M3"), modelColorIndex("minimax-m3"));
   });
 
+  it("prices OpenAI models and switches the whole request at 272,001 tokens", () => {
+    assert.equal(modelRate("gpt-6-astra")?.input, 10);
+    assert.equal(modelRate("gpt-6-astra")?.cachedInput, 1);
+    assert.equal(modelRate("gpt-6-astra")?.output, 50);
+    assert.equal(modelRate("gpt-6.1-sol")?.longContextFrom, 272_001);
+    assert.equal(modelRate("gpt-6.1-terra")?.cachedInput, 0.05);
+    assert.equal(modelRate("gpt-6-luna")?.output, 0.5);
+    const short = usageCostUsd({ prompt: 1000, completion: 100, total: 1100, cached: 200 }, "gpt-6.1-sol", 272_000);
+    const long = usageCostUsd({ prompt: 1000, completion: 100, total: 1100, cached: 200 }, "gpt-6.1-sol", 272_001);
+    assert.equal(short, (800 * 2 + 200 * 0.1 + 100 * 10) / 1_000_000);
+    assert.equal(long, (800 * 4 + 200 * 0.2 + 100 * 15) / 1_000_000);
+    assert.equal(formatModelName("gpt-6-astra"), "GPT-6 Astra");
+    assert.equal(formatModelName("gpt-6.1-sol"), "GPT-6.1 Sol");
+    assert.equal(modelColorIndex("gpt-6-astra"), modelColorIndex("GPT-6-Astra"));
+    assert.equal(modelColorIndex("gpt-6.1-sol"), 1);
+    const events = [
+      ev({
+        id: 1,
+        recorded_at: new Date(now).toISOString(),
+        workspace_path: "/a",
+        model: "gpt-6-luna",
+        prompt_tokens: 10_000,
+        completion_tokens: 0,
+        total_tokens: 10_000,
+      }),
+    ];
+    const cost = estimateUsageCost(events, { range: 7, nowMs: now });
+    assert.equal(cost.openai, 0.001);
+    assert.equal(cost.xai, 0);
+    assert.equal(cost.usd, 0.001);
+  });
+
   it("splits cached, fresh, and output, and counts only the cache discount as savings", () => {
     const events = [
       ev({

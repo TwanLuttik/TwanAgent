@@ -41,6 +41,8 @@ export type ChatMessage = {
   reasoning?: string;
   /** Signed Claude thinking blocks. Required, unchanged, on the next Claude request. */
   thinking?: ThinkingBlock[];
+  /** OpenAI reasoning items with encrypted_content. Replay unchanged. */
+  reasoning_items?: Record<string, unknown>[];
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   error?: boolean;

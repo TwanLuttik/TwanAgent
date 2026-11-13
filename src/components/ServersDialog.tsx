@@ -9,7 +9,7 @@ import { ServerDetail, ServerRow, type CopyProgress, type InstallView } from "./
 
 type Step = "list" | "detail" | "connect" | "trust" | "install" | "keys";
 
-const NO_LOCAL_KEYS: LocalKeys = { xai: null, anthropic: null, minimax: null };
+const NO_LOCAL_KEYS: LocalKeys = { xai: null, anthropic: null, minimax: null, openai: null };
 
 function providerLabel(id: ProviderId): string {
   return PROVIDERS.find((provider) => provider.id === id)?.label ?? id;
@@ -185,8 +185,8 @@ export function ServersDialog({
 
   useEffect(() => {
     reload();
-    void Promise.all([api.keyStatus(), api.anthropicKeyStatus(), api.minimaxKeyStatus()])
-      .then(([xai, anthropic, minimax]) => setLocalKeys({ xai, anthropic, minimax }))
+    void Promise.all([api.keyStatus(), api.anthropicKeyStatus(), api.minimaxKeyStatus(), api.openAiKeyStatus()])
+      .then(([xai, anthropic, minimax, openai]) => setLocalKeys({ xai, anthropic, minimax, openai }))
       .catch(() => undefined);
     void api
       .sshDefaults()

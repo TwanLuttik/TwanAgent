@@ -8,6 +8,7 @@ type ProviderStatus = {
   xai: KeyStatus | null;
   anthropic: KeyStatus | null;
   minimax: KeyStatus | null;
+  openai: KeyStatus | null;
   grokCli: GrokCliInfo | null;
   claudeCli: ClaudeCliInfo | null;
   minimaxCli: MinimaxCliInfo | null;
@@ -19,6 +20,7 @@ const EMPTY: ProviderStatus = {
   xai: null,
   anthropic: null,
   minimax: null,
+  openai: null,
   grokCli: null,
   claudeCli: null,
   minimaxCli: null,
@@ -92,6 +94,7 @@ export function refreshProviderStatus() {
   void api.keyStatus().then((xai) => patch({ xai })).catch(() => undefined);
   void api.anthropicKeyStatus().then((anthropic) => patch({ anthropic })).catch(() => undefined);
   void api.minimaxKeyStatus().then((minimax) => patch({ minimax })).catch(() => undefined);
+  void api.openAiKeyStatus().then((openai) => patch({ openai })).catch(() => undefined);
   void api.cliInfo().then((grokCli) => patch({ grokCli })).catch(() => undefined);
   void api.claudeCliInfo().then((claudeCli) => patch({ claudeCli })).catch(() => undefined);
   void api.minimaxCliInfo().then((minimaxCli) => patch({ minimaxCli })).catch(() => undefined);
@@ -99,7 +102,7 @@ export function refreshProviderStatus() {
   void api.openedWorkspaces().then((folders) => patch({ folders })).catch(() => undefined);
 }
 
-export function setProviderKeyStatus(provider: "xai" | "anthropic" | "minimax", next: KeyStatus) {
+export function setProviderKeyStatus(provider: "xai" | "anthropic" | "minimax" | "openai", next: KeyStatus) {
   patch({ [provider]: next });
 }
 
@@ -112,10 +115,10 @@ export function setProviderFolders(folders: string[]) {
 }
 
 /** Replace one CLI row after its updater finishes. The other rows stay as they are. */
-export function setProviderCli(provider: "xai" | "anthropic" | "minimax", info: GrokCliInfo) {
+export function setProviderCli(provider: "xai" | "anthropic" | "minimax" | "openai", info: GrokCliInfo) {
   if (provider === "xai") patch({ grokCli: info });
   else if (provider === "anthropic") patch({ claudeCli: info });
-  else patch({ minimaxCli: info });
+  else if (provider === "minimax") patch({ minimaxCli: info });
 }
 
 function subscribe(listener: () => void) {

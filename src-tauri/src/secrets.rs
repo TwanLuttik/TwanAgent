@@ -18,9 +18,15 @@ const DEV_SERVICE: &str = "app.twanagent.desktop.dev";
 const XAI_ACCOUNT: &str = "xai";
 const ANTHROPIC_ACCOUNT: &str = "anthropic";
 const MINIMAX_ACCOUNT: &str = "minimax";
+const OPENAI_ACCOUNT: &str = "openai";
 
 /// Provider ids stored in `provider_keys`. The keychain accounts used the same names.
-const PROVIDERS: &[&str] = &[XAI_ACCOUNT, ANTHROPIC_ACCOUNT, MINIMAX_ACCOUNT];
+const PROVIDERS: &[&str] = &[
+    XAI_ACCOUNT,
+    ANTHROPIC_ACCOUNT,
+    MINIMAX_ACCOUNT,
+    OPENAI_ACCOUNT,
+];
 
 pub fn set_ssh_secret(account: &str, value: &str) -> Result<()> {
     set_ssh_secret_in(account, value, &SystemKeychain)
@@ -555,6 +561,30 @@ pub fn resolve_minimax_key_on_disk(data_dir: &Path) -> Option<String> {
     )
 }
 
+/// OpenAI key. Stored in SQLite, never in `secrets.json` and never in the xAI account.
+pub fn set_openai_key(data_dir: &Path, key: &str) -> Result<()> {
+    write_provider_key(data_dir, OPENAI_ACCOUNT, key)
+}
+
+pub fn get_openai_key(data_dir: &Path) -> Option<String> {
+    stored_provider_key(data_dir, OPENAI_ACCOUNT)
+}
+
+pub fn delete_openai_key(data_dir: &Path) -> Result<()> {
+    write_provider_key(data_dir, OPENAI_ACCOUNT, "")
+}
+
+pub fn resolve_openai_key(saved: Option<String>, env: Option<String>) -> Option<String> {
+    resolve_xai_key(saved, env)
+}
+
+pub fn resolve_openai_key_on_disk(data_dir: &Path) -> Option<String> {
+    resolve_openai_key(
+        get_openai_key(data_dir),
+        std::env::var("OPENAI_API_KEY").ok(),
+    )
+}
+
 #[cfg(test)]
 mod xai_key_tests {
     use super::*;
@@ -725,6 +755,25 @@ mod xai_key_tests {
         delete_minimax_key(dir.path()).unwrap();
         assert_eq!(get_minimax_key(dir.path()), None);
         assert_eq!(get_xai_key(dir.path()).as_deref(), Some("xai-secret"));
+    }
+
+    #[test]
+    fn openai_key_does_not_read_the_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        set_xai_key(dir.path(), "xai-secret").unwrap();
+        set_anthropic_key(dir.path(), "anthropic-secret").unwrap();
+        assert_eq!(get_openai_key(dir.path()), None);
+        set_openai_key(dir.path(), "openai-secret").unwrap();
+        assert_eq!(get_openai_key(dir.path()).as_deref(), Some("openai-secret"));
+        assert_eq!(get_xai_key(dir.path()).as_deref(), Some("xai-secret"));
+        assert_eq!(
+            resolve_openai_key(None, Some(" env-key ".into())).as_deref(),
+            Some("env-key")
+        );
+        let raw = std::fs::read_to_string(dir.path().join("secrets.json")).unwrap_or_default();
+        assert!(!raw.contains("openai-secret"), "{raw}");
+        delete_openai_key(dir.path()).unwrap();
+        assert_eq!(get_openai_key(dir.path()), None);
     }
 
     #[test]

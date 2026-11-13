@@ -371,6 +371,7 @@ function plainReplyMessage(message: ChatMessage): ChatMessage {
     content: String(message.content ?? ""),
     ...(reasoning ? { reasoning: message.reasoning } : {}),
     ...(message.thinking?.length ? { thinking: message.thinking } : {}),
+    ...(message.reasoning_items?.length ? { reasoning_items: message.reasoning_items } : {}),
     ...(message.finishedAt ? { finishedAt: message.finishedAt } : {}),
     ...(typeof message.durationMs === "number" ? { durationMs: message.durationMs } : {}),
   };
@@ -736,6 +737,17 @@ export function shouldQueueForChat(runningId: string, chatId: string): boolean {
 /** Queue when this chat has its own turn, even if the user is looking at a different chat. */
 export function chatShouldQueue(active: { has(id: string): boolean }, chatId: string): boolean {
   return Boolean(chatId) && active.has(chatId);
+}
+
+/**
+ * History a send is allowed to continue.
+ * The screen can be the empty prompt while the database still has the chat.
+ * Sending the blank copy would replace those messages with only the new line.
+ */
+export function messagesForSend<T>(memory: readonly T[], fetched: readonly T[] | null | undefined): readonly T[] {
+  if (memory.length > 0) return memory;
+  if (fetched && fetched.length > 0) return fetched;
+  return memory;
 }
 
 export function takeNextPending(

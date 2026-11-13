@@ -1,11 +1,13 @@
 import { anthropicProfile } from "./anthropic.ts";
 import { minimaxProfile } from "./minimax.ts";
+import { openaiProfile } from "./openai.ts";
 import type { ProviderId, ProviderProfile } from "./types.ts";
 import { xaiProfile } from "./xai.ts";
 
 export type { ProviderId, ProviderProfile } from "./types.ts";
 export { isClaudeModel } from "./anthropic.ts";
 export { isMinimaxModel } from "./minimax.ts";
+export { isOpenAiModel } from "./openai.ts";
 
 /** One provider's sign-in row on the runtime snapshot. */
 export type ProviderReadyRow = {
@@ -15,7 +17,7 @@ export type ProviderReadyRow = {
 };
 
 /** Specific providers first. xAI is the fallback and must stay last. */
-const PROFILES: ProviderProfile[] = [minimaxProfile, anthropicProfile, xaiProfile];
+const PROFILES: ProviderProfile[] = [minimaxProfile, anthropicProfile, openaiProfile, xaiProfile];
 
 export function providerProfile(modelId: string): ProviderProfile {
   const id = modelId.trim();
@@ -28,9 +30,9 @@ export function providerFor(modelId: string): ProviderId {
 
 /**
  * Whether the selected model's provider can send.
- * Grok, Claude, and MiniMax each have their own row. A missing row falls back
+ * Grok, Claude, MiniMax, and OpenAI each have their own row. A missing row falls back
  * to the Grok flag so an older snapshot still blocks an unsigned Grok chat.
- * MiniMax does not need the Grok CLI or an xAI key.
+ * MiniMax and OpenAI do not need the Grok CLI or an xAI key.
  */
 export function providerReadyFor(
   modelId: string,

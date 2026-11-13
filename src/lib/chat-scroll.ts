@@ -82,6 +82,55 @@ export function stickToBottomAfterRestore(
   });
 }
 
+type ChatPadEl = {
+  style: { paddingBottom: string };
+  dataset: { chatPadMode?: string };
+};
+
+type ChatPadScroller = {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  querySelector: (selector: string) => ChatPadEl | null;
+};
+
+/**
+ * Write the composer's new pad before the next paint and report where to scroll.
+ * Returns null when the pad did not change, or when the composer is centered
+ * and the spacer is the small middle gap rather than the dock.
+ * The caller assigns scrollTop so a follow flag can cover the scroll event.
+ */
+export function applyComposerPadResize(scroller: ChatPadScroller | null, nextPad: number, pin: boolean): number | null {
+  if (!scroller || !Number.isFinite(nextPad)) return null;
+  const pad = scroller.querySelector("[data-chat-pad]");
+  if (!pad || pad.dataset.chatPadMode === "center") return null;
+  const parsed = parseFloat(pad.style.paddingBottom);
+  const previous = Number.isFinite(parsed) ? parsed : nextPad;
+  if (previous === nextPad) return null;
+  const top = scrollTopAfterComposerResize(scroller, previous, nextPad, pin);
+  pad.style.paddingBottom = `${nextPad}px`;
+  return top;
+}
+
+/**
+ * Scroll position after the composer box changes height.
+ * `scrollHeight` still includes `previousPad`. Pinning to that stale end leaves
+ * the messages too high once the field shrinks — the chat looks scrolled up.
+ * A reader who is not pinned keeps their place; the pad is below them.
+ */
+export function scrollTopAfterComposerResize(
+  el: { scrollTop: number; scrollHeight: number; clientHeight?: number },
+  previousPad: number,
+  nextPad: number,
+  pin: boolean,
+): number {
+  const view = el.clientHeight ?? 0;
+  const delta = (Number.isFinite(nextPad) ? nextPad : 0) - (Number.isFinite(previousPad) ? previousPad : 0);
+  const max = Math.max(0, el.scrollHeight + delta - view);
+  if (pin) return max;
+  return Math.min(Math.max(0, el.scrollTop), max);
+}
+
 /** Jump to the end in one assignment when stick-to-bottom is on. */
 export function pinChatToEnd(
   el: { scrollTop: number; scrollHeight: number; clientHeight?: number } | null,

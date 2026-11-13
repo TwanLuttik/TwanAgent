@@ -373,6 +373,10 @@ fn provider_keys_for(work: &ServerWork, providers: &[String]) -> twanagent_servi
             "minimax",
             crate::secrets::resolve_minimax_key_on_disk(&work.data_dir),
         ),
+        openai: pick(
+            "openai",
+            crate::secrets::resolve_openai_key_on_disk(&work.data_dir),
+        ),
     }
 }
 
@@ -387,10 +391,12 @@ fn keys_view_with(names: &[String], replaced: &[String]) -> super::ServerProvide
         xai: has("xai"),
         anthropic: has("anthropic"),
         minimax: has("minimax"),
+        openai: has("openai"),
         replaced: super::ServerKeyReplaced {
             xai: was_replaced("xai"),
             anthropic: was_replaced("anthropic"),
             minimax: was_replaced("minimax"),
+            openai: was_replaced("openai"),
         },
     }
 }
@@ -400,6 +406,8 @@ pub struct ServerProviderKeys {
     pub xai: bool,
     pub anthropic: bool,
     pub minimax: bool,
+    #[serde(default)]
+    pub openai: bool,
     /// True when this copy replaced a different key already on the server. Absent on older replies.
     #[serde(default)]
     pub replaced: super::ServerKeyReplaced,
@@ -413,6 +421,8 @@ pub struct ServerKeyReplaced {
     pub anthropic: bool,
     #[serde(default)]
     pub minimax: bool,
+    #[serde(default)]
+    pub openai: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -134,6 +134,29 @@ export function xaiAccountUsageCached(): Promise<ApiAccountUsage | null> {
   return invoke("dev_xai_account_usage_cached");
 }
 
+/** Prepaid credits, monthly cap, and the token window from the last GPT reply. */
+export function openaiAccountUsage(): Promise<ApiAccountUsage> {
+  return invoke("dev_openai_account_usage");
+}
+
+/** The last GPT allowance saved in the app database. Null until one has loaded. */
+export function openaiAccountUsageCached(): Promise<ApiAccountUsage | null> {
+  return invoke("dev_openai_account_usage_cached");
+}
+
+export type ApiAccountUsageSample = {
+  provider: string;
+  window_id: string;
+  resets_at: string;
+  used_percent: number;
+  recorded_at: string;
+};
+
+/** Allowance readings saved each time an account refreshes. Oldest first. */
+export function accountUsageHistory(): Promise<ApiAccountUsageSample[]> {
+  return invoke("dev_account_usage_history");
+}
+
 export type UsageDbInfo = {
   path: string;
   bytes: number;
@@ -194,4 +217,16 @@ export function setMinimaxKey(key: string): Promise<KeyStatus> {
 
 export function clearMinimaxKey(): Promise<KeyStatus> {
   return invoke("dev_clear_minimax_key");
+}
+
+export function openAiKeyStatus(): Promise<KeyStatus> {
+  return invoke("dev_openai_key_status");
+}
+
+export function setOpenAiKey(key: string): Promise<KeyStatus> {
+  return invoke("dev_set_openai_key", { key });
+}
+
+export function clearOpenAiKey(): Promise<KeyStatus> {
+  return invoke("dev_clear_openai_key");
 }

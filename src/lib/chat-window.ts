@@ -80,6 +80,17 @@ export function cachedTranscript<T>(
   return cached;
 }
 
+/**
+ * A blank entry is not a loaded chat. `[]` is truthy, and treating it as the
+ * transcript skips the database read, so a chat that already has messages
+ * paints the empty prompt.
+ */
+export function cachedTranscriptIsLoaded<T extends { length: number }>(
+  cached: T | null | undefined,
+): cached is T {
+  return !!cached && cached.length > 0;
+}
+
 /** How many messages to paint before the rest of a long turn. One turn can be hundreds of tool rows. */
 export const TRANSCRIPT_PAGE_MESSAGES = 48;
 

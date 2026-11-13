@@ -225,6 +225,16 @@ export function FilesPane({
       />
       {menu ? (
         <AnchoredMenu x={menu.x} y={menu.y}>
+          {menuNodes.get(menu.path)?.kind !== "dir" ? (
+            <MenuItem
+              onClick={() => {
+                onOpen(menu.path, "pin");
+                setMenu(null);
+              }}
+            >
+              Open
+            </MenuItem>
+          ) : null}
           <MenuItem
             onClick={() => {
               const parent = menuNodes.get(menu.path)?.kind === "dir" ? menu.path : fileParent(menu.path);

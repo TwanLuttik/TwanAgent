@@ -4,11 +4,12 @@ import { maskEmail } from "../../lib/mask";
 import * as api from "../../lib/tauri";
 import { Block, fieldClass, Group, Line, Page } from "./SettingsChrome";
 
-export type ProviderCardId = "xai" | "anthropic" | "minimax";
+export type ProviderCardId = "xai" | "anthropic" | "minimax" | "openai";
 
 export type ProviderCard = {
   id: ProviderCardId;
-  cli: "grokCli" | "claudeCli" | "minimaxCli";
+  /** Absent for a key-only provider. Those cards must not show a CLI row. */
+  cli?: "grokCli" | "claudeCli" | "minimaxCli";
   title: string;
   text: string;
   logo: string;
@@ -64,6 +65,19 @@ export const PROVIDER_CARDS: ProviderCard[] = [
     placeholder: "sk-…",
     save: api.setMinimaxKey,
     clear: api.clearMinimaxKey,
+  },
+  {
+    id: "openai",
+    title: "OpenAI",
+    text: "OpenAI models. An API key is the only sign-in.",
+    logo: "logo.openai",
+    markClass: "bg-[#10a37f] text-white",
+    keyLabel: "OpenAI API key",
+    keyName: "OpenAI",
+    envName: "OPENAI_API_KEY",
+    placeholder: "sk-…",
+    save: api.setOpenAiKey,
+    clear: api.clearOpenAiKey,
   },
 ];
 
@@ -125,7 +139,7 @@ export function ProvidersPane({
   onSave: (card: ProviderCard) => void;
 }) {
   const selected = cards.find((card) => card.id === selectedId) ?? cards[0];
-  const due = cards.filter((card) => cliCanUpdate(cliFor(card))).length;
+  const due = cards.filter((card) => card.cli && cliCanUpdate(cliFor(card))).length;
   const updatingAll = updatingId === "all";
   return (
     <Page
@@ -142,7 +156,7 @@ export function ProvidersPane({
         </Button>
       }
     >
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {cards.map((card) => {
           const cli = cliFor(card);
           const status = statusFor(card);
@@ -232,7 +246,7 @@ function ProviderDetail({
         title="Connection"
         text={card.text}
         action={
-          canUpdate ? (
+          card.cli && canUpdate ? (
             <button
               type="button"
               disabled={updating}
@@ -246,6 +260,8 @@ function ProviderDetail({
           ) : null
         }
       >
+        {card.cli ? (
+          <>
         <Line
           label="CLI"
           value={cli ? (cli.installed ? cli.version || "Installed" : "Not found") : "Checking…"}
@@ -276,6 +292,8 @@ function ProviderDetail({
             ) : null
           }
         />
+          </>
+        ) : null}
       </Group>
       <Group title="API key" text={card.keyLabel}>
         <Block>

@@ -1,4 +1,4 @@
-export type ProviderId = "xai" | "anthropic" | "minimax";
+export type ProviderId = "xai" | "anthropic" | "minimax" | "openai";
 
 /** What the UI branches on. The chat request does not. */
 export type ProviderProfile = {

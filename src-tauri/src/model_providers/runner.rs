@@ -79,6 +79,7 @@ pub struct StreamSession<'a> {
     stream_id: &'a str,
     tools: ToolAccum,
     thinking: ThinkingAccum,
+    reasoning_items: Vec<serde_json::Value>,
     last_usage: Option<DevChatUsage>,
     emitted_text: bool,
     emitted_reasoning: bool,
@@ -97,6 +98,7 @@ impl<'a> StreamSession<'a> {
             stream_id,
             tools: ToolAccum::default(),
             thinking: ThinkingAccum::default(),
+            reasoning_items: Vec::new(),
             last_usage: None,
             emitted_text: false,
             emitted_reasoning: false,
@@ -151,6 +153,9 @@ impl<'a> StreamSession<'a> {
                     self.last_reasoning_emit = Some(Instant::now());
                 }
             }
+            StreamPiece::ReasoningItem(item) => {
+                twanagent_service::openai::remember_output_item(&mut self.reasoning_items, &item);
+            }
             StreamPiece::Usage {
                 prompt_tokens,
                 completion_tokens,
@@ -194,6 +199,7 @@ impl<'a> StreamSession<'a> {
                         tool_calls: None,
                         usage: Some(usage),
                         thinking: None,
+                        reasoning_items: None,
                         conversation: None,
                     });
                 }
@@ -211,6 +217,7 @@ impl<'a> StreamSession<'a> {
         self.flush();
         let tool_calls = finished_tools(&self.tools);
         let thinking = finished_thinking(&self.thinking);
+        let reasoning_items = std::mem::take(&mut self.reasoning_items);
         self.emit(DevChatEvent {
             stream_id: self.stream_id.into(),
             kind: "done".into(),
@@ -225,6 +232,11 @@ impl<'a> StreamSession<'a> {
                 None
             } else {
                 Some(thinking)
+            },
+            reasoning_items: if reasoning_items.is_empty() {
+                None
+            } else {
+                Some(reasoning_items)
             },
             conversation: None,
         });
@@ -248,6 +260,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: None,
             usage: None,
             thinking: None,
+            reasoning_items: None,
             conversation: None,
         });
     }
@@ -267,6 +280,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: None,
             usage: None,
             thinking: None,
+            reasoning_items: None,
             conversation: None,
         });
     }
@@ -287,6 +301,7 @@ impl<'a> StreamSession<'a> {
             tool_calls: None,
             usage: None,
             thinking: None,
+            reasoning_items: None,
             conversation: None,
         });
     }

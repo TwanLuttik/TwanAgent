@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -215,7 +215,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
             images TEXT,
             reasoning TEXT,
             duration_ms INTEGER,
-            finished_at TEXT
+            finished_at TEXT,
+            reasoning_items TEXT
         );
         ",
     )?;
@@ -262,6 +263,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
     }
     if version.unwrap_or(0) < 10 {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN finished_at TEXT", []);
+    }
+    if version.unwrap_or(0) < 11 {
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_items TEXT", []);
     }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
@@ -385,6 +389,11 @@ fn message_columns(msg: &Value) -> Result<MessageColumns> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_string);
+    let reasoning_items = msg
+        .get("reasoning_items")
+        .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()))
+        .map(serde_json::to_string)
+        .transpose()?;
     Ok(MessageColumns {
         role,
         content_text,
@@ -394,6 +403,7 @@ fn message_columns(msg: &Value) -> Result<MessageColumns> {
         reasoning,
         duration_ms,
         finished_at,
+        reasoning_items,
     })
 }
 
@@ -406,6 +416,7 @@ struct MessageColumns {
     reasoning: Option<String>,
     duration_ms: Option<i64>,
     finished_at: Option<String>,
+    reasoning_items: Option<String>,
 }
 
 fn insert_message(
@@ -426,6 +437,7 @@ fn insert_message(
         cols.reasoning,
         cols.duration_ms,
         cols.finished_at,
+        cols.reasoning_items,
     ])?;
     Ok(())
 }
@@ -449,8 +461,8 @@ pub(super) fn replace_messages_from(
         return Ok(());
     }
     let mut stmt = conn.prepare(
-        "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO messages (conversation_id, sort_order, role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at, reasoning_items)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
     )?;
     for (i, msg) in messages.iter().enumerate().skip(from_index) {
         insert_message(&mut stmt, conversation_id, i as i64, msg)?;
@@ -541,6 +553,9 @@ fn message_same(stored: &Value, incoming: &Value) -> bool {
     if reasoning(stored) != reasoning(incoming) {
         return false;
     }
+    if reasoning_items_key(stored) != reasoning_items_key(incoming) {
+        return false;
+    }
     let duration = |msg: &Value| {
         msg.get("durationMs")
             .and_then(Value::as_i64)
@@ -557,6 +572,14 @@ fn message_same(stored: &Value, incoming: &Value) -> bool {
             .map(str::to_string)
     };
     finished(stored) == finished(incoming)
+}
+
+fn reasoning_items_key(msg: &Value) -> Option<String> {
+    let value = msg.get("reasoning_items")?;
+    if value.is_null() || value.as_array().is_some_and(|rows| rows.is_empty()) {
+        return None;
+    }
+    canonical_json(Some(value))
 }
 
 /// Stable JSON. `Value` equality and `Display` both keep object key order.
@@ -605,11 +628,21 @@ type MessageRow = (
     Option<String>,
     Option<i64>,
     Option<String>,
+    Option<String>,
 );
 
 fn message_from_row(row: MessageRow) -> Result<Value> {
-    let (role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at) =
-        row;
+    let (
+        role,
+        content,
+        tool_calls,
+        tool_call_id,
+        images,
+        reasoning,
+        duration_ms,
+        finished_at,
+        reasoning_items,
+    ) = row;
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), Value::String(role));
     if let Some(text) = content {
@@ -635,6 +668,13 @@ fn message_from_row(row: MessageRow) -> Result<Value> {
     if let Some(text) = finished_at.filter(|value| !value.trim().is_empty()) {
         obj.insert("finishedAt".into(), Value::String(text));
     }
+    if let Some(raw) = reasoning_items.filter(|value| !value.trim().is_empty()) {
+        if let Some(parsed) = serde_json::from_str::<Value>(&raw).ok() {
+            if parsed.as_array().is_some_and(|rows| !rows.is_empty()) {
+                obj.insert("reasoning_items".into(), parsed);
+            }
+        }
+    }
     Ok(Value::Object(obj))
 }
 
@@ -645,7 +685,7 @@ fn load_message_at(
 ) -> Result<Option<Value>> {
     let row = conn
         .query_row(
-            "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
+            "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at, reasoning_items FROM messages
              WHERE conversation_id = ?1 AND sort_order = ?2 ORDER BY id ASC LIMIT 1",
             params![conversation_id, sort_order],
             |row| {
@@ -658,6 +698,7 @@ fn load_message_at(
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<i64>>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                 ))
             },
         )
@@ -700,9 +741,13 @@ pub(super) fn load_messages_tail(
     load_messages_from(conn, conversation_id, start)
 }
 
-fn load_messages_from(conn: &Connection, conversation_id: &str, min_sort: i64) -> Result<Vec<Value>> {
+fn load_messages_from(
+    conn: &Connection,
+    conversation_id: &str,
+    min_sort: i64,
+) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
+        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at, reasoning_items FROM messages
          WHERE conversation_id = ?1 AND sort_order >= ?2 ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map(params![conversation_id, min_sort], |row| {
@@ -715,6 +760,7 @@ fn load_messages_from(conn: &Connection, conversation_id: &str, min_sort: i64) -
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<i64>>(6)?,
             row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
         ))
     })?;
     let mut out = Vec::new();
@@ -726,7 +772,7 @@ fn load_messages_from(conn: &Connection, conversation_id: &str, min_sort: i64) -
 
 fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>> {
     let mut stmt = conn.prepare(
-        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at FROM messages
+        "SELECT role, content, tool_calls, tool_call_id, images, reasoning, duration_ms, finished_at, reasoning_items FROM messages
          WHERE conversation_id = ?1 ORDER BY sort_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([conversation_id], |row| {
@@ -739,6 +785,7 @@ fn load_messages(conn: &Connection, conversation_id: &str) -> Result<Vec<Value>>
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<i64>>(6)?,
             row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
         ))
     })?;
     let mut out = Vec::new();
@@ -859,9 +906,8 @@ mod journeys;
 pub use conversations::list_conversations;
 pub use conversations::{
     conversation_summary, delete_conversation, get_conversation, get_conversation_tail,
-    list_conversation_summaries,
-    reorder_conversations, save_conversation, save_conversation_suffix_with_usage,
-    set_conversation_archived, set_conversation_compaction,
+    list_conversation_summaries, reorder_conversations, save_conversation,
+    save_conversation_suffix_with_usage, set_conversation_archived, set_conversation_compaction,
 };
 pub use journeys::{
     create_journey, delete_journey, get_knowledge, list_journeys, move_conversation,

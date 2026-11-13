@@ -10,7 +10,8 @@ pub use projects::{
 pub use schema::{db_path, delete_provider_key, get_provider_key, open, set_provider_key};
 pub use settings::{
     forget_project_paths, get_account_usage, get_actions, get_pull_requests, get_setting,
-    previous_paths_for, project_path_moves, remember_project_move, set_account_usage, set_actions,
+    list_account_usage_samples, previous_paths_for, project_path_moves, remember_project_move,
+    set_account_usage, set_actions, AccountUsageSample,
     set_pull_requests, set_setting,
 };
 pub use sidebar::{
@@ -412,5 +413,23 @@ mod tests {
             Some(r#"{"connected":true}"#)
         );
         assert!(set_account_usage(&conn, "  ", "{}").is_err());
+    }
+
+    #[test]
+    fn account_usage_samples_keep_a_change_and_skip_a_repeat() {
+        let data = tempdir().unwrap();
+        let conn = open(data.path()).unwrap();
+        let first = r#"{"windows":[{"id":"5h","used_percent":12.0,"resets_at":"2026-08-01T04:00:00Z"}]}"#;
+        set_account_usage(&conn, "minimax", first).unwrap();
+        set_account_usage(&conn, "minimax", first).unwrap();
+        assert_eq!(list_account_usage_samples(&conn).unwrap().len(), 1);
+        let next = r#"{"windows":[{"id":"5h","used_percent":18.5,"resets_at":"2026-08-01T04:00:00Z"}]}"#;
+        set_account_usage(&conn, "minimax", next).unwrap();
+        let rows = list_account_usage_samples(&conn).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].window_id, "5h");
+        assert!((rows[1].used_percent - 18.5).abs() < 0.01);
+        set_account_usage(&conn, "minimax", r#"{"windows":[]}"#).unwrap();
+        assert_eq!(list_account_usage_samples(&conn).unwrap().len(), 2);
     }
 }

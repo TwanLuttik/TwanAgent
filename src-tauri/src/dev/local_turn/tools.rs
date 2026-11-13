@@ -266,6 +266,7 @@ pub(super) fn create_group_chat(
     effort: &str,
     context_window: Option<u64>,
     permission: &str,
+    service_tier: &str,
 ) -> Result<String> {
     let message = str_arg(args, "message");
     let title = str_arg(args, "title");
@@ -309,6 +310,7 @@ pub(super) fn create_group_chat(
             system: String::new(),
             journey_id: None,
             allow_spawn: true,
+            service_tier: service_tier.to_string(),
         },
     );
     let _ = app.emit(

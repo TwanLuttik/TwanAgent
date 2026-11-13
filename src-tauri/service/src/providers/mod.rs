@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod minimax;
+pub mod openai;
 pub mod registry;
 pub mod xai;
 

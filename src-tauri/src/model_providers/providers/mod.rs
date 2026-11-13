@@ -8,3 +8,4 @@
 pub mod anthropic;
 pub mod grok_cli;
 pub mod minimax;
+pub mod openai;

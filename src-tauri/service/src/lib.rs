@@ -21,18 +21,25 @@ mod tools;
 mod turn;
 mod usage_log;
 
-pub use providers::{anthropic, minimax, registry, xai};
+pub use providers::{anthropic, minimax, openai, registry, xai};
 
-pub use codec::{decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_MARK, PROTOCOL_VERSION};
+pub use codec::{
+    decode_frame, encode_frame, ClientFrame, ServerFrame, PROTOCOL_MARK, PROTOCOL_VERSION,
+};
 pub use error::{Error, Result};
 pub use files::{numbered_lines, parse_line_int};
+pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
 pub use live::LiveFrame;
 pub use realtime::{ensure_started, subscribe_text, subscribe_text_with, LIVE_PORT};
-pub use keys::{provider_keys_from_env, KeyFile, ProviderKeys};
-pub use search::{glob_match, matches_glob, glob as search_glob, grep as search_grep, GlobQuery, GrepQuery};
+pub use search::{
+    glob as search_glob, glob_match, grep as search_grep, matches_glob, GlobQuery, GrepQuery,
+};
 pub use session::serve;
 pub use store::{Conversation, ConversationSummary};
-pub use turn::{bare_status_error, provider_retry_pause, provider_retry_status, transient_provider_error, ModelStep, ScriptedModel, TurnRequest};
+pub use turn::{
+    bare_status_error, provider_retry_pause, provider_retry_status, transient_provider_error,
+    ModelStep, ScriptedModel, TurnRequest,
+};
 
 /// `twanagent-server --version` prints this. It is the service crate version, not the app version.
 /// Server binary updates can ship without a new GUI build, so the two numbers move separately.
@@ -47,7 +54,10 @@ pub enum TurnEvent {
     Done(Conversation),
     Error(String),
     /// Ask mode. The command has not run. The desktop answers on the fifo.
-    ShellApproval { command: String, description: String },
+    ShellApproval {
+        command: String,
+        description: String,
+    },
 }
 
 use std::io::{Read, Write};
@@ -63,10 +73,18 @@ pub struct ProjectService {
 
 impl ProjectService {
     pub fn open(project: impl AsRef<Path>, store_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_data(project, store_dir.as_ref(), store_dir.as_ref().parent().unwrap_or(store_dir.as_ref()))
+        Self::open_with_data(
+            project,
+            store_dir.as_ref(),
+            store_dir.as_ref().parent().unwrap_or(store_dir.as_ref()),
+        )
     }
 
-    fn open_with_data(project: impl AsRef<Path>, store_dir: &Path, data_dir: &Path) -> Result<Self> {
+    fn open_with_data(
+        project: impl AsRef<Path>,
+        store_dir: &Path,
+        data_dir: &Path,
+    ) -> Result<Self> {
         let project = project.as_ref().to_path_buf();
         let store_dir = store_dir.to_path_buf();
         let data_dir = data_dir.to_path_buf();
@@ -92,7 +110,9 @@ impl ProjectService {
     }
 
     pub fn save_conversation(&self, conversation: &Conversation) -> Result<()> {
-        store::with_conn(&self.store_dir, |conn| store::save_conversation(conn, conversation))
+        store::with_conn(&self.store_dir, |conn| {
+            store::save_conversation(conn, conversation)
+        })
     }
 
     pub fn delete_conversation(&self, id: &str) -> Result<()> {
@@ -100,15 +120,23 @@ impl ProjectService {
     }
 
     pub fn reorder_conversations(&self, ids: &[String]) -> Result<Vec<store::ConversationSummary>> {
-        store::with_conn(&self.store_dir, |conn| store::reorder_conversations(conn, ids))
+        store::with_conn(&self.store_dir, |conn| {
+            store::reorder_conversations(conn, ids)
+        })
     }
 
     pub fn set_archived(&self, id: &str, archived: bool) -> Result<()> {
-        store::with_conn(&self.store_dir, |conn| store::set_archived(conn, id, archived))
+        store::with_conn(&self.store_dir, |conn| {
+            store::set_archived(conn, id, archived)
+        })
     }
 
     /// Append the prompt, run the scripted model, and save the reply. No network.
-    pub fn submit_prompt(&self, request: &TurnRequest, model: &dyn ScriptedModel) -> Result<Conversation> {
+    pub fn submit_prompt(
+        &self,
+        request: &TurnRequest,
+        model: &dyn ScriptedModel,
+    ) -> Result<Conversation> {
         let workspace = tools::LocalWorkspace {
             root: self.project.clone(),
         };
@@ -128,15 +156,24 @@ fn decode_call_frame(
     bytes: &[u8],
 ) -> Result<(ClientFrame, ProjectService)> {
     let len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-    let body = bytes.get(4..4 + len).ok_or_else(|| Error::Other("frame body is short".into()))?;
+    let body = bytes
+        .get(4..4 + len)
+        .ok_or_else(|| Error::Other("frame body is short".into()))?;
     let value = serde_json::from_slice::<serde_json::Value>(body)?;
     // A bare client frame has no token. Anyone who can run the binary could send one,
     // so a call is accepted only in the resident shape that carries the pairing token.
     if value.get("frame").is_none() {
         return Err(Error::Other("the pairing token does not match".into()));
     }
-    let project = value.get("project").and_then(|item| item.as_str()).unwrap_or("").trim();
-    let token = value.get("token").and_then(|item| item.as_str()).unwrap_or("");
+    let project = value
+        .get("project")
+        .and_then(|item| item.as_str())
+        .unwrap_or("")
+        .trim();
+    let token = value
+        .get("token")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
     if !keys::token_matches_any(&keys.auth_tokens(), token) {
         return Err(Error::Other("the pairing token does not match".into()));
     }
@@ -144,7 +181,12 @@ fn decode_call_frame(
         return Err(Error::Other("project is empty".into()));
     }
     let opened = open_server(Path::new(project), &service.data_dir)?;
-    let frame = serde_json::from_value(value.get("frame").cloned().unwrap_or(serde_json::Value::Null))?;
+    let frame = serde_json::from_value(
+        value
+            .get("frame")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )?;
     Ok((frame, opened))
 }
 
@@ -176,7 +218,10 @@ fn project_store_key(project: &Path) -> String {
     let canonical = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let text = canonical.to_string_lossy().replace('\\', "/");
     let trimmed = text.trim_end_matches('/');
-    Sha256::digest(trimmed.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(trimmed.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub fn open_server(project: &Path, data_dir: &Path) -> Result<ProjectService> {
@@ -310,7 +355,9 @@ mod tests {
         let second = open_server(&root.path().join("other"), &data).unwrap();
         assert_ne!(first.store_dir, second.store_dir);
         assert_ne!(first.store_dir, data.join("store"));
-        first.save_conversation(&chat("c1", "what is the specs of this machine")).unwrap();
+        first
+            .save_conversation(&chat("c1", "what is the specs of this machine"))
+            .unwrap();
         assert!(second.list_conversations().unwrap().is_empty());
         assert_eq!(first.list_conversations().unwrap().len(), 1);
         // Keys stay on the machine, not inside either project store.

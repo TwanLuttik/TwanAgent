@@ -282,6 +282,7 @@ export function hostedTurn(input: {
   effort?: string;
   permission?: string;
   contextWindow?: number;
+  serviceTier?: string;
 }): Promise<void> {
   return invoke("dev_hosted_turn", {
     workspace: input.workspace,
@@ -295,6 +296,8 @@ export function hostedTurn(input: {
     permission: input.permission ?? null,
     contextWindow: input.contextWindow ?? null,
     context_window: input.contextWindow ?? null,
+    serviceTier: input.serviceTier ?? null,
+    service_tier: input.serviceTier ?? null,
   });
 }
 

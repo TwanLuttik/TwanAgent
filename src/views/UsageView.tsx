@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AccountForecastView } from "../components/AccountForecast";
 import { Symbol } from "../components/Symbol";
 import { UsageRhythm } from "../components/UsageRhythm";
-import { accountFromUsage, forecastAccounts, forecastHeadline } from "../lib/account-forecast";
+import { accountFromUsage, forecastAccounts, forecastHeadline, historyPoints, type AccountUsageHistory } from "../lib/account-forecast";
 import { formatTokenCount } from "../lib/context";
 import { projectKey } from "../lib/core";
 import { providerFor, providerProfile, type ProviderId } from "../lib/provider";
@@ -16,8 +16,6 @@ import {
   modelRate,
   buildUsageTrend,
   rangeStartMs,
-  usageCostUsd,
-  usageDelta,
   usageMix,
   usageShareLabel,
   type UsageEvent,
@@ -40,16 +38,6 @@ type BreakdownRow = {
   priced: boolean;
 };
 
-type ChatRow = {
-  id: string;
-  title: string;
-  project: string;
-  model: string;
-  total: number;
-  usd: number;
-  turns: number;
-};
-
 const RANGES: { id: UsageRange; label: string }[] = [
   { id: "24h", label: "24h" },
   { id: 7, label: "7d" },
@@ -61,6 +49,7 @@ const PROVIDER_COLOR: Record<string, string> = {
   xai: "var(--usage-xai)",
   anthropic: "#d97757",
   minimax: "#e21680",
+  openai: "#10a37f",
   other: "#8d8d92",
 };
 
@@ -136,10 +125,7 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
     () => usageMix(events, { range, workspacePath }),
     [events, range, workspacePath],
   );
-  const chats = useMemo(
-    () => topChats(events, { range, workspacePath }),
-    [events, range, workspacePath],
-  );
+  const branches = usageBranches(share);
   const cloudProjects = useMemo(
     () => (workspacePath ? cloud.filter((project) => projectKey(project.project_path) === projectKey(workspacePath)) : cloud),
     [cloud, workspacePath],
@@ -224,61 +210,28 @@ export function UsageView({ onClose }: { onClose?: () => void } = {}) {
         </section>
 
         <section>
-          <div className="mb-1 flex items-baseline justify-between gap-3">
+          <div className="mb-2 flex items-baseline justify-between gap-3">
             <h2 className="m-0 text-[13px] font-medium">Where it went</h2>
-            <span className="text-[11px] text-muted">{share.length} {share.length === 1 ? "model" : "models"}</span>
+            <span className="text-[11px] text-muted">
+              {branches.length} {branches.length === 1 ? "provider" : "providers"}
+            </span>
           </div>
-          {share.length === 0 ? (
+          {branches.length === 0 ? (
             <p className="m-0 py-3 text-[12px] text-muted">No model usage in this range.</p>
           ) : (
             <div>
-              {share.map((row) => (
-                <ModelLane
-                  key={row.model || "unknown"}
-                  row={row}
-                  max={share[0]?.total ?? 1}
-                  shareLabel={usageShareLabel(row.total, snap.totals.total)}
-                  dim={focusModel != null && focusModel !== row.model}
-                  onEnter={() => setFocusModel(row.model)}
+              {branches.map((branch) => (
+                <UsageBranchRow
+                  key={branch.id}
+                  branch={branch}
+                  max={branches[0]?.total ?? 1}
+                  total={snap.totals.total}
+                  focusModel={focusModel}
+                  onEnter={setFocusModel}
                   onLeave={() => setFocusModel(null)}
                 />
               ))}
             </div>
-          )}
-        </section>
-
-        <section>
-          <div className="mb-1 flex items-baseline justify-between gap-3">
-            <h2 className="m-0 text-[13px] font-medium">Conversations</h2>
-            <span className="text-[11px] text-muted">Largest first</span>
-          </div>
-          {chats.length === 0 ? (
-            <p className="m-0 py-3 text-[12px] text-muted">No conversations in this range.</p>
-          ) : (
-            <ol className="m-0 grid list-none gap-0 p-0">
-              {chats.map((chat, index) => (
-                <li
-                  key={chat.id}
-                  className="grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-line/40 py-2.5 last:border-b-0"
-                >
-                  <span className="text-[11px] tabular-nums text-muted">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-[13px]" title={chat.title}>{chat.title}</span>
-                    <span className="mt-0.5 block truncate text-[11px] text-muted">
-                      {chat.project}
-                      {chat.model ? ` · ${formatModelName(chat.model)}` : ""}
-                      {chat.turns > 1 ? ` · ${chat.turns} turns` : ""}
-                    </span>
-                  </span>
-                  <span className="text-right">
-                    <span className="block text-[13px] tabular-nums">{formatTokenCount(chat.total)}</span>
-                    <span className="mt-0.5 block text-[11px] tabular-nums text-muted">
-                      {chat.usd > 0 ? formatUsd(chat.usd) : "—"}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ol>
           )}
         </section>
 
@@ -304,28 +257,60 @@ function AccountsPage({ events }: { events: UsageEvent[] }) {
   const grok = useAccountUsage("xai");
   const claude = useAccountUsage("anthropic");
   const minimax = useAccountUsage("minimax");
+  const openai = useAccountUsage("openai");
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [history, setHistory] = useState<AccountUsageHistory[]>([]);
   useEffect(() => {
     const id = window.setInterval(() => setNowMs(Date.now()), 60_000);
     return () => window.clearInterval(id);
+  }, []);
+  useEffect(() => {
+    let gone = false;
+    const load = () => {
+      void api
+        .accountUsageHistory()
+        .then((rows) => {
+          if (gone) return;
+          setHistory(
+            historyPoints(
+              rows.map((row) => ({
+                provider: row.provider,
+                windowId: row.window_id,
+                resetsAt: row.resets_at,
+                usedPercent: row.used_percent,
+                recordedAt: row.recorded_at,
+              })),
+            ),
+          );
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const id = window.setInterval(load, 60_000);
+    return () => {
+      gone = true;
+      window.clearInterval(id);
+    };
   }, []);
   const rows = useMemo(() => {
     const accounts = [
       accountFromUsage("xai", grok.usage, nowMs),
       accountFromUsage("anthropic", claude.usage, nowMs),
       accountFromUsage("minimax", minimax.usage, nowMs),
+      accountFromUsage("openai", openai.usage, nowMs),
     ];
     return accounts.flatMap((account) => forecastAccounts(account, events, nowMs));
-  }, [claude.usage, events, grok.usage, minimax.usage, nowMs]);
+  }, [claude.usage, events, grok.usage, minimax.usage, nowMs, openai.usage]);
   const headline = useMemo(() => forecastHeadline(rows, nowMs), [nowMs, rows]);
   const waiting =
     (grok.loading && !grok.usage) ||
     (claude.loading && !claude.usage) ||
-    (minimax.loading && !minimax.usage);
+    (minimax.loading && !minimax.usage) ||
+    (openai.loading && !openai.usage);
   if (waiting && rows.every((row) => row.account.reconnect)) {
     return <p className="m-0 py-4 text-[12px] text-muted">Checking signed-in accounts…</p>;
   }
-  return <AccountForecastView rows={rows} headline={headline} nowMs={nowMs} />;
+  return <AccountForecastView rows={rows} headline={headline} nowMs={nowMs} history={history} />;
 }
 
 function Headline({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -472,53 +457,146 @@ function FlowCell({ label, value, hint }: { label: string; value: string; hint: 
   );
 }
 
-function ModelLane({
-  row,
+type UsageBranch = {
+  id: ProviderId | "other";
+  name: string;
+  mark: string;
+  total: number;
+  server: number;
+  usd: number;
+  priced: boolean;
+  children: BreakdownRow[];
+};
+
+function branchId(model: string): ProviderId | "other" {
+  const provider = providerFor(model);
+  if (provider === "xai" && !model.trim().toLowerCase().startsWith("grok")) return "other";
+  return provider;
+}
+
+/** Providers as parents, models as children, largest first. */
+function usageBranches(rows: BreakdownRow[]): UsageBranch[] {
+  const groups = new Map<string, UsageBranch>();
+  for (const row of rows) {
+    const id = branchId(row.model);
+    const prev = groups.get(id);
+    if (prev) {
+      prev.total += row.total;
+      prev.server += row.server;
+      prev.usd += row.usd;
+      prev.priced = prev.priced || row.priced;
+      prev.children.push(row);
+      continue;
+    }
+    groups.set(id, {
+      id,
+      name: id === "other" ? "Other" : PROVIDER_NAMES[id],
+      mark: row.mark,
+      total: row.total,
+      server: row.server,
+      usd: row.usd,
+      priced: row.priced,
+      children: [row],
+    });
+  }
+  return [...groups.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+}
+
+function UsageBranchRow({
+  branch,
   max,
-  shareLabel,
-  dim,
+  total,
+  focusModel,
   onEnter,
   onLeave,
 }: {
-  row: BreakdownRow;
+  branch: UsageBranch;
   max: number;
-  shareLabel: string;
-  dim: boolean;
-  onEnter: () => void;
+  total: number;
+  focusModel: string | null;
+  onEnter: (model: string) => void;
   onLeave: () => void;
 }) {
-  const width = max > 0 ? Math.max(2, (row.total / max) * 100) : 0;
+  const width = max > 0 ? Math.max(2, (branch.total / max) * 100) : 0;
+  const color = PROVIDER_COLOR[branch.id] ?? PROVIDER_COLOR.other;
+  const dimParent = focusModel != null && branch.children.every((row) => row.model !== focusModel);
   return (
-    <div
-      tabIndex={0}
-      onMouseEnter={onEnter}
-      onMouseLeave={onLeave}
-      onFocus={onEnter}
-      onBlur={onLeave}
-      className={`grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-3 border-b border-line/25 py-2 outline-none transition-opacity ${
-        dim ? "opacity-35" : ""
-      }`}
-    >
-      <div className="min-w-0">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="flex min-w-0 items-center gap-2">
-            <ProviderMark model={row.mark} />
-            <span className="min-w-0 truncate text-[13px]" title={row.name}>{row.name}</span>
-          </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-muted">{shareLabel}</span>
+    <div className={`border-b border-line/25 py-3 transition-opacity last:border-b-0 ${dimParent ? "opacity-35" : ""}`}>
+      <div className="grid grid-cols-[minmax(0,1fr)_4.75rem] items-center gap-3">
+        <div className="min-w-0">
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2">
+              <ProviderMark model={branch.mark} />
+              <span className="min-w-0 truncate text-[13px] font-medium">{branch.name}</span>
+            </span>
+            <span className="shrink-0 text-[11px] tabular-nums text-muted">{usageShareLabel(branch.total, total)}</span>
+          </div>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink/[0.06]">
+            <div className="h-full rounded-full" style={{ width: `${width}%`, background: color }} />
+          </div>
         </div>
-        <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-ink/[0.06]">
-          <div className="h-full rounded-full bg-ink/45" style={{ width: `${width}%` }} />
-        </div>
-        {row.server > 0 ? (
-          <div className="mt-1 text-[11px] tabular-nums text-muted">{formatTokenCount(row.server)} on a server</div>
-        ) : null}
+        <UsageAmount total={branch.total} usd={branch.usd} priced={branch.priced} />
       </div>
-      <div className="text-right">
-        <div className="text-[13px] tabular-nums">{formatTokenCount(row.total)}</div>
-        <div className={`mt-0.5 text-[11px] tabular-nums ${row.priced ? "text-muted" : "text-muted/50"}`} title={row.priced ? undefined : "No list price"}>
-          {row.priced ? formatUsd(row.usd) : "—"}
-        </div>
+      <div className="mt-1">
+        {branch.children.map((row, index) => {
+          const childWidth = branch.total > 0 ? Math.max(2, (row.total / branch.total) * 100) : 0;
+          const dim = focusModel != null && focusModel !== row.model;
+          const last = index === branch.children.length - 1;
+          return (
+            <div
+              key={row.model || "unknown"}
+              tabIndex={0}
+              onMouseEnter={() => onEnter(row.model)}
+              onMouseLeave={onLeave}
+              onFocus={() => onEnter(row.model)}
+              onBlur={onLeave}
+              className={`relative py-1.5 pl-6 outline-none transition-opacity ${dim ? "opacity-35" : ""}`}
+            >
+              <TreeGuide last={last} />
+              <div className="grid grid-cols-[minmax(0,1fr)_4.75rem] items-center gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate text-[12px] text-ink/85" title={row.name}>{row.name}</span>
+                    <span className="shrink-0 text-[11px] tabular-nums text-muted">{usageShareLabel(row.total, total)}</span>
+                  </div>
+                  <div className="mt-1 h-1 overflow-hidden rounded-full bg-ink/[0.06]">
+                    <div className="h-full rounded-full" style={{ width: `${childWidth}%`, background: color, opacity: 0.72 }} />
+                  </div>
+                  {row.server > 0 ? (
+                    <div className="mt-1 text-[11px] tabular-nums text-muted">{formatTokenCount(row.server)} on a server</div>
+                  ) : null}
+                </div>
+                <UsageAmount total={row.total} usd={row.usd} priced={row.priced} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Rounded elbow into the model name. The stem stops at the last model. */
+function TreeGuide({ last }: { last: boolean }) {
+  return (
+    <>
+      <span
+        aria-hidden
+        className="pointer-events-none absolute top-0 left-[7px] h-3.5 w-2.5 rounded-bl-[5px] border-b border-l border-line/50"
+      />
+      {last ? null : (
+        <span aria-hidden className="pointer-events-none absolute top-3.5 bottom-0 left-[7px] w-px bg-line/50" />
+      )}
+    </>
+  );
+}
+
+function UsageAmount({ total, usd, priced }: { total: number; usd: number; priced: boolean }) {
+  return (
+    <div className="text-right">
+      <div className="text-[13px] tabular-nums">{formatTokenCount(total)}</div>
+      <div className={`mt-0.5 text-[11px] tabular-nums ${priced ? "text-muted" : "text-muted/50"}`} title={priced ? undefined : "No list price"}>
+        {priced ? formatUsd(usd) : "—"}
       </div>
     </div>
   );
@@ -536,7 +614,8 @@ function ProviderMark({ model }: { model: string }) {
       </span>
     );
   }
-  const color = profile.id === "anthropic" ? "text-[#d97757]" : "usage-mark-xai";
+  const color =
+    profile.id === "anthropic" ? "text-[#d97757]" : profile.id === "openai" ? "text-[#10a37f]" : "usage-mark-xai";
   return (
     <span className={`flex size-4 shrink-0 items-center justify-center ${color}`}>
       <Symbol name={profile.symbol} className="size-3.5" />
@@ -548,6 +627,7 @@ const PROVIDER_NAMES: Record<ProviderId, string> = {
   xai: "Grok",
   anthropic: "Claude",
   minimax: "MiniMax",
+  openai: "OpenAI",
 };
 
 function shareOf(models: UsageModel[], cost: ReturnType<typeof estimateUsageCost>): BreakdownRow[] {
@@ -592,66 +672,6 @@ function providerRows(models: BreakdownRow[]): BreakdownRow[] {
     });
   }
   return [...groups.values()].sort((a, b) => b.usd - a.usd || b.total - a.total || a.name.localeCompare(b.name));
-}
-
-/** The conversations that spent the most new tokens in the window. */
-function topChats(
-  events: UsageEvent[],
-  opts: { range: UsageRange; workspacePath?: string | null },
-  limit = 6,
-): ChatRow[] {
-  const nowMs = Date.now();
-  const startMs = rangeStartMs(opts.range, nowMs);
-  const want = opts.workspacePath ? projectKey(opts.workspacePath) : "";
-  const ordered = events
-    .map((ev) => ({ ev, atMs: Date.parse(ev.recorded_at) }))
-    .filter((row) => Number.isFinite(row.atMs))
-    .sort((a, b) => a.atMs - b.atMs || a.ev.id - b.ev.id);
-  const previous = new Map<string, UsageEvent>();
-  const byChat = new Map<string, ChatRow & { modelTokens: Map<string, number> }>();
-  for (const row of ordered) {
-    const key = `${row.ev.conversation_id || `event:${row.ev.id}`}\0${row.ev.model.trim()}`;
-    const delta = usageDelta(row.ev, previous.get(key));
-    previous.set(key, row.ev);
-    if (row.atMs < startMs || row.atMs > nowMs) continue;
-    if (want && projectKey(row.ev.workspace_path) !== want) continue;
-    if (delta.total <= 0) continue;
-    const id = row.ev.conversation_id || `event:${row.ev.id}`;
-    const cost = usageCostUsd(delta, row.ev.model, row.ev.prompt_tokens) ?? 0;
-    const prev = byChat.get(id);
-    if (prev) {
-      prev.total += delta.total;
-      prev.usd += cost;
-      prev.turns += 1;
-      prev.modelTokens.set(row.ev.model, (prev.modelTokens.get(row.ev.model) ?? 0) + delta.total);
-      if (!prev.title && row.ev.conversation_title) prev.title = row.ev.conversation_title;
-      continue;
-    }
-    byChat.set(id, {
-      id,
-      title: row.ev.conversation_title || "Untitled",
-      project: row.ev.workspace_name || "Project",
-      model: row.ev.model,
-      total: delta.total,
-      usd: cost,
-      turns: 1,
-      modelTokens: new Map([[row.ev.model, delta.total]]),
-    });
-  }
-  return [...byChat.values()]
-    .map((row) => {
-      let model = row.model;
-      let best = -1;
-      for (const [id, total] of row.modelTokens) {
-        if (total > best) {
-          best = total;
-          model = id;
-        }
-      }
-      return { id: row.id, title: row.title, project: row.project, model, total: row.total, usd: row.usd, turns: row.turns };
-    })
-    .sort((a, b) => b.total - a.total || a.title.localeCompare(b.title))
-    .slice(0, limit);
 }
 
 function Segmented<T extends string | number>({

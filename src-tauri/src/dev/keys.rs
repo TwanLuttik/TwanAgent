@@ -60,6 +60,7 @@ pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRunt
             crate::minimax::resolve_minimax_auth_fresh_in(&data_dir),
         )
         .is_some();
+        let openai_ready = crate::openai::resolve_openai_auth(&data_dir).is_some();
         status.providers = vec![
             grok_cli::ProviderStatus {
                 id: "xai".into(),
@@ -82,6 +83,15 @@ pub async fn dev_runtime(state: State<'_, AppState>) -> Result<grok_cli::DevRunt
                     "Using MiniMax".into()
                 } else {
                     crate::minimax::SIGN_IN_ERROR.into()
+                },
+            },
+            grok_cli::ProviderStatus {
+                id: "openai".into(),
+                ready: openai_ready,
+                hint: if openai_ready {
+                    "Using OpenAI".into()
+                } else {
+                    crate::openai::SIGN_IN_ERROR.into()
                 },
             },
         ];
@@ -340,4 +350,27 @@ pub fn dev_set_minimax_key(state: State<'_, AppState>, key: String) -> Result<Ke
 pub fn dev_clear_minimax_key(state: State<'_, AppState>) -> Result<KeyStatus> {
     secrets::delete_minimax_key(&state.data_dir)?;
     Ok(dev_minimax_key_status(state))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_openai_key_status(state: State<'_, AppState>) -> KeyStatus {
+    KeyStatus {
+        saved: secrets::get_openai_key(&state.data_dir).is_some(),
+        env: std::env::var("OPENAI_API_KEY")
+            .ok()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false),
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_set_openai_key(state: State<'_, AppState>, key: String) -> Result<KeyStatus> {
+    secrets::set_openai_key(&state.data_dir, &key)?;
+    Ok(dev_openai_key_status(state))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn dev_clear_openai_key(state: State<'_, AppState>) -> Result<KeyStatus> {
+    secrets::delete_openai_key(&state.data_dir)?;
+    Ok(dev_openai_key_status(state))
 }

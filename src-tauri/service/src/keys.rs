@@ -14,11 +14,15 @@ pub struct ProviderKeys {
     pub anthropic: String,
     #[serde(default)]
     pub minimax: String,
+    #[serde(default)]
+    pub openai: String,
 }
 
 impl ProviderKeys {
     pub fn any(&self) -> bool {
-        [&self.xai, &self.anthropic, &self.minimax].iter().any(|value| !value.trim().is_empty())
+        [&self.xai, &self.anthropic, &self.minimax, &self.openai]
+            .iter()
+            .any(|value| !value.trim().is_empty())
     }
 
     pub fn trimmed(&self) -> Self {
@@ -26,6 +30,7 @@ impl ProviderKeys {
             xai: self.xai.trim().to_string(),
             anthropic: self.anthropic.trim().to_string(),
             minimax: self.minimax.trim().to_string(),
+            openai: self.openai.trim().to_string(),
         }
     }
 }
@@ -37,7 +42,9 @@ pub struct KeyFile {
 
 impl KeyFile {
     pub fn in_dir(dir: &Path) -> Self {
-        Self { path: dir.join("provider-keys.json") }
+        Self {
+            path: dir.join("provider-keys.json"),
+        }
     }
 
     /// Every pairing token on this machine, one per line. A second desktop adds a line
@@ -104,7 +111,11 @@ pub fn token_matches(stored: &str, presented: &str) -> bool {
     if stored.is_empty() || stored.len() != presented.len() {
         return false;
     }
-    stored.bytes().zip(presented.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+    stored
+        .bytes()
+        .zip(presented.bytes())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// True when the presented token equals any line in the file. Each compare runs in full,
@@ -113,7 +124,9 @@ pub fn token_matches_any(stored: &[String], presented: &str) -> bool {
     if stored.is_empty() {
         return false;
     }
-    stored.iter().fold(false, |found, line| found || token_matches(line, presented))
+    stored
+        .iter()
+        .fold(false, |found, line| found || token_matches(line, presented))
 }
 
 pub fn provider_keys_from_env(file: &ProviderKeys) -> ProviderKeys {
@@ -121,6 +134,7 @@ pub fn provider_keys_from_env(file: &ProviderKeys) -> ProviderKeys {
         xai: pick(&file.xai, "XAI_API_KEY"),
         anthropic: pick(&file.anthropic, "ANTHROPIC_API_KEY"),
         minimax: pick(&file.minimax, "MINIMAX_API_KEY"),
+        openai: pick(&file.openai, "OPENAI_API_KEY"),
     }
 }
 
@@ -129,7 +143,11 @@ fn pick(file_value: &str, env_name: &str) -> String {
     if !trimmed.is_empty() {
         return trimmed.to_string();
     }
-    std::env::var(env_name).ok().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()).unwrap_or_default()
+    std::env::var(env_name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -147,12 +165,15 @@ mod tests {
             xai: "xai-secret".into(),
             anthropic: "  ".into(),
             minimax: "mini-secret".into(),
+            openai: "  ".into(),
         })
         .unwrap();
         let loaded = file.load().unwrap();
         assert_eq!(loaded.xai, "xai-secret");
         assert!(loaded.anthropic.is_empty());
-        assert!(!fs::read_to_string(project.join("README.md")).unwrap().contains("xai-secret"));
+        assert!(!fs::read_to_string(project.join("README.md"))
+            .unwrap()
+            .contains("xai-secret"));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

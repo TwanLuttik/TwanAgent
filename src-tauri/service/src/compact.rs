@@ -31,7 +31,9 @@ const COMPACT_NOTICE: &str = "Your conversation was summarized due to context co
 pub(crate) enum BudgetAction {
     Send,
     /// Summarize this many times before the next model call.
-    Fold { times: u8 },
+    Fold {
+        times: u8,
+    },
     Stop,
 }
 
@@ -43,7 +45,9 @@ pub(crate) struct FoldPlan {
 }
 
 pub(crate) fn should_auto_compact(prompt_tokens: u64, window: u64) -> bool {
-    prompt_tokens > 0 && window > 0 && prompt_tokens >= window.saturating_mul(AUTO_COMPACT_PERCENT) / 100
+    prompt_tokens > 0
+        && window > 0
+        && prompt_tokens >= window.saturating_mul(AUTO_COMPACT_PERCENT) / 100
 }
 
 pub(crate) fn prompt_exceeds_window(prompt_tokens: u64, window: u64) -> bool {
@@ -60,12 +64,14 @@ pub(crate) fn is_context_length_error(error: &str) -> bool {
         || text.contains("maximum context")
         || text.contains("too many tokens")
         || text.contains("token limit")
-        || (text.contains("context") && (text.contains("exceed") || text.contains("too long") || text.contains("too large")))
+        || (text.contains("context")
+            && (text.contains("exceed") || text.contains("too long") || text.contains("too large")))
 }
 
 /// `prompt_tokens` is the previous request. Zero means this turn has not measured a prompt yet.
 pub(crate) fn budget_action(prompt_tokens: u64, window: u64, can_fold: bool) -> BudgetAction {
-    if !prompt_exceeds_window(prompt_tokens, window) && !should_auto_compact(prompt_tokens, window) {
+    if !prompt_exceeds_window(prompt_tokens, window) && !should_auto_compact(prompt_tokens, window)
+    {
         return BudgetAction::Send;
     }
     if prompt_exceeds_window(prompt_tokens, window) {
@@ -103,9 +109,19 @@ pub(crate) fn plan_fold(stored: &[Value], current: Option<&Compaction>) -> Optio
     if current.is_some_and(|state| state.through as usize == through) {
         return None;
     }
-    let previous_summary = summary_body(source.first().and_then(|msg| msg.get("content")).and_then(Value::as_str).unwrap_or(""))
-        .or_else(|| current.map(|state| state.summary.trim().to_string()).filter(|text| !text.is_empty()))
-        .unwrap_or_default();
+    let previous_summary = summary_body(
+        source
+            .first()
+            .and_then(|msg| msg.get("content"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )
+    .or_else(|| {
+        current
+            .map(|state| state.summary.trim().to_string())
+            .filter(|text| !text.is_empty())
+    })
+    .unwrap_or_default();
     Some(FoldPlan {
         older,
         through,
@@ -113,7 +129,11 @@ pub(crate) fn plan_fold(stored: &[Value], current: Option<&Compaction>) -> Optio
     })
 }
 
-pub(crate) fn commit_fold(stored: &mut Vec<Value>, summary: &str, through: usize) -> Option<Compaction> {
+pub(crate) fn commit_fold(
+    stored: &mut Vec<Value>,
+    summary: &str,
+    through: usize,
+) -> Option<Compaction> {
     let summary = summary.trim();
     if summary.is_empty() || through == 0 || through >= stored.len() {
         return None;
@@ -197,7 +217,9 @@ fn tool_round_cut(messages: &[Value], keep: usize) -> usize {
     let starts: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter_map(|(index, msg)| (role(msg) == "assistant" && has_tool_calls(msg)).then_some(index))
+        .filter_map(|(index, msg)| {
+            (role(msg) == "assistant" && has_tool_calls(msg)).then_some(index)
+        })
         .collect();
     let retain = keep.max(1);
     if starts.len() <= retain {
@@ -207,9 +229,9 @@ fn tool_round_cut(messages: &[Value], keep: usize) -> usize {
 }
 
 fn foldable(older: &[Value]) -> bool {
-    older.iter().any(|msg| {
-        !is_compaction_event(msg) && !is_summary_message(msg) && role(msg) != "system"
-    })
+    older
+        .iter()
+        .any(|msg| !is_compaction_event(msg) && !is_summary_message(msg) && role(msg) != "system")
 }
 
 fn insert_compaction_event(stored: &mut Vec<Value>, at: usize) {
@@ -221,7 +243,10 @@ fn insert_compaction_event(stored: &mut Vec<Value>, at: usize) {
     {
         return;
     }
-    stored.insert(at, json!({ "role": "system", "content": COMPACTION_EVENT_TEXT }));
+    stored.insert(
+        at,
+        json!({ "role": "system", "content": COMPACTION_EVENT_TEXT }),
+    );
 }
 
 fn summary_message(summary: &str) -> Value {
@@ -243,7 +268,8 @@ fn is_summary_message(msg: &Value) -> bool {
 }
 
 fn is_failure(msg: &Value) -> bool {
-    msg.get("error").and_then(Value::as_bool) == Some(true) || content_str(msg).starts_with(FAILURE_PREFIX)
+    msg.get("error").and_then(Value::as_bool) == Some(true)
+        || content_str(msg).starts_with(FAILURE_PREFIX)
 }
 
 fn api_message(msg: &Value) -> Option<Value> {
@@ -265,7 +291,10 @@ fn api_message(msg: &Value) -> Option<Value> {
                 "role": "user",
                 "content": msg.get("content").cloned().unwrap_or_else(|| Value::String(String::new())),
             });
-            if let Some(images) = msg.get("images").filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty())) {
+            if let Some(images) = msg
+                .get("images")
+                .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()))
+            {
                 out["images"] = images.clone();
             }
             Some(out)
@@ -279,10 +308,16 @@ fn api_message(msg: &Value) -> Option<Value> {
                 .get("thinking")
                 .cloned()
                 .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()));
+            let reasoning_items = msg
+                .get("reasoning_items")
+                .cloned()
+                .filter(|value| value.as_array().is_some_and(|rows| !rows.is_empty()));
             let text = content_str(msg);
             let mut out = serde_json::Map::new();
             out.insert("role".into(), Value::String("assistant".into()));
-            if (calls.is_some() || thinking.is_some()) && text.trim().is_empty() {
+            if (calls.is_some() || thinking.is_some() || reasoning_items.is_some())
+                && text.trim().is_empty()
+            {
                 out.insert("content".into(), Value::Null);
             } else {
                 out.insert("content".into(), Value::String(text));
@@ -292,6 +327,9 @@ fn api_message(msg: &Value) -> Option<Value> {
             }
             if let Some(thinking) = thinking {
                 out.insert("thinking".into(), thinking);
+            }
+            if let Some(reasoning_items) = reasoning_items {
+                out.insert("reasoning_items".into(), reasoning_items);
             }
             Some(Value::Object(out))
         }
@@ -323,7 +361,11 @@ fn render_transcript(messages: &[Value]) -> String {
                 lines.push(format!("User: {text}{attached}").trim().to_string());
             }
             "assistant" => {
-                let thought = msg.get("reasoning").and_then(Value::as_str).unwrap_or("").trim();
+                let thought = msg
+                    .get("reasoning")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim();
                 if !thought.is_empty() {
                     lines.push(format!("Thinking: {}", clip(thought, 800)));
                 }
@@ -338,7 +380,10 @@ fn render_transcript(messages: &[Value]) -> String {
                     }
                 }
             }
-            "tool" => lines.push(format!("Tool result: {}", clip(content_str(msg).trim(), 500))),
+            "tool" => lines.push(format!(
+                "Tool result: {}",
+                clip(content_str(msg).trim(), 500)
+            )),
             _ => {}
         }
     }
@@ -421,7 +466,9 @@ fn content_str(msg: &Value) -> String {
 }
 
 fn has_tool_calls(msg: &Value) -> bool {
-    msg.get("tool_calls").and_then(Value::as_array).is_some_and(|rows| !rows.is_empty())
+    msg.get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|rows| !rows.is_empty())
 }
 
 #[cfg(test)]
@@ -471,9 +518,15 @@ mod tests {
     fn eighty_percent_folds_once_and_a_full_window_stops_when_nothing_can_fold() {
         assert!(should_auto_compact(400_000, 500_000));
         assert!(!should_auto_compact(399_999, 500_000));
-        assert_eq!(budget_action(400_000, 500_000, true), BudgetAction::Fold { times: 1 });
+        assert_eq!(
+            budget_action(400_000, 500_000, true),
+            BudgetAction::Fold { times: 1 }
+        );
         assert_eq!(budget_action(399_999, 500_000, true), BudgetAction::Send);
-        assert_eq!(budget_action(500_333, 500_000, true), BudgetAction::Fold { times: 4 });
+        assert_eq!(
+            budget_action(500_333, 500_000, true),
+            BudgetAction::Fold { times: 4 }
+        );
         assert_eq!(budget_action(500_333, 500_000, false), BudgetAction::Stop);
         assert_eq!(budget_action(0, 500_000, true), BudgetAction::Send);
     }
@@ -515,18 +568,29 @@ mod tests {
         let state = commit_fold(&mut stored, "Read the first files.", 5).unwrap();
         let api = api_messages(&messages_for_context(&stored, Some(&state)));
         assert_eq!(api[0]["role"], "user");
-        assert!(api[0]["content"].as_str().unwrap().contains("Read the first files."));
+        assert!(api[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Read the first files."));
         assert!(api.iter().all(|msg| msg.get("reasoning").is_none()));
-        assert!(api.iter().all(|msg| msg["content"].as_str() != Some(COMPACTION_EVENT_TEXT)));
+        assert!(api
+            .iter()
+            .all(|msg| msg["content"].as_str() != Some(COMPACTION_EVENT_TEXT)));
         assert!(api.iter().all(|msg| msg["content"].as_str() != Some("a")));
         assert!(api.iter().any(|msg| msg["content"].as_str() == Some("d")));
-        let calls = api.iter().any(|msg| msg["tool_calls"][0]["id"].as_str() == Some("4"));
+        let calls = api
+            .iter()
+            .any(|msg| msg["tool_calls"][0]["id"].as_str() == Some("4"));
         assert!(calls);
     }
 
     #[test]
     fn a_short_thread_and_one_tool_round_do_not_fold() {
-        let short = vec![user("find the crash"), assistant_tool("1"), tool_result("1", "a")];
+        let short = vec![
+            user("find the crash"),
+            assistant_tool("1"),
+            tool_result("1", "a"),
+        ];
         assert!(plan_fold(&short, None).is_none());
     }
 

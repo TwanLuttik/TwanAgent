@@ -51,7 +51,9 @@ fn apply_line(data: &str, open: &mut OpenRound) {
     };
     let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
     open.push_reasoning(&xai::reasoning_from_delta(&delta));
-    open.push_text(&xai::text_from_content(delta.get("content").unwrap_or(&Value::Null)));
+    open.push_text(&xai::text_from_content(
+        delta.get("content").unwrap_or(&Value::Null),
+    ));
     for fragment in xai::tool_fragments(&delta) {
         apply_fragment(open, fragment);
     }
@@ -143,7 +145,10 @@ mod tests {
     #[test]
     fn a_final_message_does_not_repeat_text_the_deltas_already_sent() {
         let mut open = OpenRound::default();
-        apply_line(r#"{"choices":[{"delta":{"content":"Hello world."}}]}"#, &mut open);
+        apply_line(
+            r#"{"choices":[{"delta":{"content":"Hello world."}}]}"#,
+            &mut open,
+        );
         apply_line(
             r#"{"choices":[{"delta":{},"finish_reason":"stop","message":{"content":"Hello world."}}]}"#,
             &mut open,
@@ -157,7 +162,10 @@ mod tests {
         let mut open = OpenRound::default();
         apply_line(r#"{"error":{"message":"overloaded"}}"#, &mut open);
         let done = open.finish();
-        assert_eq!(done.error.as_deref(), Some("xAI request failed: overloaded"));
+        assert_eq!(
+            done.error.as_deref(),
+            Some("xAI request failed: overloaded")
+        );
         assert!(done.text.is_empty());
     }
 }

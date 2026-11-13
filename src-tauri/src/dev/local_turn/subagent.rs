@@ -106,6 +106,7 @@ pub(super) fn spawn_subagent(
         system,
         journey_id: journey_id.map(str::to_string),
         allow_spawn: false,
+        service_tier: live.service_tier.clone(),
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drive_subagent(
@@ -235,7 +236,13 @@ fn drive_subagent(
                 return format!("Subagent stopped: {description}");
             }
             Fit::TooBig => {
-                return finish_failed(app, parent_id, child_id, &mut transcript, CONTEXT_LIMIT_MESSAGE);
+                return finish_failed(
+                    app,
+                    parent_id,
+                    child_id,
+                    &mut transcript,
+                    CONTEXT_LIMIT_MESSAGE,
+                );
             }
         }
         let prompt = build_child_prompt(&transcript, compaction.as_ref(), &request.system);
@@ -425,6 +432,7 @@ fn drive_subagent(
                 &round.reasoning,
                 &[],
                 &round.thinking,
+                &round.reasoning_items,
             ));
             let summary = summarize_subagent(&transcript);
             emit_subagent(
@@ -441,6 +449,7 @@ fn drive_subagent(
             &round.reasoning,
             &round.tool_calls,
             &round.thinking,
+            &round.reasoning_items,
         ));
         emit_subagent(
             app,

@@ -38,6 +38,8 @@ import {
   uniqueImageTokenLabel,
 } from "../lib/image";
 import { expandFileMentions, type MentionFile } from "../lib/mention";
+import { isOpenAiModel } from "../lib/model-providers/openai";
+import { openaiSpeedChoice } from "../lib/openai-speed";
 import { expandPasteTokens, type PasteBlock } from "../lib/paste";
 import { fileBaseName } from "../lib/file-icon";
 import type { DetectedMcpServer } from "../lib/mcp";
@@ -88,6 +90,7 @@ import {
   isTurnFailureMessage,
   mergeFinishedTranscript,
   mergeHostedTranscript,
+  messagesForSend,
   messagesShowStream,
   modelForTurn,
   markUnseenFinished,
@@ -112,11 +115,17 @@ import {
   saveEffort,
   saveModel,
   savePermission,
+  loadOpenAiSpeed,
 } from "../lib/prefs";
 import * as api from "../lib/tauri";
 import type { ConversationSummary, Model, Runtime } from "../lib/tauri";
 
 const subagentSaves = new Map<string, Promise<void>>();
+
+function openAiServiceTier(model: string): string | undefined {
+  if (!isOpenAiModel(model)) return undefined;
+  return openaiSpeedChoice(model, loadOpenAiSpeed());
+}
 
 type Update<T> = Dispatch<SetStateAction<T>>;
 type ShellRequest = { chatId: string; command: string; resolve: (ok: boolean) => void };
@@ -1154,7 +1163,9 @@ async function send(targetId = activeIdRef.current) {
     return;
   }
   let id = targetId;
+  let createdNew = false;
   if (!id) {
+    createdNew = true;
     const now = nowIso();
     id = newConversationId();
     const chosenModel = modelRef.current;
@@ -1194,31 +1205,33 @@ async function send(targetId = activeIdRef.current) {
     setDraftImages((prev) => claimDraftForChat(prev, id, (value) => value.length === 0));
     releaseUnsavedDraft(id);
   }
-  if (turnAppliesToChat(id, activeIdRef.current)) stickToBottomRef.current = true;
+  // The empty prompt can be on screen while this chat still has messages.
+  // Clearing the draft first, then sending the blank list, drops that history.
+  const onScreen = turnAppliesToChat(id, activeIdRef.current);
+  let history = onScreen ? closeDanglingToolCalls(messages) : [];
+  if (!createdNew && id) {
+    const pendingTranscript = transcriptLoad(id);
+    if (pendingTranscript) {
+      const full = await pendingTranscript;
+      if (full && full.length) history = messagesForSend(history, closeDanglingToolCalls(full));
+    }
+    if (history.length === 0) {
+      try {
+        const full = hostedTurnStaysOnServer(remoteRef.current)
+          ? await api.getConversationById(id)
+          : await api.getConversation(ws, id);
+        history = messagesForSend(history, closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []));
+      } catch (e) {
+        setFlash({ kind: "err", text: String(e) });
+        return;
+      }
+    }
+  }
+  if (onScreen) stickToBottomRef.current = true;
   clearPrompt(id);
   if (chatShouldQueue(turnsRef.current, id)) {
     setPending(enqueuePending(pendingRef.current, id, text, images));
     return;
-  }
-  let history = closeDanglingToolCalls(messages);
-  const pendingTranscript = transcriptLoad(id);
-  if (pendingTranscript && turnAppliesToChat(id, activeIdRef.current)) {
-    const full = await pendingTranscript;
-    if (!full) {
-      setFlash({ kind: "err", text: "This conversation is still loading." });
-      return;
-    }
-    history = closeDanglingToolCalls(full);
-  } else if (!turnAppliesToChat(id, activeIdRef.current)) {
-    try {
-      const full = hostedTurnStaysOnServer(remoteRef.current)
-        ? await api.getConversationById(id)
-        : await api.getConversation(ws, id);
-      history = closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []);
-    } catch (e) {
-      setFlash({ kind: "err", text: String(e) });
-      return;
-    }
   }
   await runTurn(ws, id, [...history, userMessage(promptWithWorktreeName(text, history, id, ws), images)]);
 }
@@ -1382,6 +1395,7 @@ async function runTurn(
         effort: turnSettings.effort,
         permission: turnSettings.permission,
         contextWindow: turnSettings.contextWindow || undefined,
+        serviceTier: openAiServiceTier(turnSettings.model),
       });
       // The open chat joins under another stream id. Its `done` replaces the live copy
       // and clears the stream. The sender's own join resolves `finished` directly.
@@ -1431,6 +1445,7 @@ async function runTurn(
           effort: turnSettings.effort,
           contextWindow: turnSettings.contextWindow || undefined,
           permission: turnSettings.permission,
+          serviceTier: openAiServiceTier(turnSettings.model),
           system: systemForDetached(ws, id, turnSettings),
           allowSpawn: true,
           signal: ac.signal,
@@ -1446,6 +1461,7 @@ async function runTurn(
       model: turnSettings.model,
       effort: turnSettings.effort,
       contextWindow: turnSettings.contextWindow || undefined,
+      serviceTier: openAiServiceTier(turnSettings.model),
       allowSpawn: true,
       mcpServers: mcpServersRef.current,
       skills: skillsRef.current,

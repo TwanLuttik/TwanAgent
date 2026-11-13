@@ -179,11 +179,13 @@ export type ServerProviderKeys = {
   xai: boolean;
   anthropic: boolean;
   minimax: boolean;
+  openai: boolean;
   /** Set on a copy. True when that provider's key replaced a different one already on the server. */
   replaced?: {
     xai: boolean;
     anthropic: boolean;
     minimax: boolean;
+    openai?: boolean;
   };
 };
 

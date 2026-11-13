@@ -5,6 +5,7 @@ pub enum ProviderId {
     Xai,
     Anthropic,
     Minimax,
+    OpenAi,
 }
 
 pub fn find(model_id: &str) -> ProviderId {
@@ -12,6 +13,8 @@ pub fn find(model_id: &str) -> ProviderId {
         ProviderId::Minimax
     } else if super::anthropic::is_claude_model(model_id) {
         ProviderId::Anthropic
+    } else if super::openai::is_openai_model(model_id) {
+        ProviderId::OpenAi
     } else {
         ProviderId::Xai
     }
@@ -28,6 +31,9 @@ mod tests {
         assert_eq!(find("claude-sonnet-4-5-20250929"), ProviderId::Anthropic);
         assert_eq!(find("MiniMax-M3"), ProviderId::Minimax);
         assert_eq!(find("MiniMax-M2.7"), ProviderId::Minimax);
+        assert_eq!(find("gpt-6.1-sol"), ProviderId::OpenAi);
+        assert_eq!(find("gpt-future_1"), ProviderId::OpenAi);
+        assert_eq!(find("gpt-"), ProviderId::Xai);
         assert_eq!(find(""), ProviderId::Xai);
     }
 }

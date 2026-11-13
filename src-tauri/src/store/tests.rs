@@ -535,7 +535,7 @@ fn older_store_gains_archived_column() {
         })
         .unwrap();
     // Opening any older store runs every later migration, including composer settings.
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]
@@ -606,7 +606,7 @@ fn older_store_gains_composer_setting_columns() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }
 
 #[test]
@@ -747,7 +747,87 @@ fn older_store_gains_finished_at_column() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
+}
+
+#[test]
+fn persists_reasoning_items_apart_from_the_visible_summary() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    let mut row = conv(
+        "c1",
+        "Hello",
+        vec![json!({
+            "role":"assistant",
+            "content":"Done.",
+            "reasoning":"Check the tests first.",
+            "reasoning_items":[{
+                "type":"reasoning",
+                "id":"rs_1",
+                "encrypted_content":"enc-secret",
+                "summary":[]
+            }]
+        })],
+    );
+    save_conversation(&conn, &row).unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages[0]["reasoning"], "Check the tests first.");
+    assert_eq!(
+        loaded.messages[0]
+            .pointer("/reasoning_items/0/encrypted_content")
+            .and_then(Value::as_str),
+        Some("enc-secret")
+    );
+    assert!(!loaded.messages[0]["reasoning"]
+        .as_str()
+        .unwrap()
+        .contains("enc-secret"));
+    row.messages[0]["reasoning_items"][0]["encrypted_content"] = json!("enc-2");
+    save_conversation(&conn, &row).unwrap();
+    let updated = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(
+        updated.messages[0]
+            .pointer("/reasoning_items/0/encrypted_content")
+            .and_then(Value::as_str),
+        Some("enc-2")
+    );
+    assert_eq!(updated.messages[0]["reasoning"], "Check the tests first.");
+}
+
+#[test]
+fn corrupt_reasoning_items_do_not_drop_the_message() {
+    let dir = tempdir().unwrap();
+    let conn = open(dir.path()).unwrap();
+    save_conversation(
+        &conn,
+        &conv(
+            "c1",
+            "Hello",
+            vec![
+                json!({
+                    "role":"assistant",
+                    "content":"Done.",
+                    "reasoning":"Check the tests first.",
+                    "tool_calls":[{ "id":"call_1", "name":"read_file", "arguments":"{}" }]
+                }),
+                json!({"role":"user","content":"next"}),
+            ],
+        ),
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE messages SET reasoning_items = ?1 WHERE conversation_id = 'c1' AND sort_order = 0",
+        rusqlite::params![r#"{not json"#],
+    )
+    .unwrap();
+    let loaded = get_conversation(&conn, "c1").unwrap();
+    assert_eq!(loaded.messages.len(), 2);
+    assert_eq!(loaded.messages[0]["role"], "assistant");
+    assert_eq!(loaded.messages[0]["content"], "Done.");
+    assert_eq!(loaded.messages[0]["reasoning"], "Check the tests first.");
+    assert_eq!(loaded.messages[0]["tool_calls"][0]["id"], "call_1");
+    assert!(loaded.messages[0].get("reasoning_items").is_none());
+    assert_eq!(loaded.messages[1]["content"], "next");
 }
 
 #[test]

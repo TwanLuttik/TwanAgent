@@ -80,7 +80,11 @@ pub fn glob(workspace: &Path, query: &GlobQuery) -> Result<String> {
     let mut truncated = false;
     walk_glob(&workspace, &root, pattern, &mut hits, &mut truncated)?;
     hits.sort();
-    Ok(finish(&hits, truncated || hits.len() >= MAX_FILES, "No files."))
+    Ok(finish(
+        &hits,
+        truncated || hits.len() >= MAX_FILES,
+        "No files.",
+    ))
 }
 
 fn walk_grep(
@@ -114,7 +118,11 @@ fn walk_grep(
         let dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
         if dir {
             walk_grep(workspace, &full, needle, glob, hits, truncated)?;
-        } else if entry.file_type().map(|kind| kind.is_file()).unwrap_or(false) {
+        } else if entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false)
+        {
             scan_file(workspace, &full, needle, glob, hits, truncated)?;
         }
     }
@@ -213,7 +221,11 @@ fn clip(line: &str) -> String {
 /// What the model reads when nothing matched. Names the pattern and glob so a
 /// miss is not mistaken for a file type the search skipped.
 fn grep_empty(pattern: &str, path: &str, glob: &str) -> String {
-    let where_text = if path.is_empty() { "the workspace" } else { path };
+    let where_text = if path.is_empty() {
+        "the workspace"
+    } else {
+        path
+    };
     let mut text = format!("No matches for \"{pattern}\" in {where_text}.");
     if glob.is_empty() {
         text.push_str(" Searched every text file. .ts, .tsx, and other source files are included.");
@@ -269,15 +281,15 @@ pub fn glob_match(pattern: &str, path: &str) -> bool {
     }
     match_parts(
         &split_glob(pattern),
-        &path.split('/').filter(|part| !part.is_empty()).collect::<Vec<_>>(),
+        &path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>(),
     )
 }
 
 fn split_glob(pattern: &str) -> Vec<&str> {
-    pattern
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .collect()
+    pattern.split('/').filter(|part| !part.is_empty()).collect()
 }
 
 fn match_parts(pattern: &[&str], path: &[&str]) -> bool {
@@ -348,7 +360,11 @@ mod tests {
         fs::create_dir_all(dir.path().join("node_modules/pkg")).unwrap();
         fs::write(dir.path().join("src/app.ts"), "export const answer = 42;\n").unwrap();
         fs::write(dir.path().join("src/note.md"), "Answer lives in app.ts\n").unwrap();
-        fs::write(dir.path().join("node_modules/pkg/skip.ts"), "export const answer = 1;\n").unwrap();
+        fs::write(
+            dir.path().join("node_modules/pkg/skip.ts"),
+            "export const answer = 1;\n",
+        )
+        .unwrap();
         fs::write(dir.path().join("README.md"), "# Demo\n").unwrap();
         dir
     }
@@ -377,7 +393,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(none.contains("No matches for \"missing-symbol\" in src."), "{none}");
+        assert!(
+            none.contains("No matches for \"missing-symbol\" in src."),
+            "{none}"
+        );
         assert!(none.contains(".ts"), "{none}");
         assert!(none.contains("not a regular expression"), "{none}");
         let err = grep(

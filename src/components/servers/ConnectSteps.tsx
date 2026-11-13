@@ -4,12 +4,13 @@ import { Symbol } from "../Symbol";
 import type { DetectedMcpServer } from "../../lib/mcp";
 import type { KeyStatus, LanHost, ServerInstallStatus, ServerProviderKeys } from "../../lib/tauri";
 
-export type ProviderId = "xai" | "anthropic" | "minimax";
+export type ProviderId = "xai" | "anthropic" | "minimax" | "openai";
 
 export const PROVIDERS: { id: ProviderId; label: string; logo: string; mark: string }[] = [
   { id: "xai", label: "Grok", logo: "logo.grok", mark: "bg-[#1a1a1a] text-white" },
   { id: "anthropic", label: "Claude", logo: "logo.claude", mark: "bg-[#d97757] text-[#faf9f5]" },
   { id: "minimax", label: "MiniMax", logo: "logo.minimax", mark: "bg-wash text-ink" },
+  { id: "openai", label: "OpenAI", logo: "logo.openai", mark: "bg-[#10a37f] text-white" },
 ];
 
 export type LocalKeys = Record<ProviderId, KeyStatus | null>;
@@ -433,7 +434,7 @@ export function ProviderKeys({
   return (
     <div className="grid gap-2">
       <div className="text-[11px] font-semibold tracking-wide text-muted uppercase">Provider keys</div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {PROVIDERS.map((provider) => {
           const here = keyHere(localKeys[provider.id]);
           const onServer = Boolean(keys?.[provider.id]);

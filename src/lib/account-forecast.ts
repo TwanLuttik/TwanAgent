@@ -39,6 +39,11 @@ export type ForecastAccount = {
   /** True when the login cannot be read. The row stays, with no forecast. */
   reconnect: boolean;
   windows: ForecastWindow[];
+  /** Prepaid balance in cents. Null when the account is a plan, or the balance is hidden. */
+  balanceCents: number | null;
+  balanceCurrency: string | null;
+  /** Set when the provider reports credits without a dollar amount. */
+  creditStatus: "available" | "exhausted" | null;
 };
 
 export type RunOut = {
@@ -91,6 +96,7 @@ const ACCOUNT_META: Record<
 > = {
   anthropic: { name: "Claude", logo: "logo.claude", remaining: false },
   minimax: { name: "MiniMax", logo: "logo.minimax", remaining: true },
+  openai: { name: "OpenAI", logo: "logo.openai", remaining: false },
   xai: { name: "Grok", logo: "logo.grok", remaining: false },
 };
 
@@ -158,6 +164,110 @@ export function accountFromUsage(id: ForecastAccountId, usage: AccountUsage | nu
     logo: meta.logo,
     reconnect,
     windows,
+    balanceCents: usage?.balanceCents ?? null,
+    balanceCurrency: usage?.balanceCurrency ?? null,
+    creditStatus: usage?.creditStatus ?? null,
+  };
+}
+
+/** A plan has a reset window. Credits are a balance with no window. */
+export function allowanceKind(account: ForecastAccount): "reconnect" | "plan" | "credits" | "unknown" {
+  if (account.reconnect) return "reconnect";
+  if (account.windows.length > 0) return "plan";
+  if (account.balanceCents != null || account.creditStatus) return "credits";
+  return "unknown";
+}
+
+export type WindowTimeline = {
+  openedAt: number;
+  resetsAt: number;
+  /** 0–1, how far the clock is between the open and the reset. */
+  now: number;
+  /** 0–1, how much of the allowance is already spent. */
+  used: number;
+};
+
+export type UsageHistoryPoint = {
+  atMs: number;
+  usedPercent: number;
+};
+
+export type AccountUsageHistory = {
+  provider: ForecastAccountId;
+  windowId: string;
+  resetsAtMs: number;
+  /** 0–100 already spent, after a remaining-percent provider is flipped. */
+  usedPercent: number;
+  atMs: number;
+};
+
+/** Stored readings for the usage line. Unknown providers and bad stamps are dropped. */
+export function historyPoints(
+  rows: { provider: string; windowId: string; resetsAt: string; usedPercent: number; recordedAt: string }[],
+): AccountUsageHistory[] {
+  const out: AccountUsageHistory[] = [];
+  for (const row of rows) {
+    if (!(row.provider in ACCOUNT_META)) continue;
+    const provider = row.provider as ForecastAccountId;
+    const atMs = Date.parse(row.recordedAt);
+    const resetsAtMs = parseResetMs(row.resetsAt);
+    if (!Number.isFinite(atMs) || resetsAtMs == null) continue;
+    out.push({
+      provider,
+      windowId: row.windowId,
+      resetsAtMs,
+      usedPercent: usedPercentOf(row.usedPercent, ACCOUNT_META[provider].remaining),
+      atMs,
+    });
+  }
+  return out;
+}
+
+export type UsageLinePoint = {
+  /** 0–1 across the window, open to reset. */
+  x: number;
+  /** 0–1 of the allowance spent. */
+  y: number;
+};
+
+/**
+ * The line across one window. Readings from another reset are left out.
+ * The live percent is the last point, so the line reaches now before the next save.
+ */
+export function usageHistoryLine(
+  points: UsageHistoryPoint[],
+  openedAt: number,
+  resetsAt: number,
+  nowMs: number,
+  usedNow: number,
+): UsageLinePoint[] {
+  const span = resetsAt - openedAt;
+  if (span <= 0) return [];
+  const sorted = points
+    .filter((row) => row.atMs >= openedAt - 1000 && row.atMs <= resetsAt + 1000)
+    .sort((a, b) => a.atMs - b.atMs);
+  const liveAt = Math.min(Math.max(nowMs, openedAt), resetsAt);
+  const last = sorted[sorted.length - 1];
+  if (!last || liveAt - last.atMs > 1000 || Math.abs(last.usedPercent - usedNow) > 0.05) {
+    sorted.push({ atMs: liveAt, usedPercent: usedNow });
+  }
+  return sorted.map((row) => ({
+    x: Math.max(0, Math.min(1, (row.atMs - openedAt) / span)),
+    y: Math.max(0, Math.min(1, row.usedPercent / 100)),
+  }));
+}
+
+/** The bar is the window's clock. Used and now are separate positions on it. */
+export function windowTimeline(window: ForecastWindow, usedPercent: number, nowMs: number): WindowTimeline | null {
+  if (window.resetsAt == null || window.windowMs == null || window.windowMs <= 0) return null;
+  const openedAt = window.resetsAt - window.windowMs;
+  const span = window.resetsAt - openedAt;
+  if (span <= 0) return null;
+  return {
+    openedAt,
+    resetsAt: window.resetsAt,
+    now: Math.max(0, Math.min(1, (nowMs - openedAt) / span)),
+    used: Math.max(0, Math.min(1, usedPercent / 100)),
   };
 }
 
@@ -232,6 +342,60 @@ export function allowedPerDay(usedPercent: number, resetsAt: number | null, nowM
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+export type TimelineSlice = {
+  /** 0–1, where this slice starts on the window. */
+  start: number;
+  /** 0–1, how much of the window this slice covers. */
+  span: number;
+  label: string;
+};
+
+/**
+ * The window split into the days it covers, or into hours when it is shorter than a day and a half.
+ * Each slice is one cell of the reset bar.
+ */
+export function timelineSlices(openedAt: number, resetsAt: number): TimelineSlice[] {
+  const span = resetsAt - openedAt;
+  if (span <= 0) return [];
+  const byHour = span < 36 * HOUR;
+  const slices: TimelineSlice[] = [];
+  let cursor = openedAt;
+  for (let guard = 0; cursor < resetsAt && guard < 40; guard += 1) {
+    const boundary = byHour ? nextHour(cursor) : nextDay(cursor);
+    const end = Math.min(boundary, resetsAt);
+    if (end <= cursor) break;
+    slices.push({
+      start: (cursor - openedAt) / span,
+      span: (end - cursor) / span,
+      label: byHour ? clockLabel(cursor) : (WEEKDAYS[new Date(cursor).getDay()] ?? ""),
+    });
+    cursor = end;
+  }
+  return slices;
+}
+
+/** "00:00", matching the 24-hour reset time. A partial slice keeps its real minute. */
+function clockLabel(ms: number): string {
+  const at = new Date(ms);
+  const hour = String(at.getHours()).padStart(2, "0");
+  const minute = String(at.getMinutes()).padStart(2, "0");
+  return `${hour}:${minute}`;
+}
+
+function nextHour(ms: number): number {
+  const at = new Date(ms);
+  at.setMinutes(0, 0, 0);
+  if (at.getTime() <= ms) at.setHours(at.getHours() + 1);
+  return at.getTime();
+}
+
+function nextDay(ms: number): number {
+  const at = new Date(ms);
+  at.setHours(0, 0, 0, 0);
+  if (at.getTime() <= ms) at.setDate(at.getDate() + 1);
+  return at.getTime();
+}
 
 function dayLabel(atMs: number, today: boolean): string {
   if (today) return "Today";
