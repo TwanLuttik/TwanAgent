@@ -1,8 +1,9 @@
 import { useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { isMacOS } from "../components/WindowButtons";
 import { scrollChatToEnd } from "../lib/chat-scroll";
-import { TRANSCRIPT_PAGE_MESSAGES, cachedTranscript, cachedTranscriptIsLoaded, openedTranscriptIsCurrent, rememberShownTranscript } from "../lib/chat-window";
-import { beginTranscriptLoad, clearTranscriptPreview, setTranscriptPreview } from "../lib/transcript-open";
+import { TRANSCRIPT_PAGE_MESSAGES, cachedTranscript, cachedTranscriptIsLoaded, openedTranscriptIsCurrent, rememberShownTranscript, transcriptTailIsComplete } from "../lib/chat-window";
+import { afterInput } from "../lib/after-input";
+import { beginTranscriptLoad, cancelDeferredTranscript, clearTranscriptPreview, deferTranscriptCommit, hasDeferredTranscript, noteScreenTranscript, setTranscriptPreview } from "../lib/transcript-open";
 import {
   backfillFinishedAt,
   conversationTitleFrom,
@@ -27,6 +28,7 @@ import {
   type ProjectChatGroup,
 } from "../lib/all-projects";
 import { parseChatUsage, putChatUsage, usageToPersist, type ChatUsage } from "../lib/context";
+import { displayProjectMentions, mentionProjectsNow } from "../lib/project-mention";
 import { closeEditorTab, emptyEditor, requestCloseEditorTab, selectChatTab, type EditorState } from "../lib/editor";
 import { insertCompactionEvent } from "../lib/compact";
 import { persistableCompaction, persistableMessages } from "../lib/image";
@@ -35,7 +37,7 @@ import { getLiveStream, setLiveStream, setSecondaryLiveStream } from "../lib/liv
 import { closeTabChat, focusedSplitMessages, rememberSplitPane, splitGroupForChat, splitPaneCache, type TabItem } from "../lib/split-pane";
 import { shellSessions } from "../lib/shell-terminal";
 
-import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, commitPartialReply, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, messagesShowStream, type PendingMessage, type RunningTurn } from "../lib/turn";
+import { canPersistTurn, chatHasRunningTurn, clearPendingForChat, clearUnseenFinished, commitPartialReply, composerRowForOpen, composerSettingsForChat, foregroundRunningId, forgetUnsavedDraft, liveTurnMessages, mergeHostedTranscript, messagesShowStream, transcriptKeepingLiveTurn, type PendingMessage, type RunningTurn } from "../lib/turn";
 import { publishWorktreeList, worktreeForPath, worktreeListsFor } from "../lib/worktree";
 import { parsePermissionMode, type PermissionMode } from "../lib/permission";
 import { emptyGrokPlan, grokPlanFromPayload, planModeEngaged, type GrokPlan } from "../lib/plan";
@@ -139,8 +141,6 @@ export type LibraryDeps = {
   conversationsRef: RefObject<ConversationSummary[]>;
   /** Bumped when the visible chat or project changes, so a late load cannot overwrite it. */
   openGeneration: RefObject<number>;
-  /** Saved cloud transcripts, keyed by project and chat. A click paints from here. */
-  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   setWorkspace: Update<string>;
   setConversations: Update<ConversationSummary[]>;
   setAllProjectGroups: Update<ProjectChatGroup[]>;
@@ -187,7 +187,7 @@ export function useLibrary(deps: LibraryDeps) {
   const {
     workspace, conversations, allProjectGroups, messages, activeId, runningId, runningTurns, hostedChats,
     pendingClosePath, dirtyFiles, usageByChat, compactionByChat, setCompactionByChat, model, effort, contextWindow, permission, models, defaultEffort, setModel, setEffort, setContextWindow, setPermission, openSettings, reloadConversations, scroller,
-    runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, cloudTranscriptsRef, workspaceRef, sidebarLoadedForRef,
+    runningWsRef, modelRef, activeIdRef, runningIdRef, abortRef, turnsRef, pendingRef, deletedIdsRef, turnMessagesRef, turnLiveRef, liveByChatRef, subagentsByChatRef, planByChatRef, onPlanChange, stickToBottomRef, conversationsRef, openGeneration, workspaceRef, sidebarLoadedForRef,
     setWorkspace, setConversations, setAllProjectGroups, setMessages, setActiveId, setRunningId, setEditor,
     setDirtyFiles, setPendingClosePath, setFolderOpen, closeOverlays, dismissProjectSettings,
     setCollapsedProjects, setRecents, setDrafts, setPastesByChat, setDraftImages, setUsageByChat, setStreamText, setStreamReasoning, setLiveTools,
@@ -219,6 +219,7 @@ export function useLibrary(deps: LibraryDeps) {
     shownList.current,
   );
   shownList.current = messages;
+  noteScreenTranscript(shownId.current);
 
 function closeFileTab(path: string) {
   const asked = requestCloseEditorTab(pendingClosePath, path, Boolean(dirtyFiles[path]));
@@ -476,9 +477,6 @@ function applyWorkspace(path: string, preferId = "", name = "", remote = false) 
       (savedId && liveByChatRef.current.has(savedId) && savedId) ||
       (foregroundHere ? runningIdRef.current : "") ||
       "";
-    const savedCloud = savedId
-      ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${savedId}`)
-      : undefined;
     const live = prefer
       ? liveTurnMessages({
           workspace: path,
@@ -510,20 +508,6 @@ function applyWorkspace(path: string, preferId = "", name = "", remote = false) 
       showChatSettings(entering?.conversations.find((row) => row.id === savedId));
       setActiveId(savedId);
       setMessages(shown);
-      paintedChatsRef.current.add(savedId);
-      setRunningActivity(null);
-      setTurnStartedAt(0);
-      hideSubagents();
-    } else if (savedCloud) {
-      const body = (savedCloud.messages as ChatMessage[]) ?? [];
-      const shown =
-        savedCloud.compaction?.summary && savedCloud.compaction.through > 0
-          ? insertCompactionEvent(body, savedCloud.compaction.through)
-          : body;
-      showChatSettings(entering?.conversations.find((row) => row.id === savedId));
-      setActiveId(savedId);
-      setMessages(shown);
-      shownMessages.current.set(savedId, shown);
       paintedChatsRef.current.add(savedId);
       setRunningActivity(null);
       setTurnStartedAt(0);
@@ -788,7 +772,7 @@ function showOpenedChatSettings(
 /** A running chat paints from memory and used to return before its saved model was read. */
 function refreshOpenedChatSettings(id: string, path: string, generation: number) {
   const known = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
-  const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(path, id);
+  const load = hostedChatsRef.current ? api.getConversationById(id) : api.getConversation(path, id, undefined, true);
   void load.then((full) => {
     if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return;
     if (full.compaction?.summary && full.compaction.through > 0) {
@@ -811,18 +795,75 @@ function finishOpen(generation: number, id: string) {
   openingChatRef.current = "";
 }
 
+/** A status or delta frame stores `messages: []`. That placeholder is not a transcript. */
+function liveTurnHasRows(id: string): boolean {
+  return (liveByChatRef.current.get(id)?.messages.length ?? 0) > 0;
+}
+
+/**
+ * Disk must not replace a prompt already painted.
+ * An empty live entry does not block the disk list. The list on screen and the
+ * one stored for this chat are merged in, so a finished turn still wins after
+ * its live entry is gone.
+ */
+function transcriptAfterDiskRead(id: string, disk: ChatMessage[]): ChatMessage[] | null {
+  const kept = transcriptKeepingLiveTurn(
+    disk,
+    liveByChatRef.current.get(id)?.messages,
+    liveByChatRef.current.has(id) || turnsRef.current.has(id),
+  );
+  if (!kept) return null;
+  let next = kept;
+  const stored = shownMessages.current.get(id);
+  if (stored?.length && stored !== next) next = mergeHostedTranscript(stored, next);
+  if (shownId.current === id) {
+    const onScreen = shownList.current;
+    if (onScreen.length && onScreen !== next) next = mergeHostedTranscript(onScreen, next);
+  }
+  return next;
+}
+
 /**
  * The sidebar cache can be the tool rows from a turn that already saved its
  * reply. Opening that chat used to return before reading the database, so the
  * answer stayed missing until a restart.
  */
+async function refreshHostedTranscript(path: string, id: string, painted: ChatMessage[], generation: number) {
+  try {
+    const full = await api.getHostedConversation(path, id);
+    if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return;
+    if (liveTurnHasRows(id)) return;
+    const raw = (full.messages as ChatMessage[]) ?? [];
+    const noticed =
+      full.compaction?.summary && full.compaction.through > 0
+        ? insertCompactionEvent(raw, full.compaction.through)
+        : raw;
+    const current = shownMessages.current.get(id) ?? painted;
+    const merged = mergeHostedTranscript(mergeHostedTranscript(painted, current), noticed);
+    if (merged === painted && merged === current) return;
+    if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return;
+    if (liveTurnHasRows(id)) return;
+    if (full.compaction?.summary && full.compaction.through > 0) {
+      setCompactionByChat((prev) => ({ ...prev, [id]: full.compaction! }));
+    }
+    if (shownId.current === id && shownList.current === merged) {
+      if (shownMessages.current.get(id) !== merged) shownMessages.current.set(id, merged);
+      return;
+    }
+    shownMessages.current.set(id, merged);
+    setMessages(merged);
+  } catch {
+    /* the painted copy stays */
+  }
+}
+
 async function repairCachedReply(path: string, id: string, painted: ChatMessage[], generation: number) {
   try {
     const full = await api.getConversation(path, id);
     if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return;
     const disk = (full.messages as ChatMessage[]) ?? [];
-    const merged = mergeHostedTranscript(painted, disk);
-    if (merged === painted) return;
+    const merged = transcriptAfterDiskRead(id, mergeHostedTranscript(painted, disk));
+    if (!merged || merged === painted) return;
     shownMessages.current.set(id, merged);
     setMessages(merged);
   } catch {
@@ -862,6 +903,7 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   // would drop its fetch, then the next click would no-op because the id matches.
   if (here && id === openingChatRef.current) return;
   const generation = ++openGeneration.current;
+  cancelDeferredTranscript();
   const fromId = activeIdRef.current;
   openingChatRef.current = id;
   // Turns read this ref, not the render. Set it now so the chat we left cannot
@@ -933,31 +975,30 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
   setTurnStartedAt(0);
   showOpenedChatSettings(id, conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id));
   const cached = cachedTranscript(shownMessages.current, id, shownId.current, shownList.current);
-  const remembered = !cached && hostedChatsRef.current
-    ? cloudTranscriptsRef.current.get(`${projectKey(path)}\t${id}`)
-    : undefined;
-  const painted = cached ?? (remembered ? messagesFromCached(remembered) : undefined);
+  const painted = cached;
   const paintedLoaded = cachedTranscriptIsLoaded(painted);
   if (paintedLoaded) {
     setMessages(painted);
     shownMessages.current.set(id, painted);
     paintedChatsRef.current.add(id);
-    if (remembered?.compaction?.summary && remembered.compaction.through > 0) {
-      setCompactionByChat((prev) => ({ ...prev, [id]: remembered.compaction! }));
-    }
-  }
-  // This chat was already on screen. Painting it is the whole switch. Fetching
-  // the transcript again is what freezes the window between projects. A cloud
-  // copy we just remembered still has to be read from the server.
-  // A blank cache is not that copy: `[]` is truthy and used to skip the read.
-  if (cachedTranscriptIsLoaded(cached)) {
+    // This chat was already on screen. Fetching it again on the click freezes the window.
     setActiveId(id);
     saveConversation(path, id);
     setOpeningId("");
     finishOpen(generation, id);
-    // The cache can be the tool rows from before the reply was saved. The
-    // database still has the answer, so read it without blocking the click.
-    if (!hostedChatsRef.current) void repairCachedReply(path, id, cached, generation);
+    if (hostedChatsRef.current) {
+      void refreshHostedTranscript(path, id, painted, generation);
+      void watchHosted(path, id);
+      const openedRow = conversationsRef.current.find((row) => row.id === id);
+      void ensureChatPlan(path, id, openedRow?.model);
+    } else {
+      // The cache can be the tool rows from before the reply was saved.
+      // Idle, so this read does not hold the database ahead of the next chat's tail.
+      afterInput(() => {
+        if (generation !== openGeneration.current) return;
+        void repairCachedReply(path, id, painted, generation);
+      });
+    }
     return;
   }
   // A chat that is not in memory yet keeps the previous transcript for this one
@@ -980,49 +1021,62 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
     : null;
   setOpeningId(paintedLoaded ? "" : id);
   const finishLoad = hostedChatsRef.current ? null : beginTranscriptLoad(id);
+  let keepPreview = false;
+  const deferredBody = { messages: [] as ChatMessage[] };
   try {
     if (generation !== openGeneration.current) return;
+    let full: Awaited<ReturnType<typeof api.getConversation>> | null = null;
+    let tailWasPartial = false;
     if (!hostedChatsRef.current) {
-      // The last turns are enough to paint. The full history follows, and send waits for it.
+      // The last turns are enough to paint. A short tail is the whole chat.
       const tail = await api.getConversation(path, id, TRANSCRIPT_PAGE_MESSAGES).catch(() => null);
       if (generation !== openGeneration.current) return;
-      const tailMessages = (tail?.messages as ChatMessage[] | undefined) ?? [];
+      if (tail) {
+        const tailMessages = (tail.messages as ChatMessage[]) ?? [];
+        if (transcriptTailIsComplete(tailMessages.length)) {
+          full = tail;
+        } else {
+          tailWasPartial = true;
+          if (
+            tailMessages.length > 0 &&
+            openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)
+          ) {
+            setTranscriptPreview(id, tailMessages);
+            setOpeningId("");
+          }
+        }
+      }
+    }
+    if (!full) {
+      if (generation !== openGeneration.current) return;
+      const cachedTranscript = cachedLookup ? await cachedLookup : null;
+      if (generation !== openGeneration.current) return;
       if (
-        tailMessages.length > 0 &&
-        openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)
+        cachedTranscript &&
+        openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id) &&
+        !shownMessages.current.has(id)
       ) {
-        setTranscriptPreview(id, tailMessages);
+        const cachedBody = (cachedTranscript.messages as ChatMessage[]) ?? [];
+        const shown =
+          cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0
+            ? insertCompactionEvent(cachedBody, cachedTranscript.compaction.through)
+            : cachedBody;
+        shownMessages.current.set(id, shown);
+        setMessages(shown);
         setOpeningId("");
+        if (cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0) {
+          setCompactionByChat((prev) => ({ ...prev, [id]: cachedTranscript.compaction! }));
+        }
       }
+      const loaded = await (serverLookup ??
+        api.getConversation(path, id).then(
+          (value) => ({ ok: true as const, value }),
+          (error: unknown) => ({ ok: false as const, error }),
+        ));
+      if (!loaded.ok) throw loaded.error;
+      full = loaded.value;
     }
-    if (generation !== openGeneration.current) return;
-    const cachedTranscript = cachedLookup ? await cachedLookup : null;
-    if (generation !== openGeneration.current) return;
-    if (
-      cachedTranscript &&
-      openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id) &&
-      !shownMessages.current.has(id)
-    ) {
-      const cachedBody = (cachedTranscript.messages as ChatMessage[]) ?? [];
-      const shown =
-        cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0
-          ? insertCompactionEvent(cachedBody, cachedTranscript.compaction.through)
-          : cachedBody;
-      shownMessages.current.set(id, shown);
-      setMessages(shown);
-      setOpeningId("");
-      if (cachedTranscript.compaction?.summary && cachedTranscript.compaction.through > 0) {
-        setCompactionByChat((prev) => ({ ...prev, [id]: cachedTranscript.compaction! }));
-      }
-    }
-    const loaded = await (serverLookup ??
-      api.getConversation(path, id).then(
-        (value) => ({ ok: true as const, value }),
-        (error: unknown) => ({ ok: false as const, error }),
-      ));
-    if (!loaded.ok) throw loaded.error;
-    const full = loaded.value;
-    if (generation !== openGeneration.current) return;
+    if (generation !== openGeneration.current || !full) return;
     const known = conversationsRef.current.find((row) => row.id === id) ?? conversations.find((row) => row.id === id);
     const raw = (full.messages as ChatMessage[]) ?? [];
     const noticed =
@@ -1031,19 +1085,36 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
         : raw;
     // Paint before the usage lookup. That second read is what keeps the row
     // spinning and the previous chat on screen after this one is already loaded.
-    const shown = hostedChatsRef.current
-      ? mergeHostedTranscript(shownMessages.current.get(id) ?? liveByChatRef.current.get(id)?.messages ?? [], noticed)
-      : noticed;
-    shownMessages.current.set(id, shown);
+    // A turn that started during the fetch has already painted its prompt.
+    // Store and paint only the merge, or the raw disk copy replaces it.
+    const shown = transcriptAfterDiskRead(id, noticed);
+    if (shown) shownMessages.current.set(id, shown);
     paintedChatsRef.current.add(id);
-    // shownId still names the chat on screen until this list commits. The row
-    // highlight already painted, so commit the transcript now. A transition
-    // waits behind streaming updates and leaves that previous chat up.
-    if (openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) {
+    const stillOpen = openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id);
+    // A full page is parsed off the click. Send already waits on finishLoad.
+    // Scroll-up commits this list before revealing, if it is back.
+    if (stillOpen && tailWasPartial) {
+      deferredBody.messages = shown ?? noticed;
+      keepPreview = true;
+      finishLoad?.(shown ?? noticed);
+      deferTranscriptCommit(id, () => {
+        if (!openedTranscriptIsCurrent(generation, openGeneration.current, activeIdRef.current, id)) return false;
+        // transcriptAfterDiskRead merges the stored list. The live map is already gone.
+        const next = transcriptAfterDiskRead(id, deferredBody.messages);
+        if (!next) return false;
+        deferredBody.messages = next;
+        if (shownMessages.current.get(id) !== next) shownMessages.current.set(id, next);
+        if (shownId.current === id && shownList.current === next) return true;
+        setMessages(next);
+        return true;
+      });
+    } else if (stillOpen && shown) {
       clearTranscriptPreview(id);
       setOpeningId("");
       setMessages(shown);
       finishLoad?.(shown);
+    } else if (stillOpen) {
+      finishLoad?.(null);
     }
     showOpenedChatSettings(id, known, full);
     setUsageByChat((prev) => putChatUsage(prev, id, full.context_usage));
@@ -1073,13 +1144,30 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
           ? insertCompactionEvent(loaded, full.compaction.through)
           : loaded;
       if (loaded === raw) return;
-      const next = hostedChatsRef.current
-        ? mergeHostedTranscript(shownMessages.current.get(id) ?? liveByChatRef.current.get(id)?.messages ?? [], timed)
-        : timed;
-      shownMessages.current.set(id, next);
-      setMessages(next);
-      if (loaded !== raw || timed !== loaded) {
-        void persist(timed, id, path, parseChatUsage(full.context_usage) ?? undefined, full.compaction, {
+      const stored = shownMessages.current.get(id) ?? [];
+      const liveRows = liveByChatRef.current.get(id)?.messages ?? [];
+      const onScreen = shownId.current === id ? shownList.current : [];
+      let base = stored;
+      if (liveRows.length) base = base.length ? mergeHostedTranscript(base, liveRows) : liveRows;
+      if (onScreen.length && onScreen !== base) base = base.length ? mergeHostedTranscript(base, onScreen) : onScreen;
+      const merged = base.length ? mergeHostedTranscript(base, timed) : timed;
+      const next = transcriptAfterDiskRead(id, merged);
+      const paintedNow = onScreen.length ? onScreen : stored.length ? stored : base;
+      const paintedIsNewer =
+        paintedNow.length > 0 && paintedNow !== timed && mergeHostedTranscript(paintedNow, timed) === paintedNow;
+      if (next) {
+        const chosen = stored.length ? mergeHostedTranscript(stored, next) : next;
+        // The idle paint must not keep pointing at the pre-send disk copy.
+        deferredBody.messages = chosen;
+        if (chosen !== stored) {
+          shownMessages.current.set(id, chosen);
+          const alreadyPainted = shownId.current === id && shownList.current === chosen;
+          if (!alreadyPainted && !hasDeferredTranscript(id)) setMessages(chosen);
+        }
+      }
+      // A backfill write of the pre-send copy can land after the turn's save and drop the prompt.
+      if (!paintedIsNewer && next) {
+        void persist(next, id, path, parseChatUsage(full.context_usage) ?? undefined, full.compaction, {
           touch: false,
         });
       }
@@ -1090,8 +1178,11 @@ async function openChat(id: string, tabs = openTabsRef.current, path = workspace
       void watchHosted(path, id);
     }
   } finally {
-    finishLoad?.(null);
-    clearTranscriptPreview(id);
+    if (!keepPreview) {
+      finishLoad?.(null);
+      clearTranscriptPreview(id);
+      cancelDeferredTranscript(id);
+    }
     if (generation === openGeneration.current) {
       finishOpen(generation, id);
       setOpeningId("");
@@ -1143,13 +1234,6 @@ function focusVisibleSplitChat(id: string, fromId: string, shown: ChatMessage[])
     hideSubagents();
   }
   saveConversation(workspace, id);
-}
-
-function messagesFromCached(row: import("../lib/tauri").Conversation): ChatMessage[] {
-  const body = (row.messages as ChatMessage[]) ?? [];
-  return row.compaction?.summary && row.compaction.through > 0
-    ? insertCompactionEvent(body, row.compaction.through)
-    : body;
 }
 
 function stopHostedFollow() {
@@ -1377,11 +1461,28 @@ type PersistPayload = {
   touch?: boolean;
 };
 
+/** Sidebar title and preview keep `#name`. The saved transcript still has the path. */
+function projectMentionTitles(messages: ChatMessage[]): ChatMessage[] {
+  const projects = mentionProjectsNow();
+  if (!projects.length) return messages;
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.role !== "user") return message;
+    const content = String(message.content ?? "");
+    const shown = displayProjectMentions(content, projects);
+    if (shown === content) return message;
+    changed = true;
+    return { ...message, content: shown };
+  });
+  return changed ? next : messages;
+}
+
 async function writePersisted(id: string, payload: PersistPayload) {
   if (persistGen.current.get(id) !== payload.generation) return;
   if (!canPersistTurn(id, deletedIdsRef.current)) return;
   const { next, ws, usage, compaction } = payload;
-  const title = conversationTitleFrom(next);
+  const titled = projectMentionTitles(next);
+  const title = conversationTitleFrom(titled);
   const existing =
     conversationsRef.current.find((c) => c.id === id) ?? conversations.find((c) => c.id === id);
   const now = payload.touch === false ? (existing?.updated_at || nowIso()) : nowIso();
@@ -1423,7 +1524,7 @@ async function writePersisted(id: string, payload: PersistPayload) {
     model: modelId,
     context_window: existing?.context_window ?? null,
     permission: existing?.permission ?? null,
-    preview: lastChatLine(next),
+    preview: lastChatLine(titled),
   };
   if (isSameProject(ws, workspaceRef.current)) {
     setConversations((rows) => {
@@ -1540,5 +1641,6 @@ async function reorderChats(fromId: string, toId: string, path = workspace) {
     persist,
     watchHosted,
     reorderChats,
+    shownMessages,
   };
 }

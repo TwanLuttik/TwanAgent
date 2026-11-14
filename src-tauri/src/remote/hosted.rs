@@ -853,34 +853,32 @@ fn remember_hosted_conversation(
     let _ = crate::appdb::save_sidebar_transcript(&conn, workspace, &conversation_from_hosted(row));
 }
 
-/// The last server list and every saved transcript. Opening a chat paints from this, not from SSH.
+/// The last server list. Transcript bodies are read one chat at a time.
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_hosted_sidebar_cached(
+pub async fn dev_hosted_sidebar_cached(
     state: State<'_, AppState>,
     workspace: String,
 ) -> Result<(
     Vec<crate::dev::ConversationSummary>,
     Vec<crate::dev::Journey>,
-    Vec<crate::dev::Conversation>,
 )> {
-    let conn = crate::appdb::open(&state.data_dir)?;
-    if !crate::appdb::sidebar_is_cloud(&conn, &workspace)? {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
-    }
-    let (rows, journeys) = crate::appdb::sidebar_for(&conn, &workspace)?;
-    let rows: Vec<_> = rows
-        .into_iter()
-        .filter(|row| {
-            let title = row.title.trim();
-            !(title.is_empty() || title == "New chat")
-        })
-        .collect();
-    let keep: std::collections::HashSet<_> = rows.iter().map(|row| row.id.clone()).collect();
-    let transcripts = crate::appdb::sidebar_transcripts(&conn, &workspace)?
-        .into_iter()
-        .filter(|row| keep.contains(&row.id))
-        .collect();
-    Ok((rows, journeys, transcripts))
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        let conn = crate::appdb::open(&data_dir)?;
+        if !crate::appdb::sidebar_is_cloud(&conn, &workspace)? {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let (rows, journeys) = crate::appdb::sidebar_for(&conn, &workspace)?;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|row| {
+                let title = row.title.trim();
+                !(title.is_empty() || title == "New chat")
+            })
+            .collect();
+        Ok((rows, journeys))
+    })
+    .await
 }
 
 /// Copy each hosted project's usage log into the local usage database.
@@ -1023,13 +1021,17 @@ fn usage_cursor_key(project_key: &str) -> String {
 
 /// The last transcript saved for one cloud chat. Null until that chat has been opened here.
 #[tauri::command(rename_all = "snake_case")]
-pub fn dev_hosted_conversation_cached(
+pub async fn dev_hosted_conversation_cached(
     state: State<'_, AppState>,
     workspace: String,
     id: String,
 ) -> Result<Option<crate::dev::Conversation>> {
-    let conn = crate::appdb::open(&state.data_dir)?;
-    crate::appdb::sidebar_transcript(&conn, &workspace, &id)
+    let data_dir = state.data_dir.clone();
+    crate::state::run_blocking(move || {
+        let conn = crate::appdb::open(&data_dir)?;
+        crate::appdb::sidebar_transcript(&conn, &workspace, &id)
+    })
+    .await
 }
 
 /// List, load, save, and delete chats on the paired server. The local mount is not the store.

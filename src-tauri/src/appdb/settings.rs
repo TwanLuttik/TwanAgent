@@ -113,7 +113,11 @@ pub struct AccountUsageSample {
 }
 
 /// Append one point per allowance window. An unchanged reading inside the gap is skipped.
-pub fn record_account_usage_samples(conn: &Connection, provider: &str, payload: &str) -> Result<()> {
+pub fn record_account_usage_samples(
+    conn: &Connection,
+    provider: &str,
+    payload: &str,
+) -> Result<()> {
     let provider = provider.trim();
     if provider.is_empty() {
         return Ok(());
@@ -126,7 +130,11 @@ pub fn record_account_usage_samples(conn: &Connection, provider: &str, payload: 
     };
     let now = now_iso();
     for window in windows {
-        let id = window.get("id").and_then(|item| item.as_str()).unwrap_or("").trim();
+        let id = window
+            .get("id")
+            .and_then(|item| item.as_str())
+            .unwrap_or("")
+            .trim();
         let resets = window
             .get("resets_at")
             .and_then(|item| item.as_str())
@@ -158,7 +166,13 @@ pub fn record_account_usage_samples(conn: &Connection, provider: &str, payload: 
     Ok(())
 }
 
-fn sample_is_new(conn: &Connection, provider: &str, window_id: &str, resets_at: &str, used: f64) -> Result<bool> {
+fn sample_is_new(
+    conn: &Connection,
+    provider: &str,
+    window_id: &str,
+    resets_at: &str,
+    used: f64,
+) -> Result<bool> {
     let previous: Option<(f64, String)> = conn
         .query_row(
             "SELECT used_percent, recorded_at FROM account_usage_samples
@@ -203,7 +217,8 @@ pub fn list_account_usage_samples(conn: &Connection) -> Result<Vec<AccountUsageS
             })
         },
     )?;
-    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Error::from)
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Error::from)
 }
 
 /// Old path to current path. A moved project keeps its `store.db` through this list.

@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { rememberCloudTranscripts } from "./useChatSession";
+
 import {
   applyLiveProjectChats,
   isLocalCloudDraft,
@@ -38,7 +38,6 @@ export function useProjectIndex({
   sidebarSyncRef,
   sidebarLoadedForRef,
   workspaceRef,
-  cloudTranscriptsRef,
   setFlash,
 }: {
   workspace: string;
@@ -49,7 +48,6 @@ export function useProjectIndex({
   sidebarSyncRef: RefObject<{ workspace: string; conversations: ConversationSummary[] }>;
   sidebarLoadedForRef: RefObject<string>;
   workspaceRef: RefObject<string>;
-  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   setFlash: (flash: { kind: "err"; text: string }) => void;
 }) {
   const [recents, setRecents] = useState(loadRecentWorkspaces);
@@ -149,7 +147,6 @@ export function useProjectIndex({
           if (row.remote && conversations.length === 0 && !listed.failed) {
             try {
               const cached = await api.hostedSidebarCached(row.path);
-              rememberCloudTranscripts(cloudTranscriptsRef.current, row.path, cached.transcripts);
               if (cached.conversations.length > 0) conversations = cached.conversations;
             } catch {
               /* the server copy is missing; the list stays empty until SSH */
@@ -204,7 +201,7 @@ export function useProjectIndex({
     return () => {
       cancelled = true;
     };
-  }, [pathsReady, setFlash, sidebarLoadedForRef, sidebarSyncRef, workspaceRef, cloudTranscriptsRef]);
+  }, [pathsReady, setFlash, sidebarLoadedForRef, sidebarSyncRef, workspaceRef]);
 
   useEffect(() => {
     if (!workspace) return;

@@ -35,7 +35,7 @@ import { sidebarActivityIcon, sidebarActivityText } from "../lib/core";
 import { isProviderRetryStatus } from "../lib/turn";
 import { formatModelName } from "../lib/usage";
 
-export function ConversationList({
+export const ConversationList = memo(function ConversationList({
   conversations,
   activeId,
   runningIds,
@@ -255,7 +255,7 @@ export function ConversationList({
       ) : null}
     </DndContext>
   );
-}
+});
 
 const SortableRow = memo(function SortableRow({
   row,

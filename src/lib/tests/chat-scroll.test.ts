@@ -11,6 +11,12 @@ import {
   panesThatFollow,
   pinChatToEnd,
   scrollChatToEnd,
+  chatScrollFor,
+  chatScrollNearBottom,
+  forgetChatScroll,
+  rememberChatScroll,
+  restoreChatScroll,
+  scrollOffsetFits,
   scrollTopAfterComposerResize,
   stickToBottomAfterRestore,
 } from "../chat-scroll.ts";
@@ -124,6 +130,54 @@ describe("split panes follow on their own", () => {
     assert.equal(stickToBottomAfterRestore(atEnd, 700), true);
     const up = { scrollTop: 40, scrollHeight: 900, clientHeight: 200 };
     assert.equal(stickToBottomAfterRestore(up, 40), false);
+  });
+
+  it("waits to restore until the scroller can hold the saved offset", () => {
+    const short = { scrollHeight: 200, clientHeight: 200 };
+    assert.equal(scrollOffsetFits(short, null), true);
+    assert.equal(scrollOffsetFits(short, 0), true);
+    assert.equal(scrollOffsetFits(short, CHAT_NEAR_BOTTOM_PX), true);
+    assert.equal(scrollOffsetFits(short, CHAT_NEAR_BOTTOM_PX + 1), false);
+    assert.equal(scrollOffsetFits(short, 800), false);
+    const tall = { scrollHeight: 900, clientHeight: 200 };
+    assert.equal(scrollOffsetFits(tall, 700), true);
+    assert.equal(scrollOffsetFits(tall, 700 + CHAT_NEAR_BOTTOM_PX), true);
+    assert.equal(scrollOffsetFits(tall, 700 + CHAT_NEAR_BOTTOM_PX + 1), false);
+  });
+});
+
+describe("restoreChatScroll", () => {
+  it("pins a chat left at the bottom even when the saved offset is taller than this page", () => {
+    const page = { scrollTop: 0, scrollHeight: 400, clientHeight: 300 };
+    assert.deepEqual(restoreChatScroll(page, 5000, true), { scrollTop: 100, stick: true });
+  });
+
+  it("does not stick when a scrolled-up offset does not fit the mounted page", () => {
+    const page = { scrollTop: 0, scrollHeight: 400, clientHeight: 300 };
+    assert.deepEqual(restoreChatScroll(page, 5000, false), { scrollTop: 0, stick: false });
+  });
+
+  it("puts a fitting offset back and follows only when that offset is the end", () => {
+    const page = { scrollTop: 0, scrollHeight: 900, clientHeight: 200 };
+    assert.deepEqual(restoreChatScroll(page, 40, false), { scrollTop: 40, stick: false });
+    assert.deepEqual(restoreChatScroll(page, 700, false), { scrollTop: 700, stick: true });
+  });
+
+  it("follows when the chat has never been scrolled", () => {
+    const page = { scrollTop: 12, scrollHeight: 900, clientHeight: 200 };
+    assert.deepEqual(restoreChatScroll(page, null, false), { scrollTop: 700, stick: true });
+  });
+
+  it("remembers whether the chat was near the bottom", () => {
+    rememberChatScroll("restore-chat", 5000, true);
+    assert.equal(chatScrollFor("restore-chat"), 5000);
+    assert.equal(chatScrollNearBottom("restore-chat"), true);
+    rememberChatScroll("restore-chat", 10, false);
+    assert.equal(chatScrollFor("restore-chat"), 10);
+    assert.equal(chatScrollNearBottom("restore-chat"), false);
+    forgetChatScroll("restore-chat");
+    assert.equal(chatScrollFor("restore-chat"), null);
+    assert.equal(chatScrollNearBottom("restore-chat"), false);
   });
 });
 

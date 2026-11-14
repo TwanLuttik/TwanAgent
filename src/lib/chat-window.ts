@@ -94,11 +94,32 @@ export function cachedTranscriptIsLoaded<T extends { length: number }>(
 /** How many messages to paint before the rest of a long turn. One turn can be hundreds of tool rows. */
 export const TRANSCRIPT_PAGE_MESSAGES = 48;
 
+/**
+ * A tail shorter than a page is the whole chat, including an empty one.
+ * A full page may have older rows, so the caller still has to read the rest.
+ */
+export function transcriptTailIsComplete(length: number, page = TRANSCRIPT_PAGE_MESSAGES): boolean {
+  if (!Number.isFinite(length)) return false;
+  return length < page;
+}
+
 /** Index of the first message in the last `limit` messages. */
 export function transcriptMessageStart(length: number, limit: number): number {
   const cap = Math.max(1, Math.floor(limit) || 1);
   if (!Number.isFinite(length) || length <= cap) return 0;
   return Math.floor(length) - cap;
+}
+
+/**
+ * The mounted page does not fill the viewport, so scrollTop cannot move and a
+ * scroll listener will never ask for the rest. A zero viewport is not laid out yet.
+ */
+export function scrollerNeedsOlderPage(
+  el: { scrollHeight: number; clientHeight: number } | null,
+  hidden: boolean,
+): boolean {
+  if (!el || !hidden || el.clientHeight <= 0) return false;
+  return el.scrollHeight <= el.clientHeight;
 }
 
 /** How many rows to mount on the next frame. Stays on `length` once the whole chat is up. */

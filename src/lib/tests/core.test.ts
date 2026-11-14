@@ -52,6 +52,7 @@ import {
   transcriptItems,
   liveTranscriptItems,
   splitLiveTranscript,
+  messageIndexForEnd,
   groupTranscriptTurns,
   backfillFinishedAt,
   stampTurnDuration,
@@ -1101,6 +1102,26 @@ describe("backfillFinishedAt", () => {
     const messages: ChatMessage[] = [{ role: "assistant", content: "Done." }];
     assert.equal(backfillFinishedAt(messages, []), messages);
     assert.equal(backfillFinishedAt(messages, [{ at: "not-a-date" }]), messages);
+  });
+});
+
+describe("messageIndexForEnd", () => {
+  it("keeps the whole turn that holds the last rows and skips older ones", () => {
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 6; i++) {
+      messages.push({ role: "user", content: `u${i}` }, { role: "assistant", content: `a${i}` });
+    }
+    assert.equal(messageIndexForEnd(messages, 2), 10);
+    assert.equal(messages[messageIndexForEnd(messages, 2)]?.content, "u5");
+    assert.equal(messageIndexForEnd(messages, 100), 0);
+    const end = splitLiveTranscript(messages, "", [], "", 2);
+    const full = splitLiveTranscript(messages, "", [], "");
+    assert.equal(end.moreAbove, true);
+    assert.equal(end.tail[0]?.kind === "user" && end.tail[0].content, "u5");
+    assert.equal(full.tail[0]?.kind === "user" && full.tail[0].content, "u5");
+    const wider = splitLiveTranscript(messages, "", [], "", 4);
+    assert.equal(wider.tail[0], end.tail[0]);
+    assert.equal(wider.settled.at(-1)?.user?.content, "u4");
   });
 });
 

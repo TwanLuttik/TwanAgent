@@ -8,6 +8,7 @@ import {
   liveTurnMessages,
   mergeFinishedTranscript,
   mergeHostedTranscript,
+  transcriptKeepingLiveTurn,
   clearPendingForChat,
   clearUnseenFinished,
   dequeuePending,
@@ -143,6 +144,23 @@ describe("liveTurnMessages", () => {
       "older-chat",
     );
     assert.equal(hostedChatToOpen({ currentId: "", currentInRows: false, preferredId: "older-chat" }), "older-chat");
+  });
+
+  it("does not let a disk read replace a live turn's prompt", () => {
+    const disk = [{ role: "user" as const, content: "older" }];
+    const live = [
+      { role: "user" as const, content: "older" },
+      { role: "user" as const, content: "new" },
+    ];
+    const diskWithReply = [
+      { role: "user" as const, content: "older" },
+      { role: "assistant" as const, content: "answer" },
+    ];
+    assert.equal(transcriptKeepingLiveTurn(disk, live, true), live);
+    // An empty placeholder is not a newer transcript. The disk list still paints.
+    assert.deepEqual(transcriptKeepingLiveTurn(diskWithReply, [], true), diskWithReply);
+    assert.deepEqual(transcriptKeepingLiveTurn(diskWithReply, undefined, true), diskWithReply);
+    assert.deepEqual(transcriptKeepingLiveTurn(disk, live, false), disk);
   });
 
   it("does not let a shorter hosted transcript replace the prompt already on screen", () => {

@@ -158,14 +158,25 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+/** xterm knocks an opaque selection color down to 30%. An alpha keeps the accent visible. */
+function accentFill(alpha: number): string {
+  const hex = /^#([0-9a-f]{6})$/i.exec(cssVar("--color-accent"));
+  const value = hex ? parseInt(hex[1], 16) : 0x007aff;
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export function xtermTheme() {
   return {
     background: cssVar("--color-panel") || "#f5f5f7",
     foreground: cssVar("--color-ink") || "#3f3f42",
     cursor: cssVar("--color-ink") || "#3f3f42",
     cursorAccent: cssVar("--color-panel") || "#f5f5f7",
-    selectionBackground: cssVar("--color-select") || "#c8daf5",
-    selectionInactiveBackground: cssVar("--color-select") || "#c8daf5",
+    selectionBackground: accentFill(0.85),
+    selectionInactiveBackground: accentFill(0.55),
+    selectionForeground: cssVar("--color-on-accent") || "#ffffff",
   };
 }
 

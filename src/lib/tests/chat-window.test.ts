@@ -15,7 +15,9 @@ import {
   scrollTopAfterPrepend,
   TRANSCRIPT_PAGE_MESSAGES,
   nextTranscriptLimit,
+  scrollerNeedsOlderPage,
   transcriptMessageStart,
+  transcriptTailIsComplete,
   visibleTranscriptEnd,
 } from "../chat-window.ts";
 
@@ -108,6 +110,39 @@ describe("transcriptMessageStart", () => {
     assert.equal(transcriptMessageStart(48, 48), 0);
     assert.equal(transcriptMessageStart(10, 48), 0);
     assert.equal(transcriptMessageStart(0, 48), 0);
+  });
+});
+
+describe("transcriptTailIsComplete", () => {
+  it("treats a short or empty tail as the whole chat", () => {
+    assert.equal(transcriptTailIsComplete(0), true);
+    assert.equal(transcriptTailIsComplete(TRANSCRIPT_PAGE_MESSAGES - 1), true);
+  });
+
+  it("treats a full page as maybe longer", () => {
+    assert.equal(transcriptTailIsComplete(TRANSCRIPT_PAGE_MESSAGES), false);
+    assert.equal(transcriptTailIsComplete(TRANSCRIPT_PAGE_MESSAGES + 1), false);
+    assert.equal(transcriptTailIsComplete(Number.NaN), false);
+  });
+});
+
+describe("scrollerNeedsOlderPage", () => {
+  it("asks for another page only while hidden rows still do not overflow", () => {
+    assert.equal(scrollerNeedsOlderPage(null, true), false);
+    assert.equal(scrollerNeedsOlderPage({ scrollHeight: 0, clientHeight: 0 }, true), false);
+    assert.equal(scrollerNeedsOlderPage({ scrollHeight: 100, clientHeight: 400 }, false), false);
+    assert.equal(scrollerNeedsOlderPage({ scrollHeight: 100, clientHeight: 400 }, true), true);
+    assert.equal(scrollerNeedsOlderPage({ scrollHeight: 400, clientHeight: 400 }, true), true);
+    assert.equal(scrollerNeedsOlderPage({ scrollHeight: 401, clientHeight: 400 }, true), false);
+  });
+});
+
+describe("nextTranscriptLimit", () => {
+  it("grows by one page and stops at the real row count", () => {
+    assert.equal(nextTranscriptLimit(200, 0), TRANSCRIPT_PAGE_MESSAGES * 2);
+    assert.equal(nextTranscriptLimit(200, TRANSCRIPT_PAGE_MESSAGES * 2), TRANSCRIPT_PAGE_MESSAGES * 3);
+    assert.equal(nextTranscriptLimit(100, TRANSCRIPT_PAGE_MESSAGES * 2), 100);
+    assert.equal(nextTranscriptLimit(TRANSCRIPT_PAGE_MESSAGES, 0), TRANSCRIPT_PAGE_MESSAGES);
   });
 });
 

@@ -38,6 +38,7 @@ import {
   uniqueImageTokenLabel,
 } from "../lib/image";
 import { expandFileMentions, type MentionFile } from "../lib/mention";
+import { displayProjectMentions, expandProjectMentions, type MentionProject } from "../lib/project-mention";
 import { isOpenAiModel } from "../lib/model-providers/openai";
 import { openaiSpeedChoice } from "../lib/openai-speed";
 import { expandPasteTokens, type PasteBlock } from "../lib/paste";
@@ -73,7 +74,7 @@ import {
   type SubagentEvent,
   type SubagentRecord,
 } from "../lib/subagent";
-import { transcriptLoad } from "../lib/transcript-open";
+import { screenHasTranscript, transcriptLoad } from "../lib/transcript-open";
 import { beginTurnClock, endTurnClock } from "../lib/turn-clock";
 import { isTodoTool, todoBadge, todosInLatestTurn } from "../lib/todo";
 import { getLiveStream, setSecondaryLiveStream } from "../lib/live-stream";
@@ -145,6 +146,7 @@ export type TurnDeps = {
   draftImagesRef: RefObject<Record<string, ChatImage[]>>;
   promptImages: ChatImage[];
   mentionFiles: MentionFile[];
+  mentionProjects: MentionProject[];
   busy: boolean;
   runtime: Runtime | null;
   model: string;
@@ -235,6 +237,8 @@ export type TurnDeps = {
       }
     >
   >;
+  /** Painted transcript per chat. Survives the live map, which is cleared when the turn ends. */
+  shownMessagesRef: RefObject<Map<string, ChatMessage[]>>;
   /** The other conversation in a split. Its tokens go to the secondary stream. */
   sideChatIdRef?: RefObject<string>;
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
@@ -243,12 +247,12 @@ export type TurnDeps = {
 
 export function bindTurn(deps: TurnDeps) {
   const {
-    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, mentionFiles, runtime, models,
+    workspace, activeId, messages, draft, draftPastes, draftsRef, draftImagesRef, mentionFiles, mentionProjects, runtime, models,
     conversations, usageByChat, compactionByChat, persist, setFlash, setModel, setEffort, setContextWindow, setPermission, setDraftImages,
     setPendingByChat, setEditingPending, setFolderOpen, setActiveId, setBusy, setRunningId, setRunningTurns, setUnseenFinished, setMessages, setConversations, setDrafts, setPastesByChat, setTurnStartedAt,
     setStreamText, setStreamReasoning, setLiveTools, setRunningActivity, setSubagents, setExpandedAgents, setUsageByChat, setUsageTick, bumpFiles, adoptWorktreeName,
     setShellQueue, setPlanQueue, planByChatRef, onPlanChange, permissionRef, modelRef, effortRef, contextWindowRef, conversationsRef, activeIdRef, runningIdRef, runningWsRef, busyRef, abortRef, turnsRef, pendingRef, editingRef,
-    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
+    deletedIdsRef, mcpServersRef, skillsRef, remoteRef, remoteKnownRef, linkReadyRef, turnMessagesRef, turnLiveRef, liveByChatRef, shownMessagesRef, sideChatIdRef, subagentsByChatRef, stickToBottomRef, viewingChatRef,
   } = deps;
 
 function systemForDetached(ws: string, id: string, settings: { model: string; permission: string }): string {
@@ -872,6 +876,16 @@ function setPending(next: Record<string, PendingMessage[]>) {
   setPendingByChat(next);
 }
 
+/** The live map is removed when the turn ends. The painted list has to outlive that. */
+function keepShownTranscript(id: string, messages: ChatMessage[]) {
+  if (!messages.length) return;
+  const store = shownMessagesRef.current;
+  const prev = store.get(id);
+  if (prev === messages) return;
+  const keep = prev?.length ? mergeHostedTranscript(prev, messages) : messages;
+  if (keep !== prev) store.set(id, keep);
+}
+
 function rememberLive(
   id: string,
   patch: Partial<{
@@ -891,6 +905,7 @@ function rememberLive(
   };
   const next = { ...prev, ...patch };
   liveByChatRef.current.set(id, next);
+  if (patch.messages) keepShownTranscript(id, next.messages);
   if (runningIdRef.current === id) {
     turnMessagesRef.current = next.messages;
     turnLiveRef.current = {
@@ -1015,7 +1030,7 @@ async function continueWithPending(finishedId: string, ws: string, latestMessage
   }
   await runTurn(ws, queued.chatId, [
     ...msgs,
-    userMessage(queued.item.text, queued.item.images ?? []),
+    userMessage(expandProjectMentions(queued.item.text, mentionProjects), queued.item.images ?? []),
   ]);
   return true;
 }
@@ -1124,9 +1139,11 @@ async function send(targetId = activeIdRef.current) {
   await waitPrepares(imageKey);
   const heldImages = imagesForChat(draftImagesRef.current, imageKey);
   // Keep the short `[name]` in the stored message. The model copy swaps it for the full path.
-  const text = sendingSide
-    ? expandFileMentions(draftForChat(draftsRef.current, targetId), mentionFiles).trim()
-    : expandFileMentions(expandPasteTokens(draftForChat(draftsRef.current, imageKey) || draft, draftPastes), mentionFiles).trim();
+  // `#project` becomes `project name (path)` the same way, so the model can use that folder.
+  const typed = sendingSide
+    ? expandFileMentions(draftForChat(draftsRef.current, targetId), mentionFiles)
+    : expandFileMentions(expandPasteTokens(draftForChat(draftsRef.current, imageKey) || draft, draftPastes), mentionFiles);
+  const text = expandProjectMentions(typed, mentionProjects).trim();
   const images = persistableImages(heldImages);
   if (!canSendPrompt(text, images)) return;
   const blocked = linkSendBlock({
@@ -1171,7 +1188,7 @@ async function send(targetId = activeIdRef.current) {
     const chosenModel = modelRef.current;
     const chosenEffort = effortRef.current;
     const chosenWindow = contextWindowRef.current;
-    const title = conversationTitleFrom([userMessage(text, images)]);
+    const title = conversationTitleFrom([userMessage(displayProjectMentions(typed, mentionProjects).trim(), images)]);
     const sortOrder = nextTopSort(conversationsRef.current.map((row) => row.sort_order));
     let created: ConversationSummary = {
       id,
@@ -1213,14 +1230,18 @@ async function send(targetId = activeIdRef.current) {
     const pendingTranscript = transcriptLoad(id);
     if (pendingTranscript) {
       const full = await pendingTranscript;
-      if (full && full.length) history = messagesForSend(history, closeDanglingToolCalls(full));
+      if (full) {
+        const loaded = closeDanglingToolCalls(full);
+        // The screen can still be the chat we left, or only the last page.
+        history = screenHasTranscript(id) ? [...messagesForSend(history, loaded)] : loaded;
+      }
     }
     if (history.length === 0) {
       try {
         const full = hostedTurnStaysOnServer(remoteRef.current)
           ? await api.getConversationById(id)
           : await api.getConversation(ws, id);
-        history = messagesForSend(history, closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []));
+        history = [...messagesForSend(history, closeDanglingToolCalls((full.messages as ChatMessage[]) ?? []))];
       } catch (e) {
         setFlash({ kind: "err", text: String(e) });
         return;
@@ -1675,6 +1696,8 @@ async function runTurn(
     }
     if (visible()) setFlash({ kind: "err", text: String(e) });
   } finally {
+    // Dropping the live entry first lets a deferred disk paint put the pre-send list back.
+    keepShownTranscript(id, latestMessages);
     if (turnsRef.current.get(id) === ac) turnsRef.current.delete(id);
     if (abortRef.current === ac) abortRef.current = null;
     liveByChatRef.current.delete(id);

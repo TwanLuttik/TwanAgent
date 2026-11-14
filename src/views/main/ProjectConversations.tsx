@@ -122,11 +122,20 @@ export function ProjectConversations({
     },
     [runningTurns, todoByChat, path],
   );
+  const listActiveId = conversations.some((row) => row.id === activeId) ? activeId : "";
+  const selectedIds = useMemo(() => {
+    if (!path || !selectedKeys) return undefined;
+    const ids = new Set<string>();
+    for (const row of conversations) {
+      if (selectedKeys.has(chatSelectionKey(path, row.id))) ids.add(row.id);
+    }
+    return ids;
+  }, [conversations, path, selectedKeys]);
 
   return (
     <ConversationList
       conversations={conversations}
-      activeId={activeId}
+      activeId={listActiveId}
       runningIds={runningTurns}
       unseenIds={unseenFinished}
       loadingId={loadingId}
@@ -135,15 +144,7 @@ export function ProjectConversations({
       showSettings={dimmed}
       archivedView={archivedView}
       reorderable={reorderable}
-      selectedIds={
-        path && selectedKeys
-          ? new Set(
-              conversations
-                .filter((row) => selectedKeys.has(chatSelectionKey(path, row.id)))
-                .map((row) => row.id),
-            )
-          : undefined
-      }
+      selectedIds={selectedIds}
       {...handlers}
       place={footer}
       subagentChats={subagentChats}

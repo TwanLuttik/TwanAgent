@@ -32,17 +32,52 @@ export function scrollChatToEnd(
   el.scrollTop = chatScrollMax(el);
 }
 
-const scrollByChat = new Map<string, number>();
+type StoredChatScroll = { top: number; nearBottom: boolean };
+
+const scrollByChat = new Map<string, StoredChatScroll>();
 
 /** Remember where this conversation was scrolled so another pane can take the screen. */
-export function rememberChatScroll(id: string, scrollTop: number) {
+export function rememberChatScroll(id: string, scrollTop: number, nearBottom = false) {
   if (!id || !Number.isFinite(scrollTop)) return;
-  scrollByChat.set(id, Math.max(0, scrollTop));
+  scrollByChat.set(id, { top: Math.max(0, scrollTop), nearBottom });
 }
 
 export function chatScrollFor(id: string): number | null {
   const value = scrollByChat.get(id);
-  return value == null ? null : value;
+  return value == null ? null : value.top;
+}
+
+/** The chat was at the end when it was scrolled, not only a pixel offset from a taller page. */
+export function chatScrollNearBottom(id: string): boolean {
+  return scrollByChat.get(id)?.nearBottom ?? false;
+}
+
+/**
+ * Put a saved scroll back once this chat's transcript is on screen.
+ * A chat left at the bottom pins to the end of the mounted page even when the
+ * old offset is taller than that page. An offset that does not fit, and was
+ * not the bottom, does not stick — the caller still marks the chat settled so
+ * a later scroll to the end can follow.
+ */
+export function restoreChatScroll(
+  el: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  savedTop: number | null,
+  nearBottom: boolean,
+): { scrollTop: number; stick: boolean } {
+  if (nearBottom || savedTop == null) {
+    return { scrollTop: chatScrollMax(el), stick: true };
+  }
+  if (!scrollOffsetFits(el, savedTop)) {
+    return { scrollTop: el.scrollTop, stick: false };
+  }
+  const scrollTop = Math.min(savedTop, chatScrollMax(el));
+  return {
+    scrollTop,
+    stick: stickToBottomAfterRestore(
+      { scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight },
+      savedTop,
+    ),
+  };
 }
 
 export function forgetChatScroll(id: string) {
@@ -60,6 +95,19 @@ export function panesThatFollow<T extends { id: string; nearBottom: boolean }>(p
     ids.push(pane.id);
   }
   return ids;
+}
+
+/**
+ * The scroller can put this offset back.
+ * No saved offset means there is nothing to wait for.
+ * A large offset on a short shell is not at the bottom. It has not been laid out yet.
+ */
+export function scrollOffsetFits(
+  el: { scrollHeight: number; clientHeight?: number },
+  saved: number | null,
+): boolean {
+  if (saved == null || !Number.isFinite(saved)) return true;
+  return saved <= chatScrollMax(el) + CHAT_NEAR_BOTTOM_PX;
 }
 
 /**

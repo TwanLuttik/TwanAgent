@@ -562,6 +562,71 @@ type CommittedTranscript = {
   toolLabels: Set<string>;
 };
 
+/** Rows a message can add. Over-counting keeps a whole turn; under-counting would hide one. */
+function estimatedRows(message: ChatMessage): number {
+  if (isCompactionEvent(message)) return 1;
+  if (message.role === "tool" || message.role === "system") return 0;
+  if (message.role === "user") return 1;
+  let rows = 0;
+  if (String(message.reasoning ?? "").trim()) rows += 1;
+  if (String(message.content ?? "").trim()) rows += 1;
+  if (message.tool_calls?.length) rows += 1;
+  return rows;
+}
+
+/**
+ * First message of the turns that cover the last `rowBudget` rows.
+ * The cut is always a user message, so a tool result stays with its call.
+ */
+export function messageIndexForEnd(messages: readonly ChatMessage[], rowBudget: number): number {
+  if (messages.length === 0 || !Number.isFinite(rowBudget) || rowBudget <= 0) return 0;
+  const budget = Math.floor(rowBudget);
+  let rows = 0;
+  let index = messages.length - 1;
+  for (; index >= 0; index--) {
+    rows += estimatedRows(messages[index]!);
+    if (rows >= budget) break;
+  }
+  if (index < 0) return 0;
+  while (index > 0 && messages[index]!.role !== "user") index -= 1;
+  return index;
+}
+
+type WindowedTranscript = {
+  start: number;
+  turns: TranscriptTurn[];
+  toolLabels: Set<string>;
+};
+
+/**
+ * Turns for the visible end of one messages array.
+ * A larger window parses only the older gap and keeps the turns already built.
+ */
+const windowedByMessages = new WeakMap<ChatMessage[], WindowedTranscript>();
+
+function toolLabelsOf(turns: readonly TranscriptTurn[]): Set<string> {
+  const labels = new Set<string>();
+  for (const turn of turns) {
+    for (const item of turn.rest) {
+      if (item.kind === "tools") for (const label of item.labels) labels.add(label);
+    }
+  }
+  return labels;
+}
+
+function windowedTranscript(messages: ChatMessage[], rowBudget: number): WindowedTranscript {
+  const start = messageIndexForEnd(messages, rowBudget);
+  const cached = windowedByMessages.get(messages);
+  if (cached && start >= cached.start) return cached;
+  const older = cached
+    ? groupTranscriptTurns(transcriptItems(messages.slice(start, cached.start)))
+    : groupTranscriptTurns(transcriptItems(messages.slice(start)));
+  const turns = cached ? [...older, ...cached.turns] : older;
+  const entry = { start, turns, toolLabels: toolLabelsOf(turns) };
+  windowedByMessages.set(messages, entry);
+  return entry;
+}
+
 /**
  * Settled turns are keyed by the messages array. Callers replace that array when history
  * changes, so the same reference means the committed turns have not changed.
@@ -653,17 +718,32 @@ export function splitLiveTranscript(
   streamText: string,
   liveTools: LiveToolInput[] = [],
   streamReasoning = "",
-): { settled: TranscriptTurn[]; tail: TranscriptItem[] } {
-  const committed = committedTranscript(messages);
+  rowBudget?: number,
+): { settled: TranscriptTurn[]; tail: TranscriptItem[]; moreAbove: boolean } {
+  if (rowBudget == null) {
+    const committed = committedTranscript(messages);
+    return {
+      settled: committed.settled,
+      tail: appendLiveTranscript(
+        openTurnItems(committed),
+        streamText,
+        liveTools,
+        streamReasoning,
+        committed.toolLabels,
+      ),
+      moreAbove: false,
+    };
+  }
+  const windowed = windowedTranscript(messages, rowBudget);
+  const settled = windowed.turns.slice(0, -1);
+  const open = windowed.turns[windowed.turns.length - 1];
+  const openItems: TranscriptItem[] = [];
+  if (open?.user) openItems.push(open.user);
+  if (open) openItems.push(...open.rest);
   return {
-    settled: committed.settled,
-    tail: appendLiveTranscript(
-      openTurnItems(committed),
-      streamText,
-      liveTools,
-      streamReasoning,
-      committed.toolLabels,
-    ),
+    settled,
+    tail: appendLiveTranscript(openItems, streamText, liveTools, streamReasoning, windowed.toolLabels),
+    moreAbove: windowed.start > 0,
   };
 }
 

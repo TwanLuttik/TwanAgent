@@ -873,8 +873,14 @@ mod tests {
         assert_eq!(service_tier_for("gpt-6-luna", "flex"), Some("flex"));
         assert_eq!(service_tier_for("gpt-6-luna", "fast"), Some("fast"));
         assert_eq!(service_tier_for("gpt-6-luna", "ultrafast"), Some("fast"));
-        assert_eq!(service_tier_for("gpt-6-astra", "ultrafast"), Some("ultrafast"));
-        assert_eq!(service_tier_for("gpt-6.1-sol", "ultrafast"), Some("ultrafast"));
+        assert_eq!(
+            service_tier_for("gpt-6-astra", "ultrafast"),
+            Some("ultrafast")
+        );
+        assert_eq!(
+            service_tier_for("gpt-6.1-sol", "ultrafast"),
+            Some("ultrafast")
+        );
         assert_eq!(service_tier_for("gpt-6-luna", ""), None);
         assert_eq!(service_tier_for("gpt-6-luna", "batch"), None);
     }

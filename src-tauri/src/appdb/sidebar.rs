@@ -215,21 +215,6 @@ pub fn save_sidebar_transcript(
     Ok(())
 }
 
-/// Every saved transcript for one project, keyed by chat id. Used to paint a cloud chat on click.
-pub fn sidebar_transcripts(
-    conn: &Connection,
-    project: &str,
-) -> Result<Vec<crate::dev::Conversation>> {
-    let key = project_key(project);
-    let mut stmt = conn.prepare("SELECT body FROM sidebar_transcripts WHERE project_path = ?1")?;
-    let rows = stmt.query_map([&key], |row| row.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(serde_json::from_str(&row?)?);
-    }
-    Ok(out)
-}
-
 /// Every indexed project, in sidebar order, with the chats and journeys already copied into app.db.
 /// A project that has never been indexed is left out. The caller still reads that project's store.
 pub fn sidebar_snapshot(conn: &Connection) -> Result<Vec<crate::dev::SidebarProject>> {

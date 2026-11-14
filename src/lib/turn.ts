@@ -194,6 +194,20 @@ export function mergeHostedTranscript(shown: ChatMessage[], incoming: ChatMessag
 }
 
 /**
+ * A disk read must not replace a prompt the open turn already painted.
+ * No live rows: the disk list stands. An empty placeholder is not a newer
+ * transcript. When the live list has rows, keep the one with the newer prompt.
+ */
+export function transcriptKeepingLiveTurn(
+  disk: ChatMessage[],
+  live: ChatMessage[] | null | undefined,
+  turnLive: boolean,
+): ChatMessage[] | null {
+  if (!turnLive || !live?.length) return disk;
+  return mergeHostedTranscript(live, disk);
+}
+
+/**
  * The transcript to paint when a turn finishes.
  * A saved copy can hold the reply in the same number of messages the live list
  * already has. A longer live list can be the tool rows only. Length then kept

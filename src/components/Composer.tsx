@@ -1,8 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type FormEvent, type KeyboardEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import type { ProjectGroupRow } from "../lib/all-projects";
 import { folderName, projectKey, type ChatImage, type ProjectRow } from "../lib/core";
 import { applyMention, filterMentionFiles, mentionAtCursor, type MentionFile } from "../lib/mention";
+import {
+  applyProjectMention,
+  filterMentionProjects,
+  mentionProjectsFor,
+  projectMentionAtCursor,
+  type MentionProject,
+} from "../lib/project-mention";
 import { expandPasteTokens, pasteBeforeCursor, removePasteSpan, type PasteBlock } from "../lib/paste";
 import {
   canSendPrompt,
@@ -28,7 +35,7 @@ import { PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { TodoSteps } from "./TodoSteps";
 import { ChipSelect, MicSelect, PlanToggle, VoiceWave } from "./composer/ComposerChips";
-import { MentionField, MentionMenu } from "./composer/MentionField";
+import { MentionField, MentionMenu, type MentionMenuRow } from "./composer/MentionField";
 import { ModelSelect, orderModels } from "./composer/ModelSelect";
 import { ProjectSelect } from "./composer/ProjectSelect";
 import { WorktreeBar } from "./composer/WorktreeBar";
@@ -187,8 +194,27 @@ export function Composer({
   const [cursor, setCursor] = useState(0);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionClosed, setMentionClosed] = useState(false);
+  const mentionProjects = useMemo(
+    () => mentionProjectsFor(workspace, projects, projectGroups),
+    [workspace, projects, projectGroups],
+  );
   const mention = mentionClosed ? null : mentionAtCursor(draft, cursor);
-  const mentionRows = mention ? filterMentionFiles(mentionFiles, mention.query) : [];
+  const projectMention = mentionClosed ? null : projectMentionAtCursor(draft, cursor);
+  const fileRows = mention ? filterMentionFiles(mentionFiles, mention.query) : [];
+  const projectRows = projectMention ? filterMentionProjects(mentionProjects, projectMention.query) : [];
+  const menuRows: MentionMenuRow[] = projectMention
+    ? projectRows.map((project) => ({
+        key: project.path,
+        name: project.token,
+        detail: project.path,
+        icon: "folder" as const,
+      }))
+    : fileRows.map((file) => ({
+        key: file.path,
+        name: file.name,
+        detail: file.path,
+        icon: "file" as const,
+      }));
   const canSend = canSendPrompt(expandPasteTokens(draft, pastes), images) && ready;
   const showUsage = Boolean(usage && usageWindow);
   const commandRun = useCommandRun(commandChatId ?? "");
@@ -476,17 +502,38 @@ export function Composer({
     return () => ro.disconnect();
   }, [draft, compact]);
 
-  function pickMention(file: MentionFile) {
-    if (!mention) return;
-    const next = applyMention(draft, mention, file);
-    onDraft(next.text);
-    setCursor(next.cursor);
+  function placeMentionCursor(cursor: number) {
+    setCursor(cursor);
     requestAnimationFrame(() => {
       const el = area.current;
       if (!el) return;
       el.focus();
-      el.setSelectionRange(next.cursor, next.cursor);
+      el.setSelectionRange(cursor, cursor);
     });
+  }
+
+  function pickMention(file: MentionFile) {
+    if (!mention) return;
+    const next = applyMention(draft, mention, file);
+    onDraft(next.text);
+    placeMentionCursor(next.cursor);
+  }
+
+  function pickProject(project: MentionProject) {
+    if (!projectMention) return;
+    const next = applyProjectMention(draft, projectMention, project);
+    onDraft(next.text);
+    placeMentionCursor(next.cursor);
+  }
+
+  function pickMenuRow(row: MentionMenuRow) {
+    if (projectMention) {
+      const project = projectRows.find((item) => item.path === row.key);
+      if (project) pickProject(project);
+      return;
+    }
+    const file = fileRows.find((item) => item.path === row.key);
+    if (file) pickMention(file);
   }
 
   function submit(ev?: FormEvent) {
@@ -532,16 +579,17 @@ export function Composer({
         return;
       }
     }
-    if (mention && mentionRows.length) {
+    if (menuRows.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const step = e.key === "ArrowDown" ? 1 : -1;
-        setMentionIndex((index) => (index + step + mentionRows.length) % mentionRows.length);
+        setMentionIndex((index) => (index + step + menuRows.length) % menuRows.length);
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        pickMention(mentionRows[Math.min(mentionIndex, mentionRows.length - 1)]);
+        const row = menuRows[Math.min(mentionIndex, menuRows.length - 1)];
+        if (row) pickMenuRow(row);
         return;
       }
       if (e.key === "Escape") {
@@ -620,17 +668,19 @@ export function Composer({
           </div>
         ) : null}
         <MentionMenu
-          open={Boolean(mention && mentionRows.length)}
+          open={menuRows.length > 0}
           anchor={area}
           cursor={cursor}
-          rows={mentionRows}
+          rows={menuRows}
           index={mentionIndex}
+          label={projectMention ? "Projects" : "Files"}
           onIndex={setMentionIndex}
-          onPick={pickMention}
+          onPick={pickMenuRow}
         />
         <MentionField
           draft={draft}
           files={mentionFiles}
+          projects={mentionProjects}
           compact={compact}
           area={area}
           mirror={mirror}

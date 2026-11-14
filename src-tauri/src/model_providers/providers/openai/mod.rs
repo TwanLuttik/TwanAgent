@@ -4,8 +4,9 @@ mod usage;
 
 pub use usage::{
     __cmd__dev_openai_account_usage, __cmd__dev_openai_account_usage_cached,
-    __tauri_command_name_dev_openai_account_usage, __tauri_command_name_dev_openai_account_usage_cached,
-    dev_openai_account_usage, dev_openai_account_usage_cached,
+    __tauri_command_name_dev_openai_account_usage,
+    __tauri_command_name_dev_openai_account_usage_cached, dev_openai_account_usage,
+    dev_openai_account_usage_cached,
 };
 
 use std::sync::atomic::AtomicBool;
@@ -88,7 +89,9 @@ pub async fn stream(
     service_tier: Option<&str>,
 ) -> Result<()> {
     let mut body = twanagent_service::openai::to_responses_body(&messages, model, effort, tools);
-    if let Some(tier) = twanagent_service::openai::service_tier_for(model, service_tier.unwrap_or("")) {
+    if let Some(tier) =
+        twanagent_service::openai::service_tier_for(model, service_tier.unwrap_or(""))
+    {
         body["service_tier"] = serde_json::Value::String(tier.to_string());
     }
     let resp = crate::model_providers::runner::http_client()

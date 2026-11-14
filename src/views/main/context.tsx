@@ -3,6 +3,7 @@ import type { ProjectChatGroup } from "../../lib/all-projects";
 import type { TabItem, TabMenu } from "../../lib/split-pane";
 import type { ConversationSummary } from "../../lib/tauri";
 import type { AppOverlay } from "../../lib/overlay";
+import type { TodoBadge } from "../../lib/todo";
 import type { RunningTurn } from "../../lib/turn";
 
 type MainFn = (...args: any[]) => any;
@@ -186,7 +187,8 @@ export type SidebarSlice = {
   /** Drop a project row without deleting its folder. A linked worktree uses this. */
   forgetProjectRow: MainFn;
   legacyProjectsRoot: string;
-  messages: MainModel["messages"];
+  /** Todo chip for the open chat. Stable until the todo content changes. */
+  openTodoBadge: TodoBadge | null;
   openChat: MainFn;
   openListedChat: MainFn;
   openingId: string;
@@ -207,6 +209,8 @@ export type SidebarSlice = {
   showSettings: boolean;
   showUsage: boolean;
   showDocs: boolean;
+  closeSettings: MainFn;
+  closeDocs: MainFn;
   /** False until the first frame has every cached chat. The list stays blank until then. */
   sidebarReady: boolean;
   startNewChat: MainFn;

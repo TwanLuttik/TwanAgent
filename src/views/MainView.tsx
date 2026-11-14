@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { CHAT_BOTTOM_PAD_FALLBACK, applyComposerPadResize, chatBottomPadding, isNearBottom, pinChatToEnd } from "../lib/chat-scroll";
-import { scrollTopAfterPrepend } from "../lib/chat-window";
+import { CHAT_BOTTOM_PAD_FALLBACK, applyComposerPadResize, chatBottomPadding, chatScrollFor, chatScrollNearBottom, forgetChatScroll, isNearBottom, pinChatToEnd, rememberChatScroll, restoreChatScroll } from "../lib/chat-scroll";
 import { insertCompactionEvent } from "../lib/compact";
 import { cloudSendWaiting, linkChatsOnServer, projectLink } from "../lib/hosted";
 import { type ChatUsage } from "../lib/context";
@@ -72,9 +71,12 @@ import {
 } from "../lib/prefs";
 import { parsePermissionMode, type PermissionMode, type RemoteWorkspace } from "../lib/permission";
 import { collectWorkspaceFiles, type MentionFile } from "../lib/mention";
+import { mentionProjectsFor, publishMentionProjects } from "../lib/project-mention";
+import { useProjectGroups } from "../lib/project-groups";
 import type { PasteBlock } from "../lib/paste";
 import { chatHasRunningTurn, draftForChat, pendingForChat, setDraftForChat, type PendingEdit, type PendingMessage, type RunningTurn } from "../lib/turn";
-import { chatScrollFor, forgetChatScroll, rememberChatScroll } from "../lib/chat-scroll";
+import { transcriptOnScreen } from "../lib/transcript-open";
+import { sidebarTodoBadge, todosInLatestTurn } from "../lib/todo";
 import * as api from "../lib/tauri";
 import type { ConversationSummary } from "../lib/tauri";
 import { useApp } from "../state/app-state";
@@ -86,6 +88,7 @@ import { useCapabilities } from "../hooks/useCapabilities";
 import { markLiveLocalTurns, useChatSession, useLiveRef } from "../hooks/useChatSession";
 import { useProjectIndex } from "../hooks/useProjectIndex";
 import type { MainModel, SidebarSlice } from "./main/context";
+import { todoSignature } from "./main/SidebarActivity";
 import { MainProvider } from "./main/context";
 import { MainShell } from "./main/MainShell";
 import { useOverlays } from "../hooks/useOverlays";
@@ -312,7 +315,6 @@ export function MainView() {
   const linkReadyRef = useLiveRef(linkReady);
   const sidebarSyncRef = useLiveRef({ workspace, conversations });
   const conversationsRef = useLiveRef(conversations);
-  const cloudTranscriptsRef = useRef(new Map<string, import("../lib/tauri").Conversation>());
   const sidebarLoadedForRef = useRef("");
   const deletedIdsRef = useRef(new Set<string>());
   const turnMessagesRef = useRef<ChatMessage[] | null>(null);
@@ -352,7 +354,6 @@ export function MainView() {
       if (followHolds.current === 0) followingRef.current = false;
     });
   }, []);
-  const prependRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const draft = draftForChat(drafts, activeId);
   const draftsRef = useLiveRef(drafts);
   const draftImagesRef = useLiveRef(draftImages);
@@ -425,7 +426,6 @@ export function MainView() {
     stickToBottomRef,
     holdEmptyChatRef,
     libraryRef,
-    cloudTranscriptsRef,
     paintedChatsRef,
   });
   const {
@@ -448,10 +448,17 @@ export function MainView() {
     sidebarSyncRef,
     sidebarLoadedForRef,
     workspaceRef,
-    cloudTranscriptsRef,
     setFlash,
   });
   projectsRootRef.current = projectsRoot;
+  const projectGroups = useProjectGroups();
+  const mentionProjects = useMemo(
+    () => mentionProjectsFor(workspace, allProjectGroups, projectGroups),
+    [workspace, allProjectGroups, projectGroups],
+  );
+  useEffect(() => {
+    publishMentionProjects(mentionProjects);
+  }, [mentionProjects]);
   const joinedLiveRef = useRef(new Set<string>());
   const sidebarChatIds = allProjectGroups
     .flatMap((group) => group.conversations.map((row) => row.id))
@@ -726,50 +733,50 @@ export function MainView() {
     return () => ro.disconnect();
   }, [editor.focus, showSettings, showUsage, showDocs, showServers, activeId, holdFollow]);
 
+  /** True while a prepend is writing scrollTop. That event is not the user leaving the bottom. */
+  const scrollAdjustRef = useRef(false);
   const holdScrollForOlder = useCallback(() => {
     const el = scroller.current;
-    if (!el) return;
-    // Still at the end: the pin keeps up as older rows mount above. Scrolled up: hold that place.
-    if (
-      isNearBottom({
-        scrollTop: el.scrollTop,
-        scrollHeight: el.scrollHeight,
-        clientHeight: el.clientHeight,
-      })
-    ) {
-      return;
-    }
+    if (!el) return null;
+    // Reveals only happen at the top. A short page is also near the bottom, and the pin would jump.
     stickToBottomRef.current = false;
-    prependRef.current = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+    scrollAdjustRef.current = true;
+    // The prepend's resize pin runs in this frame. Follow again only after that paint.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollAdjustRef.current = false;
+        const node = scroller.current;
+        const id = activeIdRef.current;
+        if (!node || !id || !transcriptOnScreen(id)) return;
+        const near = isNearBottom(node);
+        stickToBottomRef.current = near;
+        rememberChatScroll(id, node.scrollTop, near);
+      });
+    });
+    return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
   }, []);
 
-  const restoredFor = useRef("");
+  const scrollSettledFor = useRef("");
   useLayoutEffect(() => {
     const el = scroller.current;
-    const prepend = prependRef.current;
-    if (el && activeId && restoredFor.current !== activeId) {
-      restoredFor.current = activeId;
-      const saved = chatScrollFor(activeId);
-      if (saved != null) {
-        stickToBottomRef.current = isNearBottom({
-          scrollTop: saved,
-          scrollHeight: el.scrollHeight,
-          clientHeight: el.clientHeight,
-        });
-        el.scrollTop = saved;
+    if (el && activeId && scrollSettledFor.current !== activeId) {
+      if (!transcriptOnScreen(activeId)) {
+        // The loading shell clamps scrollTop. That is not this chat's position, and it must not pin.
+        stickToBottomRef.current = false;
+      } else {
+        const restored = restoreChatScroll(el, chatScrollFor(activeId), chatScrollNearBottom(activeId));
+        if (el.scrollTop !== restored.scrollTop) el.scrollTop = restored.scrollTop;
+        stickToBottomRef.current = restored.stick;
+        scrollSettledFor.current = activeId;
       }
-    }
-    if (prepend && el) {
-      prependRef.current = null;
-      el.scrollTop = scrollTopAfterPrepend(prepend, el.scrollHeight);
-      return;
     }
     const scrollerEl = scroller.current;
     if (!scrollerEl) return;
     let frame = 0;
     // One jump to the end. Streaming must not ease across frames.
     const pin = () => {
-      if (!stickToBottomRef.current) return;
+      if (scrollAdjustRef.current) return;
+      if (!activeId || scrollSettledFor.current !== activeId || !stickToBottomRef.current) return;
       holdFollow();
       pinChatToEnd(scroller.current, true);
     };
@@ -881,7 +888,6 @@ export function MainView() {
     stickToBottomRef,
     conversationsRef,
     openGeneration,
-    cloudTranscriptsRef,
     sidebarLoadedForRef,
     setWorkspace,
     setConversations,
@@ -958,6 +964,7 @@ export function MainView() {
     draftImagesRef,
     promptImages,
     mentionFiles,
+    mentionProjects,
     busy,
     runtime,
     model,
@@ -1024,6 +1031,7 @@ export function MainView() {
     turnMessagesRef,
     turnLiveRef,
     liveByChatRef,
+    shownMessagesRef: library.shownMessages,
     subagentsByChatRef,
     stickToBottomRef,
     sideChatIdRef,
@@ -1501,9 +1509,13 @@ export function MainView() {
     const el = scroller.current;
     if (!el) return;
     const onScroll = () => {
-      if (followingRef.current) return;
-      stickToBottomRef.current = isNearBottom(el);
-      if (activeIdRef.current) rememberChatScroll(activeIdRef.current, el.scrollTop);
+      if (followingRef.current || scrollAdjustRef.current) return;
+      const id = activeIdRef.current;
+      // The shell is shorter than the saved offset. Its clamped scrollTop is not where the user was.
+      if (!id || !transcriptOnScreen(id)) return;
+      const near = isNearBottom(el);
+      stickToBottomRef.current = near;
+      rememberChatScroll(id, el.scrollTop, near);
     };
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) stickToBottomRef.current = false;
@@ -1516,6 +1528,12 @@ export function MainView() {
     };
   }, [showLanding, showSettings, showUsage, showDocs, showServers, editor.focus, splitChatIds.join("|")]);
 
+  const openTodoSig = useMemo(() => todoSignature(messages as ChatMessage[]), [messages]);
+  // Same todos keep the same badge object, so a stream token does not rebuild the sidebar.
+  const openTodoBadge = useMemo(
+    () => sidebarTodoBadge(todosInLatestTurn(messages as ChatMessage[])),
+    [openTodoSig],
+  );
   const sidebarRef = useRef<SidebarSlice | null>(null);
   if (!sidebarRef.current) sidebarRef.current = {
     activeId,
@@ -1527,7 +1545,7 @@ export function MainView() {
     deleteProjectFromSidebar,
     forgetProjectRow,
     legacyProjectsRoot,
-    messages,
+    openTodoBadge,
     openChat,
     openListedChat,
     openingId,
@@ -1547,6 +1565,8 @@ export function MainView() {
     showSettings,
     showUsage,
     showDocs,
+    closeSettings,
+    closeDocs,
     sidebarReady,
     startNewChat,
     toggleProjectCollapsed,
@@ -1559,7 +1579,7 @@ export function MainView() {
     sidebar.collapsedProjects !== collapsedProjects ||
     sidebar.conversations !== conversations ||
     sidebar.legacyProjectsRoot !== legacyProjectsRoot ||
-    sidebar.messages !== messages ||
+    sidebar.openTodoBadge !== openTodoBadge ||
     sidebar.openingId !== openingId ||
     sidebar.projectSettings !== projectSettings ||
     sidebar.projectsRoot !== projectsRoot ||
@@ -1583,7 +1603,7 @@ export function MainView() {
       deleteProjectFromSidebar,
       forgetProjectRow,
       legacyProjectsRoot,
-      messages,
+      openTodoBadge,
       openChat,
       openListedChat,
       openingId,
@@ -1603,6 +1623,8 @@ export function MainView() {
       showSettings,
       showUsage,
       showDocs,
+      closeSettings,
+      closeDocs,
       sidebarReady,
       startNewChat,
       toggleProjectCollapsed,
@@ -1626,6 +1648,8 @@ export function MainView() {
     live.reorderProjects = reorderProjects;
     live.startNewChat = startNewChat;
     live.toggleProjectCollapsed = toggleProjectCollapsed;
+    live.closeSettings = closeSettings;
+    live.closeDocs = closeDocs;
   }
   const sidebarValue = sidebarRef.current;
 

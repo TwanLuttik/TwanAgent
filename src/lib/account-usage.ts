@@ -14,7 +14,7 @@ export type AccountUsage = {
   balanceCents: number | null;
   balanceCurrency: string | null;
   /** `available` or `exhausted` when a prepaid org has no dollar balance. */
-  creditStatus: string | null;
+  creditStatus: "available" | "exhausted" | null;
   /** When this snapshot was fetched. Absent on a cached row that predates it. */
   fetchedAt: string | null;
 };

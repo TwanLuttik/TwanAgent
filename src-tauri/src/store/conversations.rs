@@ -207,6 +207,17 @@ pub fn get_conversation_tail(
     conversation_from_head(head, messages)
 }
 
+/// Head columns only. Settings and compaction do not need message bodies.
+pub fn get_conversation_head(conn: &Connection, id: &str) -> Result<Conversation> {
+    let head = conn
+        .query_row(&format!("{HEAD_SQL} WHERE id = ?1"), [id], map_head)
+        .optional()?;
+    let Some(head) = head else {
+        return Err(Error::NotFound("conversation not found".into()));
+    };
+    conversation_from_head(head, Vec::new())
+}
+
 fn conversation_from_head(
     head: ConvHead,
     messages: Vec<serde_json::Value>,

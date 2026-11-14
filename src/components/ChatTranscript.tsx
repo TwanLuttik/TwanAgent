@@ -1,9 +1,11 @@
-import { memo, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { FilePathTip, PromptImages } from "./PromptImages";
 import { Symbol } from "./Symbol";
 import { forgetSeenToolSignature, ToolTrail } from "./ToolTrail";
-import { TRANSCRIPT_PAGE_MESSAGES, nextTranscriptLimit, visibleTranscriptEnd } from "../lib/chat-window";
+import { CHAT_NEAR_BOTTOM_PX } from "../lib/chat-scroll";
+import { TRANSCRIPT_PAGE_MESSAGES, nextTranscriptLimit, scrollTopAfterPrepend, scrollerNeedsOlderPage, visibleTranscriptEnd } from "../lib/chat-window";
+import { commitDeferredTranscript } from "../lib/transcript-open";
 import {
   splitLiveTranscript,
   type ChatImage,
@@ -14,6 +16,7 @@ import {
 } from "../lib/core";
 import { imageTextParts, imageTokenLabel } from "../lib/image";
 import { displayFileMentions, type MentionFile } from "../lib/mention";
+import { displayProjectMentions, useMentionProjects } from "../lib/project-mention";
 import { formatElapsed, formatMessageTime } from "../lib/relative-time";
 import { providerProfile } from "../lib/provider";
 import { isProviderRetryStatus } from "../lib/turn";
@@ -100,7 +103,8 @@ function UserBubble({
   images?: ChatImage[];
   mentionFiles?: MentionFile[];
 }) {
-  const shown = displayFileMentions(text, mentionFiles ?? []);
+  const mentionProjects = useMentionProjects();
+  const shown = displayProjectMentions(displayFileMentions(text, mentionFiles ?? []), mentionProjects);
   const parts = imageTextParts(shown, images ?? []);
   const body = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -209,6 +213,7 @@ export function ChatTranscript({
   model = "",
   modelName = "",
   onLoadOlder,
+  scrollerRef,
   subagents = [],
   subagentRuns,
   onOpenConversation,
@@ -225,7 +230,9 @@ export function ChatTranscript({
   /** Catalog name, such as "Grok 4.6". The id is used when this is empty. */
   modelName?: string;
   /** Called before older turns mount so the scroller can keep its place. */
-  onLoadOlder?: () => void;
+  onLoadOlder?: () => { scrollTop: number; scrollHeight: number } | null | void;
+  /** The chat scroller. Older rows mount only when this is near the top. */
+  scrollerRef?: RefObject<HTMLDivElement | null>;
   /** Live subagents for this chat. A running row opens before its result is saved. */
   subagents?: SubagentRecord[];
   /** Latest tool and start time, keyed by subagent conversation id. */
@@ -235,19 +242,26 @@ export function ChatTranscript({
   // splitLiveTranscript parses messages once and returns the same settled turns
   // while only the stream changes, so SettledTurn does not rebuild per token.
   const [revealed, setRevealed] = useState(0);
+  const revealingRef = useRef(false);
+  const pendingHold = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  /** The full list was committed from a scroll-up. Reveal one page after it paints. */
+  const armRevealRef = useRef(false);
   const chatRef = useRef(conversationId);
   if (chatRef.current !== conversationId) {
     // Coming back should paint calls that finished while this chat was hidden, not stagger them.
     forgetSeenToolSignature(chatRef.current);
     chatRef.current = conversationId;
+    revealingRef.current = false;
+    pendingHold.current = null;
+    armRevealRef.current = false;
     if (revealed !== 0) setRevealed(0);
   }
-  // Parsed once per messages array. Streaming only replaces the open tail.
-  const split = useMemo(
-    () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning),
-    [messages, streamText, liveTools, streamReasoning],
-  );
   const limit = revealed > 0 ? revealed : TRANSCRIPT_PAGE_MESSAGES;
+  // History above this page stays unparsed. A wider page parses only the new gap.
+  const split = useMemo(
+    () => splitLiveTranscript(messages, streamText, liveTools, streamReasoning, limit),
+    [messages, streamText, liveTools, streamReasoning, limit],
+  );
   const visible = useMemo(
     () => visibleTranscriptEnd(split.settled, split.tail, limit),
     [split, limit],
@@ -259,16 +273,66 @@ export function ChatTranscript({
     }
     return ids;
   }, [subagents]);
+  const rowCount = useMemo(() => {
+    let total = split.tail.length;
+    for (const turn of split.settled) total += (turn.user ? 1 : 0) + turn.rest.length;
+    return total;
+  }, [split]);
+  const revealOnePage = () => {
+    // Parsed rows stop at this page. Older messages still count, or the window never grows.
+    const length = split.moreAbove ? limit + TRANSCRIPT_PAGE_MESSAGES : rowCount;
+    const next = nextTranscriptLimit(length, revealed);
+    const current = revealed > 0 ? revealed : TRANSCRIPT_PAGE_MESSAGES;
+    if (next <= current || revealingRef.current) return;
+    revealingRef.current = true;
+    const held = onLoadOlder?.();
+    pendingHold.current = held && typeof held === "object" ? held : null;
+    setRevealed(next);
+  };
+  const requestOlderRef = useRef(revealOnePage);
+  requestOlderRef.current = () => {
+    if (revealingRef.current) return;
+    if (conversationId && commitDeferredTranscript(conversationId)) {
+      armRevealRef.current = true;
+      return;
+    }
+    if (!visible.hidden && !split.moreAbove) return;
+    revealOnePage();
+  };
   useEffect(() => {
-    if (!visible.hidden) return;
-    const frame = requestAnimationFrame(() => {
-      onLoadOlder?.();
-      startTransition(() => {
-        setRevealed((current) => nextTranscriptLimit(Number.MAX_SAFE_INTEGER, current));
-      });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [visible.hidden, limit, onLoadOlder]);
+    const el = scrollerRef?.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop > CHAT_NEAR_BOTTOM_PX) return;
+      requestOlderRef.current();
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [scrollerRef, conversationId]);
+  useLayoutEffect(() => {
+    if (!armRevealRef.current) return;
+    armRevealRef.current = false;
+    if (revealingRef.current || (!visible.hidden && !split.moreAbove)) return;
+    revealOnePage();
+  }, [messages, visible.hidden, split.moreAbove, limit]);
+  useLayoutEffect(() => {
+    if (!revealingRef.current) return;
+    const before = pendingHold.current;
+    pendingHold.current = null;
+    const el = scrollerRef?.current ?? null;
+    if (before && el) el.scrollTop = scrollTopAfterPrepend(before, el.scrollHeight);
+    revealingRef.current = false;
+    // A page that grew but still sits near the top waits for the next user scroll.
+    // Keep chaining only while the scroller cannot move.
+    if (!scrollerNeedsOlderPage(el, visible.hidden || split.moreAbove)) return;
+    revealOnePage();
+  }, [limit, visible.hidden, split.moreAbove]);
+  useLayoutEffect(() => {
+    if (revealingRef.current) return;
+    const el = scrollerRef?.current ?? null;
+    if (!scrollerNeedsOlderPage(el, visible.hidden || split.moreAbove)) return;
+    revealOnePage();
+  }, [visible.hidden, split.moreAbove, limit, messages, conversationId]);
   const showTail = visible.tail.length > 0;
   const tailKeyStart = split.tail.length - visible.tail.length;
   return (
@@ -642,7 +706,10 @@ function TranscriptTurn({
         }
         const streaming = liveIndex >= 0 && last && item.kind === "assistant" && typeof item.durationMs !== "number";
         return (
-          <div key={rowKey} className={last ? undefined : "mb-4"}>
+          <div
+            key={rowKey}
+            className={`[content-visibility:auto] [contain-intrinsic-size:auto_48px] ${last ? "" : "mb-4"}`}
+          >
             {i === finalReply ? (
               <div className="mb-1">
                 <ModelMark model={model} name={modelName} />

@@ -63,7 +63,11 @@ fn json_f64(value: &serde_json::Value) -> Option<f64> {
         .as_f64()
         .or_else(|| value.as_i64().map(|n| n as f64))
         .or_else(|| value.as_u64().map(|n| n as f64))
-        .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim().parse::<f64>().ok())
+        })
         .filter(|n| n.is_finite())
 }
 
@@ -110,13 +114,21 @@ pub fn reset_seconds(text: &str) -> Option<i64> {
 }
 
 /// Token window left on the last OpenAI reply. `used_percent` is how much of the limit is spent.
-pub fn rate_window(limit: f64, remaining: f64, reset_secs: i64, now: DateTime<Utc>) -> Option<AccountUsageWindow> {
+pub fn rate_window(
+    limit: f64,
+    remaining: f64,
+    reset_secs: i64,
+    now: DateTime<Utc>,
+) -> Option<AccountUsageWindow> {
     if !limit.is_finite() || limit <= 0.0 || !remaining.is_finite() || remaining < 0.0 {
         return None;
     }
     let used = ((limit - remaining.max(0.0)) / limit * 100.0).clamp(0.0, 100.0);
     let resets_at = if reset_secs > 0 {
-        Some((now + chrono::Duration::seconds(reset_secs)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        Some(
+            (now + chrono::Duration::seconds(reset_secs))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
     } else {
         None
     };
@@ -187,7 +199,10 @@ pub fn parse_hard_limit_usd(body: &str) -> Option<f64> {
 pub fn subscription_has_payment(body: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|json| json.get("has_payment_method").and_then(|item| item.as_bool()))
+        .and_then(|json| {
+            json.get("has_payment_method")
+                .and_then(|item| item.as_bool())
+        })
         .unwrap_or(false)
 }
 
@@ -234,7 +249,11 @@ fn next_month_start(now: DateTime<Utc>) -> DateTime<Utc> {
 }
 
 /// Month bar when both the spend and the cap are known. The reset is the next month.
-pub fn month_window(spent_usd: f64, limit_usd: f64, now: DateTime<Utc>) -> Option<AccountUsageWindow> {
+pub fn month_window(
+    spent_usd: f64,
+    limit_usd: f64,
+    now: DateTime<Utc>,
+) -> Option<AccountUsageWindow> {
     if !spent_usd.is_finite() || spent_usd < 0.0 || !limit_usd.is_finite() || limit_usd <= 0.0 {
         return None;
     }
@@ -404,7 +423,11 @@ mod tests {
         assert_eq!(usage.windows.len(), 1);
         assert_eq!(usage.windows[0].label, "Month");
         assert!((usage.windows[0].used_percent - 30.5).abs() < 0.01);
-        assert!(usage.windows[0].resets_at.as_deref().unwrap().starts_with("2026-08-01"));
+        assert!(usage.windows[0]
+            .resets_at
+            .as_deref()
+            .unwrap()
+            .starts_with("2026-08-01"));
     }
 
     #[test]
@@ -418,7 +441,13 @@ mod tests {
 
     #[test]
     fn a_paid_login_with_no_numbers_still_says_credits_are_available() {
-        let usage = usage_from_bodies(None, Some(r#"{"has_payment_method":true}"#), None, None, at());
+        let usage = usage_from_bodies(
+            None,
+            Some(r#"{"has_payment_method":true}"#),
+            None,
+            None,
+            at(),
+        );
         assert_eq!(usage.credit_status.as_deref(), Some("available"));
         assert!(usage.windows.is_empty());
     }

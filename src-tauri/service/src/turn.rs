@@ -252,7 +252,14 @@ pub fn run_live_turn_gated(
         request,
         workspace,
         &mut |messages, on_delta| {
-            model::run_round(keys, model_id(request), &request.effort, &request.service_tier, messages, on_delta)
+            model::run_round(
+                keys,
+                model_id(request),
+                &request.effort,
+                &request.service_tier,
+                messages,
+                on_delta,
+            )
         },
         ask,
         gate.map(|gate| gate.cancel.clone()),

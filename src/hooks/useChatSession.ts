@@ -71,7 +71,6 @@ export function useChatSession({
   stickToBottomRef,
   holdEmptyChatRef,
   libraryRef,
-  cloudTranscriptsRef,
   paintedChatsRef,
 }: {
   hostedChats: boolean;
@@ -113,7 +112,6 @@ export function useChatSession({
   subagentsByChatRef: RefObject<Map<string, SubagentDockState>>;
   stickToBottomRef: RefObject<boolean>;
   holdEmptyChatRef?: RefObject<boolean>;
-  cloudTranscriptsRef: RefObject<Map<string, import("../lib/tauri").Conversation>>;
   /** Chats already painted. A project switch must not read their transcript again. */
   paintedChatsRef?: RefObject<Set<string>>;
   libraryRef: RefObject<{
@@ -147,14 +145,14 @@ export function useChatSession({
         try {
           const cached = await api.hostedSidebarCached(ws);
           if (!isSameProject(ws, workspaceRef.current)) return;
-          rememberCloudTranscripts(cloudTranscriptsRef.current, ws, cached.transcripts);
           if (cached.conversations.length > 0) {
             cachePaintedForRef.current = ws;
             sidebarLoadedForRef.current = ws;
             setConversations(cached.conversations);
             const savedId = preferId || (holdEmptyChatRef?.current ? "" : loadConversation(ws));
             const row = cached.conversations.find((item) => item.id === savedId);
-            const transcript = row ? cached.transcripts.find((item) => item.id === row.id) : undefined;
+            const transcript = row ? await api.hostedConversationCached(ws, row.id).catch(() => null) : null;
+            if (!isSameProject(ws, workspaceRef.current)) return;
             if (row && transcript && !activeIdRef.current) {
               if (!isSameProject(ws, workspaceRef.current)) return;
               if (!activeIdRef.current) {
@@ -261,8 +259,9 @@ export function useChatSession({
           ? api.getHostedConversation(ws, want)
           : api.getConversation(ws, want)
         : null;
-      if (hostedChats) {
-        const skip = hostedTranscriptIds(cloudTranscriptsRef.current, ws);
+      const warmLater = () => {
+        if (!hostedChats) return;
+        const skip = new Set<string>();
         if (currentId) skip.add(currentId);
         if (openingHere) skip.add(want);
         api.warmHostedTranscripts(
@@ -270,15 +269,17 @@ export function useChatSession({
           rows.map((row) => row.id),
           skip,
         );
-      }
+      };
       if (keepCurrent) {
         setOpeningId?.("");
+        warmLater();
         return;
       }
       if (!want) {
         setActiveId("");
         setMessages([]);
         setOpeningId?.("");
+        warmLater();
         return;
       }
       const found = rows.find((row) => row.id === want);
@@ -287,14 +288,17 @@ export function useChatSession({
         // yet, so fetching the preferred older chat would replace this prompt.
         if (hostedChats && want === currentId) {
           setOpeningId?.("");
+          warmLater();
           return;
         }
         setActiveId("");
         setMessages([]);
         setOpeningId?.("");
+        warmLater();
         return;
       }
       const full = fullPromise ? await fullPromise : null;
+      warmLater();
       if (!full) return;
       if (!isSameProject(ws, workspaceRef.current)) return;
       stickToBottomRef.current = true;
@@ -455,7 +459,6 @@ export function useChatSession({
       stickToBottomRef,
       holdEmptyChatRef,
       libraryRef,
-      cloudTranscriptsRef,
       paintedChatsRef,
     ],
   );
@@ -563,33 +566,6 @@ function clearRejoinedTurn(running: Record<string, RunningTurn>, id: string): Re
   const next = { ...running };
   delete next[id];
   return next;
-}
-
-function hostedTranscriptIds(store: ReadonlyMap<string, { id?: string }>, workspace: string): Set<string> {
-  const prefix = `${workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}\t`;
-  const ids = new Set<string>();
-  for (const [key, row] of store) {
-    if (!key.startsWith(prefix)) continue;
-    ids.add(row.id || key.slice(prefix.length));
-  }
-  return ids;
-}
-
-export function rememberCloudTranscripts(
-  store: Map<string, import("../lib/tauri").Conversation>,
-  workspace: string,
-  rows: import("../lib/tauri").Conversation[],
-) {
-  const prefix = `${workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase()}\t`;
-  // A sidebar pass can arrive before the full message copy. Keep what is already here.
-  if (rows.length === 0) return;
-  for (const key of [...store.keys()]) {
-    if (key.startsWith(prefix)) store.delete(key);
-  }
-  for (const row of rows) {
-    if (!row.id) continue;
-    store.set(`${prefix}${row.id}`, row);
-  }
 }
 
 /** Keep the latest value in a ref without an effect. A turn reads this, not the render that started it. */

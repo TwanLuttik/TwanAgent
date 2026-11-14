@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::dev::{Conversation, DevChatUsage};
 use crate::error::Result;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 pub fn db_path(dir: &Path) -> PathBuf {
     dir.join("store.db")
@@ -266,6 +266,11 @@ fn init_schema(conn: &Connection) -> Result<()> {
     }
     if version.unwrap_or(0) < 11 {
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_items TEXT", []);
+    }
+    if version.unwrap_or(0) < 12 {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS messages_conv_order ON messages(conversation_id, sort_order, id);",
+        )?;
     }
     if version != Some(SCHEMA_VERSION) {
         conn.execute(
@@ -905,8 +910,8 @@ mod journeys;
 #[cfg(test)]
 pub use conversations::list_conversations;
 pub use conversations::{
-    conversation_summary, delete_conversation, get_conversation, get_conversation_tail,
-    list_conversation_summaries, reorder_conversations, save_conversation,
+    conversation_summary, delete_conversation, get_conversation, get_conversation_head,
+    get_conversation_tail, list_conversation_summaries, reorder_conversations, save_conversation,
     save_conversation_suffix_with_usage, set_conversation_archived, set_conversation_compaction,
 };
 pub use journeys::{

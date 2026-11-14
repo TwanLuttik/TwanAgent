@@ -805,7 +805,7 @@ html[data-theme-mode="light"] .running-notch::after {
 }
 
 .term .xterm-selection {
-  opacity: 0.55;
+  opacity: 1;
 }
 
 /* Canvas layers follow the pane while it moves. The character grid is not

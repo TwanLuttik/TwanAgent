@@ -194,9 +194,16 @@ pub fn run_round(
             anthropic::round(&client, &token, model, effort, &messages, &tools, on_delta)
         }
         ProviderId::Minimax => minimax::round(&client, &token, model, &messages, &tools, on_delta),
-        ProviderId::OpenAi => {
-            openai::round(&client, &token, model, effort, service_tier, &messages, &tools, on_delta)
-        }
+        ProviderId::OpenAi => openai::round(
+            &client,
+            &token,
+            model,
+            effort,
+            service_tier,
+            &messages,
+            &tools,
+            on_delta,
+        ),
     }
 }
 

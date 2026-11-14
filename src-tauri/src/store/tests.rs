@@ -102,6 +102,81 @@ fn conversation_tail_keeps_the_last_user_turns() {
     assert_eq!(text, ["ran", "three", "c"]);
     let short = get_conversation_tail(&conn, "c1", 9).unwrap();
     assert_eq!(short.messages.len(), 6);
+    let indexed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_conv_order'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 1);
+}
+
+#[test]
+fn older_store_gains_message_order_index() {
+    let dir = tempdir().unwrap();
+    let conn = Connection::open(dir.path().join("store.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+         INSERT INTO schema_migrations (version) VALUES (11);
+         CREATE TABLE conversations (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
+            journey_id TEXT,
+            sort_order INTEGER NOT NULL,
+            context_usage TEXT,
+            compaction TEXT,
+            effort TEXT,
+            model TEXT,
+            context_window INTEGER,
+            permission TEXT,
+            archived INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT,
+            tool_call_id TEXT,
+            images TEXT,
+            reasoning TEXT,
+            duration_ms INTEGER,
+            finished_at TEXT,
+            reasoning_items TEXT
+         );
+         INSERT INTO conversations (id, title, created_at, updated_at, kind, sort_order, archived)
+         VALUES ('old', 'Legacy', 't', 't', 'chat', 0, 0);
+         INSERT INTO messages (conversation_id, sort_order, role, content) VALUES
+           ('old', 0, 'user', 'one'),
+           ('old', 1, 'assistant', 'two'),
+           ('old', 2, 'user', 'three');",
+    )
+    .unwrap();
+    drop(conn);
+    let conn = open(dir.path()).unwrap();
+    let tail = get_conversation_tail(&conn, "old", 2).unwrap();
+    assert_eq!(tail.messages.len(), 2);
+    assert_eq!(tail.messages[0]["content"], "two");
+    assert_eq!(tail.messages[1]["content"], "three");
+    let indexed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_conv_order'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 1);
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -535,7 +610,7 @@ fn older_store_gains_archived_column() {
         })
         .unwrap();
     // Opening any older store runs every later migration, including composer settings.
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -606,7 +681,7 @@ fn older_store_gains_composer_setting_columns() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]
@@ -747,7 +822,7 @@ fn older_store_gains_finished_at_column() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[test]

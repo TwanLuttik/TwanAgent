@@ -6,7 +6,8 @@ import { DropImagesHint, PendingUserMessage } from "../../components/ChatTranscr
 import { SubagentCrumb, useSubagentParentId } from "../../components/SubagentCrumb";
 import { rememberSubagentParent } from "../../lib/subagent-parent";
 import { subagentRunInfo } from "../../lib/subagent";
-import { applyComposerPadResize, chatScrollFor, isNearBottom, pinChatToEnd, rememberChatScroll, stickToBottomAfterRestore } from "../../lib/chat-scroll";
+import { applyComposerPadResize, chatScrollFor, chatScrollNearBottom, isNearBottom, pinChatToEnd, rememberChatScroll, restoreChatScroll } from "../../lib/chat-scroll";
+import { screenHasTranscript } from "../../lib/transcript-open";
 import { chatHasRunningTurn, mergeHostedTranscript, pendingForChat, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { rememberSplitPane, splitGroupForChat, splitPaneCache } from "../../lib/split-pane";
 import { useMain } from "./context";
@@ -100,11 +101,18 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   const dockRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const followingRef = useRef(false);
-  /** False until a saved offset can actually be applied. A short first paint must not decide. */
+  /** True while a prepend is writing scrollTop. That event is not the user leaving the bottom. */
+  const scrollAdjustRef = useRef(false);
+  /** False until this pane's transcript is showing. A short first paint must not decide. */
   const settledRef = useRef(false);
   const restoredFor = useRef("");
   const [storedMessages, setStoredMessages] = useState<ChatMessage[]>(() => splitPaneCache(chatId)?.messages ?? []);
   const messages = active ? liveMessages : storedMessages;
+  // Only a pane that has nothing to show yet is loading. Flipping focus must not
+  // replace a transcript that is already on screen with Loading….
+  const [loading, setLoading] = useState(
+    () => (splitPaneCache(chatId)?.messages.length ?? 0) === 0,
+  );
   const subagentRuns = useMemo(
     () => (chatId === activeId ? subagentRunInfo(subagents, runningTurns) : {}),
     [chatId, activeId, subagents, runningTurns],
@@ -115,31 +123,26 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
   useEffect(() => {
     if (messages.length) rememberSplitPane(chatId, { messages });
   }, [chatId, messages]);
+  // The loading shell clamps scrollTop. That is not this chat's position, and it must not pin.
+  // Rows, a finished load (including a real empty chat), or the committed transcript count.
+  const transcriptShowing = messages.length > 0 || !loading || (active && screenHasTranscript(chatId));
   useLayoutEffect(() => {
-    if (restoredFor.current === chatId && settledRef.current) return;
     if (restoredFor.current !== chatId) {
       restoredFor.current = chatId;
       settledRef.current = false;
-      stickRef.current = true;
     }
+    if (settledRef.current) return;
     const el = scroller.current;
     if (!el) return;
-    const saved = chatScrollFor(chatId);
-    if (saved == null) {
-      settledRef.current = true;
+    if (!transcriptShowing) {
+      stickRef.current = false;
       return;
     }
-    const max = Math.max(0, el.scrollHeight - el.clientHeight);
-    if (!stickToBottomAfterRestore(el, saved)) return;
-    el.scrollTop = Math.min(saved, max);
-    stickRef.current = isNearBottom(el);
+    const restored = restoreChatScroll(el, chatScrollFor(chatId), chatScrollNearBottom(chatId));
+    if (el.scrollTop !== restored.scrollTop) el.scrollTop = restored.scrollTop;
+    stickRef.current = restored.stick;
     settledRef.current = true;
-  }, [chatId, messages]);
-  // Only a pane that has nothing to show yet is loading. Flipping focus must not
-  // replace a transcript that is already on screen with Loading….
-  const [loading, setLoading] = useState(
-    () => (splitPaneCache(chatId)?.messages.length ?? 0) === 0,
-  );
+  }, [chatId, messages, transcriptShowing]);
   const stream = useSecondaryLiveStream();
   const streamEmpty = useSecondaryLiveStreamEmpty();
   const activeRunning = chatHasRunningTurn(runningTurns, chatId);
@@ -200,7 +203,7 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
     if (!el) return;
     let frame = 0;
     const pin = () => {
-      if (!settledRef.current || !stickRef.current) return;
+      if (scrollAdjustRef.current || !settledRef.current || !stickRef.current) return;
       followingRef.current = true;
       pinChatToEnd(el, true);
       requestAnimationFrame(() => {
@@ -274,9 +277,11 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
         className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         onScroll={() => {
           const el = scroller.current;
-          if (!el || followingRef.current) return;
-          stickRef.current = isNearBottom(el);
-          rememberChatScroll(chatId, el.scrollTop);
+          if (!el || followingRef.current || scrollAdjustRef.current) return;
+          if (!transcriptShowing) return;
+          const near = isNearBottom(el);
+          stickRef.current = near;
+          rememberChatScroll(chatId, el.scrollTop, near);
         }}
         onWheel={(event) => {
           if (event.deltaY < 0) stickRef.current = false;
@@ -302,7 +307,25 @@ function SplitChatPane({ chatId, active = false }: { chatId: string; active?: bo
               if (chatId && chatId !== id) rememberSubagentParent(id, chatId);
               void openChat(id);
             }}
-            onLoadOlder={() => undefined}
+            onLoadOlder={() => {
+              const el = scroller.current;
+              if (!el) return null;
+              stickRef.current = false;
+              scrollAdjustRef.current = true;
+              // The prepend's resize pin runs in this frame. Follow again only after that paint.
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  scrollAdjustRef.current = false;
+                  const node = scroller.current;
+                  if (!node) return;
+                  const near = isNearBottom(node);
+                  stickRef.current = near;
+                  rememberChatScroll(chatId, node.scrollTop, near);
+                });
+              });
+              return { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight };
+            }}
+            scrollerRef={scroller}
             pendingShell={false}
             pendingPlan={false}
             activity={runningTurns[chatId]?.activity}

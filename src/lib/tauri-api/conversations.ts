@@ -72,17 +72,16 @@ function summaryFromHosted(row: Record<string, unknown>): ConversationSummary {
   };
 }
 
-/** The last server chat list and the saved messages. Empty until one sync has landed. */
+/** The last server chat list. Transcript bodies stay in the per-chat cache. */
 export async function hostedSidebarCached(
   workspace: string,
-): Promise<{ conversations: ConversationSummary[]; journeys: Journey[]; transcripts: Conversation[] }> {
-  const [conversations, journeys, transcripts] = await invoke<
-    [ConversationSummary[], Journey[], Conversation[]]
+): Promise<{ conversations: ConversationSummary[]; journeys: Journey[] }> {
+  const [conversations, journeys] = await invoke<
+    [ConversationSummary[], Journey[]]
   >("dev_hosted_sidebar_cached", { workspace });
   return {
     conversations: conversations ?? [],
     journeys: journeys ?? [],
-    transcripts: transcripts ?? [],
   };
 }
 
@@ -159,13 +158,20 @@ export function getConversationById(id: string): Promise<Conversation> {
   return invoke("dev_get_conversation", { id });
 }
 
-export function getConversation(workspace: string, id: string, tailMessages?: number): Promise<Conversation> {
-  const limit = tailMessages && tailMessages > 0 ? Math.floor(tailMessages) : null;
+export function getConversation(
+  workspace: string,
+  id: string,
+  tailMessages?: number,
+  headOnly = false,
+): Promise<Conversation> {
+  const limit = !headOnly && tailMessages && tailMessages > 0 ? Math.floor(tailMessages) : null;
   return invoke("dev_get_conversation", {
     id,
     workspace: workspace || null,
     tailMessages: limit,
     tail_messages: limit,
+    headOnly,
+    head_only: headOnly,
   });
 }
 

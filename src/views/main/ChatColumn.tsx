@@ -9,8 +9,8 @@ import { conversationActivityLabel } from "../../lib/core";
 import { rememberSubagentParent } from "../../lib/subagent-parent";
 import { subagentRunInfo, type SubagentRecord } from "../../lib/subagent";
 import { holdTranscript } from "../../lib/chat-window";
-import { useTranscriptPreview } from "../../lib/transcript-open";
-import { chatScrollFor, rememberChatScroll } from "../../lib/chat-scroll";
+import { clearTranscriptPreview, useTranscriptPreview } from "../../lib/transcript-open";
+import { chatScrollFor, chatScrollMax, isNearBottom, rememberChatScroll, scrollOffsetFits } from "../../lib/chat-scroll";
 import { composerDockPlace } from "../../lib/composer-dock";
 import { chatHasRunningTurn, runningTurnStartedAt, type PendingMessage } from "../../lib/turn";
 import { providerProfile } from "../../lib/provider";
@@ -72,6 +72,12 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
   const preview = useTranscriptPreview();
   const previewMessages =
     preview && preview.id === activeId && held.id !== activeId ? preview.messages : null;
+  useEffect(() => {
+    // The deferred commit only sets messages. Dropping the preview in that callback
+    // flushes the store before React paints the new list and the column goes blank.
+    if (!activeId || held.id !== activeId) return;
+    clearTranscriptPreview(activeId);
+  }, [activeId, held.id]);
   const showingTranscript = held.id === activeId || previewMessages !== null;
   const transcriptMessages = previewMessages ?? held.messages;
   const transcriptId = previewMessages ? activeId : held.id;
@@ -88,8 +94,8 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
     if (!showingTranscript) return;
     const el = scroller.current;
     const saved = chatScrollFor(transcriptId);
-    if (!el || saved == null) return;
-    el.scrollTop = saved;
+    if (!el || saved == null || !scrollOffsetFits(el, saved)) return;
+    el.scrollTop = Math.min(saved, chatScrollMax(el));
   }, [showingTranscript, transcriptId, scroller]);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
@@ -139,7 +145,8 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
           ref={scroller}
           onScroll={() => {
             if (!showingTranscript || !scroller.current || !transcriptId) return;
-            rememberChatScroll(transcriptId, scroller.current.scrollTop);
+            const el = scroller.current;
+            rememberChatScroll(transcriptId, el.scrollTop, isNearBottom(el));
           }}
           className="no-scrollbar absolute inset-0 overflow-auto [overflow-anchor:none]"
         >
@@ -159,6 +166,7 @@ export function ChatColumn({ paneClosed = false }: { paneClosed?: boolean }) {
                 subagentRuns={subagentRuns}
                 onOpenConversation={onOpenConversation}
                 onLoadOlder={holdScrollForOlder}
+                scrollerRef={scroller}
                 pendingShell={Boolean(pendingShell)}
                 pendingPlan={Boolean(pendingPlan)}
                 activity={runningTurns[transcriptId]?.activity}
@@ -364,6 +372,7 @@ export const LiveTranscript = memo(function LiveTranscript({
   subagentRuns,
   onOpenConversation,
   onLoadOlder,
+  scrollerRef,
   pendingShell,
   pendingPlan,
   activity,
@@ -385,7 +394,8 @@ export const LiveTranscript = memo(function LiveTranscript({
   subagents?: SubagentRecord[];
   subagentRuns?: ReturnType<typeof subagentRunInfo>;
   onOpenConversation?: (id: string) => void;
-  onLoadOlder: () => void;
+  onLoadOlder: () => { scrollTop: number; scrollHeight: number } | null | void;
+  scrollerRef?: RefObject<HTMLDivElement | null>;
   pendingShell: boolean;
   pendingPlan: boolean;
   activity: Parameters<typeof conversationActivityLabel>[0];
@@ -422,6 +432,7 @@ export const LiveTranscript = memo(function LiveTranscript({
         subagentRuns={subagentRuns}
         onOpenConversation={onOpenConversation}
         onLoadOlder={onLoadOlder}
+        scrollerRef={scrollerRef}
       />
       {transcriptPending && !activeRunning ? <ActivityStatus label="Loading…" /> : null}
       {activeRunning && !pendingShell && !pendingPlan && (

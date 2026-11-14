@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { motion } from "motion/react";
 import type { ChatImage } from "../../lib/core";
 import { draftMentionSpans, type MentionFile } from "../../lib/mention";
+import { draftProjectMentionSpans, type MentionProject } from "../../lib/project-mention";
 import {
   flattenPasteToken,
   insertCollapsedPaste,
@@ -58,22 +59,31 @@ function caretRect(node: HTMLTextAreaElement, cursor: number): DOMRect {
   return caret;
 }
 
+export type MentionMenuRow = {
+  key: string;
+  name: string;
+  detail: string;
+  icon: "file" | "folder";
+};
+
 export function MentionMenu({
   open,
   anchor,
   cursor,
   rows,
   index,
+  label,
   onIndex,
   onPick,
 }: {
   open: boolean;
   anchor: RefObject<HTMLTextAreaElement | null>;
   cursor: number;
-  rows: MentionFile[];
+  rows: MentionMenuRow[];
   index: number;
+  label: string;
   onIndex: (index: number) => void;
-  onPick: (file: MentionFile) => void;
+  onPick: (row: MentionMenuRow) => void;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -136,18 +146,18 @@ export function MentionMenu({
     <motion.div
       ref={panel}
       role="listbox"
-      aria-label="Files"
+      aria-label={label}
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.16, ease: MODEL_MENU_EASE }}
       style={{ left: box?.left ?? -9999, top: box?.top ?? 0, width: box?.width ?? 320, visibility: box ? "visible" : "hidden" }}
       className="fixed z-50 max-h-56 origin-bottom overflow-auto rounded-lg border border-line/25 bg-canvas py-1 shadow-card"
     >
-      {rows.map((file, row) => {
+      {rows.map((item, row) => {
         const current = row === index;
         return (
           <button
-            key={file.path}
+            key={item.key}
             ref={current ? active : undefined}
             type="button"
             role="option"
@@ -155,16 +165,20 @@ export function MentionMenu({
             onMouseEnter={() => onIndex(row)}
             onMouseDown={(event) => {
               event.preventDefault();
-              onPick(file);
+              onPick(item);
             }}
             className={`flex h-7 w-full cursor-pointer items-center gap-2 px-2.5 text-left text-[12px] transition-colors duration-150 hover:bg-wash ${
               current ? "bg-wash font-medium text-ink" : "text-ink/80"
             }`}
           >
-            <FileIcon name={file.name} className="size-3.5 shrink-0" />
-            <span className="shrink-0 truncate">{file.name}</span>
+            {item.icon === "folder" ? (
+              <Symbol name="folder.fill" className="size-3.5 shrink-0 text-accent" />
+            ) : (
+              <FileIcon name={item.name} className="size-3.5 shrink-0" />
+            )}
+            <span className="shrink-0 truncate">{item.name}</span>
             <span className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-muted">
-              {file.path}
+              {item.detail}
             </span>
           </button>
         );
@@ -177,6 +191,7 @@ export function MentionMenu({
 export function MentionField({
   draft,
   files,
+  projects = [],
   compact,
   area,
   mirror,
@@ -196,6 +211,7 @@ export function MentionField({
 }: {
   draft: string;
   files: MentionFile[];
+  projects?: MentionProject[];
   compact?: boolean;
   area: RefObject<HTMLTextAreaElement | null>;
   mirror: RefObject<HTMLDivElement | null>;
@@ -215,7 +231,7 @@ export function MentionField({
 }) {
   const pad = compact ? "px-3.5 pt-3 pb-1.5" : "px-4 pt-3.5 pb-2";
   const type = "m-0 whitespace-pre-wrap break-words border-0 font-sans text-[14px] leading-relaxed";
-  const spans = draftHighlightSpans(draft, files, pastes, images);
+  const spans = draftHighlightSpans(draft, files, pastes, images, projects);
   const showImageText = spans.some((span) => span.kind === "image");
   let cursor = 0;
   const parts: ReactNode[] = [];
@@ -394,8 +410,12 @@ function draftHighlightSpans(
   files: MentionFile[],
   pastes: PasteBlock[],
   images: ChatImage[],
+  projects: MentionProject[],
 ): HighlightSpan[] {
-  const mentions = draftMentionSpans(draft, files).map((span) => ({
+  const mentions = [
+    ...draftMentionSpans(draft, files),
+    ...draftProjectMentionSpans(draft, projects),
+  ].map((span) => ({
     start: span.start,
     end: span.end,
     kind: "mention" as const,

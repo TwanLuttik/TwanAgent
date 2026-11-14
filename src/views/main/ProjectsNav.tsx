@@ -19,9 +19,9 @@ import type { GitWorktree } from "../../lib/tauri.ts";
 import { groupProjectsByWorktree, linkedWorktrees, publishWorktreeChats, publishWorktreeLists, subscribeWorktreeLists, withoutLinkedWorktrees, worktreeNameRevision, worktreeRepoKey, type WorktreeChild } from "../../lib/worktree.ts";
 import { useApp } from "../../state/app-state";
 import { NewChatMenu } from "./AppChrome";
-import { useMain, useSidebar } from "./context";
+import { useSidebar } from "./context";
 import { ProjectConversations } from "./ProjectConversations";
-import { ActivityDock, todoSignature } from "./SidebarActivity";
+import { ActivityDock } from "./SidebarActivity";
 import { SidebarSearch } from "./SidebarSearch";
 import { UpdateNotice, VersionChip } from "./UpdateRow";
 
@@ -81,7 +81,7 @@ export function ProjectsNav({
     deleteProjectFromSidebar,
     forgetProjectRow,
     legacyProjectsRoot,
-    messages,
+    openTodoBadge,
     openingId,
     openProjectFromSidebar,
     rememberOpenedProject,
@@ -95,13 +95,14 @@ export function ProjectsNav({
     unseenFinished,
     showUsage,
     showDocs,
+    closeDocs,
+    closeSettings,
     sidebarReady,
     reorderProjects,
     startNewChat,
     toggleProjectCollapsed,
     workspace,
   } = useSidebar();
-  const { closeDocs, closeSettings } = useMain();
   const fullPage = Boolean(showUsage || projectSettings);
   const [picked, setPicked] = useState<ChatSelection[]>([]);
   const pickAnchor = useRef<ChatSelection | null>(null);
@@ -398,9 +399,9 @@ export function ProjectsNav({
       group.conversations.map((row) => `${group.remote ? "1" : "0"}\t${group.path}\t${row.id}\t${row.updated_at}`),
     )
     .join("\n");
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
-  const openTodoKey = `${workspace}\t${activeId}\t${todoSignature(messages as ChatMessage[])}`;
+  const openTodoKey = `${workspace}\t${activeId}\t${
+    openTodoBadge ? `${openTodoBadge.done}/${openTodoBadge.total}` : ""
+  }`;
   const openTodo = useRef({ workspace, activeId });
   openTodo.current = { workspace, activeId };
   const runningRef = useRef(runningTurns);
@@ -438,8 +439,7 @@ export function ProjectsNav({
           const isOpen = openKey === `${projectKey(row.path)}\t${row.id}`;
           const badgeKey = sidebarTodoKey(row.path, row.id);
           if (isOpen) {
-            const badge = sidebarTodoBadge(todosInLatestTurn(messagesRef.current as ChatMessage[]));
-            if (badge) found[badgeKey] = badge;
+            if (openTodoBadge) found[badgeKey] = openTodoBadge;
             return;
           }
           if (row.id in runningRef.current) return;
